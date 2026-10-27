@@ -4,6 +4,7 @@
 //! presented from the resource and changed only through its actions.
 
 use std::collections::HashMap;
+use std::f64::consts::TAU;
 use std::rc::Rc;
 #[cfg(test)]
 use ui::widget::Edits;
@@ -26,6 +27,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::actions::{self, GraphKind};
+use crate::convert_page::ConvertPage;
 use crate::engine;
 use crate::graph2d::{Graph2dScreen, Pointer};
 use crate::graph3d::Graph3dScreen;
@@ -47,11 +49,15 @@ use ui::tilo_resource::Id;
 pub struct CalculatorApp {
     model: CalcModel,
     calc: CalcScreen,
+    convert: ConvertPage,
     g2: Graph2dScreen,
     g3: Graph3dScreen,
 
     /// The whole window.
     area: Rect,
+    /// The theme the last layout was built with: the event path has no theme
+    /// of its own and places the conversion page with this one.
+    theme: Theme,
     /// What kind of pointer drives the window, for the canvas hint's copy.
     environment: InteractionEnvironment,
     /// The person has panned, orbited or zoomed a plot, so the hint that
@@ -119,9 +125,11 @@ impl CalculatorApp {
             model,
             copy: ui::CopyWatch::default(),
             calc: CalcScreen::default(),
+            convert: ConvertPage::new(),
             g2: Graph2dScreen::default(),
             g3: Graph3dScreen::default(),
             area: Rect::ZERO,
+            theme: Theme::dark(),
             environment: InteractionEnvironment::POINTER,
             navigated: false,
             mouse: Point::ZERO,
@@ -194,6 +202,21 @@ impl CalculatorApp {
                 self.set_mode(Mode::Calc);
             }
             Some("error") => self.model.apply_error_demo(),
+            Some("convert" | "convert-currency") => {
+                self.set_mode(Mode::Convert);
+                // The conversion the audit asked for: 40 °C in °F.
+                self.convert
+                    .apply(&crate::convert_page::ConvertAction::Quantity(
+                        crate::convert::Dimension::Temperature,
+                    ));
+                self.convert
+                    .set_field_text(crate::model::CONVERT_DEMO_AMOUNT);
+                if scenario == Some("convert-currency") {
+                    self.convert
+                        .apply(&crate::convert_page::ConvertAction::Currency);
+                }
+                self.relayout();
+            }
             Some("graph3d" | "narrow-graph3d") => self.set_mode(Mode::Graph3d),
             _ => self.set_mode(Mode::Graph2d),
         }
@@ -217,6 +240,27 @@ impl CalculatorApp {
         self.dirty = true;
     }
 
+    /// Which page this window shows, for a test that checks a switch landed.
+    #[cfg(test)]
+    pub(crate) fn mode_for_test(&self) -> Mode {
+        self.model.mode
+    }
+
+    /// The clipboard watch every copy in this window goes through.
+    pub(crate) fn copy_watch_mut(&mut self) -> &mut ui::CopyWatch {
+        &mut self.copy
+    }
+
+    /// The conversion page, to read.
+    pub(crate) fn convert_page(&self) -> &ConvertPage {
+        &self.convert
+    }
+
+    /// The conversion page, to change.
+    pub(crate) fn convert_page_mut(&mut self) -> &mut ConvertPage {
+        &mut self.convert
+    }
+
     /// Lay out the active screen in the window. Derived from the current
     /// size every call, so a resize between breakpoints reflows rather than
     /// staying frozen at the launch layout.
@@ -227,6 +271,7 @@ impl CalculatorApp {
     fn layout_active(&mut self) {
         match self.model.mode {
             Mode::Calc => self.calc.layout(self.area),
+            Mode::Convert => self.convert.layout(self.area, &self.theme.clone()),
             Mode::Graph2d => self.g2.layout(self.area, &self.model),
             Mode::Graph3d => self.g3.layout(self.area, &self.model),
         }
@@ -424,6 +469,10 @@ impl CalculatorApp {
         self.last_click = Some(now);
         self.last_click_pos = p;
 
+        if self.model.mode == Mode::Convert {
+            self.on_press_convert(p);
+            return;
+        }
         match self.model.mode.graph() {
             None => {
                 if let Some(slot) = self.calc.copy_at(p) {
@@ -541,33 +590,70 @@ impl CalculatorApp {
                 self.model_dirty = true;
             }
             Mode::Graph3d => {
-                self.model.view3d.yaw += d.x * 0.01;
+                // Kept within one turn however far it orbits.
+                let yaw = self.model.view3d.yaw + d.x * 0.01;
+                self.model.view3d.yaw = yaw - TAU * (yaw / TAU).round();
                 self.model.view3d.pitch = (self.model.view3d.pitch + d.y * 0.01).clamp(-1.5, 1.5);
                 // An orbit re-projects regardless, so settle any zoom ease.
                 self.g3.settle_zoom(self.model.view3d.zoom);
                 self.model_dirty = true;
             }
-            Mode::Calc => {}
+            Mode::Calc | Mode::Convert => {}
         }
     }
 
-    fn on_wheel(&mut self, step: f64) {
-        // Scrolling over a math editor scrolls its (clipped) content — the axis
-        // that actually overflows moves; the other is clamped to a no-op.
+    /// Scroll the math editor under the pointer by `(dx, dy)`: the axis that
+    /// overflows moves, the other stays. False with no editor there.
+    fn scroll_field_under_pointer(&mut self, dx: f64, dy: f64) -> bool {
         if let Some(kind) = self.model.mode.graph()
             && let Some(i) = self.panel(kind).field_at(self.mouse)
         {
             if let Some(f) = self.graph_field(kind, i) {
-                f.scroll_by(-step * 24.0, -step * 24.0);
+                f.scroll_by(dx, dy);
             }
-            return;
+            return true;
         }
-
         if self.model.mode == Mode::Calc && self.calc.expression_rect().contains(self.mouse) {
-            self.calc.field.scroll_by(-step * 24.0, -step * 24.0);
+            self.calc.field.scroll_by(dx, dy);
+            return true;
+        }
+        false
+    }
+
+    fn on_scroll(&mut self, delta: &MouseScrollDelta, scale_factor: f64, ctrl: bool) {
+        match delta {
+            MouseScrollDelta::LineDelta(_, y) => self.on_wheel(f64::from(*y)),
+            // A touchpad's pinch arrives as a Ctrl-scroll on some platforms.
+            MouseScrollDelta::PixelDelta(pos) if ctrl => self.on_wheel(pos.y / 40.0),
+            MouseScrollDelta::PixelDelta(pos) => {
+                self.on_pixel_scroll(Vec2::new(pos.x, pos.y) / scale_factor);
+            }
+        }
+    }
+
+    /// A mouse wheel's detents scroll an editor and zoom a graph.
+    fn on_wheel(&mut self, step: f64) {
+        if !self.scroll_field_under_pointer(-step * 24.0, -step * 24.0) {
+            self.zoom_at_pointer((1.0 + step * 0.12).clamp(0.4, 2.5));
+        }
+    }
+
+    /// Two fingers on a touchpad or screen moved `d` logical pixels: an
+    /// editor scrolls, and a graph's content follows them as under a drag.
+    /// Zoom is the pinch's.
+    fn on_pixel_scroll(&mut self, d: Vec2) {
+        if self.scroll_field_under_pointer(-d.x, -d.y) {
             return;
         }
-        let factor = (1.0 + step * 0.12).clamp(0.4, 2.5);
+        if let Some(kind) = self.model.mode.graph()
+            && self.canvas_contains(kind, self.mouse)
+        {
+            self.on_drag(d);
+        }
+    }
+
+    /// Scale the graph under the pointer by `factor`, about the pointer.
+    fn zoom_at_pointer(&mut self, factor: f64) {
         match self.model.mode {
             Mode::Graph2d if self.g2.canvas_contains(self.mouse) => {
                 self.navigated = true;
@@ -631,58 +717,8 @@ impl CalculatorApp {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         let shift = modifiers.state().shift_key();
 
-        // The display's values are copy targets. A selection in the
-        // expression keeps the editor's own copy first; with nothing
-        // selected, Ctrl+C takes the result and Ctrl+Shift+C the expression.
-        if ctrl
-            && self.model.mode == Mode::Calc
-            && let WKey::Character(s) = key
-            && s.eq_ignore_ascii_case("c")
-        {
-            if shift {
-                self.copy_display(DisplaySlot::Expression);
-                return;
-            }
-            self.calc.field.set_source(&self.model.expr);
-            if !self.calc.field.has_selection() {
-                self.copy_display(DisplaySlot::Result);
-                return;
-            }
-        }
-
-        // Ctrl+digit always switches mode, from any screen.
-        if ctrl && let WKey::Character(s) = key {
-            match s.as_str() {
-                "1" => {
-                    self.switch_mode(Mode::Calc, doc);
-                    return;
-                }
-                "2" => {
-                    self.switch_mode(Mode::Graph2d, doc);
-                    return;
-                }
-                "3" => {
-                    self.switch_mode(Mode::Graph3d, doc);
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Escape first dismisses transient drawers. Clearing an expression is
-        // still available on a second Escape in Calculator mode, but an open
-        // overlay must never trap a keyboard user behind its scrim.
-        if matches!(key, WKey::Named(NamedKey::Escape)) {
-            let dismissed = match self.model.mode.graph() {
-                Some(kind) if self.panel(kind).side().is_open() => {
-                    self.panel_mut(kind).side_mut().close();
-                    true
-                }
-                _ => false,
-            };
-            if dismissed {
-                return;
-            }
+        if self.on_global_shortcut(key, ctrl, shift, doc) {
+            return;
         }
 
         // The graph editors own a real math field; route their input there.
@@ -706,6 +742,8 @@ impl CalculatorApp {
                 // committed; here we just append (an action) and focus it.
                 Mode::Graph2d => self.add_graph(GraphKind::Curve2d, "", doc),
                 Mode::Graph3d => self.add_graph(GraphKind::Surface3d, "", doc),
+                // A conversion has nothing to evaluate: Enter is the field's.
+                Mode::Convert => {}
             },
             WKey::Named(NamedKey::Backspace) => {
                 if self.model.mode == Mode::Calc {
@@ -753,6 +791,77 @@ impl CalculatorApp {
             }
             _ => {}
         }
+    }
+
+    /// The shortcuts that work from any screen: copying the display's
+    /// values, Ctrl+digit mode switches and Escape dismissing a drawer.
+    /// Whether the key was consumed.
+    fn on_global_shortcut(
+        &mut self,
+        key: &WKey,
+        ctrl: bool,
+        shift: bool,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        // The display's values are copy targets. A selection in the
+        // expression keeps the editor's own copy first; with nothing
+        // selected, Ctrl+C takes the result and Ctrl+Shift+C the expression.
+        if ctrl
+            && self.model.mode == Mode::Calc
+            && let WKey::Character(s) = key
+            && s.eq_ignore_ascii_case("c")
+        {
+            if shift {
+                self.copy_display(DisplaySlot::Expression);
+                return true;
+            }
+            self.calc.field.set_source(&self.model.expr);
+            if !self.calc.field.has_selection() {
+                self.copy_display(DisplaySlot::Result);
+                return true;
+            }
+        }
+
+        // Ctrl+digit always switches mode, from any screen.
+        if ctrl && let WKey::Character(s) = key {
+            match s.as_str() {
+                "1" => {
+                    self.switch_mode(Mode::Calc, doc);
+                    return true;
+                }
+                "2" => {
+                    self.switch_mode(Mode::Graph2d, doc);
+                    return true;
+                }
+                "3" => {
+                    self.switch_mode(Mode::Graph3d, doc);
+                    return true;
+                }
+                "4" => {
+                    self.switch_mode(Mode::Convert, doc);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        // Escape first dismisses transient drawers. Clearing an expression is
+        // still available on a second Escape in Calculator mode, but an open
+        // overlay must never trap a keyboard user behind its scrim.
+        if matches!(key, WKey::Named(NamedKey::Escape)) {
+            let dismissed = match self.model.mode.graph() {
+                Some(kind) if self.panel(kind).side().is_open() => {
+                    self.panel_mut(kind).side_mut().close();
+                    true
+                }
+                _ => false,
+            };
+            if dismissed {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Edit at the two-dimensional caret, preserving continuation after Equals.
@@ -1148,8 +1257,27 @@ impl Widget for CalculatorApp {
         }
     }
 
+    /// A finger on a plot pans the plane or orbits the surface, as a mouse
+    /// drag does; two fingers pinch it.
+    fn touch_claim(&self, point: Point) -> ui::interaction::TouchClaim {
+        match self.model.mode.graph() {
+            Some(kind)
+                if self.canvas_contains(kind, point) && !self.panel(kind).side().covers(point) =>
+            {
+                ui::interaction::TouchClaim::Drag
+            }
+            _ => ui::interaction::TouchClaim::Pointer,
+        }
+    }
+
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        self.host_focused.then_some(ui::ime::InputContent::TEXT)
+        // The calculator's keypad types the expression; graph formulas are
+        // typed on the keyboard.
+        let content = match self.model.mode.graph() {
+            None => ui::ime::InputContent::TEXT.own_keys(),
+            Some(_) => ui::ime::InputContent::TEXT,
+        };
+        self.host_focused.then_some(content)
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
@@ -1166,7 +1294,7 @@ impl Widget for CalculatorApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let _ = theme;
+        self.theme = theme.clone();
         // `new_leaf` only errs when the tree is at capacity; degrade to an
         // inert node rather than aborting the whole session.
         let node = taffy
@@ -1199,6 +1327,7 @@ impl Widget for CalculatorApp {
         let area = self.area;
         match self.model.mode {
             Mode::Calc => self.calc.prepare(tr, theme, &self.model, area),
+            Mode::Convert => self.convert.layout(area, theme),
             Mode::Graph2d => self.g2.prepare(tr, theme, &self.model, area),
             Mode::Graph3d => self.g3.prepare(tr, theme, &self.model, area),
         }
@@ -1217,9 +1346,10 @@ impl Widget for CalculatorApp {
             Mode::Graph3d => self
                 .g3
                 .draw_content(scene, t, tr, theme, &self.model, pointer),
+            Mode::Convert => self.convert.draw(scene, t, tr, theme, presence),
         }
         match self.model.mode {
-            Mode::Calc => {}
+            Mode::Calc | Mode::Convert => {}
             Mode::Graph2d => {
                 self.g2
                     .draw_panel(scene, t, tr, theme, &self.model, self.host_focused);
@@ -1234,7 +1364,7 @@ impl Widget for CalculatorApp {
         // 2D glyph layout (peers editing the same graph show up as coloured
         // carets inside the math, not just as a pointer over the window).
         let remote = match self.model.mode {
-            Mode::Calc => Vec::new(),
+            Mode::Calc | Mode::Convert => Vec::new(),
             Mode::Graph2d | Mode::Graph3d => remote_carets(presence),
         };
         if !remote.is_empty()
@@ -1310,18 +1440,30 @@ impl Widget for CalculatorApp {
                 *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let step = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
-                };
-                self.on_wheel(step);
+                let ctrl = ctx.modifiers.state().control_key();
+                self.on_scroll(delta, ctx.scale_factor, ctrl);
+                *ctx.handled = true;
+            }
+            WindowEvent::PinchGesture { delta, .. } => {
+                self.zoom_at_pointer((1.0 + delta).clamp(0.4, 2.5));
                 *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                *ctx.handled = !self.escape_is_idle(&key_event.logical_key);
-                self.on_key(&key_event.logical_key, *ctx.modifiers, &mut ctx.state);
+                *ctx.handled = true;
+                if self.model.mode == Mode::Convert {
+                    // The amount is the page's one editable value: what is
+                    // typed is the amount, and nothing else on the page takes
+                    // a key.
+                    self.convert_key(event, ctx);
+                } else {
+                    *ctx.handled = !self.escape_is_idle(&key_event.logical_key);
+                    self.on_key(&key_event.logical_key, *ctx.modifiers, &mut ctx.state);
+                }
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(_)) if self.model.mode == Mode::Convert => {
+                self.convert_key(event, ctx);
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.on_key(
@@ -1459,6 +1601,7 @@ impl Widget for CalculatorApp {
                         .with_children(keys),
                 );
             }
+            Mode::Convert => children.push(self.convert_accessibility()),
             Mode::Graph2d => children.push(self.graph_accessibility(GraphKind::Curve2d)),
             Mode::Graph3d => children.push(self.graph_accessibility(GraphKind::Surface3d)),
         }
@@ -1503,6 +1646,9 @@ impl Widget for CalculatorApp {
             }
             "calculator.mode:2" if matches!(action, Action::Activate) => {
                 self.switch_mode(Mode::Graph3d, state);
+            }
+            "calculator.mode:3" if matches!(action, Action::Activate) => {
+                self.switch_mode(Mode::Convert, state);
             }
             "calculator.angle:radians"
                 if matches!(action, Action::Activate | Action::ToggleCheck) =>
@@ -1568,6 +1714,14 @@ impl Widget for CalculatorApp {
                 self.apply_calc_key(&key);
                 self.model_dirty = true;
             }
+            _ if target.starts_with("calculator.convert:")
+                && matches!(action, Action::Activate) =>
+            {
+                let Some(convert) = ConvertPage::action_for_target(target) else {
+                    return false;
+                };
+                self.apply_convert_action(&convert);
+            }
             _ if target.starts_with("calculator.graph.") => {
                 return self.perform_graph_semantic_action(target, action, state);
             }
@@ -1583,7 +1737,7 @@ impl Widget for CalculatorApp {
     /// (only the visible screen's `draw` advances its own animation).
     fn needs_animation_frame(&self) -> bool {
         match self.model.mode {
-            Mode::Calc => false,
+            Mode::Calc | Mode::Convert => false,
             Mode::Graph2d => self.g2.zoom_active() || self.g2.panel.side().is_animating(),
             Mode::Graph3d => self.g3.zoom_active() || self.g3.panel.side().is_animating(),
         }

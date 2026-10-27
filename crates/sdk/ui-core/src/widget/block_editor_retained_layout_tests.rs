@@ -633,7 +633,7 @@ fn retained_paragraph_layout_tracks_typing_reflow_clicks_and_attachments() {
                 let mut fixture = RetainedEditor::new(width, scale, false);
                 let initial = fixture.editor.blocks[0].line.get_rect().height();
                 let sentence =
-                    "Let's go. Hi this is Quinten speaking. Why does pressing Enter not work? ";
+                    "Let's go. Hi this is Ada speaking. Why does pressing Enter not work? ";
                 let content = sentence.repeat(3);
                 fixture.type_text(&content);
                 assert_eq!(

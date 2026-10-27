@@ -99,8 +99,18 @@ impl syn::parse::Parse for Param {
     }
 }
 
-fn enum_operation(input: &DeriveInput) -> syn::Result<String> {
+/// The `#[effect(...)]` options of the enum itself: the operation type its
+/// effects are routed as, and the app whose `ActionKey`s they are published
+/// under.
+struct EnumOptions {
+    operation: String,
+    /// The app its typed references name their effects by.
+    app: Option<String>,
+}
+
+fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
     let mut operation = None;
+    let mut app = None;
     for attr in input
         .attrs
         .iter()
@@ -110,17 +120,21 @@ fn enum_operation(input: &DeriveInput) -> syn::Result<String> {
             if meta.path.is_ident("operation") {
                 operation = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 Ok(())
+            } else if meta.path.is_ident("app") {
+                app = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+                Ok(())
             } else {
-                Err(meta.error("expected `operation = \"...\"`"))
+                Err(meta.error("expected `operation = \"...\"` or `app = \"...\"`"))
             }
         })?;
     }
-    operation.ok_or_else(|| {
+    let operation = operation.ok_or_else(|| {
         syn::Error::new(
             input.ident.span(),
             "name the effects' operation type: `#[effect(operation = \"app.effects\")]`",
         )
-    })
+    })?;
+    Ok(EnumOptions { operation, app })
 }
 
 #[derive(Default)]
@@ -130,6 +144,10 @@ fn enum_operation(input: &DeriveInput) -> syn::Result<String> {
 )]
 struct VariantOptions {
     label: Option<String>,
+    /// `keywords = "…"`: the other words people use for the effect.
+    keywords: Vec<String>,
+    /// `icon = "…"`: the effect's own picture, by its Lucide name.
+    icon: Option<String>,
     view: bool,
     row: bool,
     idempotent: bool,
@@ -235,6 +253,11 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("label") {
                 options.label = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+            } else if meta.path.is_ident("keywords") {
+                options.keywords =
+                    crate::keyword_list(&meta.value()?.parse::<syn::LitStr>()?)?;
+            } else if meta.path.is_ident("icon") {
+                options.icon = Some(crate::icon_name(&meta.value()?.parse::<syn::LitStr>()?)?);
             } else if meta.path.is_ident("kind") {
                 options.kind = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else if meta.path.is_ident("view") {
@@ -297,7 +320,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.outside_with = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(meta.error(
-                    "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
+                    "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
                      `own_device`, `attended`, `risk`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
@@ -334,7 +357,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             "an effect vocabulary names at least one effect",
         ));
     }
-    let operation = enum_operation(input)?;
+    let EnumOptions { operation, app } = enum_options(input)?;
     let any_arguments = data
         .variants
         .iter()
@@ -598,6 +621,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             Some(param) => quote!(::core::option::Option::Some(#param)),
         };
         let params: Vec<Tokens> = params.collect();
+        let keywords = &options.keywords;
+        let icon = crate::optional_str(options.icon.as_deref());
         let params_fn = if params.is_empty() {
             quote!(#krate::effect::no_params)
         } else {
@@ -612,6 +637,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             #krate::effect::EffectRow {
                 id: #id,
                 label: #label,
+                keywords: &[#(#keywords),*],
+                icon: #icon,
                 description: #description,
                 params: #params_fn,
                 kind: #krate::__private::OperationKind::#kind,
@@ -697,7 +724,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         consts.push(quote! {
             #[doc = #const_doc]
             pub const #const_ident: #krate::ActionRef<#name, #input_ty> =
-                #krate::ActionRef::new(#id, &[#(#field_names),*]);
+                #krate::ActionRef::new(
+                    #id,
+                    &[#(#field_names),*],
+                    #krate::ResourceKind::of_effect::<#name>(
+                        #operation,
+                        <#name as #krate::Effect>::LABEL,
+                        <#name as #krate::Effect>::APP_ID,
+                    ),
+                );
         });
     }
 
@@ -706,11 +741,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
     } else {
         quote!(_arguments)
     };
+    let app_id = app
+        .as_ref()
+        .map_or_else(|| quote!(#krate::kind::DEFAULT_APP), |app| quote!(#app));
     let row_count = decls.len();
     let rows = decls.into_iter().map(|row| name_self(row, name));
     Ok(quote! {
         impl #krate::Effect for #name {
             const OPERATION: &'static str = #operation;
+
+            const APP_ID: &'static str = #app_id;
 
             fn declarations() -> ::std::vec::Vec<#krate::effect::EffectDecl> {
                 #krate::effect::EffectDecl::of_rows(Self::__effect_rows())

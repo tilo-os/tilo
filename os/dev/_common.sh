@@ -101,7 +101,7 @@ TILO_TPM_DIR="${TILO_TPM_DIR:-$TILO_RUN/tpm}"
 TILO_TPM_SOCK="$TILO_TPM_DIR/swtpm-ctrl.sock"
 
 # Guest login (from os/account.env — the account disk-image.sh creates).
-TILO_USER="${TILO_USER:-quickuser}"
+TILO_USER="${TILO_USER:-tester}"
 TILO_PASS="${TILO_PASS:-tilo}"
 
 TILO_MEM="${TILO_MEM:-4096}"

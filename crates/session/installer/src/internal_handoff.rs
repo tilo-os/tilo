@@ -76,7 +76,7 @@ pub(crate) mod tests {
             "target_extent": {"first_lba": TARGET.0, "last_lba": TARGET.1},
             "owned_boot_entry": "0104",
             "original_boot_order": ["0001", "0000"],
-            "profile": {"hostname": "studio", "username": "quinten", "locale": "en_US.UTF-8",
+            "profile": {"hostname": "studio", "username": "ada", "locale": "en_US.UTF-8",
                         "keyboard": "de"},
         })
     }
@@ -131,7 +131,7 @@ pub(crate) mod tests {
             assert_eq!(handoff.host_os, HostOs::Windows);
             assert_eq!(handoff.host_os.display_name(), "Windows");
             let profile = media_profile(&handoff).unwrap();
-            assert_eq!(profile.username.as_deref(), Some("quinten"));
+            assert_eq!(profile.username.as_deref(), Some("ada"));
             assert_eq!(profile.keyboard_display_name(), Some("German (QWERTZ)"));
         }
         {

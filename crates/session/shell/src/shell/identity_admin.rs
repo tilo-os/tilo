@@ -520,6 +520,8 @@ fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
         resource_kind: RESOURCE.into(),
         resource_label: t("search-action-identity-resource"),
         action_label: t(label),
+        keywords: Vec::new(),
+        icon: None,
         description: Some(t(description)),
         locus: tilo_actions::ExecutionLocus::default(),
         kind: if matches!(step, LIST | DEVICES) {

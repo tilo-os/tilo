@@ -72,6 +72,8 @@ fn a_program_in_an_app_lists_and_runs_actions_with_its_workspaces_scope() {
                 resource_kind: "calculator.graph".into(),
                 resource_label: "Curve".into(),
                 action_label: "Hide".into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: tilo_actions::ExecutionLocus::default(),
                 kind: tilo_actions::OperationKind::View,

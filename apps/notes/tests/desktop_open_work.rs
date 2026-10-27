@@ -61,8 +61,8 @@ struct Step {
 impl Step {
     fn since(self, before: Self) -> Self {
         Self {
-            rebuilt: self.rebuilt - before.rebuilt,
-            nodes_built: self.nodes_built - before.nodes_built,
+            rebuilt: self.rebuilt.saturating_sub(before.rebuilt),
+            nodes_built: self.nodes_built.saturating_sub(before.nodes_built),
         }
     }
 }
@@ -127,7 +127,7 @@ impl Desktop {
 
     /// The app's component for `tab` is ready: the window shows it.
     fn arrive(&mut self, f: &NotebookFixture, checkout: &ui::record::RecordCheckout, tab: TabId) {
-        self.instance += 1;
+        self.instance = self.instance.saturating_add(1);
         let mut component =
             component_support::component(f, self.instance, component_support::existing(checkout));
         component
@@ -141,7 +141,7 @@ impl Desktop {
     /// `limit`; how many it drew.
     fn settle(&mut self, limit: usize) -> usize {
         for frame in 0..limit {
-            self.now += FRAME;
+            self.now = self.now.checked_add(FRAME).unwrap();
             let harness = &mut self.harness;
             let drew =
                 ui::time::testing::with_monotonic_time(self.now, || harness.poll_frame().unwrap());
@@ -191,7 +191,7 @@ struct Opened {
 
 impl Opened {
     fn rebuilt(&self) -> u64 {
-        self.opening.rebuilt + self.arrived.rebuilt
+        self.opening.rebuilt.saturating_add(self.arrived.rebuilt)
     }
 }
 
@@ -207,7 +207,9 @@ fn open_with(others: usize) -> Opened {
     let opening_frames = desktop.settle(240);
     let opening = desktop.spent().since(start);
     let opening_us = wall.elapsed().as_micros();
-    let per_frame = opening_us / u128::try_from(opening_frames.max(1)).unwrap_or(1);
+    let per_frame = opening_us
+        .checked_div(u128::try_from(opening_frames.max(1)).unwrap_or(1))
+        .unwrap_or_default();
     eprintln!(
         "perf open beside {others}: the window opening took {opening_us}us over {opening_frames} frames ({per_frame}us a frame), {opening:?}"
     );

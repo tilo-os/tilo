@@ -133,7 +133,9 @@ impl Counter {
         match read {
             NativeDocumentRead::Captured { .. } => self.whole.fetch_add(1, Ordering::AcqRel),
             NativeDocumentRead::Changes { .. } => self.changes.fetch_add(1, Ordering::AcqRel),
-            NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Pending => 0,
+            NativeDocumentRead::Unchanged(_)
+            | NativeDocumentRead::Pending
+            | NativeDocumentRead::Absent => 0,
         };
     }
 }

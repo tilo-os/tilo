@@ -166,6 +166,14 @@ impl FrameHarness {
         self.window_search.query()
     }
 
+    /// What the window bar's search counts: the rows a list or a query view
+    /// kept of all of them, the current match of all matches in a document;
+    /// `None` before anything is typed.
+    #[must_use]
+    pub fn window_search_count(&self) -> Option<crate::widget::FilterCount> {
+        self.window_search.count()
+    }
+
     /// Whether the window bar's search offers Replace on what the window
     /// shows.
     #[must_use]
@@ -415,7 +423,7 @@ impl FrameHarness {
 
     /// The window's bar as the desktop draws it across a window `width`
     /// wide, at rest, its labels measured as painted.
-    fn painted_window_bar(&mut self, width: f64) -> TabBar {
+    pub(super) fn painted_window_bar(&mut self, width: f64) -> TabBar {
         let _settled = crate::motion::testing::settled();
         let mut bar = self.window_bar(width);
         bar.draw(
@@ -544,7 +552,7 @@ impl FrameHarness {
     }
 
     /// Hand the app what was done in `bar`'s slots.
-    fn deliver_bar_events(&mut self, bar: &mut TabBar) -> Result<(), String> {
+    pub(super) fn deliver_bar_events(&mut self, bar: &mut TabBar) -> Result<(), String> {
         let events = bar.take_toolbar_events();
         if events.is_empty() {
             return Err("the bar ran nothing".into());
@@ -685,15 +693,15 @@ fn lay_out_bar(bar: &mut TabBar, width: f64, theme: &crate::theme::Theme) {
     ) else {
         return;
     };
-    if taffy
-        .compute_layout(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(f32_of_f64(width)),
-                height: AvailableSpace::Definite(f32_of_f64(height)),
-            },
-        )
-        .is_err()
+    if crate::widget::solve_layout(
+        &mut taffy,
+        root,
+        taffy::Size {
+            width: AvailableSpace::Definite(f32_of_f64(width)),
+            height: AvailableSpace::Definite(f32_of_f64(height)),
+        },
+    )
+    .is_err()
     {
         return;
     }
@@ -722,6 +730,10 @@ fn place_search(bar: &TabBar, search: &mut WindowSearch) {
     search.place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
     search.set_cramped_start(bar.search_cramped_start());
 }
+
+#[cfg(test)]
+#[path = "window_bar_layout_tests.rs"]
+mod layout_tests;
 
 #[cfg(test)]
 mod tests {
@@ -889,7 +901,7 @@ mod tests {
     }
 
     /// An app that is only its name.
-    struct NamedApp;
+    pub(super) struct NamedApp;
 
     impl Widget for NamedApp {
         fn name(&self) -> &str {
@@ -1889,7 +1901,7 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    struct HostedReset;
+    pub(super) struct HostedReset;
 
     impl Drop for HostedReset {
         fn drop(&mut self) {

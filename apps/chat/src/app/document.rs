@@ -115,6 +115,15 @@ impl ChatApp {
                 ))
             })
             .collect();
+        self.report_recordings = chat
+            .feedback
+            .iter()
+            .filter_map(|(id, report)| {
+                let recording = report.submission.as_ref()?.feedback.recording.clone()?;
+                Some((crate::feedback::message_id(id.as_str()), recording))
+            })
+            .collect();
+        self.read_scrollback(&chat, &held);
         // Drop the body views of messages no longer loaded.
         let shown: HashSet<&str> = self.messages.iter().map(|m| m.id.as_str()).collect();
         self.body_views

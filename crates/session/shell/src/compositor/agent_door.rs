@@ -583,6 +583,8 @@ mod tests {
                     resource_kind: "settings".into(),
                     resource_label: "Displays".into(),
                     action_label: "Inspect".into(),
+                    keywords: Vec::new(),
+                    icon: None,
                     description: None,
                     operation_kind: tilo_actions::OperationKind::View,
                     params: vec![],

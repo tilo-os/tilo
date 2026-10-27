@@ -210,7 +210,7 @@ fn operations_menu(
         for &(action, offer) in &offers {
             let intents = intents.clone();
             let run = move || intents.push(Intent::RunOn { action, partition });
-            let entry = if action.destructive() {
+            let entry = if action.is_delete() {
                 MenuEntry::destructive(action.label(), run)
             } else {
                 MenuEntry::new(action.label(), run)
@@ -267,7 +267,7 @@ pub(crate) fn drive_list(
     NavList::new(vec![section])
         .selected(&drive_id(selected))
         .with_accessible_name("Drives")
-        .on_select(move |id| {
+        .on_view("disks.drives", move |id| {
             if let Some(index) = id.strip_prefix("drive:").and_then(|n| n.parse().ok()) {
                 intents.push(Intent::SelectDrive(index));
             }

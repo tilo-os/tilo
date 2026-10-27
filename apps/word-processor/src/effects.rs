@@ -62,11 +62,12 @@ pub enum WordProcessorEffect {
     /// Read a document kept as content.
     ///
     /// Answers with what a document kept as content says (an attachment, a
-    /// shared file), as Markdown, as `read-file` reads a file: its name tells
-    /// its format. A long one answers in parts: read on from the `next` an
-    /// answer gives. A picture (a scan, a photo) has no text: it answers with
-    /// `format` `picture`, its type and size, and an agent whose model sees
-    /// is shown it.
+    /// shared file), as Markdown, as `read-file` reads a file: its format is
+    /// read from its contents, its name telling only text kinds apart. A
+    /// long one answers in parts: read on from the `next` an answer gives. A
+    /// picture (a scan, a photo) has no text: it answers with `format`
+    /// `picture`, its type and size, and an agent whose model sees is shown
+    /// it.
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ReadContent {
         #[param("The document's content address, `tilo.content:<hash>`")]
@@ -79,16 +80,14 @@ pub enum WordProcessorEffect {
     /// Import a document kept as content.
     ///
     /// Replaces this document's body with a Word file (or `OpenDocument`,
-    /// Markdown, HTML, RTF, by its name) the room holds as content, while
+    /// HTML, RTF, Markdown, by its contents) the room holds as content, while
     /// the document is empty; a document someone wrote is never replaced.
     /// Undo takes it back.
     #[effect(returns, kind = "undoable", audience = "agents")]
     ImportDocxContent {
         #[param(content, "The document's content address, `tilo.content:<hash>`")]
         content: String,
-        #[param(
-            "Its file name, e.g. report.docx, whose extension names the format; Word when none"
-        )]
+        #[param("Its file name, e.g. report.docx; the format is read from the content")]
         name: Option<String>,
     },
     /// Export document as content.

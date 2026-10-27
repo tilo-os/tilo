@@ -25,7 +25,9 @@
 //! app's resources ([`Queryable`], [`InPlace::Query`]). The field then
 //! searches the whole app in place ("Search Music"), so it offers no
 //! widening to the app; Enter or Down hands the keyboard to the results, and
-//! Escape returns the window to the view it showed before.
+//! Escape returns the window to the view it showed before. An app that is a
+//! widget implements [`Queryable`] itself; one whose view is a function
+//! wraps that view in a [`QueryView`].
 //!
 //! On a document the open search carries one more control after the steps:
 //! the find's options (`options`), a panel under the field with Match case
@@ -37,6 +39,9 @@
 //! panel.
 
 mod options;
+mod query_view;
+
+pub use query_view::QueryView;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

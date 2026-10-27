@@ -400,6 +400,8 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
             resource_kind: "files.entry".into(),
             resource_label: "Synthetic report".into(),
             action_label: "Refresh".into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),

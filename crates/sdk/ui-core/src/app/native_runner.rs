@@ -3788,6 +3788,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
                 window.request_redraw();
             }
+            UserEvent::SafeAreaChanged => sync_safe_area(&mut self.app, &window),
             UserEvent::Wake(_)
             | UserEvent::NativeScenarioInput(_)
             | UserEvent::RenderReady(_)
@@ -4491,10 +4492,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // resources, only when a widget reports that its model changed.
             // A glide, a fade or a slide changes nothing the app publishes:
             // forcing a sync here rebuilt and republished the whole resource
-            // tree on every frame of every animation.
-            // Forces `apply_layout` since an animation tick (e.g. momentum
-            // fling) can reposition content without an input event.
-            app.layout.layout_dirty |= widget_animation;
+            // tree on every frame of every animation. Likewise it lays the
+            // window out again only when an animation reports that it moved
+            // what it lays out (`widget::note_layout_moved`): a spinner or a
+            // fade is only drawn.
             request_primary_redraw();
             for surface in &self.floating_windows {
                 if auxiliary_redraw_allowed(surface.render.as_ref()) {
@@ -5150,7 +5151,13 @@ impl App {
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
         #[cfg(target_os = "android")]
-        super::android_text_input::bridge::install(proxy.clone());
+        {
+            super::android_text_input::bridge::install(proxy.clone());
+            let insets = proxy.clone();
+            crate::launch::android::on_safe_area_changed(Box::new(move || {
+                let _ = insets.send_event(UserEvent::SafeAreaChanged);
+            }));
+        }
         #[allow(
             clippy::panic,
             reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario"

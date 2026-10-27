@@ -240,12 +240,15 @@ pub(crate) fn frames_over(window: u64) -> u64 {
 /// Draw the views over `window` (a surface), through `transform`, with
 /// `place` mapping the window's own logical coordinates to where its
 /// picture is drawn: each laid out at [`VIEW`]'s size and scaled into its
-/// place, clipped to what of it may show. A view withheld from captures is
-/// left out of one.
+/// place, clipped to what of it may show and to `within`, the window's
+/// tile. A view withheld from captures is left out of one. A window with no
+/// views over it gets nothing drawn, so its picture stays the last thing
+/// drawn there (a fullscreen client stays a scanout candidate).
 pub(crate) fn paint_over(
     window: u64,
     scene: &mut Scene,
     transform: Affine,
+    within: Rect,
     place: impl Fn(Rect) -> Rect,
 ) {
     let over = REGISTRY
@@ -260,7 +263,7 @@ pub(crate) fn paint_over(
             continue;
         }
         let rect = place(view.rect);
-        let clip = place(view.clip).intersect(rect);
+        let clip = place(view.clip).intersect(rect).intersect(within);
         if rect.is_zero_area() || clip.is_zero_area() {
             continue;
         }
@@ -371,7 +374,14 @@ mod tests {
         assert!(set_over(HashMap::from([(3, vec![over.clone()])])));
         assert!(!set_over(HashMap::from([(3, vec![over])])));
         assert_ne!(frames_over(3), before);
+        let tile = Rect::new(0.0, 0.0, 400.0, 400.0);
         let mut scene = Scene::new();
-        paint_over(3, &mut scene, Affine::IDENTITY, |rect| rect);
+        paint_over(3, &mut scene, Affine::IDENTITY, tile, |rect| rect);
+        let mut bare = Scene::new();
+        paint_over(4, &mut bare, Affine::IDENTITY, tile, |rect| rect);
+        assert!(
+            bare.encoding().is_empty(),
+            "a window with no views over it draws nothing more"
+        );
     }
 }

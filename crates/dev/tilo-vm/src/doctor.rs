@@ -675,17 +675,17 @@ mod ownership_tests {
     /// with the exact chown that fixes them; none passes.
     #[test]
     fn root_owned_build_files_fail_with_the_chown_that_fixes_them() {
-        assert_eq!(ownership_check(&[], "xaver").state, "ok");
+        assert_eq!(ownership_check(&[], "bob").state, "ok");
         let found = vec![
             std::path::PathBuf::from("/w/a/target"),
             std::path::PathBuf::from("/var/cache/tilo-vm/sccache"),
         ];
-        let check = ownership_check(&found, "xaver");
+        let check = ownership_check(&found, "bob");
         assert_eq!(check.state, "fail");
         assert!(check.detail.contains("/w/a/target"));
         assert_eq!(
             check.fix.as_deref(),
-            Some("sudo chown -R xaver: /w/a/target /var/cache/tilo-vm/sccache")
+            Some("sudo chown -R bob: /w/a/target /var/cache/tilo-vm/sccache")
         );
     }
 

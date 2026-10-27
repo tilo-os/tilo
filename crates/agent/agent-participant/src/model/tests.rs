@@ -193,7 +193,9 @@ fn the_usage_log_keeps_cached_input_and_reasoning() {
 
 /// An endpoint answering `answers` in order, one connection each, and
 /// reporting every request's head and body.
-fn endpoint(answers: Vec<String>) -> (String, std::sync::mpsc::Receiver<(String, String)>) {
+pub(crate) fn endpoint(
+    answers: Vec<String>,
+) -> (String, std::sync::mpsc::Receiver<(String, String)>) {
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -230,7 +232,7 @@ fn http(status: &str, body: &str) -> String {
     )
 }
 
-fn open_notes() -> Catalogue {
+pub(crate) fn open_notes() -> Catalogue {
     let (catalogue, _) = catalogue(&PlanContext {
         apps: vec!["so.tilo.notes".into()],
         ..PlanContext::default()
@@ -298,7 +300,7 @@ fn a_metered_turn_is_retried_under_one_key_and_plans() {
 }
 
 /// A chat-completions answer calling `plan` with one step, `operation`.
-fn plan_answer(id: &str, operation: &str) -> String {
+pub(crate) fn plan_answer(id: &str, operation: &str) -> String {
     let answer = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
             "tool_calls": [{"id": id, "type": "function", "function": {"name": "plan",
                 "arguments": serde_json::json!({"steps": [{"operation": operation, "arguments": {}}],

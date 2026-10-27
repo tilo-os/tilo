@@ -364,7 +364,18 @@ state = json.load(open(state_path)) if os.path.exists(state_path) else {}
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 if args[0] == "copy":
     src, dst = args[-2], args[-1]
-    state[dst] = src[len("oci-archive:"):] if src.startswith("oci-archive:") else state[src]
+    if src in state:
+        state[dst] = state[src]
+    elif src.startswith("oci:") and os.path.isfile(src[4:] + "/index.json"):
+        # A layout is read where it is: what it holds is kept, as a registry would.
+        os.makedirs(state_path + ".held", exist_ok=True)
+        held = state_path + ".held/" + os.urandom(8).hex()
+        with tarfile.open(held, "w") as tar:
+            for name in ["index.json"] + ["blobs/sha256/" + b for b in os.listdir(src[4:] + "/blobs/sha256")]:
+                tar.add(src[4:] + "/" + name, name)
+        state[dst] = held
+    else:
+        sys.exit("skopeo: cannot copy from " + src)
     json.dump(state, open(state_path, "w"))
 elif args[0] == "inspect":
     if args[-1] not in state:
@@ -478,6 +489,15 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(receipt["reference"], "main")
         self.assertFalse(receipt["signed"])
         self.assertNotIn("login", self.log.read_text())
+
+    def test_an_archive_is_unpacked_once_and_pushed_as_a_layout(self):
+        result = self.publish("dev:dev-{commit}", ref="main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pushes = [line.split()[-2] for line in self.log.read_text().splitlines() if line.startswith("skopeo copy")]
+        self.assertEqual(len(pushes), 1)
+        self.assertTrue(pushes[0].startswith("oci:"), pushes)
+        self.assertFalse(Path(pushes[0][4:]).exists(), "the unpacked layout outlives the push")
+        self.assertEqual(self.receipt()["digest"], self.digest)
 
     def test_a_release_needs_its_signature(self):
         result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="stable")
@@ -770,7 +790,12 @@ class ScriptTests(unittest.TestCase):
                          {"docker-manifest-digest": self.digest})
 
     def board(self, revision: str = COMMIT, board: str = "lenovo-83ed") -> subprocess.CompletedProcess:
-        """os-board-publish.sh on what `os-image.sh board` and its signing leave in OUT."""
+        """os-board-publish.sh on what `os-image.sh board` and its signing leave in OUT: the image as
+        an OCI layout."""
+        if (self.out / "image.oci.tar").exists():
+            with tarfile.open(self.out / "image.oci.tar") as tar:
+                tar.extractall(self.out / "oci", filter="data")
+            (self.out / "image.oci.tar").unlink()
         (self.out / "payload.json").write_text(
             '{"critical":{"identity":{"docker-reference":"registry.tilo.so/tilo/tilo-vm"},"image":'
             '{"docker-manifest-digest":"' + self.digest + '"},'
@@ -830,14 +855,14 @@ class ScriptTests(unittest.TestCase):
         self.board()
         ref = self.tmp / "ref"
         self.env["TILO_DEV_SIGNING"] = "1"
-        result = self.run_script("os-ref.sh", "sign", "lenovo-83ed", str(self.out), str(ref), ref="quinten/Fix_it")
+        result = self.run_script("os-ref.sh", "sign", "lenovo-83ed", str(self.out), str(ref), ref="ada/Fix_it")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('"docker-reference":"registry.tilo.so/tilo/tilo-vm-ref"', (ref / "payload.json").read_text())
-        result = self.run_script("os-ref.sh", "publish", "lenovo-83ed", str(self.out), str(ref), ref="quinten/Fix_it")
+        result = self.run_script("os-ref.sh", "publish", "lenovo-83ed", str(self.out), str(ref), ref="ada/Fix_it")
         self.assertEqual(result.returncode, 0, result.stderr)
         receipt = json.loads((ref / "receipt.json").read_text())
         self.assertEqual(receipt["repository"], "registry.tilo.so/tilo/tilo-vm-ref")
-        self.assertEqual(receipt["tags"], [f"ref-quinten-fix-it-{COMMIT[:7]}-lenovo-83ed"])
+        self.assertEqual(receipt["tags"], [f"ref-ada-fix-it-{COMMIT[:7]}-lenovo-83ed"])
         self.assertTrue(receipt["signed"])
         result = self.run_script("os-ref.sh", "publish", "lenovo-83ed", str(self.out), str(ref), ref="main")
         self.assertIn("publishes from a branch", result.stderr)

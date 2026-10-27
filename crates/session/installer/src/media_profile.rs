@@ -310,8 +310,8 @@ mod tests {
         serde_json::json!({
             "schema": 1,
             "hostname": "studio",
-            "username": "quinten",
-            "full_name": "Quinten",
+            "username": "ada",
+            "full_name": "Ada",
             "locale": "en_US.UTF-8",
             "keyboard": "de",
             "timezone": "Europe/Berlin",
@@ -401,7 +401,7 @@ mod tests {
                 assert_eq!(profile.repairs, vec![expected], "wrong repair for {field}");
                 assert_eq!(
                     profile.username.as_deref(),
-                    (field != "username").then_some("quinten")
+                    (field != "username").then_some("ada")
                 );
                 assert_eq!(
                     profile.hostname.as_deref(),

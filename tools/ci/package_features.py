@@ -50,6 +50,10 @@ NATIVE_TEST_FEATURES = {
     "tilo-dav": ("test-support",),
     "tilo-crypto": ("srp-test-server",),
     "tilo-resource": ("test-support",),
+    # Its net-moved bytes are the default; the Automerge pairing on top of them
+    # (`FakeDocumentNet`) is a feature, so a package that wants only the
+    # environment does not link a CRDT.
+    "tilo-test-env": ("document",),
     "app-host": ("test-support",),
     "package-store": ("store",),
     "cloud-source": ("conformance",),
@@ -63,6 +67,10 @@ NATIVE_TEST_FEATURES = {
     # The tunnel the shell links is a feature the root helper leaves out; its
     # tests, and the namespace test of both together, need it.
     "tilo-device-vpn": ("test-support",),
+    # An integration test links the library without its `cfg(test)`, so the
+    # fixtures every application test draws with (the headless app driver, the
+    # pinned font catalogue) are behind its `test-support`.
+    "tilo-ui": ("test-support",),
 }
 
 # Packages whose tested features above are not their default build. The
@@ -82,6 +90,7 @@ DEFAULT_BUILDS_ALSO_CHECKED = (
     "tilo-model-gateway",
     "tilo-moq",
     "tilo-net",
+    "tilo-test-env",
 )
 
 

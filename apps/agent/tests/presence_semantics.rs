@@ -50,7 +50,7 @@ fn keyed_pointer_and_typing_survive_the_native_broker() {
 
     let mut alice = TypedPeer::connect(&socket);
     let mut bob = TypedPeer::connect(&socket);
-    alice.announce(&socket, &hello("quinten")).unwrap();
+    alice.announce(&socket, &hello("ada")).unwrap();
     bob.announce(&socket, &hello("Scribe")).unwrap();
     // Construction is the readiness boundary: this transient update is not
     // replayed, so receiving it proves both routes subscribed before their

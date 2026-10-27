@@ -2,22 +2,18 @@
 # runtime (tools/release/local-model-runtime.sh builds it;
 # crates/agent/local-model-service/RELEASE.md, "Signed runtimes"). Built in
 # NVIDIA's CUDA development image and run in its runtime image, both pinned by
-# digest. CMake comes from Ubuntu's snapshot archive at a fixed time, so the
-# build tools do not drift either; the runtime stage installs nothing.
+# digest. The development image has the compilers; CMake is Kitware's release
+# build, pinned by hash (local-model-runtime.sh fetches it), so the build
+# installs no packages and the runtime stage installs nothing.
 ARG BUILD_BASE
 ARG RUN_BASE
 FROM ${BUILD_BASE} AS build
-ARG UBUNTU_SNAPSHOT
 ARG LLAMA_BUILD_NUMBER
 ARG LLAMA_BUILD_COMMIT
-COPY llama.cpp.tar.gz /llama.cpp.tar.gz
+COPY llama.cpp.tar.gz cmake.tar.gz /
 RUN set -eu; \
-    rm -f /etc/apt/sources.list.d/*; \
-    for suite in noble noble-updates noble-security; do \
-      echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://snapshot.ubuntu.com/ubuntu/$UBUNTU_SNAPSHOT $suite main universe"; \
-    done > /etc/apt/sources.list; \
-    apt-get -o Acquire::Check-Valid-Until=false update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cmake make g++; \
+    mkdir /cmake && tar -xzf /cmake.tar.gz -C /cmake --strip-components=1; \
+    export PATH=/cmake/bin:$PATH; \
     mkdir /src && tar -xzf /llama.cpp.tar.gz -C /src --strip-components=1; \
     cmake -S /src -B /build-tree -DCMAKE_BUILD_TYPE=Release \
       -DLLAMA_BUILD_NUMBER="$LLAMA_BUILD_NUMBER" -DLLAMA_BUILD_COMMIT="$LLAMA_BUILD_COMMIT" \

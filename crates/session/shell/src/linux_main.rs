@@ -621,6 +621,8 @@ pub fn run() -> std::process::ExitCode {
         .log_internal_errors(false)
         .init();
     shell::crash_log::install("tilo shell panic");
+    // Before any GPU, font or session state: the heap the binary itself starts with.
+    shell::shell::heap_trim::log_milestone("start");
     // After the crash log: a panic outside a helper's panic boundary still
     // ends the compositor, in every build. Inside one (the collaboration
     // broker's thread) it unwinds to the helper's owner, which restarts it.

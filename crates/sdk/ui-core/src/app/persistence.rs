@@ -56,7 +56,7 @@ impl App {
     /// Starts a new autosave generation so writes queued for the previous
     /// document are recognised as stale. A `u64` counter never wraps in
     /// practice; wrapping keeps this total instead of panicking.
-    fn advance_autosave_generation(&mut self) {
+    pub(super) fn advance_autosave_generation(&mut self) {
         self.autosave_generation = self.autosave_generation.wrapping_add(1);
     }
 

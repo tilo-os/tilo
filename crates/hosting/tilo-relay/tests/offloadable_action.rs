@@ -77,7 +77,14 @@ impl ComputeSandbox for ThumbnailSandbox {
             &io.join("request.json"),
             &io.join("outputs"),
         ) {
-            Ok(()) => (0, Vec::new()),
+            Ok(failed) => (
+                0,
+                failed
+                    .iter()
+                    .map(|failure| format!("thumbnail-batch: {failure}\n"))
+                    .collect::<String>()
+                    .into_bytes(),
+            ),
             Err(error) => (i32::from(error.exit_code()), error.to_string().into_bytes()),
         };
         Ok(CapturedRunOutput {
@@ -99,6 +106,8 @@ fn make_thumbnails() -> ActionDescriptor {
         resource_kind: "photos.library".into(),
         resource_label: "Library".into(),
         action_label: "Make thumbnails".into(),
+        keywords: Vec::new(),
+        icon: None,
         description: Some("Thumbnails of the selected photographs.".into()),
         locus: ExecutionLocus::ClientLocal,
         kind: OperationKind::Effect,
@@ -320,9 +329,16 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
     .await
     .unwrap();
     let action = make_thumbnails();
-    let local: Arc<LocalTransform> =
-        Arc::new(|inputs: &[Vec<u8>]| thumbnail_batch(inputs).map_err(|error| error.to_string()));
-    let expected = thumbnail_batch(&photographs).unwrap();
+    let local: Arc<LocalTransform> = Arc::new(|inputs: &[Vec<u8>]| {
+        thumbnail_batch(inputs)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    });
+    let expected: Vec<Vec<u8>> = thumbnail_batch(&photographs)
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
     let expected_digests: Vec<[u8; 32]> = expected
         .iter()
         .map(|bytes| *blake3::hash(bytes).as_bytes())
@@ -533,9 +549,9 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
     assert_eq!(
         elsewhere.outputs,
         thumbnail_batch(&others)
-            .unwrap()
-            .iter()
-            .map(|bytes| *blake3::hash(bytes).as_bytes())
+            .into_iter()
+            .map(Result::unwrap)
+            .map(|bytes| *blake3::hash(&bytes).as_bytes())
             .collect::<Vec<_>>()
     );
     let lacked = *staging.staged.lock().unwrap().last().unwrap();
@@ -926,12 +942,16 @@ async fn a_lost_or_revoked_worker_fails_its_job_at_once_and_the_action_runs_loca
     .await
     .unwrap();
     let action = make_thumbnails();
-    let local: Arc<LocalTransform> =
-        Arc::new(|inputs: &[Vec<u8>]| thumbnail_batch(inputs).map_err(|error| error.to_string()));
+    let local: Arc<LocalTransform> = Arc::new(|inputs: &[Vec<u8>]| {
+        thumbnail_batch(inputs)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    });
     let expected: Vec<[u8; 32]> = thumbnail_batch(&photographs)
-        .unwrap()
-        .iter()
-        .map(|bytes| *blake3::hash(bytes).as_bytes())
+        .into_iter()
+        .map(Result::unwrap)
+        .map(|bytes| *blake3::hash(&bytes).as_bytes())
         .collect();
     let invoke = || {
         offloader.invoke(

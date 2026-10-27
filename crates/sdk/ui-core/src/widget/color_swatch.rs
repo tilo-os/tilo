@@ -330,6 +330,8 @@ pub struct ColorSwatchPicker {
     focus_index: usize,
     /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
     on_change: Option<Box<dyn FnMut(usize)>>,
+    /// The action a chosen index invokes ([`ColorSwatchPicker::on_action`]).
+    action: Option<crate::widget::ActionEmitter<usize>>,
     /// The cell's width (and height, unless `cell_height`), when it is not
     /// a pointer target.
     cell_width: Option<f64>,
@@ -357,6 +359,7 @@ impl ColorSwatchPicker {
             focused: false,
             focus_index: 0,
             on_change: None,
+            action: None,
             cell_width: None,
             cell_height: None,
             painter: None,
@@ -367,6 +370,15 @@ impl ColorSwatchPicker {
     #[must_use]
     pub fn on_change(mut self, f: impl FnMut(usize) + 'static) -> Self {
         self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// Invoke `binding` with each index the person chooses, through the
+    /// host like any action-bound control: the picker shows the choice until
+    /// the state it changes answers.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<usize>) -> Self {
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
         self
     }
 
@@ -464,13 +476,35 @@ impl ColorSwatchPicker {
     fn choose(&mut self, index: usize) {
         self.selected = Some(index);
         self.choice = Some(index);
+        if let Some(action) = self.action.as_mut()
+            && let Err(error) = action.emit(index)
+        {
+            tracing::warn!(%error, "swatch action refused its index");
+        }
         if let Some(on_change) = self.on_change.as_mut() {
             on_change(index);
         }
     }
 }
 
+impl crate::widget::controls::ActionControls for ColorSwatchPicker {
+    crate::widget::controls::optional_emitter_controls!();
+
+    /// Each swatch is the control its semantic target names, bound to the
+    /// picker's action.
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let Some(action) = &self.action else {
+            return crate::widget::controls::default_bindings(self);
+        };
+        (0..self.swatches.len())
+            .map(|index| action.metadata(format!("swatch:{index}")))
+            .collect()
+    }
+}
+
 impl Widget for ColorSwatchPicker {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -26,8 +26,9 @@ pub fn install_crypto_provider() {
 /// Roots from the Tilo system trust bundle.
 ///
 /// Unparsable entries are skipped; an unreadable bundle yields an empty store,
-/// so verification fails closed. The bundle exists only on Linux; elsewhere
-/// use [`client_config`], which asks the platform.
+/// so verification fails closed. The bundle exists on Linux, and Android's
+/// system store stands in for it there; on macOS use [`client_config`],
+/// which asks the platform.
 pub fn system_roots() -> RootCertStore {
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
@@ -43,18 +44,28 @@ pub fn client_config_with_roots(roots: RootCertStore) -> Result<ClientConfig, ru
 }
 
 /// A client config that verifies servers against the system's trust: the
-/// Tilo bundle on Linux, the Keychain on macOS. This is the verifier reqwest
-/// uses, so every Tilo client trusts the same servers.
+/// Tilo bundle on Linux, the Keychain on macOS, the system store on Android.
+/// This is the verifier reqwest uses, so every Tilo client trusts the same
+/// servers.
 ///
 /// # Errors
 /// If the provider supports none of rustls' default protocol versions, or the
 /// platform verifier cannot load the system's trust.
+#[cfg(not(target_os = "android"))]
 pub fn client_config() -> Result<ClientConfig, rustls::Error> {
     use rustls_platform_verifier::BuilderVerifierExt as _;
     Ok(ClientConfig::builder_with_provider(crypto_provider())
         .with_safe_default_protocol_versions()?
         .with_platform_verifier()?
         .with_no_client_auth())
+}
+
+/// On Android the platform verifier needs the app's JVM context and its own
+/// Kotlin classes, and aborts the process without them; Android's system
+/// store holds the same roots the platform trusts.
+#[cfg(target_os = "android")]
+pub fn client_config() -> Result<ClientConfig, rustls::Error> {
+    client_config_with_roots(system_roots())
 }
 
 /// A client config that trusts the server certificate `accept` admits, given

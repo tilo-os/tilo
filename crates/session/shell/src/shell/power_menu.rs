@@ -12,7 +12,8 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
 use crate::shell::i18n::t;
 use crate::shell::overlay_host::layers::{
-    LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
+    Anchor, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Material, Modality, Role,
+    Routed, ShellLayer, Surface,
 };
 use ui::TextRole;
 use ui::paint::PaintCtx;
@@ -590,6 +591,19 @@ impl PowerMenu {
 impl ShellLayer for PowerMenu {
     fn id(&self) -> LayerId {
         LayerId::PowerMenu
+    }
+
+    /// A popup hanging from the top bar's trailing edge, window-modal: it
+    /// covers the desktop it stands on and takes every vector of input
+    /// while it is up, nothing wider.
+    fn surface(&self) -> Option<Surface> {
+        Some(Surface::shell(
+            Role::Popup,
+            Anchor::TopTrailing(self.metrics().margin),
+            Modality::WindowModal,
+            Material::Floating,
+            self.open,
+        ))
     }
 
     fn is_open(&self) -> bool {

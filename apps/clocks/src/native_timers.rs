@@ -159,7 +159,7 @@ pub(crate) fn reconcile(
     for pending in pending {
         if owned.contains(&pending.tag)
             && !wanted.contains(&pending.tag)
-            && pending.at > ui::time::wall()
+            && pending.at > system_time(now)
         {
             host.cancel(&pending.tag)?;
             retained.remove(&pending.tag);
@@ -324,7 +324,6 @@ mod tests {
     use std::{
         cell::{Cell, RefCell},
         collections::BTreeMap,
-        time::Duration,
     };
     use ui::prelude::{Collection, Id};
 
@@ -755,7 +754,7 @@ mod tests {
             host.schedule(
                 &foreign_id,
                 "Other profile",
-                ui::time::wall() + Duration::from_secs(3600),
+                system_time(Utc::now() + chrono::Duration::hours(1)),
             )
             .unwrap();
             reconcile(
@@ -864,9 +863,10 @@ mod tests {
             let id = "fedcba9876543210".to_owned();
             let mut delivery = Delivery::default();
             delivery.native_owners.insert(id.clone());
-            host.pending
-                .borrow_mut()
-                .insert(timer_id(&id), ui::time::wall() - Duration::from_secs(60));
+            host.pending.borrow_mut().insert(
+                timer_id(&id),
+                system_time(Utc::now() - chrono::Duration::minutes(1)),
+            );
             reconcile(
                 None,
                 &Clocks::default(),

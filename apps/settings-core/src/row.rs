@@ -15,12 +15,15 @@
 
 use ui::LocalState;
 use ui::tilo_resource::{Binds, Model, Path, Settable};
-use ui::widget::{Button, Dropdown, Segment, Slider, Toggle, ToggleGroup};
+use ui::widget::{
+    Button, Dropdown, Picture, PictureChoice, PictureOption, Segment, Slider, Toggle, ToggleGroup,
+};
 
 use crate::effects::SettingsEffect;
 use crate::host::{Followed, PaneCx, Section};
 use crate::widgets::{
-    El, Item, choice_row_stacked, field_row_described, setting_row, setting_row_described,
+    El, Item, choice_row_stacked, field_row_described, nested_setting_row, setting_row,
+    setting_row_described,
 };
 
 /// One labelled row of a settings card ([`PaneCx::row`]).
@@ -32,6 +35,8 @@ pub struct Row<'a> {
     id: Option<String>,
     name: Option<String>,
     stacked: bool,
+    /// Indented under the row above it ([`Row::nested`]).
+    nested: bool,
     /// Whether its control takes input: off while a setting it depends on
     /// is off ([`Row::enabled`]).
     enabled: bool,
@@ -47,6 +52,7 @@ impl PaneCx {
             id: None,
             name: None,
             stacked: false,
+            nested: false,
             enabled: true,
         }
     }
@@ -79,6 +85,13 @@ impl Row<'_> {
         self
     }
 
+    /// Indented under the row above it: an option that refines the one
+    /// above and that the pane shows only while that one is on.
+    pub fn nested(mut self) -> Self {
+        self.nested = true;
+        self
+    }
+
     /// With its control disabled unless `enabled`: a setting that only
     /// matters while another is on. The pane says why in the row's
     /// description.
@@ -89,6 +102,9 @@ impl Row<'_> {
 
     /// The row around `control`, which the pane bound itself.
     pub fn control(self, control: El) -> Item {
+        if self.nested && !self.stacked {
+            return nested_setting_row(&self.label, self.description.as_deref(), control);
+        }
         match (&self.description, self.stacked) {
             (Some(description), true) => field_row_described(&self.label, description, control),
             (None, true) => choice_row_stacked(&self.label, control),
@@ -207,6 +223,45 @@ impl Row<'_> {
         }
         let chooser = self.cx.bind(self.chooser(options, current), effect);
         self.control(Box::new(chooser))
+    }
+
+    /// A choice of `options` (a name and the picture that shows it), each
+    /// a tile on the line under the row's label, showing `current` and
+    /// setting the section's field `field` to what `value` makes of the
+    /// chosen name: for a setting whose meaning is visual (a text size, a
+    /// colour filter), where a word would make the person imagine it.
+    pub fn pictures<T, V>(
+        mut self,
+        options: Vec<(String, Picture)>,
+        current: &LocalState<String>,
+        field: Path<T, V>,
+        value: impl Fn(String) -> Result<V, String> + Send + Sync + 'static,
+    ) -> Item
+    where
+        T: Section,
+        V: Model + Settable + 'static,
+    {
+        let names: Vec<String> = options.iter().map(|(name, _)| name.clone()).collect();
+        let mut picker = PictureChoice::from_state(
+            options
+                .into_iter()
+                .map(|(name, picture)| (name.clone(), PictureOption::new(name, picture)))
+                .collect(),
+            current,
+        )
+        .with_accessible_name(self.label.clone())
+        .with_enabled(self.enabled);
+        if let Some(id) = &self.id {
+            picker = picker.with_id(id);
+        }
+        let picker = self.cx.bind_field_with(picker, field, move |index: usize| {
+            let name = names
+                .get(index)
+                .ok_or_else(|| format!("no choice {index}"))?;
+            value(name.clone())
+        });
+        self.stacked = true;
+        self.control(Box::new(picker))
     }
 
     /// A button `id` reading `text`, invoking `effect` when pressed.
@@ -444,6 +499,27 @@ where
                 .cx
                 .bind_field_with(self.row.chooser(options, &current), self.path, value);
         self.row.control(Box::new(menu))
+    }
+
+    /// A choice of `values`, each a tile showing `picture` of it over its
+    /// name as `label` gives it ([`Row::pictures`]).
+    pub fn pictures(
+        self,
+        values: impl IntoIterator<Item = V>,
+        label: impl Fn(&V) -> String + Clone + Send + Sync + 'static,
+        picture: impl Fn(&V) -> Picture,
+    ) -> Item
+    where
+        V: Clone + Send + Sync,
+    {
+        let values: Vec<V> = values.into_iter().collect();
+        let options = values
+            .iter()
+            .map(|value| (label(value), picture(value)))
+            .collect();
+        let (_, chosen) = labelled(values, label.clone());
+        let current = self.followed.shown(&self.path, label);
+        self.row.pictures(options, &current, self.path, chosen)
     }
 
     /// A chooser of every value the field's type offers, by its label.

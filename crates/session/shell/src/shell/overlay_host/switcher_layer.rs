@@ -7,7 +7,10 @@ use ui::a11y::AccessNode;
 use vello::kurbo::Rect;
 use winit::event::WindowEvent;
 
-use super::layers::{LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
+use super::layers::{
+    Anchor, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Material, Modality, Role,
+    Routed, ShellLayer, Surface,
+};
 
 /// What the host must do after the switcher settled on `outcome`; `None`
 /// when the switcher ignored the input.
@@ -24,6 +27,19 @@ pub(super) fn outcome_intent(outcome: SwitcherOutcome) -> Option<LayerIntent> {
 impl ShellLayer for WindowSwitcher {
     fn id(&self) -> LayerId {
         LayerId::WindowSwitcher
+    }
+
+    /// A mode the held modifier keeps open over every display at once:
+    /// window-modal, drawn on the floating material so the windows it
+    /// chooses between stay visible.
+    fn surface(&self) -> Option<Surface> {
+        Some(Surface::shell(
+            Role::Overlay,
+            Anchor::Fill,
+            Modality::WindowModal,
+            Material::Floating,
+            self.is_active(),
+        ))
     }
 
     fn is_open(&self) -> bool {

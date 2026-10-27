@@ -77,7 +77,6 @@ pub(crate) enum Hit {
     JumpToLatest,
     ThreadScroll(bool),
     AgentReasoning(String),
-    ComposerEmoji(Rect),
     /// Open the workspace file picker to share an attachment.
     Attach,
     /// One rung of an attachment's ladder: open it at full size, save a copy,
@@ -95,6 +94,8 @@ pub(crate) enum Hit {
     StartCall,
     StopSharingLiveContext,
     CopyResourceLink(Id),
+    /// Replay the recording the report a message shows carries.
+    ReplayRecording(Id),
     OpenResource(Id),
     /// Open the window a message shares, as a window of this person's own.
     OpenShare(Id),
@@ -167,7 +168,6 @@ impl Hit {
             Self::JumpToLatest => "chat.jump-to-latest".into(),
             Self::ThreadScroll(end) => format!("chat.thread-scroll-{end}"),
             Self::AgentReasoning(id) => format!("chat.reasoning.{id}"),
-            Self::ComposerEmoji(_) => "chat.composer-emoji".into(),
             Self::Attach => "chat.attach".into(),
             Self::Attachment { msg, action } => {
                 format!("chat.attachment:{msg}:{}", action.key())
@@ -178,6 +178,7 @@ impl Hit {
             Self::StartCall => "chat.start-call".into(),
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
             Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
+            Self::ReplayRecording(id) => format!("chat.replay-recording:{id}"),
             Self::OpenResource(id) => format!("chat.open-resource:{id}"),
             Self::OpenShare(id) => format!("chat.open-share:{id}"),
             Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
@@ -400,11 +401,6 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
-                    Hit::ComposerEmoji(_) => (
-                        copy(&crate::i18n::t("chat-emoji-insert")),
-                        Role::Button,
-                        false,
-                    ),
                     Hit::Attach => (
                         copy(&crate::i18n::t("chat-attach-share")),
                         Role::Button,
@@ -439,6 +435,14 @@ impl ChatApp {
                     ),
                     Hit::StartCall => (copy("chat-call-start-or-open"), Role::Button, false),
                     Hit::StopSharingLiveContext => (copy("chat-context-stop"), Role::Button, false),
+                    Hit::ReplayRecording(message) => (
+                        ControlName {
+                            text: self.resource_navigation.replay_label(message, true),
+                            interface: self.resource_navigation.replay_label_is_copy(message),
+                        },
+                        Role::Button,
+                        false,
+                    ),
                     Hit::CopyResourceLink(message) => (
                         ControlName {
                             text: self.resource_navigation.label(message, true),
@@ -732,7 +736,6 @@ impl ChatApp {
                         | Hit::CallDeafen
                         | Hit::Attach
                         | Hit::Send
-                        | Hit::ComposerEmoji(_)
                         | Hit::AddReaction { .. }
                         | Hit::MessageBar { .. }
                         | Hit::MessageMore { .. }

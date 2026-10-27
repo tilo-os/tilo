@@ -404,7 +404,12 @@ impl Widget for HistoryHost {
         self.build_presentation(None, tree, theme, nodes)
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let narrow = self.rect.width() < 600.0;
         self.rect = crate::widget::layout_rect(tree, node, origin);
+        // Its layout follows whether it is narrow (`needs_refresh`).
+        if (self.rect.width() < 600.0) != narrow {
+            super::super::note_news();
+        }
         let origin = self.rect.origin();
         if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {
             panel.dialog.apply_layout(tree, node, origin);

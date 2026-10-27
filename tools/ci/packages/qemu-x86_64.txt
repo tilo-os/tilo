@@ -1,0 +1,5 @@
+# QEMU and UEFI firmware for x86-64 guests on a native x86-64 host.
+edk2-ovmf
+qemu-system-x86-core
+qemu-device-display-virtio-vga
+qemu-device-display-virtio-gpu

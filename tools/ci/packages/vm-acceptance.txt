@@ -1,0 +1,21 @@
+# What tools/ci/vm-acceptance.sh needs beside the builder image to run a libvirt
+# guest as an unprivileged user and drive it with tilo-vm.
+libvirt-daemon-driver-qemu
+libvirt-client
+passt
+qemu-kvm
+qemu-img
+edk2-ovmf
+ipxe-roms-qemu
+openssh-clients
+rsync
+python3-pillow
+binutils
+jq
+socat
+sudo
+systemd
+shadow-utils
+util-linux
+git
+python3

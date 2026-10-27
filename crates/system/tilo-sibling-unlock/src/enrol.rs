@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn a_saved_connection_is_tied_to_its_mac_for_early_boot() {
-        let saved = "[connection]\nid=lan\ntype=ethernet\ninterface-name=enp0s4\npermissions=user:quickuser;\n\n[ethernet]\n\n[ipv4]\naddress1=192.168.231.11/24\nmethod=manual\n";
+        let saved = "[connection]\nid=lan\ntype=ethernet\ninterface-name=enp0s4\npermissions=user:tester;\n\n[ethernet]\n\n[ipv4]\naddress1=192.168.231.11/24\nmethod=manual\n";
         let adapted = for_early_boot(saved, |interface| {
             (interface == "enp0s4").then(|| "52:54:00:23:83:0b".to_owned())
         });

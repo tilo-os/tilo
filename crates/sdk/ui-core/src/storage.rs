@@ -154,6 +154,12 @@ impl Scope {
 pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
     const SCOPE: Scope;
 
+    /// The app whose own settings these are when another app keeps them
+    /// for it, as Settings keeps the on-screen keyboard's layouts: a
+    /// [`Scope::Personal`] or [`Scope::DeviceLocal`] value is that app's,
+    /// whichever app reads or writes it. `None`: the app that holds them.
+    const APP: Option<&'static str> = None;
+
     /// What a person who changed nothing has on a `device`: [`Default`]
     /// everywhere, unless the setting costs what one class of device should
     /// not spend unasked (a copy kept on the device, work in the
@@ -267,6 +273,19 @@ impl SettingsDocument {
         match self {
             Self::Session => settings_store::settings_path(),
             Self::File(path) => Some(path.clone()),
+        }
+    }
+
+    /// The configuration directory of the profile this document belongs to:
+    /// the person's config root for the session document, else the
+    /// directory holding the file. Per-profile stores beside the settings
+    /// (accounts, their credentials and sync health) live here, so a test,
+    /// capture or `--data-dir` profile never reads or writes the person's.
+    #[must_use]
+    pub fn config_root(&self) -> Option<PathBuf> {
+        match self {
+            Self::Session => settings_store::config_root(),
+            Self::File(path) => path.parent().map(Path::to_path_buf),
         }
     }
 
@@ -604,11 +623,12 @@ impl<T> std::fmt::Debug for Settings<T> {
 }
 
 impl<T: SettingsSchema> Settings<T> {
-    /// The settings of the app with this id, in the session document.
+    /// The settings of the app with this id (or of the app they are
+    /// [`SettingsSchema::APP`]'s), in the session document.
     #[must_use]
     pub fn for_app(app_id: &str) -> Self {
         Self {
-            app_id: app_id.to_owned(),
+            app_id: T::APP.unwrap_or(app_id).to_owned(),
             document: SettingsDocument::Session,
             device: None,
             schema: PhantomData,
@@ -938,6 +958,13 @@ impl AppStorage {
     #[must_use]
     pub fn settings_document(&self) -> &SettingsDocument {
         &self.settings
+    }
+
+    /// The configuration directory of the host's profile
+    /// ([`SettingsDocument::config_root`]).
+    #[must_use]
+    pub fn config_root(&self) -> Option<PathBuf> {
+        self.settings.config_root()
     }
 }
 

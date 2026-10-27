@@ -37,3 +37,14 @@ fn cold_start() {
     )
     .print();
 }
+
+/// Moving the pointer down the sidebar and back: each motion moves the
+/// hover from one row to the next, which repaints those two rows and
+/// nothing else, and costs no more than any other pointer motion.
+#[test]
+fn sidebar_hover() {
+    let sweep = ui::framework::testing::perf::sidebar_sweep::<file_explorer::FileExplorerShell>(4)
+        .expect("file-explorer opens");
+    sweep.print();
+    sweep.assert_each_hover_repaints_only_its_rows();
+}

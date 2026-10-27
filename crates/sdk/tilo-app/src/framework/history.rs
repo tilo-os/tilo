@@ -287,7 +287,22 @@ pub(crate) fn specs() -> Vec<ActionSpec> {
     let mut specs = edit_specs();
     specs.extend(view_specs());
     specs.extend(review::specs());
+    for spec in &mut specs {
+        if names_a_version(&spec.id) {
+            spec.type_mut()
+                .contract
+                .set_audience(tilo_actions::Audience::Agents);
+        }
+    }
     specs
+}
+
+/// Whether the history action `id` names a version by its change id, which
+/// only history shows: agents and scripts list the versions and take one
+/// from there, a person goes back to one in the app's own history. Undo,
+/// redo and naming a checkpoint ask for nothing a person cannot say.
+fn names_a_version(id: &str) -> bool {
+    matches!(id, "restore" | "history" | "diff")
 }
 
 fn edit_specs() -> Vec<ActionSpec> {

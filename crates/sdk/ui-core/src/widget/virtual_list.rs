@@ -37,6 +37,8 @@ use crate::widget::{ArrivingRows, Element, TaffyTreeExt, Widget};
 #[path = "virtual_list_remount.rs"]
 mod remount;
 use remount::row_kept;
+#[path = "virtual_list_choice.rs"]
+mod choice;
 #[path = "virtual_list_shown.rs"]
 mod shown;
 use shown::ListShown;
@@ -351,6 +353,9 @@ pub struct VirtualList<M: ListModel> {
     /// What has been typed into the focused list ([`ListModel::label`]).
     typing: crate::type_ahead::TypeAhead,
     on_select: Option<SelectCallback<M::Key>>,
+    /// Choosing a row, published as the list's view action
+    /// ([`VirtualList::on_view`]).
+    view: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
     on_activate: Option<KeyCallback<M::Key>>,
     on_context: Option<ContextCallback<M::Key>>,
     /// The last row a click landed on and when, for a double click.
@@ -497,6 +502,7 @@ impl<M: ListModel> VirtualList<M> {
             focused_key: None,
             typing: crate::type_ahead::TypeAhead::default(),
             on_select: None,
+            view: None,
             on_activate: None,
             on_context: None,
             last_click: None,
@@ -1435,7 +1441,13 @@ impl<M: ListModel> VirtualList<M> {
 
     fn emit_selection(&mut self, key: M::Key) {
         let selected = self.selection.is_selected(&key);
-        if let Some(callback) = &mut self.on_select {
+        if let Some((_, handler)) = &mut self.view {
+            // The person's choice is the published view action's own run:
+            // no host decides a view or records it.
+            if selected {
+                handler(key);
+            }
+        } else if let Some(callback) = &mut self.on_select {
             callback(key, selected);
         }
     }
@@ -1664,6 +1676,12 @@ where
 }
 
 impl<M: ListModel + 'static> Widget for VirtualList<M> {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -1727,7 +1745,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // A reveal in progress, like a glide, moves only the viewport.
         self.follow_scroll_to(crate::motion::frame_now());
         if self.viewport.offset().to_bits() != offset.to_bits() {
-            crate::widget::note_placement_moved();
+            crate::widget::note_layout_moved();
         }
         if self.reorder.is_active() {
             let motion = self.reorder.tick(self.rect, elapsed, now);

@@ -1855,7 +1855,7 @@ mod tests {
         ));
         assert!(!super::is_disk_unlock_prompt("Tilo\nStarting services"));
         assert!(!super::is_disk_unlock_prompt(
-            "Welcome back to Tilo\nxaver\nEnter your passcode to open your desktop."
+            "Welcome back to Tilo\nbob\nEnter your passcode to open your desktop."
         ));
         assert!(!super::is_disk_unlock_prompt(
             "Tilo identity setup\nBack up your Tilo identity\nRecovery key"

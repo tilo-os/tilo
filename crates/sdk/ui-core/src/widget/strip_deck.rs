@@ -419,6 +419,10 @@ impl Widget for StripDeck {
     /// Every strip's apps run, shown or not (a terminal drains its output
     /// whichever strip it is on).
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // A slide moves the strips, which their layout places.
+        if self.moving() || self.edge_reach.is_some() {
+            crate::widget::note_layout_moved();
+        }
         let mut changed = false;
         for row in &mut self.rows {
             changed |= row.update(state, path);
@@ -481,6 +485,11 @@ impl Widget for StripDeck {
         let now = crate::motion::frame_now();
         self.advance_edge_reach(now);
         self.laid = self.position_at(now);
+        // A slide moves on in the next frame's layout, whether or not the
+        // host runs this deck's update first.
+        if self.moving() || self.edge_reach.is_some() {
+            crate::widget::note_layout_moved();
+        }
         let height = self.rect.height();
         let top_left = Point::new(self.rect.x0, self.rect.y0);
         for (i, (row, &child)) in self.rows.iter_mut().zip(&self.nodes).enumerate() {

@@ -3,7 +3,7 @@ import test from 'node:test';
 import {AdmissionError, NO_ACCESS, admit} from './admission.mjs';
 import {CustodyError} from './device-custody.mjs';
 
-const room = {kind: 'room', host: 'https://quinten.tilo.cloud', room: '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90'};
+const room = {kind: 'room', host: 'https://ada.tilo.cloud', room: '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90'};
 
 function doors(overrides = {}) {
   const calls = [];

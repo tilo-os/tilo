@@ -6,7 +6,9 @@ use tilo_automerge::WriteTyped as _;
 use tilo_clock::unix_now_i64;
 
 mod continuation_labels;
+pub mod governed_layout;
 mod local_app_records;
+mod personal_apps;
 mod room_bases;
 mod room_binding;
 mod tree_handle;
@@ -16,6 +18,7 @@ use super::fs_authority::schedule_fs_authority_publication;
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use continuation_labels::{ContinuationLabels, UnresolvedContinuationLabels};
 pub use local_app_records::LocalAppRecord;
+pub use personal_apps::is_personal_app;
 pub(crate) use room_binding::room_holds_files;
 pub use tree_handle::{
     WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard, next_policy_revision,
@@ -30,6 +33,7 @@ pub use collab_types::role::Role as CapRole;
 pub use tilo_action_policy::Preset;
 pub use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::projection;
+use tilo_desktop_model::shared_record;
 pub use tilo_desktop_model::{
     APP_ID_PREFIX, AppId, AppKind, Capability, Collaborator, FileId, FsMode, GRANT_ALWAYS,
     GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, MintIds, PEER_ID_COUNTER_MASK,
@@ -464,7 +468,6 @@ struct RoomBatchBasis {
     /// with a local rename staged.
     before: Option<AutoCommit>,
     terms: RoomBatchTerms,
-    local_salt: u16,
     caps_now: u64,
 }
 
@@ -485,9 +488,7 @@ impl RoomBatchBasis {
         changes: &[Vec<u8>],
         from: &PeerOrigin,
     ) -> Result<tilo_peer_state::room::AdmittedRoom, tilo_peer_state::room::RoomRefusal> {
-        use tilo_peer_state::room::{
-            AuthorityPin, ContentOwnership, RoomAdmission, Writer, admit_room_changes,
-        };
+        use tilo_peer_state::room::{AuthorityPin, RoomAdmission, Writer, admit_room_changes};
         let terms = &self.terms;
         let authority = match &terms.authority {
             // We administer the room; only another device of the person who
@@ -513,9 +514,6 @@ impl RoomBatchBasis {
                     standing: terms.standing,
                 },
                 authority,
-                contents: ContentOwnership::Salted {
-                    local_salt: self.local_salt,
-                },
                 caps_now: self.caps_now,
             },
             changes,
@@ -900,6 +898,17 @@ pub struct WorkspaceTree {
     /// before a restart still goes out.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub strips_to_retain: BTreeSet<StripId>,
+    /// Changes this device wrote to the layout of rooms another device
+    /// governs that the governor has not admitted yet, oldest first, by
+    /// room: shown here at once, and sent until the room holds them.
+    /// Persisted, so what was arranged while the governor was away still
+    /// reaches it after a restart.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub layout_pending: HashMap<RoomId, Vec<Vec<u8>>>,
+    /// What the last look at each such room's layout found nothing to
+    /// write for ([`Self::capture_governed_layout`]).
+    #[serde(skip)]
+    pub layout_captured: HashMap<RoomId, governed_layout::Captured>,
     /// Tabs created from same-identity continuation rather than from this
     /// machine's ordinary layout.  Persisting this marker lets a later
     /// checkpoint remove a remote close without ever deleting a local tab
@@ -1024,6 +1033,8 @@ impl Default for WorkspaceTree {
             room_peer_identities: HashMap::new(),
             room_share_floor: HashMap::new(),
             strips_to_retain: BTreeSet::new(),
+            layout_pending: HashMap::new(),
+            layout_captured: HashMap::new(),
             continuation_tabs: BTreeSet::new(),
             local_person: None,
             authenticated_persons: HashMap::new(),
@@ -1306,6 +1317,9 @@ impl WorkspaceTree {
         {
             tilo_peer_state::room::adopt_room(archived, document, &[]);
         }
+        // What this device changed in the room's layout is written on top of
+        // what the room held before, so folding what it admitted now keeps it.
+        self.capture_governed_layout(room);
         self.room_docs.insert(room, document.clone());
         self.queue_inbound_records(room, document);
         self.merge_room_contents(room);
@@ -2163,6 +2177,7 @@ impl WorkspaceTree {
         let Some(ws) = self.workspace_in_room(room) else {
             return false;
         };
+        let ws_id = ws.id;
         let name = ws.name.clone();
         let policy = ws.policy.clone();
         let sandbox = ws.sandbox.clone();
@@ -2224,39 +2239,41 @@ impl WorkspaceTree {
         if let Err(err) = projection::project_room_records(doc, &held) {
             tracing::error!(?err, "room doc: records map");
         }
-        let mut retained: Vec<StripId> = Vec::new();
+        let mut retained: Vec<StripId> = strips
+            .iter()
+            .filter(|strip| self.strips_to_retain.contains(&strip.id))
+            .map(|strip| strip.id)
+            .collect();
+        let mine = |id: u64| {
+            local_salt != 0
+                && peer_salt_of(id) == local_salt
+                && share_floor.is_none_or(|floor| counter_of(id) >= floor)
+        };
         if personal {
             // What this device wrote into the room while it shared its
             // layout comes out (a member may take its own windows out of a
             // personal room, and nothing else); nothing is retained in a room
             // that holds no strip of this desktop's: the strips stay here.
-            if local_salt != 0 {
-                let _ = projection::drop_contents_except(doc, &|id| peer_salt_of(id) != local_salt);
+            if let Err(err) = shared_record::device::withdraw(doc, &mine) {
+                tracing::error!(?err, "room doc: withdraw own windows");
             }
-            retained.extend(
-                strips
-                    .iter()
-                    .filter(|strip| self.strips_to_retain.contains(&strip.id))
-                    .map(|strip| strip.id),
-            );
         } else {
-            for (order, strip) in strips.iter().enumerate() {
-                if !self.strips_to_retain.contains(&strip.id) {
-                    continue;
-                }
-                match projection::retain_owned_strip(doc, strip, order as u64, local_salt) {
-                    Ok(_) => retained.push(strip.id),
-                    Err(err) => tracing::error!(?err, "room doc: retained strip"),
-                }
-            }
-            if let Err(err) = projection::project_owned_contents(
+            let mut published = Workspace::in_room(ws_id, room, name.clone());
+            published.strips = strips;
+            let person = self.local_person.map(hex::encode);
+            let retain = |id: u64| self.strips_to_retain.contains(&StripId(id));
+            if let Err(err) = shared_record::device::write(
                 doc,
-                &strips,
-                local_salt,
-                share_floor,
-                projection::EmptyStrips::Skip,
+                room,
+                &published,
+                &shared_record::device::Writer {
+                    person: person.as_deref(),
+                    mine: &mine,
+                    retained: &retain,
+                },
             ) {
-                tracing::error!(?err, "room doc: contents map");
+                tracing::error!(?err, "room doc: layout");
+                retained.clear();
             }
         }
         if let Err(error) = projection::project_effect_receipts(doc, &effect_receipts) {
@@ -2508,9 +2525,11 @@ impl WorkspaceTree {
             .map_or_else(projection::RoomLayout::default, projection::room_layout)
     }
 
-    /// Fold `room`'s replication document into the cached workspace that
-    /// addresses it — see [`projection::merge_room_contents`]. Reports
-    /// whether anything changed.
+    /// Fold `room`'s layout into the cached workspace that addresses it:
+    /// its strips, groups and windows as the room document (with what this
+    /// device wrote that the room's governor has not admitted yet) says,
+    /// and what this device decides alone kept
+    /// ([`shared_record::device::fold`]). Reports whether anything changed.
     fn merge_room_contents(&mut self, room: RoomId) -> bool {
         let local_salt = self.local_salt();
         if local_salt == 0 {
@@ -2521,30 +2540,67 @@ impl WorkspaceTree {
         };
         let changed = if projection::room_layout(doc).is_personal() {
             // A room whose layout is personal shares no member's windows:
-            // nothing of its contents is taken in, and what this device
+            // nothing of its layout is taken in, and what this device
             // mirrored of other people's windows while it shared them goes.
             // Every window of this device's own stays where it is.
-            let owners = projection::contents_owners_of(doc);
             let theirs = |tab: &Tab| {
                 let salt = peer_salt_of(tab.id);
-                salt != 0
-                    && salt != local_salt
-                    && salt != tilo_desktop_model::ids::RESERVED_SALT
-                    && (owners.is_empty()
-                        || owners.contains_key(&salt)
-                        || matches!(
-                            tab.tile,
-                            TileContent::PeerWindow { .. } | TileContent::HostedWindow { .. }
-                        ))
+                salt != 0 && salt != local_salt && salt != tilo_desktop_model::ids::RESERVED_SALT
             };
             projection::drop_windows_of_others(&mut self.desktop, room, local_salt, &theirs)
         } else {
-            projection::merge_room_contents(
-                &mut self.desktop,
-                room,
-                projection::contents_of(doc),
-                projection::Reader::Owner(local_salt),
-            )
+            let pending = self.layout_pending.get(&room).filter(|p| !p.is_empty());
+            let replica = pending.and_then(|pending| {
+                let mut replica = doc.clone();
+                let changes = pending
+                    .iter()
+                    .filter_map(|bytes| automerge::Change::from_bytes(bytes.clone()).ok());
+                replica.apply_incoming(changes).ok()?;
+                Some(replica)
+            });
+            let doc = replica.as_ref().unwrap_or(doc);
+            let device = self
+                .window_hosting
+                .as_ref()
+                .map(|hosting| hosting.device.clone())
+                .unwrap_or_default();
+            let share_floor = self.room_share_floor.get(&room).copied();
+            let mine = |id: u64| peer_salt_of(id) == local_salt;
+            // Windows this device had open before it joined stay its own.
+            let private =
+                |id: u64| mine(id) && share_floor.is_some_and(|floor| counter_of(id) < floor);
+            let desktop = &mut self.desktop;
+            let Some(ws) = desktop.workspaces.iter_mut().find(|ws| ws.room() == room) else {
+                return false;
+            };
+            let held: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
+            let changed = shared_record::device::fold(
+                doc,
+                ws,
+                &device,
+                &shared_record::device::Kept {
+                    mine: &mine,
+                    private: &private,
+                },
+            );
+            // Removed rather than repointed: resolvers already fall back to
+            // the first strip or group with no explicit selection.
+            let ws_id = ws.id;
+            let live: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
+            if desktop
+                .active_strip
+                .get(&ws_id)
+                .is_some_and(|active| !live.contains(active))
+            {
+                desktop.active_strip.remove(&ws_id);
+            }
+            for strip in held.iter().filter(|strip| !live.contains(strip)) {
+                desktop.active_group.remove(strip);
+            }
+            changed
+        };
+        let Some(doc) = self.room_docs.get(&room) else {
+            return changed;
         };
         if self.requires_native_owner(room) {
             let presets = projection::workspace_presets_of(doc);
@@ -2935,7 +2991,6 @@ impl WorkspaceTree {
             heads,
             before,
             terms: self.room_batch_terms(room, from, staged_name),
-            local_salt: self.local_salt(),
             caps_now: tilo_clock::unix_now(),
         })
     }
@@ -3023,6 +3078,14 @@ impl WorkspaceTree {
                 return Ok(false);
             }
         };
+        // What this device changed in the room's layout is written before
+        // what the batch brings is folded in: the fold shows the room's
+        // layout, so an edit only the tree held would be undone by it. A room
+        // with no document here yet has nothing of this device's in it, and
+        // a refused batch leaves it with none.
+        if self.room_docs.contains_key(&room) {
+            self.try_sync_room_doc(room);
+        }
         let moved = self
             .room_docs
             .get_mut(&room)
@@ -3101,8 +3164,8 @@ impl WorkspaceTree {
             self.try_sync_room_doc(room);
         }
 
-        // Folds the room's windows into this machine's copy, preserving
-        // view state; see `merge_room_contents`.
+        // Folds the room's layout into this machine's tree, keeping what it
+        // decides alone; see `merge_room_contents`.
         let contents_changed = self.merge_room_contents(room);
 
         let Some(ws) = self
@@ -3443,7 +3506,7 @@ impl WorkspaceTree {
     /// name `account` to the key identity selected for its room.
     ///
     /// Before a device has an identity, [`local_user_id`] falls back to the
-    /// account name, so a workspace created then is owned by `"quinten"`.
+    /// account name, so a workspace created then is owned by `"ada"`.
     /// Once the identity exists the same person acts as its key-derived
     /// principal, is no member of that workspace, and every app they open
     /// there is refused its collaboration route and exits before drawing.
@@ -3835,19 +3898,25 @@ impl WorkspaceTree {
         Some(stored)
     }
 
-    /// The active workspace after the person at this machine opens `app`.
+    /// The workspace `app` opens in after the person at this machine opens
+    /// it: the active one, or for a personal app the personal workspace
+    /// ([`Self::workspace_for_app`]).
     ///
     /// The launch that follows must use this workspace: its sandbox is what
     /// the new process is told, and a workspace launch with no author
     /// capability opens the app as a viewer.
     pub fn workspace_after_opening_app(&mut self, app: &str) -> Option<Workspace> {
-        let (id, room) = {
-            let workspace = self.desktop.active_workspace()?;
-            (workspace.id, workspace.room())
-        };
+        let shown = self.desktop.active_workspace()?.id;
+        // A personal app opens in the personal workspace, whichever is shown.
+        let id = self.home_for_app(app, shown);
+        let room = self.room_of(id)?;
         let person = local_user_id_for_room(&room);
         let _ = self.grant_app_authorship(id, &person, app);
-        self.desktop.active_workspace().cloned()
+        self.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .cloned()
     }
 
     /// Persist an exact, owner-signed ownership offer without changing roles.
@@ -5342,6 +5411,27 @@ impl WorkspaceTree {
         new_group_id: GroupId,
         target: DropTarget,
     ) -> bool {
+        // A personal app's window never goes onto a shared workspace's strip.
+        let destination = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|ws| ws.strips.iter().any(|strip| strip.id == dest_strip_id))
+            .map(|ws| ws.id);
+        let app = self
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|ws| &ws.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == tab_id)
+            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile));
+        if let (Some(destination), Some(app)) = (destination, app)
+            && !self.may_hold_app(destination, &app)
+        {
+            return false;
+        }
         // Cache and Automerge document form one transaction. Keep snapshots
         // so a stale/malformed document cannot leave the live cache moved
         // while replication still describes the old layout.
@@ -6397,7 +6487,7 @@ mod automerge_foundation_tests {
         let mut host = WorkspaceTree::bootstrap_demo();
         let host_ws = host.desktop.workspaces[0].id;
         let room = host.room_of(host_ws).expect("bootstrap mints a room");
-        host.adopt_ownerless_workspaces(&"quinten".to_string());
+        host.adopt_ownerless_workspaces(&"ada".to_string());
 
         let mut guest = WorkspaceTree::bootstrap_demo();
         let guest_ws = guest.desktop.workspaces[0].id;
@@ -6405,7 +6495,7 @@ mod automerge_foundation_tests {
         // The host's invite names it (hub 1, as `ship` delivers it) as the
         // room's governor; a join alone names nobody.
         assert!(guest.pin_room_authority(room, PeerOrigin::hub(1)));
-        guest.adopt_ownerless_workspaces(&"xaver".to_string());
+        guest.adopt_ownerless_workspaces(&"bob".to_string());
         (host, guest, room)
     }
 
@@ -6475,7 +6565,7 @@ mod automerge_foundation_tests {
     fn workspaces_owned_by_the_account_name_pass_to_the_device_identity() {
         let key = "61".repeat(32);
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.adopt_ownerless_workspaces(&"quinten".to_string());
+        tree.adopt_ownerless_workspaces(&"ada".to_string());
         let home = tree.desktop.workspaces[0].id;
         let joined = tree.append_empty_workspace("Joined");
         let joined_room = tree.room_of(joined).expect("a room");
@@ -6486,12 +6576,12 @@ mod automerge_foundation_tests {
                 .iter_mut()
                 .find(|w| w.id == joined)
                 .unwrap();
-            ws.set_owner("quinten".to_string());
+            ws.set_owner("ada".to_string());
         }
         tree.room_authority
             .insert(joined_room, RoomAuthority::Unpinned);
 
-        let rebound = tree.rebind_account_owned_workspaces("quinten", |_| key.clone());
+        let rebound = tree.rebind_account_owned_workspaces("ada", |_| key.clone());
 
         assert_eq!(
             rebound,
@@ -6506,7 +6596,7 @@ mod automerge_foundation_tests {
             .unwrap();
         assert_eq!(ws.owner().map(String::as_str), Some(key.as_str()));
         assert_eq!(ws.role_of(&key), Some(CapRole::Owner));
-        assert_eq!(ws.role_of("quinten"), None);
+        assert_eq!(ws.role_of("ada"), None);
         let other = tree
             .desktop
             .workspaces
@@ -6515,7 +6605,7 @@ mod automerge_foundation_tests {
             .unwrap();
         assert_eq!(
             other.owner().map(String::as_str),
-            Some("quinten"),
+            Some("ada"),
             "a foreign room keeps its owner"
         );
 
@@ -6537,7 +6627,7 @@ mod automerge_foundation_tests {
         assert_eq!(mirrored.role_of(&key), Some(CapRole::Owner));
 
         assert!(
-            tree.rebind_account_owned_workspaces("quinten", |_| "quinten".to_string())
+            tree.rebind_account_owned_workspaces("ada", |_| "ada".to_string())
                 .is_empty(),
             "without an identity the account name is still who sits here"
         );
@@ -6778,28 +6868,23 @@ mod automerge_foundation_tests {
             host.sync_room_doc(room);
 
             let doc = host.room_docs.get(&room).expect("a room document");
-            let (_, contents) = doc
-                .get(&ROOT, "contents")
-                .ok()
-                .flatten()
-                .expect("the room's windows must be in its document");
-            let (_, strip) = doc
-                .get(&contents, projection::contents_key(strip_id.raw()).as_str())
-                .ok()
-                .flatten()
-                .expect("the strip");
-            let (_, groups) = doc.get(&strip, "groups").ok().flatten().expect("groups");
+            let layout =
+                shared_record::read(doc, None).expect("the room's windows must be in its document");
+            assert_eq!(layout.tree.workspaces[0].strips[0].id, strip_id);
+            let shared = layout.tree.workspaces[0].strips[0].window_groups[0].clone();
+            assert_eq!(shared.id, group_id, "the strip's group replicates");
+            assert_eq!(
+                shared.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+                [tab_id],
+                "the group's tabs must replicate"
+            );
+            let (_, groups) = doc.get(&ROOT, "groups").ok().flatten().expect("groups");
             let (_, group) = doc
-                .get(&groups, projection::contents_key(group_id).as_str())
+                .get(&groups, group_id.to_string().as_str())
                 .ok()
                 .flatten()
                 .expect("the group");
-
             let group_keys: Vec<String> = doc.keys(&group).collect();
-            assert!(
-                group_keys.contains(&"tabs".to_string()),
-                "the group's tabs must replicate; got {group_keys:?}",
-            );
             assert!(
                 !group_keys.contains(&"active_tab".to_string()),
                 "which tab someone is looking at is theirs, not the room's, and \
@@ -6927,7 +7012,7 @@ mod automerge_foundation_tests {
         // way owner/capabilities are.
         {
             let (mut host, mut guest, room) = two_in_a_room();
-            guest.set_room_records(room, held(("file:/docs/from-xaver.md", "document")));
+            guest.set_room_records(room, held(("file:/docs/from-bob.md", "document")));
 
             ship(&mut guest, &mut host, room, 2);
 
@@ -6935,7 +7020,7 @@ mod automerge_foundation_tests {
                 host.take_inbound_room_records(),
                 vec![(
                     room,
-                    "file:/docs/from-xaver.md".to_string(),
+                    "file:/docs/from-bob.md".to_string(),
                     "document".to_string()
                 )],
                 "a guest's reference must reach the room's owner",
@@ -6947,8 +7032,8 @@ mod automerge_foundation_tests {
         // record id rather than a list, so the merge is a union.
         {
             let (mut host, mut guest, room) = two_in_a_room();
-            host.set_room_records(room, held(("file:/docs/from-quinten.md", "document")));
-            guest.set_room_records(room, held(("file:/docs/from-xaver.md", "document")));
+            host.set_room_records(room, held(("file:/docs/from-ada.md", "document")));
+            guest.set_room_records(room, held(("file:/docs/from-bob.md", "document")));
 
             // Neither has seen the other's yet: both project, then both merge.
             ship(&mut host, &mut guest, room, 1);
@@ -6963,8 +7048,8 @@ mod automerge_foundation_tests {
                 assert_eq!(
                     ids,
                     vec![
-                        "file:/docs/from-quinten.md".to_string(),
-                        "file:/docs/from-xaver.md".to_string()
+                        "file:/docs/from-ada.md".to_string(),
+                        "file:/docs/from-bob.md".to_string()
                     ],
                     "{who} lost one of two simultaneous references",
                 );
@@ -7034,7 +7119,12 @@ mod automerge_foundation_tests {
                 keys.contains(&"records".to_string()),
                 "the room's records must be in its document; got {keys:?}",
             );
-            for forbidden in ["active", "active_strip", "active_group", "workspaces"] {
+            // The layout record holds this room's workspace alone.
+            assert_eq!(
+                shared_record::read(doc, None).map(|layout| layout.tree.workspaces.len()),
+                Some(1)
+            );
+            for forbidden in ["active", "active_strip", "active_group"] {
                 assert!(
                     !keys.contains(&forbidden.to_string()),
                     "{forbidden:?} is a fact about a person at a desk, not about the \
@@ -7140,6 +7230,8 @@ mod automerge_foundation_tests {
             let (mut host, mut guest, room) = two_in_a_room();
             host.set_salt_override(HOST);
             guest.set_salt_override(GUEST);
+            // The host's window is its person's.
+            host.local_person = Some([0x0a; 32]);
 
             let strip = StripId::from(salted(HOST, 1));
             let group = salted(HOST, 2);
@@ -7180,27 +7272,22 @@ mod automerge_foundation_tests {
                 .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
                 .expect("guest merges the host's room");
             {
-                use automerge::{ROOT, ReadDoc, transaction::Transactable};
                 let doc = guest.room_docs.get_mut(&room).expect("room doc");
-                let (_, contents) = doc.get(&ROOT, "contents").ok().flatten().expect("contents");
-                let (_, s_entry) = doc
-                    .get(&contents, projection::contents_key(strip.raw()).as_str())
-                    .ok()
-                    .flatten()
-                    .expect("strip");
-                let (_, groups) = doc.get(&s_entry, "groups").ok().flatten().expect("groups");
-                let (_, g_entry) = doc
-                    .get(&groups, projection::contents_key(group).as_str())
-                    .ok()
-                    .flatten()
-                    .expect("group");
-                let (_, tabs) = doc.get(&g_entry, "tabs").ok().flatten().expect("tabs");
-                let (_, t_entry) = doc
-                    .get(&tabs, projection::contents_key(tab).as_str())
-                    .ok()
-                    .flatten()
-                    .expect("tab");
-                let _ = doc.put(&t_entry, "title", "Hijacked".to_string());
+                let mut layout = shared_record::read(&*doc, None).expect("layout");
+                for held in layout
+                    .tree
+                    .workspaces
+                    .iter_mut()
+                    .flat_map(|ws| &mut ws.strips)
+                    .flat_map(|strip| &mut strip.window_groups)
+                    .flat_map(|group| &mut group.tabs)
+                    .filter(|held| held.id == tab)
+                {
+                    held.title = "Hijacked".into();
+                }
+                shared_record::write(doc, &layout).expect("written");
+                doc.commit();
+                let _ = (strip, group);
             }
             let tampered = guest
                 .export_room_changes_since(room, &[])
@@ -7401,19 +7488,21 @@ mod automerge_foundation_tests {
                 .map(|tab| tab.id)
                 .collect()
         };
-        let titles_in = |doc: &AutoCommit| -> Vec<String> {
-            projection::contents_of(doc)
+        let tabs_in = |doc: &AutoCommit| -> Vec<Tab> {
+            shared_record::read(doc, None)
                 .into_iter()
-                .flat_map(|strip| strip.groups)
+                .flat_map(|layout| layout.tree.workspaces)
+                .flat_map(|w| w.strips)
+                .flat_map(|strip| strip.window_groups)
                 .flat_map(|group| group.tabs)
-                .map(|tab| tab.title)
                 .collect()
         };
+        let titles_in = |doc: &AutoCommit| -> Vec<String> {
+            tabs_in(doc).into_iter().map(|tab| tab.title).collect()
+        };
         let hosts_in = |doc: &AutoCommit| -> usize {
-            projection::contents_of(doc)
+            tabs_in(doc)
                 .iter()
-                .flat_map(|strip| &strip.groups)
-                .flat_map(|group| &group.tabs)
                 .filter(|tab| peer_salt_of(tab.id) == HOST)
                 .count()
         };
@@ -7708,25 +7797,25 @@ mod automerge_foundation_tests {
             // the handle a caret arrives under.
             {
                 let (mut host, _ws, room) = host_owning_a_room();
-                let xaver = peer_id(9);
+                let bob = peer_id(9);
 
                 assert!(
-                    host.name_peer(room, &ROOM_OWNER.to_string(), &xaver, "Xaver"),
+                    host.name_peer(room, &ROOM_OWNER.to_string(), &bob, "Bob"),
                     "the room's administrator may name a peer in it",
                 );
 
                 assert_eq!(
                     host.room_peer_names_in_doc(room)
-                        .get(&xaver)
+                        .get(&bob)
                         .map(String::as_str),
-                    Some("Xaver"),
+                    Some("Bob"),
                     "the name has to be in the room document, which is what replicates",
                 );
                 assert_eq!(
                     host.room_peer_labels(room)
-                        .get(&handle_of(&xaver))
+                        .get(&handle_of(&bob))
                         .map(String::as_str),
-                    Some("Xaver"),
+                    Some("Bob"),
                     "and it has to be reachable from the handle a presence frame carries",
                 );
             }
@@ -7737,17 +7826,17 @@ mod automerge_foundation_tests {
             // reachable before the first sync round.
             {
                 let (mut host, _ws, room) = host_owning_a_room();
-                let xaver = peer_id(9);
-                assert!(host.name_peer(room, &ROOM_OWNER.to_string(), &xaver, "Xaver"));
+                let bob = peer_id(9);
+                assert!(host.name_peer(room, &ROOM_OWNER.to_string(), &bob, "Bob"));
 
                 // What a restart leaves: the cache, and no projected document.
                 host.room_docs.clear();
 
                 assert_eq!(
                     host.room_peer_labels(room)
-                        .get(&handle_of(&xaver))
+                        .get(&handle_of(&bob))
                         .map(String::as_str),
-                    Some("Xaver"),
+                    Some("Bob"),
                     "the machine that governs the room is the one the document is \
                      projected from, so its cache is the same authority",
                 );
@@ -7758,14 +7847,10 @@ mod automerge_foundation_tests {
             // a name in its cache with none in the document was never entitled.
             {
                 let (mut host, mut guest, room) = two_in_a_room();
-                let xaver = peer_id(9);
-                assert!(host.name_peer(room, &"quinten".to_string(), &xaver, "Xaver"));
+                let bob = peer_id(9);
+                assert!(host.name_peer(room, &"ada".to_string(), &bob, "Bob"));
                 ship(&mut host, &mut guest, room, 1);
-                assert!(
-                    guest
-                        .room_peer_labels(room)
-                        .contains_key(&handle_of(&xaver))
-                );
+                assert!(guest.room_peer_labels(room).contains_key(&handle_of(&bob)));
 
                 // A name the guest holds locally and the room does not.
                 guest
@@ -7780,8 +7865,8 @@ mod automerge_foundation_tests {
                     "a guest must not show a name that is not in the room document",
                 );
                 assert_eq!(
-                    labels.get(&handle_of(&xaver)).map(String::as_str),
-                    Some("Xaver")
+                    labels.get(&handle_of(&bob)).map(String::as_str),
+                    Some("Bob")
                 );
             }
 
@@ -7792,7 +7877,7 @@ mod automerge_foundation_tests {
                 let (mut host, _ws, room) = host_owning_a_room();
                 let named = peer_id(9);
                 let stranger = peer_id(10);
-                assert!(host.name_peer(room, &ROOM_OWNER.to_string(), &named, "Xaver"));
+                assert!(host.name_peer(room, &ROOM_OWNER.to_string(), &named, "Bob"));
 
                 let labels = host.room_peer_labels(room);
                 assert!(
@@ -7811,27 +7896,27 @@ mod automerge_foundation_tests {
             // to a peer that never wrote it and cannot have made it up.
             {
                 let (mut host, mut guest, room) = two_in_a_room();
-                let xaver = peer_id(9);
+                let bob = peer_id(9);
                 // `two_in_a_room` makes the host the owner of its own workspace;
                 // it is the machine that minted the room, so it governs it.
-                assert!(host.name_peer(room, &"quinten".to_string(), &xaver, "Xaver"));
+                assert!(host.name_peer(room, &"ada".to_string(), &bob, "Bob"));
 
                 ship(&mut host, &mut guest, room, 1);
 
                 assert_eq!(
                     guest
                         .room_peer_names_in_doc(room)
-                        .get(&xaver)
+                        .get(&bob)
                         .map(String::as_str),
-                    Some("Xaver"),
+                    Some("Bob"),
                     "a guest reads names out of the replicated room document",
                 );
                 assert_eq!(
                     guest
                         .room_peer_labels(room)
-                        .get(&handle_of(&xaver))
+                        .get(&handle_of(&bob))
                         .map(String::as_str),
-                    Some("Xaver"),
+                    Some("Bob"),
                 );
             }
 
@@ -7840,19 +7925,19 @@ mod automerge_foundation_tests {
             // it, or a mislabelled caret is mislabelled forever.
             {
                 let (mut host, mut guest, room) = two_in_a_room();
-                let xaver = peer_id(9);
-                assert!(host.name_peer(room, &"quinten".to_string(), &xaver, "Xaver"));
+                let bob = peer_id(9);
+                assert!(host.name_peer(room, &"ada".to_string(), &bob, "Bob"));
                 ship(&mut host, &mut guest, room, 1);
-                assert!(guest.room_peer_names_in_doc(room).contains_key(&xaver));
+                assert!(guest.room_peer_names_in_doc(room).contains_key(&bob));
 
                 assert!(
-                    host.name_peer(room, &"quinten".to_string(), &xaver, ""),
+                    host.name_peer(room, &"ada".to_string(), &bob, ""),
                     "an empty name un-names the peer",
                 );
                 ship(&mut host, &mut guest, room, 1);
 
                 assert!(
-                    !guest.room_peer_names_in_doc(room).contains_key(&xaver),
+                    !guest.room_peer_names_in_doc(room).contains_key(&bob),
                     "the retraction has to replicate, not just the name",
                 );
             }
@@ -7865,8 +7950,8 @@ mod automerge_foundation_tests {
             // write this map could put any name over any caret in the room.
             {
                 let (mut host, _ws, room) = host_owning_a_room();
-                let xaver = peer_id(9);
-                host.name_peer(room, &ROOM_OWNER.to_string(), &xaver, "Xaver");
+                let bob = peer_id(9);
+                host.name_peer(room, &ROOM_OWNER.to_string(), &bob, "Bob");
                 host.sync_room_doc(room);
 
                 // A guest whose own state says it governs the room, projecting
@@ -7883,7 +7968,7 @@ mod automerge_foundation_tests {
                         .expect("the guest's own workspace");
                     ws.set_owner(ROOM_GUEST.to_string());
                 }
-                assert!(guest.name_peer(room, &ROOM_GUEST.to_string(), &xaver, "Quinten"));
+                assert!(guest.name_peer(room, &ROOM_GUEST.to_string(), &bob, "Ada"));
                 let claim = guest
                     .export_room_changes_since(room, &[])
                     .expect("the guest is in the room it exports");
@@ -7893,9 +7978,9 @@ mod automerge_foundation_tests {
 
                 assert_eq!(
                     host.room_peer_names_in_doc(room)
-                        .get(&xaver)
+                        .get(&bob)
                         .map(String::as_str),
-                    Some("Xaver"),
+                    Some("Bob"),
                     "a guest must not be able to rename anyone in a room it joined",
                 );
             }
@@ -7905,10 +7990,10 @@ mod automerge_foundation_tests {
             // authority a grant needs — on the machine and on the person.
             {
                 let (mut host, _ws, room) = host_owning_a_room();
-                let xaver = peer_id(9);
+                let bob = peer_id(9);
 
                 assert!(
-                    !host.name_peer(room, &ROOM_GUEST.to_string(), &xaver, "Xaver"),
+                    !host.name_peer(room, &ROOM_GUEST.to_string(), &bob, "Bob"),
                     "somebody who does not administer the room may not name in it",
                 );
                 assert!(
@@ -7922,7 +8007,7 @@ mod automerge_foundation_tests {
                 joiner.join_room("Mine", room).expect("joins the room");
                 joiner.adopt_ownerless_workspaces(&ROOM_GUEST.to_string());
                 assert!(
-                    !joiner.name_peer(room, &ROOM_GUEST.to_string(), &xaver, "Xaver"),
+                    !joiner.name_peer(room, &ROOM_GUEST.to_string(), &bob, "Bob"),
                     "a machine that joined the room does not get to name its peers",
                 );
             }
@@ -7933,8 +8018,8 @@ mod automerge_foundation_tests {
             // that failed to replicate rather than one never addressed to anyone.
             {
                 let (mut host, _ws, room) = host_owning_a_room();
-                assert!(!host.name_peer(room, &ROOM_OWNER.to_string(), "xaver", "Xaver"));
-                assert!(!host.name_peer(room, &ROOM_OWNER.to_string(), "", "Xaver"));
+                assert!(!host.name_peer(room, &ROOM_OWNER.to_string(), "bob", "Bob"));
+                assert!(!host.name_peer(room, &ROOM_OWNER.to_string(), "", "Bob"));
                 assert!(host.room_peer_names_in_doc(room).is_empty());
             }
         }
@@ -7956,7 +8041,7 @@ mod automerge_foundation_tests {
             signature: [0; 64],
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
-        let owner = "quinten".to_string();
+        let owner = "ada".to_string();
         assert!(host.name_peer(room, &owner, &endpoint.to_string(), "Bob"));
         assert!(host.name_peer(room, &owner, &named_only.to_string(), "Carol"));
         assert!(host.certify_peer_identity(room, &endpoint.to_string(), certificate.clone()));
@@ -8022,7 +8107,7 @@ mod automerge_foundation_tests {
             tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
             assert!(host.name_peer(
                 room,
-                &"quinten".to_string(),
+                &"ada".to_string(),
                 &endpoint.to_string(),
                 "Ada Lovelace"
             ));
@@ -8092,7 +8177,7 @@ mod automerge_foundation_tests {
                 signature: [0; 64],
             };
             tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
-            assert!(host.name_peer(room, &"quinten".to_string(), &endpoint.to_string(), "Ada"));
+            assert!(host.name_peer(room, &"ada".to_string(), &endpoint.to_string(), "Ada"));
             assert!(host.certify_peer_identity(room, &endpoint.to_string(), certificate.clone()));
             assert_eq!(host.trusted_identity_projection(room).humans.len(), 1);
 
@@ -8114,10 +8199,10 @@ mod automerge_foundation_tests {
 
             // Omission is not removal, and un-name/re-name cannot revive it.
             assert!(!host.certify_peer_identity(room, &endpoint.to_string(), certificate));
-            assert!(host.name_peer(room, &"quinten".to_string(), &endpoint.to_string(), ""));
+            assert!(host.name_peer(room, &"ada".to_string(), &endpoint.to_string(), ""));
             assert!(host.name_peer(
                 room,
-                &"quinten".to_string(),
+                &"ada".to_string(),
                 &endpoint.to_string(),
                 "Ada Renamed"
             ));
@@ -8146,7 +8231,7 @@ mod automerge_foundation_tests {
         tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
         assert!(host.name_peer(
             room,
-            &"quinten".to_string(),
+            &"ada".to_string(),
             &laptop.to_string(),
             "Ada Lovelace"
         ));
@@ -8259,7 +8344,7 @@ mod automerge_foundation_tests {
         let laptop = iroh::SecretKey::generate().public();
         assert!(host.name_peer(
             room,
-            &"quinten".to_string(),
+            &"ada".to_string(),
             &laptop.to_string(),
             "Ada Lovelace"
         ));
@@ -8338,8 +8423,7 @@ mod automerge_foundation_tests {
             .unwrap();
         tilo_resource::history::commit_stamped_with_message(&mut document, None);
         let handle = WorkspaceTreeHandle::new(tree);
-        let mut pane =
-            crate::shell::room_activity::RoomActivityPane::with_local_user("quinten".into());
+        let mut pane = crate::shell::room_activity::RoomActivityPane::with_local_user("ada".into());
         pane.refresh_observed(
             &handle,
             &ui::record::RecordStore::in_memory(),
@@ -9513,6 +9597,9 @@ mod shell_media_policy;
 #[cfg(test)]
 #[path = "state/apply_room_changes_tests.rs"]
 mod apply_room_changes_tests;
+#[cfg(test)]
+#[path = "state/own_devices_layout_tests.rs"]
+mod own_devices_layout_tests;
 
 #[cfg(test)]
 mod active_workspace_peer_count_tests {

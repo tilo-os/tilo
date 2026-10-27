@@ -3,9 +3,9 @@
 //!
 //! The list is the toolkit's navigation list, so rows, selection lift,
 //! keyboard handling, section headers and the narrow push behaviour are the
-//! same as every other Tilo sidebar. Choosing a category publishes a typed,
-//! process-local navigation request which `crate::SettingsApp::sync`
-//! consumes to switch the active category. Navigation is presentation state:
+//! same as every other Tilo sidebar. Choosing a category runs its pane's
+//! published open action, the one an agent or the palette runs to open it.
+//! Navigation is presentation state:
 //! it must not become a replicated preference, an undo entry, or a document
 //! click flag.
 
@@ -21,14 +21,8 @@ pub fn width_for_text_scale(scale: f32) -> f64 {
 }
 
 /// Build the sectioned category list with `selected` chosen. Choosing a row
-/// writes its category to `selection_request`.
-pub fn build(
-    cx: &crate::host::PaneCx,
-    selected: Category,
-    query: &str,
-    selection_request: &ui::LocalState<Option<Category>>,
-) -> Box<dyn ui::Widget> {
-    let request = selection_request.clone();
+/// runs its pane's open effect.
+pub fn build(cx: &crate::host::PaneCx, selected: Category, query: &str) -> Box<dyn ui::Widget> {
     let bindings = Category::ALL
         .iter()
         .filter_map(|category| {
@@ -42,12 +36,7 @@ pub fn build(
         .with_id(NAV_ID)
         .with_accessible_name(crate::i18n::t("settings-nav-name"))
         .selected(selected.slug())
-        .selection_actions(bindings)
-        .on_select(move |id| {
-            if let Some(category) = Category::from_slug(&id) {
-                request.set(Some(category));
-            }
-        });
+        .selection_actions(bindings);
     list.set_filter(query);
     list.into_widget()
 }
@@ -114,7 +103,6 @@ mod tests {
     /// setting matched: "where is the keyboard layout".
     #[test]
     fn the_filter_finds_pages_by_the_settings_on_them() {
-        let request = ui::LocalState::new(None);
         let cx =
             crate::host::PaneCx::detached(ui::storage::AppStorage::for_app("so.tilo.settings"));
         for (query, page) in [
@@ -126,7 +114,7 @@ mod tests {
             ("tap to click", Category::Pointing),
             ("disable touchpad while typing", Category::Pointing),
         ] {
-            let mut widget = build(&cx, Category::Network, query, &request);
+            let mut widget = build(&cx, Category::Network, query);
             let list = widget
                 .as_any_mut()
                 .unwrap()
@@ -138,22 +126,5 @@ mod tests {
                 "{query:?} shows {page:?}, got {shown:?}"
             );
         }
-    }
-
-    #[test]
-    fn choosing_a_row_publishes_a_local_request_without_touching_the_document() {
-        let request = ui::LocalState::new(None);
-        let cx =
-            crate::host::PaneCx::detached(ui::storage::AppStorage::for_app("so.tilo.settings"));
-        let mut widget = build(&cx, Category::Network, "", &request);
-        let list = widget
-            .as_any_mut()
-            .unwrap()
-            .downcast_mut::<ui::widget::NavList>()
-            .unwrap();
-        assert_eq!(list.selected_id().as_deref(), Some("network"));
-        list.set_selected(Some("about"));
-        assert_eq!(list.selected_id().as_deref(), Some("about"));
-        assert_eq!(request.with(|r| *r), None, "set_selected does not report");
     }
 }

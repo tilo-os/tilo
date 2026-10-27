@@ -927,7 +927,7 @@ impl PackageStore {
         } else if row.payload_root.starts_with(layout.root().join("payloads")) {
             // A tree from before payloads were content addressed.
             remove_tree(&row.payload_root)?;
-            remove_tree(&integrity::legacy_record_dir(layout.root(), &row.id))?;
+            remove_tree(&integrity::detached_record_dir(layout.root(), &row.id))?;
         }
         Ok(())
     }

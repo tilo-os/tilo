@@ -191,7 +191,7 @@ impl HostOrigin {
         })
     }
 
-    /// An origin as a locator announces it (`https://quinten.tilo.cloud`).
+    /// An origin as a locator announces it (`https://ada.tilo.cloud`).
     ///
     /// # Errors
     ///
@@ -742,10 +742,10 @@ mod tests {
     #[test]
     fn hosts_are_https_except_this_computer() {
         assert_eq!(
-            HostOrigin::from_authority("quinten.tilo.cloud")
+            HostOrigin::from_authority("ada.tilo.cloud")
                 .unwrap()
                 .as_str(),
-            "https://quinten.tilo.cloud"
+            "https://ada.tilo.cloud"
         );
         assert_eq!(
             HostOrigin::from_authority("localhost:9700")
@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn formats_the_spec_examples() {
-        let mut target = LinkTarget::new(room("https://quinten.tilo.cloud"));
+        let mut target = LinkTarget::new(room("https://ada.tilo.cloud"));
         if let Scope::Room { slug, .. } = &mut target.scope {
             *slug = Slug::from_name("Reading Group");
         }
@@ -803,7 +803,7 @@ mod tests {
             span: Some(Span::chars(40, 96)),
         });
         let route = format!(
-            "/@quinten.tilo.cloud/w/reading-group~{ROOM}/so.tilo.word-processor/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/word_processor.block/b12?chars=40-96"
+            "/@ada.tilo.cloud/w/reading-group~{ROOM}/so.tilo.word-processor/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/word_processor.block/b12?chars=40-96"
         );
         let link = plain(Mode::Desktop, target);
         assert_eq!(

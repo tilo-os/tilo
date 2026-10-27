@@ -277,6 +277,10 @@ pub struct BrokerActor {
     /// The issue whose run the agent works in, by its address: grants
     /// naming the issue decide for the run as the agent's own do.
     issue: Option<String>,
+    /// How far the invocation this actor's request continues was admitted
+    /// to reach: what goes further asks first
+    /// ([`tilo_action_policy::Reach`]).
+    ceiling: Option<tilo_action_policy::Reach>,
 }
 
 impl BrokerActor {
@@ -289,6 +293,7 @@ impl BrokerActor {
             for_person: None,
             session_delegated: false,
             issue: None,
+            ceiling: None,
         }
     }
 
@@ -301,6 +306,7 @@ impl BrokerActor {
             for_person: None,
             session_delegated: false,
             issue: None,
+            ceiling: None,
         }
     }
 
@@ -315,6 +321,7 @@ impl BrokerActor {
             for_person: Some(installer.into()),
             session_delegated: false,
             issue: None,
+            ceiling: None,
         }
     }
 
@@ -339,6 +346,22 @@ impl BrokerActor {
     pub fn session_delegated(mut self) -> Self {
         self.session_delegated = true;
         self
+    }
+
+    /// The same actor, asking as part of an invocation admitted to reach
+    /// `ceiling`, when it is one.
+    #[must_use]
+    pub fn within(mut self, ceiling: Option<tilo_action_policy::Reach>) -> Self {
+        self.ceiling = ceiling;
+        self
+    }
+
+    /// Whether an action of `kind`, privileged when `privileged`, reaches
+    /// further than the invocation this actor's request continues was
+    /// admitted for.
+    fn exceeds(&self, kind: ActionKind, privileged: bool) -> bool {
+        self.ceiling
+            .is_some_and(|ceiling| !ceiling.covers(kind, privileged))
     }
 
     /// The same agent, working in a run of the issue at `issue`.
@@ -425,9 +448,10 @@ impl BrokerActor {
     }
 
     /// Whether this actor is a person acting from their own device: the one
-    /// whose own gesture answers a grant that asks first.
+    /// whose own gesture answers a grant that asks first. What an effect asks
+    /// for while it continues their invocation is not their gesture.
     pub(crate) fn direct(&self) -> bool {
-        self.delegate().is_none() && !self.capped
+        self.delegate().is_none() && !self.capped && self.ceiling.is_none()
     }
 
     /// The person this actor is, when a person acts from their own device:
@@ -569,7 +593,13 @@ impl BrokerActor {
             if privileged {
                 verdict = verdict.privileged();
             }
-            (verdict.answer, verdict.spent())
+            // A child going further than the invocation it continues was
+            // admitted for is asked for as its own request.
+            let answer = match verdict.answer {
+                Answer::Allow if self.exceeds(kind, privileged) => Answer::Ask,
+                answer => answer,
+            };
+            (answer, verdict.spent())
         })
     }
 
@@ -1473,6 +1503,9 @@ struct PendingInvocation {
     /// Who it was admitted for, kept so an edit its effect submits is
     /// admitted for them too.
     caller: Option<ContinuingCaller>,
+    /// How far it was admitted to reach: what its effect asks for goes no
+    /// further without being asked for.
+    reach: tilo_action_policy::Reach,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
     network_evidence: Option<tilo_relay_session::client::CertifiedAction>,
@@ -1633,14 +1666,12 @@ impl CallerInvocation {
 }
 
 impl CapnpBrokerState {
-    /// The caller of the invocation `running` that this broker delivered to
-    /// the connection `peer_id` and that still runs: who an edit its effect
-    /// submits is admitted for. `None` when the connection runs no such
-    /// invocation, or its caller was known only by certificate.
-    /// Who an invoke continuing a running invocation is admitted for: that
-    /// invocation's own caller, with their grants. `None` for any other
-    /// request; the refusal to answer with when the connection runs no such
-    /// invocation.
+    /// Who an invoke an agent's connection makes continuing a running
+    /// invocation is admitted for: that invocation's own caller, with their
+    /// grants, reaching no further than it ([`Self::child_caller`]). `None`
+    /// for any other request; the refusal to answer with when the connection
+    /// runs no such invocation. An application's connection is decided by
+    /// [`Self::app_request_caller`].
     fn continued_caller(
         &self,
         peer_id: u64,
@@ -1651,7 +1682,7 @@ impl CapnpBrokerState {
             return None;
         };
         let running = invoke.on_behalf_of?;
-        Some(self.continuing_caller(peer_id, running).ok_or_else(|| {
+        Some(self.child_caller(peer_id, running).ok_or_else(|| {
             Box::new(tilo_actions::remote::RemoteActionMessage::Receipt(
                 tilo_actions::remote::InvocationReceipt {
                     invocation: invoke.invocation,
@@ -1663,11 +1694,38 @@ impl CapnpBrokerState {
         }))
     }
 
+    /// The caller of the invocation `running` that this broker delivered to
+    /// the connection `peer_id` and that still runs. `None` when the
+    /// connection runs no such invocation, two callers share its id, or its
+    /// caller no longer stands.
     pub(crate) fn continuing_caller(
         &self,
         peer_id: u64,
         running: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::Caller> {
+        self.running_for(peer_id, running).map(|(caller, _)| caller)
+    }
+
+    /// Who a request continuing the invocation `running`, which this broker
+    /// delivered to the connection `peer_id` and that still runs, is decided
+    /// as: its caller, reaching no further than it was admitted to without
+    /// being asked for. `None` as [`Self::continuing_caller`].
+    pub(crate) fn child_caller(
+        &self,
+        peer_id: u64,
+        running: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::Caller> {
+        self.running_for(peer_id, running)
+            .map(|(caller, reach)| caller.within(reach))
+    }
+
+    /// The current caller of `running` on `peer_id`, and how far it was
+    /// admitted to reach.
+    fn running_for(
+        &self,
+        peer_id: u64,
+        running: tilo_actions::InvocationId,
+    ) -> Option<(tilo_actions::remote::Caller, tilo_action_policy::Reach)> {
         // Doors that take the caller's own invocation id can admit two
         // callers' invocations under one id; such an id names nobody.
         let mut matching = self
@@ -1676,13 +1734,14 @@ impl CapnpBrokerState {
             .ok()?
             .values()
             .filter(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
-            .map(|pending| pending.caller.clone())
+            .map(|pending| (pending.caller.clone(), pending.reach))
             .take(2)
             .collect::<Vec<_>>();
         if matching.len() != 1 {
             return None;
         }
-        matching.pop()??.current(self)
+        let (caller, reach) = matching.pop()?;
+        Some((caller?.current(self)?, reach))
     }
 }
 
@@ -5228,6 +5287,8 @@ impl CapnpBrokerState {
                     resource_kind: "applications.app".into(),
                     action_label: format!("Open {display_name}"),
                     resource_label: display_name,
+                    keywords: Vec::new(),
+                    icon: None,
                     description: Some(
                         "Launch this application into the current workspace".into(),
                     ),
@@ -5565,7 +5626,7 @@ impl CapnpBrokerState {
             && (!matches!(
                 offered.1.operation_kind,
                 tilo_actions::OperationKind::Document | tilo_actions::OperationKind::View
-            ) && offered.1.contract.kind != tilo_actions::ActionKind::Read
+            ) && offered.1.contract.need().kind != tilo_actions::ActionKind::Read
                 || (offered.1.operation_kind != tilo_actions::OperationKind::Document
                     && local_report.is_some_and(|report| !report.mutation_hashes.is_empty()))
                 || provenance.durable.is_some()
@@ -5806,13 +5867,13 @@ impl CapnpBrokerState {
         // Where the room's grants ask first, the person's confirmation in
         // the host is the answer: the invocation needs a confirmation token
         // even when the action itself asks for none.
-        if asks
+        let confirmed = asks
             || requires_store_witness(&offered.0.app_id, &offered.1.action)
             || !matches!(
                 offered.1.contract.confirmation,
                 tilo_actions::ConfirmationPolicy::None
-            )
-        {
+            );
+        if confirmed {
             let token = confirmation_token.ok_or_else(|| {
                 "action_confirmation_required: request and present a one-use confirmation token"
                     .to_string()
@@ -6064,7 +6125,19 @@ impl CapnpBrokerState {
             &offered.1,
             argument,
         );
+        // What it was admitted to reach caps what its effect asks for: its
+        // own reach, narrowed by what it continues unless the person
+        // confirmed it.
+        let own = tilo_action_policy::Reach {
+            kind: offered.1.contract.kind,
+            privileged: offered.1.contract.need().privileged,
+        };
+        let reach = match actor.ceiling {
+            Some(ceiling) if !confirmed => own.narrowed(ceiling),
+            _ => own,
+        };
         let pending = PendingInvocation {
+            reach,
             caller: continuing,
             activity: ActivityTarget::new(
                 execution.clone(),
@@ -7215,6 +7288,7 @@ impl CapnpBrokerState {
             | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::ChannelAccess { .. }
             | CollabEvent::CommittedDocument { .. }
+            | CollabEvent::RecordUnavailable { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
@@ -8137,6 +8211,7 @@ impl collab_service::Server for CapnpCollabService {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         Promise::from_future(async move {
+            let mut phases = JoinPhases::start();
             let reader = params.get()?;
             let channel_id = reader
                 .get_channel_id()?
@@ -8161,6 +8236,7 @@ impl collab_service::Server for CapnpCollabService {
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
+            phases.mark("verify");
             // An attested launch joins its own route; another app's only to
             // read a record whose kinds it declared it reads.
             let route_access = match self.lease.local_media.as_ref() {
@@ -8212,7 +8288,8 @@ impl collab_service::Server for CapnpCollabService {
             let participant_kind = reader.get_participant_kind()?.to_str().map_err(|error| {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
-            let record_kind = joined_record_kind(reader.get_record_kind()?)?;
+            let record_kind =
+                route_record_kind(&route, joined_record_kind(reader.get_record_kind()?)?)?;
             if (verified_identity.host_scope.is_some()
                 || verified_identity.worker_registration.is_some())
                 && !matches!(participant_kind, "" | "person")
@@ -8302,9 +8379,11 @@ impl collab_service::Server for CapnpCollabService {
             {
                 verified_identity.worker_registration = Some(registration);
             }
+            phases.mark("admit");
             let ensured = channel_id.clone();
             let retained = verified_identity.clone();
             let hold = self.holds.hold(&state, &self.directories, peer_id, &route);
+            phases.mark("hold");
             let hold_id = hold.id();
             let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
                 person_chat_views: RefCell::default(),
@@ -8322,13 +8401,77 @@ impl collab_service::Server for CapnpCollabService {
             });
             // Refused, the handle and its hold drop here and withdraw again.
             state.retain_host_worker(hold_id, &route, &retained)?;
+            phases.mark("retain-worker");
             state.ensure_channel(&ensured);
+            phases.mark("ensure-channel");
             state
                 .publisher()
                 .local_route(&crate::route::CrdtRoute::from_channel_key(&ensured));
+            phases.mark("publish-route");
+            phases.report(&ensured);
             results.get().set_handle(client);
             Ok(())
         })
+    }
+}
+
+/// The resource kind of the record `route` names: a workspace record's own
+/// kind, which the route's id already derives from and every window joining
+/// it holds whether or not it says so, else what the join `named`. A join
+/// naming a workspace record as another kind is refused.
+fn route_record_kind(
+    route: &CrdtRoute,
+    named: Option<String>,
+) -> Result<Option<String>, capnp::Error> {
+    let Some(record) = collab_types::workspace_record(&route.app_id, &route.record_id) else {
+        return Ok(named);
+    };
+    match named {
+        Some(kind) if kind != record.kind => Err(capnp::Error::failed(format!(
+            "the workspace record of kind {} was joined as {kind}",
+            record.kind
+        ))),
+        _ => Ok(Some(record.kind.to_owned())),
+    }
+}
+
+/// Where one join's time went, logged with every join (`COLLAB-JOIN`): an app's
+/// cold start waits for its route's join, and its own startup line only sees the
+/// round trip. The time before `verify` is the request's decoding; a join slower on
+/// the app's side than here waited for the broker's thread.
+struct JoinPhases {
+    started: std::time::Instant,
+    last: std::time::Instant,
+    spans: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl JoinPhases {
+    fn start() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            last: now,
+            spans: Vec::with_capacity(6),
+        }
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        let now = std::time::Instant::now();
+        self.spans.push((phase, now.duration_since(self.last)));
+        self.last = now;
+    }
+
+    fn report(&self, channel: &str) {
+        let split = self
+            .spans
+            .iter()
+            .map(|(phase, took)| format!("{phase}={}us", took.as_micros()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!(
+            "COLLAB-JOIN channel={channel} total={}us {split}",
+            self.started.elapsed().as_micros()
+        );
     }
 }
 
@@ -9161,25 +9304,28 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // An app's open of an application is decided as the caller of the
-        // invocation it continues, under that invocation's custody, else as
-        // the person whose press it follows; an edit an effect submits while
-        // running for someone is theirs.
-        let (decided, continued_origin) = match current
-            .agent_id
-            .is_none()
-            .then(|| {
-                self.state
-                    .app_open_caller(self.peer_id, &route.app_id, &person, &request.message)
-            })
-            .flatten()
-        {
-            Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
-            Some(Err(refused)) => (Some(Err(refused)), None),
-            None => (
+        // An app's request continuing an invocation someone asked of it (an
+        // edit its effect submits, another app's action its effect calls) is
+        // decided as that invocation's caller, under its custody; its open
+        // of an application, else as the person whose press it follows.
+        // Anything else, including what continues an invocation the app made
+        // of itself, is the app's own door's to decide.
+        let (decided, continued_origin) = if current.agent_id.is_none() {
+            match self.state.app_request_caller(
+                self.peer_id,
+                &route.app_id,
+                &person,
+                &request.message,
+            ) {
+                Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
+                Some(Err(refused)) => (Some(Err(refused)), None),
+                None => (None, None),
+            }
+        } else {
+            (
                 self.state.continued_caller(self.peer_id, &request.message),
                 None,
-            ),
+            )
         };
         let caller = match decided {
             Some(Ok(caller)) => caller,
@@ -12062,7 +12208,7 @@ impl<'a> DirectoryQuestion<'a> {
             resource,
             action,
             field: contract.field.as_deref(),
-            kind: contract.kind,
+            kind: contract.need().kind,
             // Read kind alone does not make a private UI view public.
             // A declared document read, however, discloses document state
             // under the caller's ordinary resource policy, not owner UI.
@@ -15817,6 +15963,8 @@ pub mod tests {
                 resource_kind: "workspace".into(),
                 resource_label: "Atlas".into(),
                 action_label: "Open Atlas".into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: Some("Open the Atlas workspace".into()),
                 operation_kind: tilo_actions::OperationKind::View,
                 params: Vec::new(),
@@ -15918,6 +16066,8 @@ pub mod tests {
     include!("canonical_route_tests.rs");
     #[cfg(all(test, target_os = "linux"))]
     include!("native_checkout_tests.rs");
+    #[cfg(all(test, target_os = "linux"))]
+    include!("workspace_record_custody_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
@@ -18597,6 +18747,8 @@ pub mod tests {
                 resource_kind: "files.entry".into(),
                 resource_label: resource.into(),
                 action_label: "Open".into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 operation_kind: tilo_actions::OperationKind::View,
                 params: Vec::new(),
@@ -18998,6 +19150,8 @@ pub mod tests {
                 resource_kind: "document".into(),
                 resource_label: "Document".into(),
                 action_label: "Command".into(),
+                keywords: Vec::new(),
+                icon: None,
                 description,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 params: Vec::new(),
@@ -19160,6 +19314,8 @@ pub mod tests {
                         resource_kind: "files.entry".into(),
                         resource_label: "report".into(),
                         action_label: "Reveal".into(),
+                        keywords: Vec::new(),
+                        icon: None,
                         description: None,
                         operation_kind: tilo_actions::OperationKind::View,
                         params: Vec::new(),
@@ -19174,6 +19330,8 @@ pub mod tests {
                         resource_kind: "files.entry".into(),
                         resource_label: "report".into(),
                         action_label: "Erase".into(),
+                        keywords: Vec::new(),
+                        icon: None,
                         description: None,
                         operation_kind: tilo_actions::OperationKind::Effect,
                         params: Vec::new(),
@@ -19192,6 +19350,8 @@ pub mod tests {
                         resource_kind: "files.entry".into(),
                         resource_label: "report".into(),
                         action_label: "Refresh".into(),
+                        keywords: Vec::new(),
+                        icon: None,
                         description: None,
                         operation_kind: tilo_actions::OperationKind::Effect,
                         params: Vec::new(),
@@ -19406,6 +19566,8 @@ pub mod tests {
                 resource_kind: "files.app".into(),
                 resource_label: "Files".into(),
                 action_label: "New window".into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 operation_kind: tilo_actions::OperationKind::View,
                 params: Vec::new(),
@@ -19576,6 +19738,10 @@ pub mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
+            reach: tilo_action_policy::Reach {
+                kind: tilo_actions::ActionKind::Outside,
+                privileged: false,
+            },
             caller: None,
             activity: None,
             owner: InvocationOwner::Local {
@@ -21289,63 +21455,4 @@ mod host_worker_capacity_tests {
 mod resource_view_tests;
 
 #[cfg(test)]
-mod person_record_join_tests {
-    use super::*;
-
-    fn route(app: &str, record: &str) -> CrdtRoute {
-        CrdtRoute {
-            app_id: app.into(),
-            cluster_id: collab_types::person_room(&[7; 32]).to_string(),
-            record_id: record.into(),
-        }
-    }
-
-    /// An app joins the person's room for the records of theirs its surface
-    /// declares, its own or another app's it reads, and for nothing else.
-    #[test]
-    fn an_app_joins_the_persons_room_only_for_the_records_it_declares() {
-        static TERMINAL: &[u8] = b"[[resources]]\nkind = \"test-person.session\"\nlabel = \"Session\"\nversion = 1\n\n[[resources]]\nkind = \"test-person.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n\n[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
-        ui::app_surface::register_package("test.person-terminal", TERMINAL);
-        let history = collab_types::person_record_id("test-person.history");
-        let accounts = collab_types::person_record_id("test-person.accounts");
-        assert_eq!(
-            person_record_join(
-                "test.person-terminal",
-                &route("test.person-terminal", &history)
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            person_record_join(
-                "test.person-terminal",
-                &route("test.person-settings", &accounts)
-            ),
-            Ok(()),
-            "another app's record of the person's it declares, to read"
-        );
-        let undeclared = collab_types::person_record_id("test-person.bookmarks");
-        assert!(
-            person_record_join(
-                "test.person-terminal",
-                &route("test.person-terminal", &undeclared)
-            )
-            .is_err()
-        );
-        assert!(
-            person_record_join(
-                "test.person-terminal",
-                &route("test.person-terminal", "tab:01")
-            )
-            .is_err(),
-            "nothing but the person's records"
-        );
-        assert!(
-            person_record_join(
-                "test.person-notes",
-                &route("test.person-terminal", &history)
-            )
-            .is_err(),
-            "an app that declares none of them is refused"
-        );
-    }
-}
+mod person_record_join_tests;

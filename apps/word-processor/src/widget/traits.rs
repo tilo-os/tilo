@@ -28,6 +28,17 @@ use super::{
     WordProcessorWidget, block_presence_key,
 };
 
+/// The page is this window's content, so the window's zoom gestures are the
+/// page's: Ctrl+Plus, Ctrl+Minus and Ctrl+0, Ctrl+scroll and a pinch scale
+/// the sheet — the words — and the window bar says the level. Without it the
+/// window would grow its own chrome while the page a person is trying to
+/// read stayed the size it was.
+impl ui::content_zoom::ContentZoom for WordProcessorWidget {
+    fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
+        Some(self.zoom_page(step))
+    }
+}
+
 impl Widget for WordProcessorWidget {
     ui::provides!(
         dyn ui::collaboration::participants::Participants,
@@ -36,7 +47,8 @@ impl Widget for WordProcessorWidget {
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::semantic_document_read::SemanticReaders,
-        dyn ui::widget::Findable
+        dyn ui::widget::Findable,
+        dyn ui::content_zoom::ContentZoom
     );
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {

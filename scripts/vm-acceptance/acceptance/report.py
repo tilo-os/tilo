@@ -25,8 +25,26 @@ ESSENTIALS = [
 # printed into the log too: up to EVIDENCE_FILE_BYTES of each file (the end of a long log,
 # where the failure is) and EVIDENCE_TOTAL_BYTES for the run.
 EVIDENCE_FILE_BYTES = 4096
-EVIDENCE_TOTAL_BYTES = 96 * 1024
+# Each failed check has its own share, so one check's large files never crowd out the
+# next check's; the run's total stays bounded too.
+EVIDENCE_CHECK_BYTES = 8 * 1024
+EVIDENCE_TOTAL_BYTES = 256 * 1024
 TEXT_SUFFIXES = {".txt", ".log", ".json", ".jsonl", ".csv", ".md"}
+# Bulky evidence (tables, memory maps, sample series) comes after a check's diagnosis.
+BULKY_SUFFIXES = {".csv", ".jsonl"}
+BULKY_WORDS = ("map", "smaps", "footprint", "samples", "series", "trace", "records")
+
+
+def _evidence_rank(result: Result, rel: str) -> int:
+    """Where a check's evidence file is printed among its others: a traceback and the
+    files its failure text names first, then its other diagnosis files, bulky ones last."""
+    name = Path(rel).name
+    if rel.startswith("errors/") or name in result.detail:
+        return 0
+    stem = Path(rel).stem.lower()
+    if Path(rel).suffix in BULKY_SUFFIXES or any(word in stem for word in BULKY_WORDS):
+        return 2
+    return 1
 
 # `xfail` is a named, expected failure (core.ExpectedFailure) and `skip` a check the run
 # could not have (core.Skipped): neither fails the run, and neither counts as a pass.
@@ -58,31 +76,39 @@ def write(out: Path, meta: dict, results: list[Result], owners: dict) -> dict:
 
 
 def failure_evidence(out: Path, results: list[Result]) -> str:
-    """The text evidence files of every failed check, each cut to EVIDENCE_FILE_BYTES and
-    the whole to EVIDENCE_TOTAL_BYTES; images are left out. JSON is printed compact from
-    its start, where its summary fields are; other text from its end, where the failure is."""
+    """The text evidence files of every failed check, its diagnosis before its bulky files
+    (`_evidence_rank`), each file cut to EVIDENCE_FILE_BYTES, each check's to
+    EVIDENCE_CHECK_BYTES and the whole to EVIDENCE_TOTAL_BYTES; images are left out. JSON
+    is printed compact from its start, where its summary fields are; other text from its
+    end, where the failure is."""
     L, total = [], 0
     for r in results:
         if r.status in PASSING:
             continue
-        for rel in r.evidence:
-            path = out / rel
-            if path.suffix not in TEXT_SUFFIXES or not path.is_file():
-                continue
+        spent = 0
+        files = [rel for rel in r.evidence
+                 if Path(rel).suffix in TEXT_SUFFIXES and (out / rel).is_file()]
+        for rel in sorted(files, key=lambda rel: _evidence_rank(r, rel)):
             header = f"==== {r.id}: {rel}"
-            if total >= EVIDENCE_TOTAL_BYTES:
-                L.append(f"{header}: left out, the run's printed evidence reached {EVIDENCE_TOTAL_BYTES} bytes")
+            room = min(EVIDENCE_FILE_BYTES, EVIDENCE_CHECK_BYTES - spent, EVIDENCE_TOTAL_BYTES - total)
+            if room <= 0:
+                why = (f"the run's printed evidence reached {EVIDENCE_TOTAL_BYTES} bytes"
+                       if total >= EVIDENCE_TOTAL_BYTES else
+                       f"{r.id}'s printed evidence reached {EVIDENCE_CHECK_BYTES} bytes")
+                L.append(f"{header}: left out, {why}")
                 continue
+            path = out / rel
             data = path.read_bytes()
             if path.suffix == ".json":
                 try:
                     data = json.dumps(json.loads(data), separators=(",", ":"), ensure_ascii=False).encode()
                 except ValueError:
                     pass
-            cut = data[:EVIDENCE_FILE_BYTES] if path.suffix == ".json" else data[-EVIDENCE_FILE_BYTES:]
+            cut = data[:room] if path.suffix == ".json" else data[-room:]
             if len(cut) < len(data):
                 header += f" ({'first' if path.suffix == '.json' else 'last'} {len(cut)} of {len(data)} bytes)"
             L += [header, cut.decode("utf-8", "replace").rstrip("\n")]
+            spent += len(cut)
             total += len(cut)
     return "\n".join(L) + "\n" if L else ""
 

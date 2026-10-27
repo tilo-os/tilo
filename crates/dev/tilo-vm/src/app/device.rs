@@ -537,11 +537,11 @@ mod tests {
     /// are refused rather than written into sudoers.
     #[test]
     fn granting_sudo_writes_one_checked_drop_in() {
-        let line = grant_sudo_line("xaver").unwrap();
+        let line = grant_sudo_line("bob").unwrap();
         assert!(line.starts_with("sudo -- sh -c '"), "{line}");
-        assert!(line.contains("xaver ALL=(ALL) NOPASSWD: ALL"), "{line}");
+        assert!(line.contains("bob ALL=(ALL) NOPASSWD: ALL"), "{line}");
         assert!(
-            line.contains("visudo -cqf /etc/sudoers.d/tilo-vm-xaver.new && mv /etc/sudoers.d/tilo-vm-xaver.new /etc/sudoers.d/tilo-vm-xaver"),
+            line.contains("visudo -cqf /etc/sudoers.d/tilo-vm-bob.new && mv /etc/sudoers.d/tilo-vm-bob.new /etc/sudoers.d/tilo-vm-bob"),
             "{line}"
         );
         // No single quote inside: the line survives any login shell's quoting.

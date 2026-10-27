@@ -37,6 +37,36 @@ pub enum Error {
     InvalidMetadata,
 }
 
+impl Error {
+    /// This host has no native metadata provider at all, rather than one that
+    /// failed: a caller that needs a keyboard drawing has nothing to draw from.
+    #[must_use]
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, Self::Unsupported)
+    }
+}
+
+/// The keys one pass over `positions` reads for a host with no native
+/// provider: each position is present, so a drawing made from geometry alone
+/// can still be read and inspected, and none carries a legend, since no layout
+/// was compiled to say what it prints.
+#[must_use]
+pub fn unlabelled_levels(positions: &[String]) -> Vec<Key> {
+    positions
+        .iter()
+        .map(|position| Key {
+            name: position.clone(),
+            physical: winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            ),
+            levels: vec![vec![Symbol {
+                name: position.clone(),
+                text: String::new(),
+            }]],
+        })
+        .collect()
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {

@@ -260,10 +260,7 @@ impl SectionHeader {
         }
         let has_chevron = disclosure.is_some();
         if let Some(disclosure) = &disclosure {
-            children.push(Box::new(Chevron {
-                expanded: Rc::clone(&disclosure.expanded),
-                rect: Rect::ZERO,
-            }));
+            children.push(Box::new(Chevron::new(Rc::clone(&disclosure.expanded))));
         }
         HeaderRow {
             parts: Parts::new(children),
@@ -274,6 +271,8 @@ impl SectionHeader {
             has_action,
             has_chevron,
             disclosure,
+            painted: None,
+            presented: None,
         }
     }
 }
@@ -507,6 +506,21 @@ impl Widget for CountPill {
 struct Chevron {
     expanded: Rc<Cell<bool>>,
     rect: Rect,
+    /// Which way the chevron last painted, and which way the last presented
+    /// frame showed it: it repaints only when the section opens or closes.
+    painted: Option<bool>,
+    presented: Option<bool>,
+}
+
+impl Chevron {
+    fn new(expanded: Rc<Cell<bool>>) -> Self {
+        Self {
+            expanded,
+            rect: Rect::ZERO,
+            painted: None,
+            presented: None,
+        }
+    }
 }
 
 impl Widget for Chevron {
@@ -535,12 +549,27 @@ impl Widget for Chevron {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let icon = if self.expanded.get() {
+        let expanded = self.expanded.get();
+        let icon = if expanded {
             Icon::ChevronDown
         } else {
             Icon::ChevronRight
         };
         icon.draw(scene, transform, self.rect, theme.text_dim);
+        self.painted = Some(expanded);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.presented != Some(self.expanded.get())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.presented = self.painted;
+    }
+
+    /// A chevron is laid out once it has a rect.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
 
     fn name(&self) -> &'static str {
@@ -586,9 +615,20 @@ struct HeaderRow {
     has_action: bool,
     has_chevron: bool,
     disclosure: Option<Disclosure>,
+    /// The hover, press and focus the header painted under its row, and
+    /// where, this frame and as the last presented frame showed them: the
+    /// row repaints its box only when they change.
+    painted: Option<(Interaction, Rect)>,
+    presented: Option<(Interaction, Rect)>,
 }
 
 impl HeaderRow {
+    /// Whether the hover, press or focus the header paints changed since
+    /// the last presented frame.
+    fn own_paint_changed(&self) -> bool {
+        self.disclosure.as_ref().map(|d| d.interaction) != self.presented.map(|(state, _)| state)
+    }
+
     fn action_rect(&self) -> Option<Rect> {
         if !self.has_action {
             return None;
@@ -614,8 +654,29 @@ impl Widget for HeaderRow {
     }
 
     fn mark_drawn(&mut self) {
+        self.presented = self.painted;
         for child in &mut self.parts.children {
             child.mark_drawn();
+        }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.own_paint_changed() || self.parts.children.iter().any(|child| child.needs_redraw())
+    }
+
+    /// Where its hover, press or focus changed, and what its parts changed:
+    /// a header the pointer is not on repaints nothing.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.painted != self.presented {
+            regions.extend(
+                [self.painted, self.presented]
+                    .into_iter()
+                    .flatten()
+                    .map(|(_, rect)| rect),
+            );
+        }
+        for child in &self.parts.children {
+            child.collect_damage(regions);
         }
     }
 
@@ -831,12 +892,15 @@ impl Widget for HeaderRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.painted = None;
         if let Some(disclosure) = &self.disclosure {
             let state = disclosure.interaction;
+            let row = self.parts.rect.inflate(row_bleed(theme), 0.0);
+            self.painted = Some((state, row));
             paint_row_selection(
                 scene,
                 transform,
-                self.parts.rect.inflate(row_bleed(theme), 0.0),
+                row,
                 SelectionState::new(state.pressed, state.hovered, false),
                 theme.tokens.colors.surfaces.content,
                 theme,
@@ -1081,10 +1145,7 @@ impl Section {
                     chevron.expanded = Rc::clone(&state);
                 }
             } else {
-                row.parts.children.push(Box::new(Chevron {
-                    expanded: state,
-                    rect: Rect::ZERO,
-                }));
+                row.parts.children.push(Box::new(Chevron::new(state)));
                 row.has_chevron = true;
             }
             row.title = title;

@@ -115,6 +115,72 @@ pub mod testing {
         }
     }
 
+    /// A test's right to pin the wall clock of its whole process. A test
+    /// has one only inside `tilo_test_env::in_own_process`, which runs it in
+    /// a process no other test shares; `policy/ui-clock-contract` refuses
+    /// [`hold_wall_everywhere`] anywhere else.
+    #[derive(Clone, Copy)]
+    pub struct OwnProcess(());
+
+    impl OwnProcess {
+        /// The right [`hold_wall_everywhere`] needs, for the body
+        /// `tilo_test_env::in_own_process` runs: the only place a test has
+        /// its process to itself.
+        #[doc(hidden)]
+        #[must_use]
+        pub const fn of_a_test_in_its_own_process() -> Self {
+            Self(())
+        }
+    }
+
+    /// The wall clock of a process this test has to itself, held still
+    /// until the hold drops: the process reads its own clock again, so a
+    /// test that pins twice in a row leaves nothing behind for what it runs
+    /// after the second.
+    pub struct WallHold {
+        // The test's right to the process, kept for as long as the pin is.
+        _process: OwnProcess,
+        pinned: std::sync::Arc<super::AtomicU64>,
+        // The pin this one replaced, back in force when this hold drops.
+        replaced: Option<std::sync::Arc<super::AtomicU64>>,
+    }
+
+    impl Drop for WallHold {
+        fn drop(&mut self) {
+            let mut process = super::PROCESS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A later hold may already have replaced this one, and its pin is
+            // the one to keep.
+            if process
+                .as_ref()
+                .is_some_and(|pin| std::sync::Arc::ptr_eq(pin, &self.pinned))
+            {
+                *process = self.replaced.take();
+            }
+        }
+    }
+
+    /// Pin the wall clock of the whole process `process` stands for to
+    /// `at`, until the test ends. Every thread reads `at`, so state a
+    /// test's helper threads stamp carries its time, and a test that pins
+    /// again moves the process to the time it names last; a test that only
+    /// needs its own thread held reads [`with_wall`] instead.
+    pub fn hold_wall_everywhere(process: OwnProcess, at: SystemTime) -> WallHold {
+        let pinned = std::sync::Arc::new(super::AtomicU64::new(super::wall_ms(at)));
+        // One test owns the process, so no earlier pin of another is in
+        // force; a test pinning twice keeps its last time.
+        let replaced = super::PROCESS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(pinned.clone());
+        WallHold {
+            _process: process,
+            pinned,
+            replaced,
+        }
+    }
+
     thread_local! {
         static FOLLOWED: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicU64>>> =
             const { std::cell::RefCell::new(None) };
@@ -160,10 +226,12 @@ pub mod testing {
     }
 
     /// Run `operation` with the wall clock pinned to `at` on this thread
-    /// alone, as [`super::freeze_wall`] pins it for a capture. Other threads
-    /// (the other tests of one process) keep their own clock: a test of the
-    /// pinned clock must not stop every notice and indicator beside it.
-    /// Nested scopes and unwinding restore the previous reading.
+    /// alone. Every other thread (the other tests of one process, the
+    /// worker a runtime runs on) keeps its own clock: a test of the pinned
+    /// clock must not stop every notice and indicator beside it. A test
+    /// whose pinned time must reach its own threads takes the process with
+    /// `tilo_test_env::in_own_process` and [`hold_wall_everywhere`]. Nested
+    /// scopes and unwinding restore the previous reading.
     pub fn with_wall<T>(at: SystemTime, operation: impl FnOnce() -> T) -> T {
         let ms = super::wall_ms(at);
         let _restore = RestoreWall(super::FROZEN_HERE_MS.with(|here| here.replace(ms)));
@@ -263,14 +331,9 @@ mod scoped_monotonic_tests {
     }
 }
 
-/// Wall time pinned by [`freeze_wall`], in milliseconds since the Unix epoch;
-/// `0` while the clock runs.
-static FROZEN_WALL_MS: AtomicU64 = AtomicU64::new(0);
-
 thread_local! {
-    /// The wall time [`freeze_wall`] pinned on this thread, which wins over
-    /// the process-wide one here: two tests pinning different times on
-    /// their own threads of one process each read their own.
+    /// The wall time held on this thread: by [`testing::with_wall`], which
+    /// wins over the thread's part in a pin for a whole process.
     static FROZEN_HERE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -279,11 +342,25 @@ thread_local! {
 fn frozen_ms() -> u64 {
     match FROZEN_HERE_MS.with(std::cell::Cell::get) {
         0 => match followed_ms() {
-            0 => FROZEN_WALL_MS.load(Ordering::Relaxed),
+            0 => pinned_ms(),
             followed => followed,
         },
         here => here,
     }
+}
+
+/// The wall clock a whole process holds: a capture pins it with
+/// [`pin_wall`], a test that has its process to itself with
+/// [`testing::hold_wall_everywhere`]. `None` while every thread reads its own
+/// clock, which is every live session.
+static PROCESS: std::sync::Mutex<Option<std::sync::Arc<AtomicU64>>> = std::sync::Mutex::new(None);
+
+fn pinned_ms() -> u64 {
+    PROCESS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map_or(0, |ms| ms.load(Ordering::Relaxed))
 }
 
 /// The wall time of the test clock this thread follows
@@ -299,7 +376,7 @@ const fn followed_ms() -> u64 {
 }
 
 /// The current wall-clock time, for timestamps shown to people or persisted.
-/// After [`freeze_wall`] it is that instant, every time.
+/// Under a pin it is that instant, every time.
 #[must_use]
 #[inline]
 pub fn wall() -> SystemTime {
@@ -316,13 +393,19 @@ pub fn wall() -> SystemTime {
 /// ([`now`]) keeps running: animations and timeouts still advance. Never
 /// called in a live session.
 ///
-/// The calling thread reads `at` from then on even when another thread
-/// pins another time later, so tests sharing one process each keep the
-/// time they chose; other threads read the last time pinned anywhere.
-pub fn freeze_wall(at: SystemTime) {
-    let ms = wall_ms(at);
-    FROZEN_WALL_MS.store(ms, Ordering::Relaxed);
-    FROZEN_HERE_MS.with(|here| here.set(ms));
+/// Only a capture takes this: it draws every frame of the process from the
+/// thread that pins it here, so it needs the whole process, not only its own
+/// thread. A test holds its own thread with [`testing::with_wall`], or, when
+/// the time it pins must reach its own helper threads too, takes the process
+/// with `tilo_test_env::in_own_process` and [`testing::hold_wall_everywhere`].
+#[cfg(not(test))]
+pub fn pin_wall(at: SystemTime) {
+    let pinned = std::sync::Arc::new(AtomicU64::new(wall_ms(at)));
+    // A capture pins once, at start; a second pin takes over from the first
+    // rather than stacking, and the first goes with it.
+    *PROCESS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pinned);
 }
 
 /// `at` as a pinned reading: milliseconds since the Unix epoch, never `0`
@@ -332,7 +415,7 @@ fn wall_ms(at: SystemTime) -> u64 {
         .map_or(1, |since| saturating_u64(since.as_millis()).max(1))
 }
 
-/// Whether [`freeze_wall`] pinned the wall clock.
+/// Whether [`pin_wall`] pinned the wall clock.
 #[must_use]
 pub fn wall_frozen() -> bool {
     frozen_ms() != 0
@@ -532,63 +615,53 @@ impl Clock for ManualClock {
 mod tests {
     use super::*;
 
-    // `freeze_wall` pins the process-wide wall clock as well, which every
-    // other test sharing the process would read: the tests that call it run
-    // in a process of their own.
+    // A test holds the wall clock of its own thread with `with_wall`, and
+    // the clock of the whole process only in a process of its own:
+    // `pin_wall` does not compile here, because every other test of this
+    // process would read the time it pinned.
 
     #[test]
-    fn a_thread_keeps_the_wall_time_it_pinned_when_another_pins_another() {
+    fn a_threads_own_wall_clock_shadows_the_process_pin_only_on_that_thread() {
+        const OTHER: u64 = 4_000_000_000;
+        let at = UNIX_EPOCH + Duration::from_secs(OTHER);
         tilo_test_env::in_own_process(
             module_path!(),
-            "a_thread_keeps_the_wall_time_it_pinned_when_another_pins_another",
+            "a_threads_own_wall_clock_shadows_the_process_pin_only_on_that_thread",
             || {
-                let first = UNIX_EPOCH + Duration::from_secs(1_000);
-                let second = UNIX_EPOCH + Duration::from_secs(2_000);
-                let pinned = std::sync::Barrier::new(2);
-                std::thread::scope(|scope| {
-                    let early = scope.spawn(|| {
-                        freeze_wall(first);
-                        pinned.wait();
-                        pinned.wait();
-                        wall()
-                    });
-                    let late = scope.spawn(|| {
-                        pinned.wait();
-                        freeze_wall(second);
-                        pinned.wait();
-                        wall()
-                    });
+                let process = testing::OwnProcess::of_a_test_in_its_own_process();
+                let _held = testing::hold_wall_everywhere(process, at);
+                assert_eq!(unix_now(), OTHER);
+                assert!(wall_frozen());
+                testing::with_wall(at + Duration::from_secs(1), || {
+                    assert_eq!(wall(), at + Duration::from_secs(1), "the thread's own");
                     assert_eq!(
-                        early.join().ok(),
-                        Some(first),
-                        "the first thread keeps its own time"
+                        std::thread::spawn(wall).join().unwrap(),
+                        at,
+                        "another thread keeps the process's"
                     );
-                    assert_eq!(late.join().ok(), Some(second));
                 });
+                assert_eq!(wall(), at, "the process's, after the thread's scope");
             },
         );
     }
 
     #[test]
     fn a_frozen_wall_clock_holds_while_the_monotonic_clock_runs() {
-        tilo_test_env::in_own_process(
-            module_path!(),
-            "a_frozen_wall_clock_holds_while_the_monotonic_clock_runs",
-            || {
-                let at = UNIX_EPOCH + Duration::from_secs(1_782_816_120);
-                let before = now();
-                freeze_wall(at);
-                assert!(wall_frozen());
-                assert_eq!(wall(), at);
-                assert_eq!(unix_now(), 1_782_816_120);
-                assert_eq!(wall(), at, "it stays put");
-                assert!(now() >= before, "the monotonic clock is not frozen");
-            },
-        );
+        let at = UNIX_EPOCH + Duration::from_secs(1_782_816_120);
+        let before = now();
+        testing::with_wall(at, || {
+            assert!(wall_frozen());
+            assert_eq!(wall(), at);
+            assert_eq!(unix_now(), 1_782_816_120);
+            assert_eq!(wall(), at, "it stays put");
+            assert!(now() >= before, "the monotonic clock is not frozen");
+        });
+        assert!(!wall_frozen(), "the scope ended");
     }
 
     #[test]
     fn clocks_agree_on_units_move_only_as_told_and_never_backwards() {
+        assert!(!wall_frozen(), "no other test's pinned time is read here");
         {
             let secs = unix_now();
             let ms = unix_now_ms();

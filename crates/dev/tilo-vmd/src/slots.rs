@@ -48,6 +48,10 @@ pub struct SlotRecord {
     /// the slot was last loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceSession>,
+    /// Its user is this VM's person (`slot create --identity device`): the
+    /// session runs on the machine's own identity tree, with no private root.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub device_identity: bool,
 }
 
 /// The machine's own session, which the `device` slot swaps into: the
@@ -56,7 +60,7 @@ pub struct SlotRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceSession {
     /// The unit that runs it: the board session's system unit, e.g.
-    /// `tilo-board-headless-session@quickuser.service`; the login's
+    /// `tilo-board-headless-session@tester.service`; the login's
     /// `session-<id>.scope`; or `greetd.service` while the owner is logged
     /// out.
     pub unit: String,
@@ -220,6 +224,7 @@ impl SlotStore {
             seat0: None,
             outputs: outputs.to_vec(),
             device: None,
+            device_identity: false,
         };
         self.save(&record)?;
         Ok((record, true))
@@ -258,6 +263,7 @@ impl SlotStore {
                 seat0: None,
                 outputs: Vec::new(),
                 device: None,
+                device_identity: false,
             });
             record.device = Some(device);
             return Ok(record);
@@ -276,6 +282,7 @@ impl SlotStore {
                 seat0: None,
                 outputs: Vec::new(),
                 device: None,
+                device_identity: false,
             });
         }
         Err(DaemonError::SlotNotFound(name.to_owned()))
@@ -817,7 +824,7 @@ mod tests {
         let store = SlotStore::new(root.path());
         let login = DeviceSession {
             unit: "session-3.scope".into(),
-            account: "quickuser".into(),
+            account: "tester".into(),
             units: Vec::new(),
             control_socket: PathBuf::from("/run/user/1000/tilo-session/test-control.sock"),
             login: Some(Login {
@@ -835,11 +842,11 @@ mod tests {
         let device = out.device.unwrap();
         assert_eq!(device.unit, crate::apply::GREETER_UNIT);
         assert_eq!(device.login, Some(Login::default()));
-        assert_eq!(device.account, "quickuser");
+        assert_eq!(device.account, "tester");
 
         let board = DeviceSession {
             login: None,
-            unit: "tilo-board-headless-session@quickuser.service".into(),
+            unit: "tilo-board-headless-session@tester.service".into(),
             ..login
         };
         let record = store.load_with(DEVICE_SLOT, Some(board)).unwrap();

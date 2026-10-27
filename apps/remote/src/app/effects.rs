@@ -2,11 +2,14 @@
 //! open request, a confirmation or a row invokes — connect, forget a
 //! credential, trust a host key — and the outcome reported back for each.
 
+use std::path::PathBuf;
+
 use crate::model::ConnectionId;
 use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
+use crate::ssh::{TransferDirection, transfer_name};
 use crate::view::Destination;
 
-use super::{Action, LiveSession, PendingResourceOperation, RemoteApp};
+use super::{Action, LiveSession, PendingResourceOperation, RemoteApp, owner};
 
 impl RemoteApp {
     /// The open session, published as a live row beside the saved
@@ -123,6 +126,46 @@ impl RemoteApp {
                 self.disconnect_session();
                 done()
             }
+            RemoteEffect::PutFile {
+                connection,
+                local_path,
+                remote_path,
+            } => {
+                if local_path.trim().is_empty() {
+                    return Err("the local path is empty".into());
+                }
+                if remote_path.trim().is_empty() {
+                    return Err("the remote path is empty".into());
+                }
+                self.start_file_transfer(
+                    connection,
+                    TransferDirection::Put {
+                        local_path: PathBuf::from(local_path),
+                        remote_path,
+                    },
+                    cx,
+                )
+            }
+            RemoteEffect::FetchFile {
+                connection,
+                remote_path,
+                local_path,
+            } => {
+                if remote_path.trim().is_empty() {
+                    return Err("the remote path is empty".into());
+                }
+                if local_path.trim().is_empty() {
+                    return Err("the local path is empty".into());
+                }
+                self.start_file_transfer(
+                    connection,
+                    TransferDirection::Fetch {
+                        remote_path,
+                        local_path: PathBuf::from(local_path),
+                    },
+                    cx,
+                )
+            }
             RemoteEffect::TrustHostKey {
                 connection,
                 observed,
@@ -133,6 +176,66 @@ impl RemoteApp {
                 self.forget_host_key(connection).and_then(|()| done())
             }
         }
+    }
+
+    /// Move one file over the connected SSH session. The job is the whole
+    /// system's, so its progress stays visible after the page closes; the
+    /// effect answers when the transfer ends, with its failure named.
+    fn start_file_transfer(
+        &mut self,
+        connection: ConnectionId,
+        direction: TransferDirection,
+        cx: &mut ui::framework::EffectCx<crate::resource::Remote, Self>,
+    ) -> ui::framework::EffectAnswer {
+        if self.pending_resource_operation.is_some() {
+            return Err("another remote operation is still running".into());
+        }
+        if self.session_for != Some(connection) {
+            return Err("that remote session is no longer active".into());
+        }
+        let target = self.target_name(connection);
+        let name = transfer_name(&direction);
+        let (title, phase) = match &direction {
+            TransferDirection::Put { .. } => (format!("Sending {name} to {target}"), "Sending"),
+            TransferDirection::Fetch { .. } => {
+                (format!("Fetching {name} from {target}"), "Receiving")
+            }
+        };
+        let job = ui::jobs::start(
+            ui::jobs::Spec::new(title)
+                .subject(ui::jobs::Subject::new(owner(), target).opens(connection.to_string()))
+                .unit(ui::jobs::Unit::Bytes)
+                .phase(phase)
+                .stoppable(|| {}),
+        );
+        let completion = {
+            let session = self.session.borrow();
+            let Some(LiveSession::Ssh(ssh)) = session.live.as_ref() else {
+                let reason =
+                    "file transfer needs a connected SSH session; this session is a remote desktop";
+                job.failed(reason);
+                return Err(reason.into());
+            };
+            if ssh.status() != SessionStatus::Connected {
+                let reason = "file transfer needs a connected SSH session";
+                job.failed(reason);
+                return Err(reason.into());
+            }
+            match ssh.transfer(direction, job.clone()) {
+                Ok(completion) => completion,
+                Err(reason) => {
+                    job.failed(reason.clone());
+                    return Err(reason);
+                }
+            }
+        };
+        self.pending_resource_operation = Some(PendingResourceOperation::FileTransfer {
+            reply: Some(cx.reply()),
+            connection_id: connection,
+            session_generation: self.session_generation,
+            completion,
+        });
+        Ok(ui::framework::Effected::Pending)
     }
 
     /// Trust the SSH host key `observed` on first contact with `connection_id`,
@@ -186,7 +289,8 @@ impl RemoteApp {
         let cancelled = match &self.pending_resource_operation {
             Some(
                 PendingResourceOperation::Connect { reply, .. }
-                | PendingResourceOperation::SshInput { reply, .. },
+                | PendingResourceOperation::SshInput { reply, .. }
+                | PendingResourceOperation::FileTransfer { reply, .. },
             ) => reply
                 .as_ref()
                 .is_some_and(ui::framework::EffectReply::is_cancelled),
@@ -200,6 +304,9 @@ impl RemoteApp {
                 reply: Some(reply), ..
             }
             | PendingResourceOperation::SshInput {
+                reply: Some(reply), ..
+            }
+            | PendingResourceOperation::FileTransfer {
                 reply: Some(reply), ..
             },
         ) = self.pending_resource_operation.take()
@@ -269,6 +376,26 @@ impl RemoteApp {
                         Err(std::sync::mpsc::TryRecvError::Empty) => return None,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                             Err("remote input worker stopped before acknowledgement".into())
+                        }
+                    }
+                }
+            }
+            PendingResourceOperation::FileTransfer {
+                connection_id,
+                session_generation,
+                completion,
+                ..
+            } => {
+                if self.session_for != Some(*connection_id)
+                    || self.session_generation != *session_generation
+                {
+                    Err("the SSH session ended before the file transfer finished".into())
+                } else {
+                    match completion.try_recv() {
+                        Ok(result) => result.map(|_| ()),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            Err("the file transfer worker stopped before it finished".into())
                         }
                     }
                 }

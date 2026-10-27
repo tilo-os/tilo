@@ -24,7 +24,7 @@ use shell::compositor::capture::CaptureExecutor;
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
-use shell::shell::state::WorkspaceTree;
+use shell::shell::state::{AppKind, WorkspaceTree};
 use ui::Widget;
 
 use taffy::prelude::NodeId;
@@ -36,6 +36,7 @@ mod now_playing_fixture;
 mod scene_catalogue;
 mod search_seed;
 mod secret_prompt_sim_scene;
+mod tab_bar_drop;
 mod two_groups_scene;
 mod uninstall_scenes;
 mod window_menu_scene;
@@ -46,6 +47,45 @@ mod window_menu_scene;
 /// have to spend that time. Kept short enough that sleeping 60 frames
 /// (~1 s) doesn't blow scenario runtime.
 const FRAME_MS: u64 = 16;
+
+/// The places an app-search scene's Files window keeps among its Favorites,
+/// pinned by its `add-bookmark`. The fixture's Files has no home of its own
+/// to resolve the standard folders against, so they are named by path.
+const FILES_SEED: &[(&str, &str, &str)] = &[
+    (
+        "files.folder",
+        "add-bookmark",
+        r#"{"place":"/srv/Projects"}"#,
+    ),
+    ("files.folder", "add-bookmark", r#"{"place":"/srv/Photos"}"#),
+    ("files.folder", "add-bookmark", r#"{"place":"/srv/Shared"}"#),
+];
+
+/// The notes an app-search scene's notebook holds, made by its `new-note`.
+const NOTES_SEED: &[(&str, &str, &str)] = &[
+    ("notes.notebook", "new-note", r#"{"title":"Groceries"}"#),
+    (
+        "notes.notebook",
+        "new-note",
+        r#"{"title":"Trip to Lisbon"}"#,
+    ),
+    ("notes.notebook", "new-note", r#"{"title":"Reading list"}"#),
+];
+
+/// The files an app-search scene's project holds, made by its `new-file`.
+const CODE_SEED: &[(&str, &str, &str)] = &[
+    (
+        "code_editor.project",
+        "new-file",
+        r##"{"name":"README.md","text":"# Harbour\n"}"##,
+    ),
+    (
+        "code_editor.project",
+        "new-file",
+        r#"{"name":"main.rs","text":"fn main() {}\n"}"#,
+    ),
+];
+
 /// How long a capture waits for pending visual work before it shows it.
 const CAPTURE_SETTLE: Duration = Duration::from_secs(5);
 
@@ -563,6 +603,20 @@ impl ShellDriver {
     /// No Terminal window is active.
     pub fn feed_active_terminal(&mut self, text: &str) -> Result<(), String> {
         self.fb.feed_active_terminal_for_shots(text.as_bytes())
+    }
+
+    /// What the active window's focused field asks an input method for, read
+    /// off the live widget tree as the compositor reads it off the wire.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn active_ime_content_for_shots(&self) -> Option<ui::ime::InputContent> {
+        self.fb.active_ime_content_for_shots()
+    }
+
+    /// Draw the on-screen keyboard in the frame, in the layout `content`'s
+    /// purpose asks for; `None` puts it away.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn set_shots_keyboard(&mut self, content: Option<ui::ime::InputContent>) {
+        self.fb.set_shots_keyboard(content);
     }
 
     pub fn type_str(&mut self, s: &str) {
@@ -2006,8 +2060,33 @@ impl ShellDriver {
             "palette" => self.scene_palette(),
             "palette_app_query" => self.scene_palette_app_query(),
             "palette_in_app_query" => self.scene_palette_in_app_query(),
+            "app_search_files" => {
+                self.scene_app_search(AppKind::FileExplorer, "Files", "", FILES_SEED);
+            }
+            "app_search_files_query" => {
+                self.scene_app_search(AppKind::FileExplorer, "Files", "pro", FILES_SEED);
+            }
+            "app_search_code" => {
+                self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "", CODE_SEED);
+            }
+            "app_search_code_query" => {
+                self.scene_app_search(
+                    AppKind::Other("Editor".into()),
+                    "Editor",
+                    "readme",
+                    CODE_SEED,
+                );
+            }
+            "app_search_notes" => {
+                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "", NOTES_SEED);
+            }
+            "app_search_notes_query" => {
+                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "trip", NOTES_SEED);
+            }
             "palette_records" => self.scene_palette_records(),
             "palette_no_results" => self.scene_palette_no_results(),
+            "palette_ask_agent" => self.scene_palette_ask_agent(true),
+            "palette_ask_agent_no_model" => self.scene_palette_ask_agent(false),
             "palette_typed" => self.scene_palette_typed(),
             "palette_rechner" => self.scene_palette_query("rechner"),
             "palette_sum" => self.scene_palette_query("2+2"),
@@ -2344,6 +2423,88 @@ impl ShellDriver {
             .refresh_search_results_for_shots(&mut self.state, &root);
     }
 
+    /// An app alone in a window, its search opened the way its own search
+    /// control opens it (`ShellOverlayHost::open_app_search`), with `query`
+    /// typed or nothing yet: the palette scoped to the app, standing in its
+    /// window, over what the app holds and what it can do.
+    fn scene_app_search(
+        &mut self,
+        kind: AppKind,
+        label: &str,
+        query: &str,
+        seed: &[(&str, &str, &str)],
+    ) {
+        use shell::shell::state::{
+            MintIds, ProcessIds, Tab, TileContent, WindowGroup, WindowWidth,
+        };
+        let tab = Tab {
+            id: ProcessIds.mint_id(),
+            title: label.into(),
+            tile: TileContent::AppPlaceholder {
+                kind,
+                label: label.into(),
+            },
+            app_title: None,
+        };
+        let tab_id = tab.id;
+        self.with_chrome(|st| {
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.desktop.active_workspace_mut() {
+                    for strip in &mut ws.strips {
+                        strip.window_groups.clear();
+                    }
+                    if let Some(strip) = ws.strips.first_mut() {
+                        strip.window_groups.push(WindowGroup {
+                            id: ProcessIds.mint_id(),
+                            active_tab: tab_id,
+                            tabs: vec![tab],
+                            width: WindowWidth::Normal,
+                            maximized: false,
+                            focus_history: Vec::new(),
+                        });
+                    }
+                }
+            }
+            st.bump();
+        });
+        self.open_tab_records(&[tab_id]);
+        self.relayout();
+        // The window arrives, and its app comes up and publishes what it
+        // holds, before search is asked for.
+        for _ in 0..60 {
+            let _ = self.paint_settled();
+            std::thread::sleep(Duration::from_millis(FRAME_MS));
+        }
+        // What the app holds, made through its own actions, as a person
+        // would make it.
+        for (resource, action, arguments) in seed {
+            let arguments = serde_json::from_str(arguments).unwrap_or_default();
+            let staged = tilo_actions::ControlInvocation::from_parts(resource, action, arguments)
+                .is_some_and(|invocation| {
+                    self.fb
+                        .host_mut()
+                        .run_in_window_for_shots(tab_id, invocation)
+                });
+            if !staged {
+                eprintln!("shots: {label} took no {resource}/{action}");
+            }
+            for _ in 0..10 {
+                let _ = self.paint_settled();
+                std::thread::sleep(Duration::from_millis(FRAME_MS));
+            }
+        }
+        let _ = self.focus_tab_titled(label);
+        self.relayout();
+        self.fb.host_mut().open_app_search_for_shots(tab_id, query);
+        self.fb.host_mut().force_palette_settled();
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+        self.relayout();
+    }
+
     /// Seeded in other rooms deliberately — a record already in the active
     /// room needs no bringing.
     fn scene_palette_records(&mut self) {
@@ -2371,6 +2532,43 @@ impl ShellDriver {
         self.fb
             .host_mut()
             .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Search for something nothing here matches, in a workspace whose
+    /// agent "Tide" has a model (`model`) or none: asking the agent leads,
+    /// or says why it cannot and follows searching the web.
+    fn scene_palette_ask_agent(&mut self, model: bool) {
+        if model {
+            use agent_provider_config::{
+                ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
+            };
+            let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+            profile.models = vec![ModelDescriptor::new("small")];
+            profile.default_model = Some("small".into());
+            let config = ProviderConfig {
+                default_profile: Some(profile.id.clone()),
+                profiles: vec![profile],
+                ..ProviderConfig::default()
+            };
+            // This run's private settings (`main` isolates them).
+            if let Err(error) = config.save() {
+                eprintln!("shots: ask-agent could not choose a model: {error}");
+            }
+        }
+        {
+            let chrome = self.chrome_handle();
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            if let Some(workspace) = tree.desktop.active_workspace_mut() {
+                let owner = workspace.owner().cloned().unwrap_or_default();
+                workspace.admit_agent_preset(
+                    "Tide",
+                    tilo_action_policy::roles::AgentPreset::Operator,
+                    &tilo_action_policy::Subject::person(owner),
+                );
+            }
+        }
+        self.scene_palette_query("what changed in the Q3 numbers");
     }
 
     /// Search answering one typed query, for the queries search used to get

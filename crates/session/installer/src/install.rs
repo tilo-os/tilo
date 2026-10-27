@@ -1108,7 +1108,7 @@ mod tests {
             let opts = InstallOptions {
                 filesystem: "ext4".to_string(),
                 hostname: "lab-1".to_string(),
-                full_name: "Quinten Example".to_string(),
+                full_name: "Ada Example".to_string(),
                 locale: "nl_NL.UTF-8".to_string(),
                 timezone: "Europe/Amsterdam".to_string(),
                 keymap: "de".to_string(),
@@ -1117,7 +1117,7 @@ mod tests {
                 fido2: false,
                 ..InstallOptions::default()
             };
-            let cmd = install_command("/dev/sda", "quinten", &opts);
+            let cmd = install_command("/dev/sda", "ada", &opts);
             assert_eq!(cmd.get_program(), INSTALL_BIN);
             let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
             assert_eq!(
@@ -1126,13 +1126,13 @@ mod tests {
                     "--disk",
                     "/dev/sda",
                     "--user",
-                    "quinten",
+                    "ada",
                     "--filesystem",
                     "ext4",
                     "--hostname",
                     "lab-1",
                     "--full-name",
-                    "Quinten Example",
+                    "Ada Example",
                     "--locale",
                     "nl_NL.UTF-8",
                     "--confirm-erase",

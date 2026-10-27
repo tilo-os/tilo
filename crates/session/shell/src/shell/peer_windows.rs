@@ -1285,7 +1285,7 @@ mod tests {
     const FILES: &str = "so.tilo.file-explorer";
 
     fn tree_with_local_app(app_id: &str) -> (WorkspaceTree, TabId) {
-        let mut ws = room_owned_by("quinten");
+        let mut ws = room_owned_by("ada");
         let tab = Tab {
             id: next_id(),
             title: "Legacy App".into(),
@@ -1764,8 +1764,8 @@ mod tests {
         set_note(&mut answered, answered_tab, NOT_INSTALLED.into());
         let (blank_app, _) = tree_with_local_app("  ");
         let (one_local, _) = tree_with_local_app("dev.tilo.one-local");
-        let (one_peer, _) = tree_with_peer_window(room_owned_by("quinten"));
-        let (mut many, _) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
+        let (one_peer, _) = tree_with_peer_window(room_owned_by("ada"));
+        let (mut many, _) = tree_with_peer_window_for(room_owned_by("ada"), APP);
         for app in ["dev.tilo.second", "dev.tilo.third"] {
             let (other, _) = tree_with_local_app(app);
             many.desktop.workspaces.extend(other.desktop.workspaces);
@@ -1869,7 +1869,7 @@ mod tests {
     #[test]
     fn this_machines_own_window_of_an_app_is_found_in_any_workspace() {
         const SETTINGS: &str = "so.tilo.settings";
-        let (mut tree, _) = tree_with_peer_window_for(room_owned_by("quinten"), SETTINGS);
+        let (mut tree, _) = tree_with_peer_window_for(room_owned_by("ada"), SETTINGS);
         assert!(
             opened_here(&tree, SETTINGS).is_none(),
             "a peer's window is not ours"
@@ -1941,7 +1941,7 @@ mod tests {
     fn room_file_managers_alone_see_the_users_home() {
         fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
             let home = tilo_paths::home().expect("the test machine has a home directory");
-            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), FILES);
+            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), FILES);
 
             assert!(
                 !may_read(&tree.desktop.workspaces[0], FILES, &home),
@@ -1961,7 +1961,7 @@ mod tests {
 
         fn opening_another_app_for_the_room_grants_it_no_home() {
             let home = tilo_paths::home().expect("the test machine has a home directory");
-            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
+            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), APP);
 
             let _ = examine(&mut tree);
 
@@ -1973,7 +1973,7 @@ mod tests {
 
         fn a_refused_file_manager_is_granted_nothing() {
             let home = tilo_paths::home().expect("the test machine has a home directory");
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             ws.policy.owner = None;
             let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);
 
@@ -2012,7 +2012,7 @@ mod tests {
     #[test]
     fn windows_to_return_to_are_this_machines_answered_openings() {
         fn a_window_this_machine_opened_for_the_room_is_found() {
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             let tab = Tab {
                 id: peer_id(),
                 title: "Word Processor".into(),
@@ -2049,7 +2049,7 @@ mod tests {
         }
 
         fn a_window_this_person_opened_is_not_one_to_return_to() {
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             let tab = Tab {
                 id: next_id(),
                 title: "Terminal".into(),
@@ -2081,7 +2081,7 @@ mod tests {
         }
 
         fn an_unanswered_card_is_not_a_window_to_return_to() {
-            let (tree, _tab) = tree_with_peer_window(room_owned_by("quinten"));
+            let (tree, _tab) = tree_with_peer_window(room_owned_by("ada"));
             assert!(
                 opened_for_the_room(&tree.desktop.workspaces[0], APP, 0).is_none(),
                 "an unexamined peer window has no instance behind it yet"
@@ -2089,7 +2089,7 @@ mod tests {
         }
 
         fn a_note_is_what_marks_a_window_answered() {
-            let (mut tree, tab) = tree_with_peer_window(room_owned_by("quinten"));
+            let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
             assert!(any_pending(&tree), "an unexamined peer window is pending");
             assert!(set_note(
                 &mut tree,
@@ -2111,7 +2111,7 @@ mod tests {
     #[test]
     fn room_authority_admits_apps_only_with_an_owner_and_no_restriction() {
         fn a_room_with_an_owner_admits_its_apps() {
-            let ws = room_owned_by("quinten");
+            let ws = room_owned_by("ada");
             assert_eq!(admits(&ws, APP), Ok(()));
         }
 
@@ -2119,14 +2119,14 @@ mod tests {
         /// has replicated, exactly when a machine must not start processes
         /// on a peer's say-so.
         fn a_room_with_no_owner_admits_nothing() {
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             ws.policy.owner = None;
             let refusal = admits(&ws, APP).expect_err("an ownerless room must authorise nothing");
             assert_eq!(refusal, "This workspace has no owner yet");
         }
 
         fn an_ownerless_window_stays_pending_until_room_authority_arrives() {
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             ws.policy.owner = None;
             let (mut tree, tab) = tree_with_peer_window(ws);
             assert!(
@@ -2192,7 +2192,7 @@ mod tests {
 
         // A card answered before the catalogue arrived is answered again
         // once it does, and only then offers the install.
-        let (mut tree, tab) = tree_with_peer_window(room_owned_by("quinten"));
+        let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
         assert!(set_state(
             &mut tree,
             tab,
@@ -2215,7 +2215,7 @@ mod tests {
 
     #[test]
     fn only_a_pressed_install_on_an_installable_card_installs() {
-        let (mut tree, tab) = tree_with_peer_window(room_owned_by("quinten"));
+        let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
         assert!(set_state(
             &mut tree,
             tab,
@@ -2303,7 +2303,7 @@ mod tests {
 
     #[test]
     fn a_window_hosted_on_another_device_is_never_opened_here() {
-        let (mut tree, tab) = tree_with_peer_window(room_owned_by("quinten"));
+        let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
         tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile =
             TileContent::HostedWindow {
                 app_id: "org.gimp.GIMP".into(),

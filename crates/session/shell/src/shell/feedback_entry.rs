@@ -22,6 +22,27 @@ pub(crate) fn open(st: &mut ChromeState) -> Result<(), ActionError> {
     }
 }
 
+/// The record the window in front shows, as the session's broker knows
+/// the windows' records: what a recording of the window records.
+fn shown_record(st: &ChromeState, app: &str) -> Option<tilo_desktop::feedback::ShownRecord> {
+    let (workspace, instance) = {
+        let tree = st.tree();
+        let tab = tilo_desktop::feedback::focused_tab(&tree.desktop)?;
+        let shown = tree
+            .local_app_window(tab)
+            .filter(|(_, shown, _)| *shown == app)
+            .map(|(room, _, instance)| (room.to_string(), instance));
+        drop(tree);
+        shown?
+    };
+    let record = st
+        .hosted_inputs
+        .in_process()?
+        .borrow()
+        .window_record(&workspace, app, instance)?;
+    Some(tilo_desktop::feedback::ShownRecord { workspace, record })
+}
+
 /// The next click picks what the report is about. Until then the desktop
 /// says so; Escape lets it go.
 pub(crate) fn point(st: &mut ChromeState) -> Result<(), ActionError> {
@@ -33,8 +54,20 @@ pub(crate) fn point(st: &mut ChromeState) -> Result<(), ActionError> {
 
 /// Open the composer about `subject`, general feedback for `None`.
 pub(crate) fn about(st: &mut ChromeState, subject: Option<Subject>) -> Result<(), ActionError> {
+    let subject = with_record(st, subject);
     in_process(st)?.borrow_mut().feedback_about(subject);
     bring_up(st)
+}
+
+/// `subject` with the record its window shows. However a report was
+/// started (the palette, a click on a control, picked parts), the window it
+/// is about is the one in front, and the record it shows is what a
+/// recording of it records, through the one recorder.
+fn with_record(st: &ChromeState, mut subject: Option<Subject>) -> Option<Subject> {
+    if let Some(subject) = subject.as_mut().filter(|subject| subject.record.is_none()) {
+        subject.record = shown_record(st, &subject.app);
+    }
+    subject
 }
 
 /// Whether reports have a destination on this desktop.
@@ -49,8 +82,14 @@ pub(crate) fn report(
     st: &mut ChromeState,
     picked: tilo_app::feedback::PickedReport,
 ) -> Result<(), ActionError> {
-    in_process(st)?
-        .borrow()
+    let front = tilo_desktop::feedback::focused(&st.tree().desktop, |_| None);
+    let subject = with_record(
+        st,
+        tilo_desktop::feedback::picked_subject(&picked.draft, front),
+    );
+    let apps = in_process(st)?;
+    apps.borrow_mut().feedback_about(subject);
+    apps.borrow()
         .begin_feedback_report(picked)
         .map_err(ActionError::Explained)?;
     bring_up(st)
@@ -202,6 +241,7 @@ mod tests {
             app: "so.tilo.notes".into(),
             name: "Notes".into(),
             control: None,
+            record: None,
         }
     }
 

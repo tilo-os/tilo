@@ -2928,3 +2928,29 @@ fn saving_a_grid_changed_in_one_cell_visits_one_chunk_of_rows() {
     );
     assert_eq!(edits.len(), 1);
 }
+
+#[test]
+fn reading_a_document_whole_again_presents_a_new_state_only_once_per_change() {
+    let mut replica = Replica::<Notebook>::new();
+    replica
+        .apply(Notebook::ADD.with("first".to_owned()))
+        .unwrap();
+    let mut reader = Reader::<Notebook>::open(replica.doc_mut()).unwrap();
+    let opened = reader.revision();
+    // What a view keys its layout on stays put while nothing changed, however
+    // often the record is checked.
+    assert!(!reader.reread_whole(replica.doc()).unwrap());
+    assert!(!reader.reread_whole(replica.doc()).unwrap());
+    assert_eq!(reader.revision(), opened);
+
+    // A change followed as a delta is checked whole once, then rests.
+    replica
+        .apply(Notebook::ADD.with("second".to_owned()))
+        .unwrap();
+    assert!(reader.sync(replica.doc()).unwrap());
+    let synced = reader.revision();
+    assert!(reader.reread_whole(replica.doc()).unwrap());
+    assert!(!reader.reread_whole(replica.doc()).unwrap());
+    assert_eq!(reader.revision(), synced + 1);
+    assert_eq!(reader.state().as_ref(), &replica.state().unwrap());
+}

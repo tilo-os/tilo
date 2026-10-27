@@ -98,11 +98,17 @@ impl ShellOverlayHost {
         busy.then_some(Quiet::Busy)
     }
 
-    /// Advance the hints to `now`, and keep what the person learned.
-    pub(super) fn prepare_control_hints(&mut self, now: Instant) {
+    /// Fold in what the person's other devices learned, when it is time to
+    /// read their kept record again. On the compositor tick, so painting
+    /// never reads the settings file.
+    pub(super) fn reread_control_hints(&mut self, now: Instant) {
         if self.control_hints.reread_due(now) {
             self.control_hints.merge(&LEARNED.get(), now);
         }
+    }
+
+    /// Advance the hints to `now`, and keep what the person learned.
+    pub(super) fn prepare_control_hints(&mut self, now: Instant) {
         let frame = self.control_hint_frame(now);
         self.control_hints.update(&frame, now);
         self.control_hints_frame = frame;

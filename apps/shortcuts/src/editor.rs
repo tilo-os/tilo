@@ -7,11 +7,12 @@
 //! shows, and the binding choices are exactly what the checker accepts.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use serde_json::Value;
 use tilo_automation::{
-    ActionCatalog, AiTransform, Binding, BindingOption, CheckError, CheckErrorKind, Condition,
-    ResourceTarget, Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
+    ActionCatalog, Binding, BindingOption, CheckError, CheckErrorKind, Condition, ResourceTarget,
+    Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
 };
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
@@ -238,7 +239,8 @@ pub fn step_number(steps: &[Step], id: &str) -> Option<usize> {
                 StepKind::Invoke { .. }
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
-                | StepKind::Ai { .. } => None,
+                | StepKind::Ai { .. }
+                | StepKind::Task { .. } => None,
             };
             if found.is_some() {
                 return found;
@@ -389,17 +391,94 @@ pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
         }
         StepKind::SetVar { name, value } => format!("Set {name} to {}", say(value)),
         StepKind::Ask { param } => format!("Ask for {}", param.description),
-        StepKind::Ai { transform, input } => match transform {
-            AiTransform::Summarise => format!("Summarise {}", say(input)),
-            AiTransform::Extract { .. } => format!("Extract from {}", say(input)),
-            AiTransform::Classify { choices } => {
-                format!("Classify {} as {}", say(input), choices.join(" or "))
-            }
-            AiTransform::Freeform { prompt } => {
-                format!("Ask the agent “{prompt}” about {}", say(input))
-            }
+        StepKind::Ai { prompt, input, .. } => match input {
+            Some(input) => format!("{prompt} {}", say(input)),
+            None => prompt.clone(),
         },
+        StepKind::Task { instruction, .. } => instruction.clone(),
     }
+}
+
+/// Everything about one step a person would notice in it: its heading, and
+/// the fields it holds — what an invocation is given, which resource it
+/// takes, what a condition asks — each as the short form a review reads.
+#[must_use]
+pub fn substance(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
+    let mut line = title(step, catalog, steps);
+    match &step.kind {
+        StepKind::Invoke {
+            action,
+            resource,
+            args,
+            appearance,
+        } => {
+            let _ = write!(line, " ({action}, {resource:?}");
+            for (name, binding) in args {
+                let _ = write!(line, ", {name}: {}", describe(binding, steps));
+            }
+            if appearance.is_some() {
+                let _ = write!(line, ", shown as it runs");
+            }
+            line.push(')');
+        }
+        StepKind::SetVar { name, value } => {
+            let _ = write!(line, " ({name}: {})", describe(value, steps));
+        }
+        StepKind::Ask { param } => {
+            let _ = write!(line, " ({}: {})", param.name, param.description);
+        }
+        StepKind::If { cond, .. } => {
+            let _ = write!(line, " ({})", describe_condition(cond, steps));
+        }
+        StepKind::ForEach { items, item, .. } => {
+            let _ = write!(line, " ({item} in {})", describe(items, steps));
+        }
+        StepKind::Ai { prompt, input, .. } => {
+            let _ = write!(
+                line,
+                " ({prompt:?}{})",
+                input
+                    .as_ref()
+                    .map_or_else(String::new, |input| format!(", {}", describe(input, steps)))
+            );
+        }
+        StepKind::Task { instruction, .. } => {
+            let _ = write!(line, " ({instruction:?})");
+        }
+    }
+    line
+}
+
+/// Every step a person would notice in `steps`, in reading order and branches
+/// included: what changed between two programs is read as a list of these,
+/// one per step of the program.
+#[must_use]
+pub fn outline(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> Vec<String> {
+    fn walk(step: &Step, catalog: &ActionCatalog, steps: &[Step], out: &mut Vec<String>) {
+        out.push(substance(step, catalog, steps));
+        match &step.kind {
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                for inner in then.iter().chain(otherwise) {
+                    walk(inner, catalog, steps, out);
+                }
+            }
+            StepKind::ForEach { body, .. } => {
+                for inner in body {
+                    walk(inner, catalog, steps, out);
+                }
+            }
+            StepKind::Invoke { .. }
+            | StepKind::SetVar { .. }
+            | StepKind::Ask { .. }
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. } => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(step, catalog, steps, &mut out);
+    out
 }
 
 /// Where an action step acts: "Inbox in Notes". `None` for other steps.

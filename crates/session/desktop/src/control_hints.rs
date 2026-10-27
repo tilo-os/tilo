@@ -268,10 +268,15 @@ impl ControlHints {
         self.layer.needs_frame(now, self.motion)
     }
 
-    /// When the hints next need a frame.
+    /// When the hints next need a frame: a hint's own schedule, or the
+    /// pause in typing that lets a hint held back by it begin.
     #[must_use]
     pub fn next_wake_deadline(&self, now: Instant) -> Option<Instant> {
-        self.layer.next_wake(now, self.motion)
+        let pause = self.typing_until.filter(|until| *until > now);
+        match (self.layer.next_wake(now, self.motion), pause) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// The hint on screen, for assistive technology.
@@ -577,6 +582,32 @@ mod tests {
         assert!(!hints.is_showing(), "too soon after it was seen");
         hints.update(&frame, seen + Duration::from_secs(18));
         assert!(hints.is_showing());
+    }
+
+    // Writing past a hint's moment holds the hint back without a frame on
+    // every frame: the desktop sleeps until the person pauses, and the
+    // frame then shows the hint.
+    #[test]
+    fn a_hint_held_back_by_typing_waits_for_the_pause_without_frames() {
+        let mut hints = ControlHints::new(Learned::default());
+        let start = ui::time::now();
+        let mut frame = frame();
+        frame.row.windows = 0;
+        frame.row.beyond = (false, false);
+        frame.row.focused_bar = None;
+        frame.row.focused_edge = None;
+        hints.update(&frame, start);
+        let typing = start + Duration::from_secs(16);
+        let typed = winit::event::WindowEvent::Ime(winit::event::Ime::Commit("a".into()));
+        hints.heard(&typed, typing);
+        let writing = start + Duration::from_secs(18);
+        hints.update(&frame, writing);
+        assert!(!hints.is_showing(), "no hint while the person types");
+        assert!(!hints.needs_animation_frame(writing));
+        let pause = typing + TYPING_PAUSE;
+        assert_eq!(hints.next_wake_deadline(writing), Some(pause));
+        hints.update(&frame, pause);
+        assert!(hints.is_showing(), "the pause shows it");
     }
 
     #[test]

@@ -462,10 +462,11 @@ impl TileSource for Source {
             ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &room)
                 .unwrap(),
         );
-        let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-            "keyboard-author",
-            ui::permissions::Role::Owner,
-        )));
+        let permissions =
+            ui::permissions::SharedPermissions::new(ui::permissions::PermissionContext::member(
+                "keyboard-author",
+                ui::permissions::Role::Owner,
+            ));
         let context = HostContext::prepare(
             &definition,
             HostContextInputs {

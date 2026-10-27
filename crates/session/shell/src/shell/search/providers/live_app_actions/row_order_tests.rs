@@ -53,6 +53,8 @@ fn equal_rows_come_in_title_order() {
                     resource_kind: "note".into(),
                     resource_label: format!("Page {page}"),
                     action_label: format!("Rename Page {page}"),
+                    keywords: Vec::new(),
+                    icon: None,
                     description: None,
                     operation_kind: tilo_actions::OperationKind::Effect,
                     params: Vec::new(),

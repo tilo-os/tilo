@@ -42,7 +42,6 @@ fn nested_construction_cannot_replace_the_original_worker() {
 fn absent_existing_record_cannot_reach_a_default_new_factory() {
     use crate::application::{ApplicationDefinition, ApplicationHost, ComponentRunnerInputs};
     use crate::record::{RecordCheckout, RecordId, RecordKind};
-    use std::{cell::RefCell, rc::Rc};
     let directory = tempfile::tempdir().unwrap();
     let definition = ApplicationDefinition {
         app_id: "dev.tilo.cold-construction".into(),
@@ -70,9 +69,9 @@ fn absent_existing_record_cannot_reach_a_default_new_factory() {
                 "device".into(),
                 "room",
                 crate::permissions::UserId(crate::permissions::LOCAL_USER.into()),
-                Rc::new(RefCell::new(
+                crate::permissions::SharedPermissions::new(
                     crate::permissions::PermissionContext::permissive(),
-                )),
+                ),
                 tilo_actions::ActionContext::default(),
             )?;
             host.prepare_record(

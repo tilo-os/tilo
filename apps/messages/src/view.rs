@@ -262,6 +262,7 @@ fn answer(
         | MessagesEffect::LeaveGroup { .. }
         | MessagesEffect::CloseGroups
         | MessagesEffect::ReadHistory { .. }
+        | MessagesEffect::ReadOlderHistory { .. }
         | MessagesEffect::Send { .. } => {
             return Err(CATALOG.t("messages-transport-unavailable"));
         }
@@ -672,6 +673,9 @@ fn register_effects(
         if let MessagesEffect::ReadHistory { choice } = effect {
             return effect_history.read(&effect_sources, &state, &choice, cx);
         }
+        if let MessagesEffect::ReadOlderHistory { choice } = effect {
+            return effect_history.read_older(&effect_sources, &state, &choice, cx);
+        }
         let before = state.get();
         let result = answer(&effect_sources, &state, effect)?;
         let selected = state.get();
@@ -798,7 +802,7 @@ fn detail(
             "messages.history:{}:{}",
             selected.person, selected.choice
         ))
-        .with_child(history_view.widget(sources, selected, chosen, hint, &who));
+        .with_child(history_view.widget(sources, selected, chosen, hint, &who, actions));
     let mut body = Column::new();
     if let Some(choice) = chosen {
         let label = choice.label(sources);
@@ -1005,7 +1009,9 @@ fn capture_history() -> tilo_messaging::HistoryPage {
             recipient: "+12025550123".into(),
             revision: "fixture-signal-revision".into(),
         },
-        more: false,
+        // Older SMS waits below this page: the capture shows the way back to
+        // it, beside the conversation it belongs to.
+        more: true,
         messages: [
             // Two days, so the capture shows what a divider is for and what
             // a time on every line is for.

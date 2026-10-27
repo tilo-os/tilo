@@ -452,3 +452,107 @@ fn notes_copied_into_a_step_come_out_again() {
     assert_eq!(unannotated("See [1] and 14 October 2026 [draft]"), None);
     assert_eq!(unannotated("no notes"), None);
 }
+
+#[test]
+fn an_expression_written_bare_computes_where_arithmetic_does() {
+    let params = [
+        ActionParam::required_owned("value", ParamType::Object, "")
+            .with_schema(json!({"type": "object", "additionalProperties": true})),
+        ActionParam::required("body", ParamType::Text, ""),
+    ];
+    let mut arguments = json!({
+        "value": {
+            "Pay by": "workday(2026-10-14, 10)",
+            "Days": "days_between(2026-01-05, 2026-01-15)",
+            "Total": " sum(120, 80, 45) ",
+            "Net": "round(289*0.9, 2)",
+            "Due": "ADD_DAYS(\"2026-10-14\", 7)",
+            "Back": "add_days(2026-10-14, 7) - 2026-10-14",
+        },
+        "body": "workday(2026-10-14, 10)",
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+    fill_untyped(&mut arguments, &params);
+    assert_eq!(
+        serde_json::Value::Object(arguments),
+        json!({
+            "value": {"Pay by": "2026-10-28", "Days": 10, "Total": 245, "Net": 260.1,
+                      "Due": "2026-10-21", "Back": 7},
+            // Text a parameter takes is text, however it reads.
+            "body": "workday(2026-10-14, 10)",
+        })
+    );
+    for text in [
+        // A name the host's expressions do not know, or more than one.
+        "nonsense(2026-10-14, 10)",
+        "Call(555)",
+        "workday(2026-10-14, 10) or later",
+        "Pay by workday(2026-10-14, 10)",
+        // What a document holds is quoted with {{…}}, not named bare.
+        "sum(Sheet1!B2:B9)",
+        "sum({sheets:x/read#/a}, 1)",
+        // Dates other than ISO, and the day it runs.
+        "workday(14/10/2026, 10)",
+        "workday(\"14 October 2026\", 10)",
+        "add_days(today(), 3)",
+        // Parsed only in part, or not computing.
+        "sum(1, 2",
+        "workday(2026-10-14)",
+        "round(1, 2) round(3)",
+        // No call: plain arithmetic's to read, and it does not.
+        "2026-10-14",
+    ] {
+        assert_eq!(plain::untyped(text), None, "{text}");
+    }
+}
+
+#[test]
+fn a_typed_argument_takes_an_expression_written_bare() {
+    assert_eq!(date_of("workday(2026-10-14, 10)"), json!("2026-10-28"));
+    assert_eq!(date_of("add_days(2026-10-14, 7)"), json!("2026-10-21"));
+    assert_eq!(
+        typed("workday(2026-10-14, 10)", Wants::Date { time: true }).unwrap(),
+        Some(json!("2026-10-28"))
+    );
+    assert_eq!(number_of("round(289*0.9, 2)"), json!(260.1));
+    assert_eq!(
+        typed(
+            "days_between(2026-01-05, 2026-01-15)",
+            Wants::Number { whole: true }
+        )
+        .unwrap(),
+        Some(json!(10))
+    );
+    // A call that does not compute says why, rather than the forms.
+    let why = typed("workday(2026-10-14)", DATE).unwrap_err();
+    assert!(why.contains("takes 2 arguments"), "{why}");
+    let why = typed("days_between(2026-01-05, 2026-01-15)", DATE).unwrap_err();
+    assert!(why.contains("is not a date"), "{why}");
+    let why = typed("avg(1, 2)", Wants::Number { whole: true }).unwrap_err();
+    assert!(why.contains("not a whole number"), "{why}");
+    // An unknown name is refused with the forms, as before.
+    let why = typed("nonsense(2026-10-14, 10)", DATE).unwrap_err();
+    assert!(why.contains("not a date"), "{why}");
+}
+
+#[test]
+fn an_expression_reads_an_iso_date_as_a_date() {
+    assert_eq!(
+        computed("workday(2026-10-14, 10)"),
+        Value::Date(dates::parse("2026-10-28").unwrap())
+    );
+    assert_eq!(computed("2026-10-14 - 2026-10-01"), Value::Number(13.0));
+    assert_eq!(computed("2026 - 10 - 14"), Value::Number(2002.0));
+}
+
+#[test]
+fn every_function_a_bare_expression_may_name_is_known() {
+    for name in expr::FUNCTIONS {
+        let why = expr::evaluate(&format!("{name}()"), &mut |_| Err(String::new()))
+            .err()
+            .unwrap_or_default();
+        assert!(!why.contains("unknown function"), "{name}: {why}");
+    }
+}

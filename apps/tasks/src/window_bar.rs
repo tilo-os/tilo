@@ -7,7 +7,7 @@
 //! list and the board. Search is the bar's own.
 
 use ui::prelude::*;
-use ui::widget::{AppModel, ModelPath, NavShell};
+use ui::widget::{AppModel, ModelPath, NavShell, Stack};
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
 
 use crate::{Filter, Nav, Place, Tracker, reference, tr};
@@ -17,16 +17,28 @@ const PLACE_PREFIX: &str = "place:";
 
 /// The window, with its slots in the window's bar.
 pub(crate) struct TasksWindow {
-    shell: NavShell,
+    /// The window's page, with the tracker's own dialogs over it.
+    page: Stack,
+    /// The shell inside that page: the bar's slots come from it, so a
+    /// dialog standing over the page leaves them alone.
+    bar: ui::widget::WindowBarLink,
     nav: Nav,
     /// The tracker as the window reads it, for the location and the views.
     tracker: LocalState<Tracker>,
 }
 
 impl TasksWindow {
-    pub(crate) fn new(shell: NavShell, nav: Nav, tracker: LocalState<Tracker>) -> Self {
+    pub(crate) fn new(
+        shell: NavShell,
+        nav: Nav,
+        tracker: LocalState<Tracker>,
+        dialog: Element,
+    ) -> Self {
+        let bar = shell.window_bar_link();
+        let page = Stack::new().push(Box::new(shell)).push(dialog);
         Self {
-            shell,
+            page,
+            bar,
             nav,
             tracker,
         }
@@ -34,7 +46,7 @@ impl TasksWindow {
 
     /// The window bar's slots for what the window shows now.
     fn window_toolbar(&self) -> WindowToolbar {
-        let mut toolbar = self.shell.window_toolbar();
+        let mut toolbar = self.bar.slots();
         let open = self.nav.open.with(Option::clone);
         let place = self.nav.place.with(|place| *place);
         let filter = self.nav.filter();
@@ -56,9 +68,18 @@ impl TasksWindow {
         toolbar
     }
 
-    /// Where the window is: the open issue as it reads in a reference, else
-    /// the place, narrowed by the filter when one is chosen.
+    /// Where the window is: the open issue as it reads in a reference, the
+    /// open project by its name, else the place, narrowed by the filter when
+    /// one is chosen.
     fn location(&self, open: Option<&Id>, place: Place, filter: &Filter) -> String {
+        if let Some(area) = self.nav.area() {
+            let name = self
+                .tracker
+                .with(|tracker| tracker.area(&area).map(|area| area.name.clone()));
+            if let Some(name) = name {
+                return name;
+            }
+        }
         if let Some(id) = open {
             let shown = self.tracker.with(|tracker| {
                 tracker
@@ -84,11 +105,11 @@ impl TasksWindow {
 
     /// What the person asked for in the bar: the shell's own slots first,
     /// then a press on one of the views.
-    fn take_events(&mut self) -> bool {
+    fn take_events(&self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {
             asked = true;
-            if self.shell.window_toolbar_event(&event) {
+            if self.bar.event(&event) {
                 continue;
             }
             if let ToolbarEvent::Action { id } = event
@@ -107,26 +128,26 @@ impl TasksWindow {
 }
 
 impl ui::widget::Decorator for TasksWindow {
-    type Inner = NavShell;
+    type Inner = Stack;
 
-    fn inner(&self) -> &NavShell {
-        &self.shell
+    fn inner(&self) -> &Stack {
+        &self.page
     }
 
-    fn inner_mut(&mut self) -> &mut NavShell {
-        &mut self.shell
+    fn inner_mut(&mut self) -> &mut Stack {
+        &mut self.page
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.take_events();
         self.declare();
-        self.shell.sync(state, path);
+        ui::widget::Widget::sync(&mut self.page, state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let asked = self.take_events();
         self.declare();
-        self.shell.update(state, path) || asked
+        ui::widget::Widget::update(&mut self.page, state, path) || asked
     }
 
     fn name(&self) -> &'static str {

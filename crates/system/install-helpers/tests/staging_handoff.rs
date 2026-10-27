@@ -64,7 +64,7 @@ fn handoff_document() -> Value {
         "target_extent": {"first_lba": TARGET.0, "last_lba": TARGET.1},
         "owned_boot_entry": "0104",
         "original_boot_order": ["0001", "0000"],
-        "profile": {"schema": 1, "hostname": "studio", "username": "quinten", "locale": "en_US.UTF-8",
+        "profile": {"schema": 1, "hostname": "studio", "username": "ada", "locale": "en_US.UTF-8",
                     "keyboard": "de", "timezone": "Europe/Berlin"},
     })
 }

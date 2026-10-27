@@ -246,11 +246,21 @@ fn render_spec() -> tilo_actions::ActionSpec {
                 "A past version: change id from history, or checkpoint name",
             )
             .nullable(),
+            tilo_actions::ActionParam::optional(
+                ANCHOR_PARAM,
+                tilo_actions::ParamType::Text,
+                "An item of the app's to show first: the anchor of a search hit",
+            )
+            .nullable(),
         ],
         |args| {
             tilo_actions::EncodedAction::encode_operation(
                 RENDER_TYPE,
-                &serde_json::json!({ "scale": args.number("scale"), "version": args.text("version") }),
+                &serde_json::json!({
+                    "scale": args.number("scale"),
+                    "version": args.text("version"),
+                    ANCHOR_PARAM: args.text(ANCHOR_PARAM),
+                }),
             )
             .unwrap_or_else(|_| tilo_actions::EncodedAction {
                 type_id: RENDER_TYPE.into(),
@@ -260,7 +270,7 @@ fn render_spec() -> tilo_actions::ActionSpec {
     )
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
-        "See the app's window as a picture: answers with the image and the revision of the document it shows.",
+        "See the app's window as a picture: answers with the image and the revision of the document it shows. With an anchor, shows that item first.",
     )
     // How an agent sees what the person sees: never a row of the person's.
     .for_audience(tilo_actions::Audience::Agents);
@@ -268,6 +278,18 @@ fn render_spec() -> tilo_actions::ActionSpec {
         schema: serde_json::json!({"type": "object"}),
     };
     spec
+}
+
+/// The `render` payload's parameter naming an item to show before drawing.
+const ANCHOR_PARAM: &str = "anchor";
+
+/// The item a `render` payload asks to be shown first, when it asks for one.
+pub(crate) fn rendered_anchor(payload: &[u8]) -> Option<String> {
+    let args: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    args.get(ANCHOR_PARAM)
+        .and_then(serde_json::Value::as_str)
+        .filter(|anchor| !anchor.is_empty())
+        .map(str::to_owned)
 }
 
 fn revision(doc: &AutoCommit) -> String {

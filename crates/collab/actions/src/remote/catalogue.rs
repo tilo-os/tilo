@@ -256,6 +256,7 @@ impl CatalogueRow {
         ];
         if let Some(action) = &self.action {
             fields.extend([action.action_label.as_str(), action.address.action.as_str()]);
+            fields.extend(action.keywords.iter().map(String::as_str));
             for param in &action.params {
                 fields.extend([param.name.as_ref(), param.description.as_ref()]);
             }
@@ -407,6 +408,8 @@ mod tests {
                 resource_kind: "notes.note".into(),
                 resource_label: resource.into(),
                 action_label: action.into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
                 kind: OperationKind::Document,

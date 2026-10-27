@@ -102,8 +102,7 @@ pub(super) enum Retry {
     Print {
         path: PathBuf,
         printer: String,
-        copies: f64,
-        two_sided: bool,
+        settings: os_actions::printing::PrintSettings,
     },
     /// A page from the same scanner.
     Scan { scanner: String },
@@ -173,7 +172,7 @@ impl Work {
                 printer,
                 path,
                 settings,
-            } => cups::print_document(&printer, &path, settings),
+            } => cups::print_document(&printer, &path, &settings),
         }
     }
 }
@@ -183,9 +182,8 @@ impl PrintCentre {
     /// waiting for the person when somebody does — and what that row's Try
     /// again asks for.
     pub(super) fn tell(&mut self, notice: OperationNotice) {
-        let retry = notice.retry.clone();
         if let ui::attention::Published::Waiting(item) = ui::attention::publish(notice.notice())
-            && let Some(retry) = retry
+            && let Some(retry) = notice.retry
         {
             self.pending_retries.insert(item, retry);
         }
@@ -200,16 +198,13 @@ impl PrintCentre {
             let Some(acted) = ui::attention::apply(press) else {
                 continue;
             };
-            match acted.action.verb.as_str() {
-                TRY_AGAIN_ACTION => {
-                    if let Some(retry) = self.pending_retries.remove(&acted.item) {
-                        asked |= self.retry(retry);
-                    }
+            if acted.action.verb == TRY_AGAIN_ACTION {
+                if let Some(retry) = self.pending_retries.remove(&acted.item) {
+                    asked |= self.retry(retry);
                 }
-                _ => {
-                    self.open_queue();
-                    asked = true;
-                }
+            } else {
+                self.open_queue();
+                asked = true;
             }
         }
         asked
@@ -227,13 +222,25 @@ impl PrintCentre {
             Retry::Print {
                 path,
                 printer,
-                copies,
-                two_sided,
+                settings,
             } => {
                 self.pending_document = Some(path);
                 self.selected_printer = Some(printer);
-                self.print_copies.set(copies);
-                self.print_two_sided.set(two_sided);
+                self.print_copies.set(f64::from(settings.copies));
+                self.print_two_sided.set(settings.two_sided);
+                self.print_range.set(
+                    settings
+                        .page_range
+                        .as_ref()
+                        .map(|range| range.as_str().to_owned())
+                        .unwrap_or_default(),
+                );
+                self.print_choice = super::PrintChoice {
+                    page_size: settings.page_size.clone(),
+                    colour: settings.colour.clone(),
+                    duplex: settings.duplex.clone(),
+                    orientation: settings.orientation,
+                };
                 UiCommand::PrintDocument
             }
             Retry::Scan { scanner } => {

@@ -95,6 +95,12 @@ pub struct ExportedAction {
     pub resource_kind: String,
     pub resource_label: String,
     pub action_label: String,
+    /// The other words people use for the action, published with its label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    /// The action's own picture, by its Lucide name, published with its label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     pub description: Option<String>,
     pub operation_kind: OperationKind,
     /// The canonical typed parameter descriptors.
@@ -130,6 +136,8 @@ impl ExportedAction {
             resource_kind: self.resource_kind.clone(),
             resource_label: self.resource_label.clone(),
             action_label: self.action_label.clone(),
+            keywords: self.keywords.clone(),
+            icon: self.icon.clone(),
             description: self.description.clone(),
             locus,
             kind: self.operation_kind,
@@ -150,6 +158,8 @@ impl From<&ActionDescriptor> for ExportedAction {
             resource_kind: descriptor.resource_kind.clone(),
             resource_label: descriptor.resource_label.clone(),
             action_label: descriptor.action_label.clone(),
+            keywords: descriptor.keywords.clone(),
+            icon: descriptor.icon.clone(),
             description: descriptor.description.clone(),
             operation_kind: descriptor.kind,
             params: descriptor.params.clone(),
@@ -265,16 +275,15 @@ pub fn wire_json_len<T: serde::Serialize + ?Sized>(value: &T) -> usize {
     }
 }
 
-/// An upper bound on `row`'s Cap'n Proto size, which the broker checks a
-/// page against: every text field costs its bytes, a NUL, padding to a word
-/// and an 8-byte pointer; every struct a fixed allowance for its data words,
-/// pointer and list tag.
-#[must_use]
-pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
-    const STRUCT: usize = 64;
-    fn sum<const N: usize>(parts: [usize; N]) -> usize {
+/// The parts of [`action_directory_row_wire_bytes`]'s bound.
+mod wire_size {
+    /// A struct's data words, pointer and list tag.
+    pub(super) const STRUCT: usize = 64;
+
+    pub(super) fn sum<const N: usize>(parts: [usize; N]) -> usize {
         parts.into_iter().fold(0, usize::saturating_add)
     }
+
     fn text_len(len: usize) -> usize {
         // The bytes and a NUL, padded to a word, and the pointer to them.
         (len / 8)
@@ -282,15 +291,27 @@ pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
             .saturating_mul(8)
             .saturating_add(8)
     }
-    fn text(value: &str) -> usize {
+
+    pub(super) fn text(value: &str) -> usize {
         text_len(value.len())
     }
-    fn optional(value: Option<&str>) -> usize {
+
+    pub(super) fn optional(value: Option<&str>) -> usize {
         text(value.unwrap_or(""))
     }
-    fn json<T: serde::Serialize + ?Sized>(value: &T) -> usize {
-        text_len(wire_json_len(value))
+
+    pub(super) fn json<T: serde::Serialize + ?Sized>(value: &T) -> usize {
+        text_len(super::wire_json_len(value))
     }
+}
+
+/// An upper bound on `row`'s Cap'n Proto size, which the broker checks a
+/// page against: every text field costs its bytes, a NUL, padding to a word
+/// and an 8-byte pointer; every struct a fixed allowance for its data words,
+/// pointer and list tag.
+#[must_use]
+pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
+    use wire_size::{STRUCT, json, optional, sum, text};
     let descriptor = row.descriptor.as_ref().map_or(0, |descriptor| {
         let input = match &descriptor.input {
             ExportedInput::None => 0,
@@ -339,6 +360,13 @@ pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
             text(&descriptor.resource_kind),
             text(&descriptor.resource_label),
             text(&descriptor.action_label),
+            // A list of texts: its own pointer and tag, then each text.
+            descriptor
+                .keywords
+                .iter()
+                .map(|word| text(word))
+                .fold(STRUCT, usize::saturating_add),
+            optional(descriptor.icon.as_deref()),
             optional(descriptor.description.as_deref()),
             text(descriptor.operation_kind.as_str()),
             json(&descriptor.params),
@@ -494,6 +522,15 @@ mod codec {
         out.set_resource_kind(&action.resource_kind);
         out.set_resource_label(&action.resource_label);
         out.set_action_label(&action.action_label);
+        if !action.keywords.is_empty() {
+            let count = u32::try_from(action.keywords.len())
+                .map_err(|_| capnp::Error::failed("too many action keywords".into()))?;
+            let mut keywords = out.reborrow().init_keywords(count);
+            for (at, word) in (0..count).zip(&action.keywords) {
+                keywords.set(at, word);
+            }
+        }
+        out.set_icon(action.icon.as_deref().unwrap_or(""));
         out.set_description(action.description.as_deref().unwrap_or(""));
         out.set_operation_kind(action.operation_kind.as_str());
         out.set_params_json(&encode_json(&action.params, "action parameters")?);
@@ -731,11 +768,19 @@ mod codec {
             .map(decode_view)
             .transpose()?;
         let description = capnp_text(row.get_description()?)?;
+        let keywords = row
+            .get_keywords()?
+            .iter()
+            .map(|word| capnp_text(word?))
+            .collect::<Result<Vec<_>, _>>()?;
+        let icon = capnp_text(row.get_icon()?)?;
         Ok(ExportedAction {
             semantic_identity,
             resource_kind: capnp_text(row.get_resource_kind()?)?,
             resource_label: capnp_text(row.get_resource_label()?)?,
             action_label: capnp_text(row.get_action_label()?)?,
+            keywords,
+            icon: (!icon.is_empty()).then_some(icon),
             description: (!description.is_empty()).then_some(description),
             operation_kind,
             params,

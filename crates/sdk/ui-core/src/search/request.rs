@@ -39,6 +39,8 @@ const QUERY_PARAM: &str = "query";
 const SCOPE_PARAM: &str = "scope";
 const SCOPE_LABEL_PARAM: &str = "scope_label";
 const OFFER_PARAM: &str = "offer";
+const ACTION_PARAM: &str = "action";
+const ANCHOR_PARAM: &str = "anchor";
 
 pub use tilo_resource::{ScopeDecl, scope_contains};
 
@@ -66,6 +68,27 @@ pub struct SearchRequest {
     /// plain search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offer: Option<SearchOffer>,
+    /// One of the app's own published actions, on the resource the scope
+    /// names: search opens on it, asking for its arguments, a parameter
+    /// picked from the workspace on its picker. Nothing runs until the
+    /// person has answered them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// A resource of the app's to open on, selected: the row that shows it is
+    /// the one under the cursor, so pressing Enter opens it (see
+    /// [`SearchRequest::on`]). A host that does not know the resource opens a
+    /// plain search of the app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<Anchor>,
+}
+
+/// The resource a search is opened on, and the text that finds its row.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Anchor {
+    /// Resource id of what to open on.
+    pub resource: String,
+    /// The text the app searches to find it.
+    pub query: String,
 }
 
 /// A system action an app prepares for the person ([`SearchRequest::offer`]):
@@ -92,7 +115,48 @@ impl SearchRequest {
             scope: SearchRequestScope::Resource(scope),
             query: None,
             offer: None,
+            action: None,
+            ..Self::default()
         }
+    }
+
+    /// Open search on `resource`, a resource of this app's, with `query` the
+    /// text that finds its row: that row is under the cursor, so one Enter
+    /// opens it. How an app shows the person something it has instead of
+    /// describing it.
+    #[must_use]
+    pub fn on(resource: impl Into<String>, query: impl Into<String>) -> Self {
+        Self {
+            anchor: Some(Anchor {
+                resource: resource.into(),
+                query: query.into(),
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// Open search on `action`, a published action of the resource `scope`
+    /// names, asking for its arguments (see [`SearchRequest::action`]): a
+    /// button whose action needs what the person picks ("Link a note")
+    /// opens straight on the picker.
+    #[must_use]
+    pub fn asking(scope: ScopeDecl, action: impl Into<String>) -> Self {
+        Self {
+            action: Some(action.into()),
+            ..Self::within(scope)
+        }
+    }
+
+    /// The action this request opens search on, by its address
+    /// ([`SearchRequest::asking`]).
+    #[must_use]
+    pub fn asked(&self) -> Option<tilo_actions::ActionAddress> {
+        let scope = self.resource_scope()?;
+        let action = self.action.as_deref()?;
+        Some(tilo_actions::ActionAddress::new(
+            scope.anchor.as_str(),
+            action,
+        ))
     }
 
     /// Open search on the system's action `action`, with `arguments` filled
@@ -122,6 +186,14 @@ impl SearchRequest {
         self
     }
 
+    /// The resource this search opens on ([`SearchRequest::on`]), when the
+    /// host should select it: a resource and a query both named.
+    #[must_use]
+    pub fn anchored(&self) -> Option<&Anchor> {
+        let anchor = self.anchor.as_ref()?;
+        (!anchor.resource.is_empty() && !anchor.query.is_empty()).then_some(anchor)
+    }
+
     #[must_use]
     pub fn resource_scope(&self) -> Option<&ScopeDecl> {
         match &self.scope {
@@ -148,6 +220,16 @@ impl SearchRequest {
         {
             arguments.insert(OFFER_PARAM.into(), offer.into());
         }
+        if let Some(action) = &self.action {
+            arguments.insert(ACTION_PARAM.into(), action.clone().into());
+        }
+        if let Some(anchor) = self
+            .anchor
+            .as_ref()
+            .and_then(|anchor| serde_json::to_string(anchor).ok())
+        {
+            arguments.insert(ANCHOR_PARAM.into(), anchor.into());
+        }
         arguments
     }
 
@@ -168,12 +250,21 @@ impl SearchRequest {
             text(SCOPE_LABEL_PARAM),
         )
         .with_offer(text(OFFER_PARAM).as_deref())
+        .with_action(text(ACTION_PARAM))
+        .with_anchor(text(ANCHOR_PARAM).as_deref())
     }
 
     /// The offer the `offer` argument carries, as its JSON text; a malformed
     /// one reads as none.
     fn with_offer(mut self, offer: Option<&str>) -> Self {
         self.offer = offer.and_then(|offer| serde_json::from_str(offer).ok());
+        self
+    }
+
+    /// The anchor the `anchor` argument carries, as its JSON text; a
+    /// malformed one reads as none.
+    fn with_anchor(mut self, anchor: Option<&str>) -> Self {
+        self.anchor = anchor.and_then(|anchor| serde_json::from_str(anchor).ok());
         self
     }
 
@@ -189,6 +280,13 @@ impl SearchRequest {
             text(SCOPE_LABEL_PARAM),
         )
         .with_offer(text(OFFER_PARAM).as_deref())
+        .with_action(text(ACTION_PARAM))
+        .with_anchor(text(ANCHOR_PARAM).as_deref())
+    }
+
+    fn with_action(mut self, action: Option<String>) -> Self {
+        self.action = action;
+        self
     }
 
     fn from_parts(query: Option<String>, anchor: Option<String>, label: Option<String>) -> Self {
@@ -200,6 +298,8 @@ impl SearchRequest {
             scope,
             query,
             offer: None,
+            action: None,
+            anchor: None,
         }
     }
 
@@ -265,6 +365,16 @@ pub(crate) fn search_resource() -> Resource {
                 OFFER_PARAM,
                 ParamType::Text,
                 "A system action the app prepares for the person to confirm, as JSON: {\"action\": id, \"arguments\": {name: text}}",
+            ),
+            ActionParam::optional(
+                ACTION_PARAM,
+                ParamType::Text,
+                "An action of the scoped resource to open on, asking for its arguments",
+            ),
+            ActionParam::optional(
+                ANCHOR_PARAM,
+                ParamType::Text,
+                "A resource of the app's to open on, selected, as JSON: {\"resource\": id, \"query\": text}",
             ),
         ],
         |args| SearchRequest::from_args(args).encode(),
@@ -363,6 +473,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_asked_action_round_trips_and_names_its_address() {
+        let request = SearchRequest::asking(
+            ScopeDecl::new("tasks.tracker/issues/1", "This issue"),
+            "link-note",
+        );
+        assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
+        assert_eq!(
+            SearchRequest::decode(&request.encode().payload).unwrap(),
+            request
+        );
+        assert_eq!(
+            request.asked(),
+            Some(tilo_actions::ActionAddress::new(
+                "tasks.tracker/issues/1",
+                "link-note"
+            ))
+        );
+        assert_eq!(SearchRequest::this_app().asked(), None);
+    }
+
+    #[test]
     fn an_offered_action_round_trips_and_a_malformed_offer_is_none() {
         let request = SearchRequest::offering(
             "bot.add",
@@ -422,6 +553,50 @@ mod tests {
             tilo_actions::ActionInput::Immediate(Some(_))
         ));
         assert!(ActionBinding::unit_for(&resource, SEARCH_ACTION).is_ok());
+    }
+
+    #[test]
+    fn a_search_on_a_resource_round_trips_and_keeps_its_row_selected() {
+        let request = SearchRequest::on("note.3", "Quarterly review");
+        assert_eq!(
+            request.anchored(),
+            Some(&Anchor {
+                resource: "note.3".into(),
+                query: "Quarterly review".into(),
+            })
+        );
+        assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
+        assert_eq!(
+            SearchRequest::decode(&request.encode().payload).unwrap(),
+            request
+        );
+        let invocation = open_search_binding(&request).invoke(()).unwrap();
+        assert_eq!(
+            SearchRequest::from_invocation(&invocation).and_then(|r| r.anchored().cloned()),
+            request.anchor
+        );
+
+        // An anchor missing either half cannot pick a row, so a host that
+        // reads one searches the app plainly rather than guessing.
+        assert!(
+            SearchRequest {
+                anchor: Some(Anchor {
+                    resource: "note.3".into(),
+                    query: String::new(),
+                }),
+                ..SearchRequest::this_app()
+            }
+            .anchored()
+            .is_none()
+        );
+        assert!(SearchRequest::this_app().anchored().is_none());
+
+        let mut arguments = SearchRequest::this_app().arguments();
+        arguments.insert(ANCHOR_PARAM.into(), "{not json".into());
+        assert_eq!(
+            SearchRequest::from_arguments(&arguments),
+            SearchRequest::this_app()
+        );
     }
 
     #[test]

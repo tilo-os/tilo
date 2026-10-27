@@ -80,6 +80,12 @@ pub(crate) enum Request {
     /// A day chosen in the birthday calendar, as `YYYY-MM-DD`.
     PickDate(String),
     OpenWebsite(String),
+    /// Start a call to this number, in whichever app this device dials with.
+    Call(String),
+    /// Write a message to this number.
+    WriteMessage(String),
+    /// Write an email to this address.
+    WriteEmail(String),
     /// An answer to the open dialog.
     Dialog(DialogChoice),
 }

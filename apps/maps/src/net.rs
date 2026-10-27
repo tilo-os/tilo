@@ -6,6 +6,7 @@
 //! None of this runs under `--shots` (no event loop) — the screenshot uses
 //! the bundled sample data instead.
 
+use crate::failure;
 use std::fmt::Write as _;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -225,8 +226,7 @@ fn place_label(item: &Value, display: &str) -> String {
         .split(',')
         .map(str::trim)
         .find(|frag| !frag.is_empty() && !frag.chars().all(|c| c.is_ascii_digit()))
-        .unwrap_or("Place")
-        .to_string()
+        .map_or_else(|| failure::t("maps-category-other"), str::to_owned)
 }
 
 /// Build the Overpass QL query URL for categorised POIs inside the bbox
@@ -461,35 +461,28 @@ fn route_from_json(value: &Value, mode: TravelMode, from: LatLon, to: LatLon) ->
 }
 
 fn step_instruction(m: Maneuver, name: &str) -> String {
-    let road = if name.is_empty() {
-        String::new()
-    } else {
-        format!(" onto {name}")
+    let road = |key: &str| failure::t_args(key, &[("road", name.into())]);
+    let named = |key: &str, plain: &str| {
+        if name.is_empty() {
+            failure::t(plain)
+        } else {
+            road(key)
+        }
     };
     match m {
-        Maneuver::Depart => {
-            if name.is_empty() {
-                "Start".to_string()
-            } else {
-                format!("Head out on {name}")
-            }
-        }
-        Maneuver::Arrive => "Arrive at your destination".to_string(),
+        Maneuver::Depart => named("maps-turn-head-out", "maps-turn-start"),
+        Maneuver::Arrive => failure::t("maps-turn-arrive"),
         Maneuver::Continue | Maneuver::Merge => {
-            if name.is_empty() {
-                "Continue".to_string()
-            } else {
-                format!("Continue on {name}")
-            }
+            named("maps-turn-continue-on", "maps-turn-continue")
         }
-        Maneuver::Left => format!("Turn left{road}"),
-        Maneuver::SharpLeft => format!("Sharp left{road}"),
-        Maneuver::SlightLeft => format!("Slight left{road}"),
-        Maneuver::Right => format!("Turn right{road}"),
-        Maneuver::SharpRight => format!("Sharp right{road}"),
-        Maneuver::SlightRight => format!("Slight right{road}"),
-        Maneuver::Uturn => "Make a U-turn".to_string(),
-        Maneuver::Roundabout => format!("At the roundabout, take the exit{road}"),
+        Maneuver::Left => named("maps-turn-left-onto", "maps-turn-left"),
+        Maneuver::SharpLeft => named("maps-turn-sharp-left-onto", "maps-turn-sharp-left"),
+        Maneuver::SlightLeft => named("maps-turn-slight-left-onto", "maps-turn-slight-left"),
+        Maneuver::Right => named("maps-turn-right-onto", "maps-turn-right"),
+        Maneuver::SharpRight => named("maps-turn-sharp-right-onto", "maps-turn-sharp-right"),
+        Maneuver::SlightRight => named("maps-turn-slight-right-onto", "maps-turn-slight-right"),
+        Maneuver::Uturn => failure::t("maps-turn-uturn"),
+        Maneuver::Roundabout => named("maps-turn-roundabout-onto", "maps-turn-roundabout"),
     }
 }
 

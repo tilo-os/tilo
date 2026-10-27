@@ -10,6 +10,9 @@ use ui::tilo_resource::{self, Model};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Calc,
+    /// Unit conversion: a quantity, two units and an amount. Offline, from a
+    /// fixed table ([`crate::convert`]).
+    Convert,
     Graph2d,
     Graph3d,
 }
@@ -18,6 +21,7 @@ impl Mode {
     pub fn label(self) -> &'static str {
         match self {
             Mode::Calc => "Calculator",
+            Mode::Convert => "Convert",
             Mode::Graph2d => "Graph 2D",
             Mode::Graph3d => "Graph 3D",
         }
@@ -26,36 +30,46 @@ impl Mode {
     pub fn short_label(self) -> &'static str {
         match self {
             Mode::Calc => "Calc",
+            Mode::Convert => "Conv",
             Mode::Graph2d => "2D",
             Mode::Graph3d => "3D",
         }
     }
-    pub fn all() -> [Mode; 3] {
-        [Mode::Calc, Mode::Graph2d, Mode::Graph3d]
+    pub fn all() -> [Mode; 4] {
+        [Mode::Calc, Mode::Graph2d, Mode::Graph3d, Mode::Convert]
     }
+    /// The mode's place in the bar's switcher. The three the app shipped with
+    /// keep their places, so a chord or a saved view that names them still
+    /// lands where it did.
     pub fn index(self) -> usize {
         match self {
             Mode::Calc => 0,
             Mode::Graph2d => 1,
             Mode::Graph3d => 2,
+            Mode::Convert => 3,
         }
     }
     pub fn from_index(i: usize) -> Mode {
         match i {
             1 => Mode::Graph2d,
             2 => Mode::Graph3d,
+            3 => Mode::Convert,
             _ => Mode::Calc,
         }
     }
     /// The graph list this mode plots, if it is a graph mode.
     pub fn graph(self) -> Option<GraphKind> {
         match self {
-            Mode::Calc => None,
+            Mode::Calc | Mode::Convert => None,
             Mode::Graph2d => Some(GraphKind::Curve2d),
             Mode::Graph3d => Some(GraphKind::Surface3d),
         }
     }
 }
+
+/// The amount a capture's conversion page shows: the conversion the audit
+/// asked a calculator to be able to answer.
+pub const CONVERT_DEMO_AMOUNT: &str = "40";
 
 /// One evaluated entry in the calculator history.
 #[derive(Model, Clone, Debug, PartialEq)]
@@ -418,11 +432,10 @@ impl Key {
             Key::Digit(_) | Key::Dot | Key::DoubleZero => KeyRole::Digit,
             Key::Equals => KeyRole::Equals,
             Key::Clear => KeyRole::Clear,
-            Key::Backspace | Key::Ins("+" | "-" | "*" | "/") => KeyRole::Operator,
             // The page key is navigation, not a function: it gets the
             // operator's lifted face so it reads as a place to go, not
             // another symbol to insert.
-            Key::Page(_) => KeyRole::Operator,
+            Key::Backspace | Key::Ins("+" | "-" | "*" | "/") | Key::Page(_) => KeyRole::Operator,
             _ => KeyRole::Function,
         }
     }

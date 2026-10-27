@@ -62,7 +62,9 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
                 views: views.clone(),
                 device_id: "D".into(),
                 instance_id: instance,
-                permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                permissions: crate::permissions::SharedPermissions::new(
+                    PermissionContext::permissive(),
+                ),
                 author: UserId("tester".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },

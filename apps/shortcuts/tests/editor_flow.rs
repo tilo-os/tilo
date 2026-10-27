@@ -56,6 +56,8 @@ fn row(
             resource_kind: kind.into(),
             resource_label: "Inbox".into(),
             action_label: action.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::default(),
             kind: OperationKind::Document,
@@ -402,7 +404,10 @@ fn every_operation_is_a_published_action() {
         .map(|spec| spec.id.as_str())
         .collect();
     effects.sort_unstable();
-    assert_eq!(effects, ["delete", "describe", "refresh", "run", "save"]);
+    assert_eq!(
+        effects,
+        ["delete", "describe", "refine", "refresh", "run", "save"]
+    );
     assert!(
         resources
             .iter()
@@ -873,4 +878,14 @@ fn the_save_review_says_what_saving_allows() {
             )
             .unwrap_or_else(|error| panic!("the review shows {id}: {error}"));
     }
+}
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<App>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 }

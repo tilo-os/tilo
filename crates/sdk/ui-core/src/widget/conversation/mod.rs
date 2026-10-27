@@ -26,6 +26,7 @@
 //! | [`draft`] | A draft kept per conversation, and the line that shows it wherever the conversation is listed |
 //! | [`composer`] | Enter sends, Shift+Enter breaks the line, Escape lets go — the same rule in both |
 //! | [`list`] | [`ConversationList`]: the message list itself, for a widget-tree app |
+//! | [`unread`] | Where the reader's unread lines start: the "New messages" divider |
 //!
 //! A host that adopts a piece keeps its own identity: a channel still shows
 //! authors and avatars, a private thread still shows one person and their
@@ -38,7 +39,9 @@ pub mod composer;
 pub mod day;
 pub mod delivery;
 pub mod draft;
+pub mod earlier;
 pub mod list;
+pub mod unread;
 
 pub use attachment::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, SavedCopy, UploadProgress,
@@ -48,9 +51,12 @@ pub use composer::{ComposerIntent, ComposerRule};
 pub use day::{ConversationClock, ConversationDay, DayBreaks, DayDividerFace, day_break_indices};
 pub use delivery::{DeliveryFace, DeliveryState, DeliveryStep};
 pub use draft::{DRAFT_PREVIEW_CHARS, DraftBook, line as draft_line, preview as draft_preview};
+pub use earlier::EarlierUnavailableFace;
 pub use list::{
-    ConversationLine, ConversationList, ConversationRole, ListFace, bubble_colors, run_breaks,
+    ConversationLine, ConversationList, ConversationRole, ListCache, ListFace, ListWork,
+    bubble_colors, run_breaks,
 };
+pub use unread::UnreadDividerFace;
 
 /// Resolve one of the conversation's labels in the desktop's language.
 ///

@@ -530,7 +530,7 @@ fn receive_reply(
                 apps.pump_messaging_records();
                 h.a11y_nodes()
                     .iter()
-                    .any(|(_, n)| n.label() == Some("private SIM arrival"))
+                    .any(|(_, n)| speaks(n.label(), "private SIM arrival"))
             })
     );
     let reply = MessagesEffect::Send {
@@ -549,7 +549,7 @@ fn receive_reply(
             .harness
             .a11y_nodes()
             .iter()
-            .any(|(_, n)| n.label() == Some("private SIM reply"))
+            .any(|(_, n)| speaks(n.label(), "private SIM reply"))
     );
     assert!(!mounted.harness.dump_json().contains("private SIM"));
     assert!(!mounted.harness.dump_json().contains("8901000000000000001"));
@@ -652,7 +652,7 @@ fn restart(
                 apps.pump_messaging_records();
                 h.a11y_nodes()
                     .iter()
-                    .any(|(_, n)| n.label() == Some("private SIM reply"))
+                    .any(|(_, n)| speaks(n.label(), "private SIM reply"))
             }),
         "the same account history must return after restart"
     );

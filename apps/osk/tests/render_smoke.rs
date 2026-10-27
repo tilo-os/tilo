@@ -73,7 +73,7 @@ fn osk_renders_keys_and_toolbar() {
             "expected a full key grid, got {}",
             osk.key_geometry().len()
         );
-        assert_eq!(osk.toolbar_geometry().len(), 4, "default toolbar present");
+        assert_eq!(osk.toolbar_geometry().len(), 5, "default toolbar present");
 
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();

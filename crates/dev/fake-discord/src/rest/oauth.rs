@@ -13,7 +13,7 @@ fn signed_in(state: &State) -> User {
     state
         .oauth_user
         .clone()
-        .unwrap_or_else(|| User::new("4242", "Quik2007"))
+        .unwrap_or_else(|| User::new("4242", "qwolff"))
 }
 
 fn arg<'a>(query: &'a [(String, String)], name: &str) -> &'a str {

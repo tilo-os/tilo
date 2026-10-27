@@ -1767,10 +1767,38 @@ impl Renderer {
     /// [`Self::start_deferred_pipelines`] once the first frame is out.
     pub fn new_deferring(
         device: &Device,
+        options: RendererOptions,
+        deferral: PipelineDeferral,
+    ) -> Result<Self> {
+        Self::build(device, options, deferral, false)
+    }
+
+    /// [`Self::new`] for a renderer whose every render must be the same
+    /// picture: its tiles sum their segments in a fixed order
+    /// ([`Self::enable_canonical_segment_order`]) from the start (Tilo
+    /// patch). The shader set is compiled once, in that order; turning the
+    /// order on after [`Self::new`] compiles a second set and keeps both,
+    /// which a software GPU holds in its heap.
+    ///
+    /// # Errors
+    /// Returns an error if the shader set fails to compile.
+    pub fn new_with_canonical_segment_order(
+        device: &Device,
+        options: RendererOptions,
+    ) -> Result<Self> {
+        Self::build(device, options, PipelineDeferral::None, true)
+    }
+
+    fn build(
+        device: &Device,
         mut options: RendererOptions,
         mut deferral: PipelineDeferral,
+        canonical_segment_order: bool,
     ) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
+        if canonical_segment_order {
+            engine.enable_canonical_segment_order();
+        }
         engine.initialize_gpu_timestamps(device);
         // The GL backend has one context, and every pipeline compile holds
         // its lock. Worker threads only queue on that lock, and a slow driver

@@ -391,6 +391,34 @@ pub trait AppWidget: Widget {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         Err(tilo_actions::DoorError::Unknown(address.clone()))
     }
+
+    /// What an app keeping its own document publishes for the search of its
+    /// window: its resources and its search providers, which its host cannot
+    /// read through its widgets. `None` for an app whose host reads them
+    /// directly ([`crate::widget::published_resources`]).
+    fn window_search(&self) -> Option<WindowPublication> {
+        None
+    }
+
+    /// Run `invocation`, chosen in the search of this window, as the app's
+    /// own control would, for an app keeping its own document. Gives it back
+    /// when the app takes no controls this way.
+    ///
+    /// # Errors
+    /// The invocation itself, when the app did not take it.
+    fn run_window_control(
+        &mut self,
+        invocation: tilo_actions::ControlInvocation,
+    ) -> Result<(), tilo_actions::ControlInvocation> {
+        Err(invocation)
+    }
+}
+
+/// What a window publishes for its own search: the resources it holds and
+/// can act on, and the search providers that find what it keeps.
+pub struct WindowPublication {
+    pub resources: Vec<tilo_actions::Resource>,
+    pub providers: Vec<Box<dyn crate::search::SearchProvider>>,
 }
 
 // The sole internal owner adapter; raw descendants inherit its layout boundary.

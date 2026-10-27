@@ -46,8 +46,12 @@ const NOBODY: &str = "nobody is at this computer to choose a file; name the file
 const NOBODY_TO_CHOOSE: &str = "nobody is at this computer to choose an identity";
 const NOBODY_TO_CHOOSE_APP: &str = "nobody is at this computer to choose an app";
 const OUT_OF_TURN: &str = "the session's shell answered out of turn";
-const CLOSED: &str = "the session's file chooser is gone";
-const UNREACHABLE: &str = "could not reach the session's file chooser";
+// What an app may show the person when the shell's chooser itself is out
+// of reach: what happened, and what to do (`PortalOutcome::Failed` carries a
+// sentence for the person, never a transport error).
+const CLOSED: &str = "The file chooser closed before you chose. Try again.";
+const UNREACHABLE: &str = "The file chooser didn't open. Try again.";
+const CHOOSER_OUT_OF_TURN: &str = "The file chooser gave an answer that doesn't fit. Try again.";
 /// How long a link waits for the shell, which answers once its compositor
 /// has dispatched the link (a frame, unless the session is wedged).
 const LINK_ANSWER: std::time::Duration = std::time::Duration::from_secs(30);
@@ -306,9 +310,10 @@ impl Connection {
         if let Err(error) = sent
             && let Some(answer) = self.take(id)
         {
+            tracing::warn!(%error, "the session's file chooser is out of reach");
             answer(Reply::Failed {
                 id,
-                reason: format!("{UNREACHABLE}: {error}"),
+                reason: UNREACHABLE.to_owned(),
             });
         }
     }
@@ -569,9 +574,7 @@ impl crate::UriOpener for ShellOpener {
         match rx.recv_timeout(LINK_ANSWER) {
             Ok(Reply::Opened { .. }) => Ok(()),
             Ok(Reply::Unclaimed { .. }) => self.elsewhere.open(uri),
-            Ok(Reply::Failed { reason, .. })
-                if reason == CLOSED || reason.starts_with(UNREACHABLE) =>
-            {
+            Ok(Reply::Failed { reason, .. }) if reason == CLOSED || reason == UNREACHABLE => {
                 self.elsewhere.open(uri)
             }
             Ok(Reply::Failed { reason, .. }) => Err(std::io::Error::other(reason)),
@@ -677,7 +680,7 @@ impl ShellChooser {
                         None => failed(NOBODY.to_owned()),
                     },
                     Reply::Failed { reason, .. } => failed(reason),
-                    _ => failed("the session's file chooser answered out of turn".to_owned()),
+                    _ => failed(CHOOSER_OUT_OF_TURN.to_owned()),
                 });
             }),
         );
@@ -798,9 +801,7 @@ impl FilePicker for ShellChooser {
                                 },
                             ),
                             Reply::Failed { reason, .. } => ContentsOutcome::Failed(reason),
-                            _ => ContentsOutcome::Failed(
-                                "the session's file chooser answered out of turn".to_owned(),
-                            ),
+                            _ => ContentsOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned()),
                         };
                         deliver(outcome);
                     },
@@ -907,9 +908,7 @@ impl FilePicker for ShellChooser {
                 deliver(match reply {
                     Reply::Opened { .. } => LaunchOutcome::Opened,
                     Reply::Failed { reason, .. } => LaunchOutcome::Failed(reason),
-                    _ => LaunchOutcome::Failed(
-                        "the session's file chooser answered out of turn".into(),
-                    ),
+                    _ => LaunchOutcome::Failed(CHOOSER_OUT_OF_TURN.into()),
                 });
             }),
         );

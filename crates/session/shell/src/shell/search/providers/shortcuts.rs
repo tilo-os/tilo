@@ -130,6 +130,7 @@ impl ShortcutsProvider {
             }),
             on_invoke: Some(invoke),
             on_begin_invoke: None,
+            resource: None,
         })
     }
 }

@@ -182,7 +182,12 @@ pub struct RichTextLine {
 impl RichTextLine {
     pub fn new() -> Self {
         // Block-editor cells render as document copy, not a form field.
-        let mut inner = TextInput::local().with_plain_chrome();
+        // `@` is the block editor's own: it writes a mention mark naming the
+        // participant, which the field's inline completion cannot. `:emoji:`
+        // is the field's like anywhere else.
+        let mut inner = TextInput::local()
+            .with_plain_chrome()
+            .with_completion(crate::widget::TextCompletion::EMOJI);
         inner.keep_document_inset();
         // The block editor writes an autocorrection after the keystroke
         // that typed its word boundary, as an undo step of its own.

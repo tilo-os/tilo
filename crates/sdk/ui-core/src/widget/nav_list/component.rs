@@ -92,7 +92,7 @@ impl Described for NavList {
             .into_iter()
             .filter_map(|(key, event)| Some((key, event.handler()?)))
             .collect();
-        list.on_select(move |id| {
+        list.on_view(key, move |id| {
             if let Some(run) = runs.get_mut(&id) {
                 run();
             }

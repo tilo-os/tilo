@@ -164,6 +164,20 @@ impl TouchPointer {
         let events = self.emulator.events(touch, |_| true);
         if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
             self.routes.remove(&touch.id);
+            // What the lift turned into: a tap that clicked says so beside its
+            // route, and one that did not says what it was instead.
+            let clicked = events
+                .iter()
+                .any(|event| matches!(event, ui::TouchPointerEvent::Press(_)));
+            tracing::info!(
+                target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                x = touch.location.x,
+                y = touch.location.y,
+                phase = ?touch.phase,
+                clicked,
+                events = events.len(),
+                "touch contact lifted"
+            );
         }
         Self::window_events(touch.device_id, events)
     }
@@ -195,7 +209,14 @@ impl TouchPointer {
     pub fn poll(&mut self, now: std::time::Instant) -> Vec<WindowEvent> {
         self.emulator
             .poll(now)
-            .map(|(device_id, events)| Self::window_events(device_id, events))
+            .map(|(device_id, events)| {
+                tracing::info!(
+                    target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                    events = events.len(),
+                    "touch hold became a long press"
+                );
+                Self::window_events(device_id, events)
+            })
             .unwrap_or_default()
     }
 

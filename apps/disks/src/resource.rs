@@ -232,7 +232,7 @@ fn row_operation(
     lost: impl FnOnce() -> String,
 ) -> ui::tilo_actions::ActionSpec {
     let mut spec = DisksEffect::operation(kind, device).bound();
-    if kind.destructive() {
+    if kind.is_delete() {
         spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
             phrase: device.to_owned(),
         };
@@ -937,5 +937,15 @@ mod reach_tests {
                 "{scenario}: published actions a drive cannot invoke"
             );
         }
+    }
+
+    /// The window bar's sidebar button flips the sidebar on every click, in a
+    /// window wide enough to dock it and in a narrow one.
+    #[test]
+    fn the_window_bars_sidebar_button_flips_the_sidebar() {
+        ui::framework::testing::check_window_sidebar_button(|| {
+            ui::framework::testing::TestApp::<super::DisksShell>::drive("laptop")
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
     }
 }

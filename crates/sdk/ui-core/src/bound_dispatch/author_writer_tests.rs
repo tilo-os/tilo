@@ -83,7 +83,7 @@ pub(super) fn mount(
         host_person: UserId(author.into()),
         records: records.clone(),
         checkout: checkout.clone(),
-        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+        permissions: crate::permissions::SharedPermissions::new(PermissionContext::permissive()),
         author: UserId(author.into()),
         operation_context: tilo_actions::ActionContext::default(),
         writes_as_author,

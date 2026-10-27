@@ -255,6 +255,23 @@ impl Seats {
         true
     }
 
+    /// Stands every held seat at `now_ms`, as if it had just been taken:
+    /// a test's way to keep guests a loaded runner admitted minutes apart
+    /// from lapsing before it asks the room to be full, without a clock
+    /// every page of the room reads.
+    #[cfg(test)]
+    pub fn stand_seats_at(&mut self, now_ms: u64) {
+        for taken in &mut self.held {
+            *taken = now_ms;
+        }
+    }
+
+    /// How many seats are held and not yet filled by somebody online.
+    #[cfg(test)]
+    pub fn held(&self) -> usize {
+        self.held.len()
+    }
+
     /// Gives back a seat held for an admission that was not answered.
     pub fn release(&mut self) {
         self.held.pop_back();

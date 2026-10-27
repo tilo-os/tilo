@@ -23,7 +23,7 @@ mod ordinary_confirmation;
 use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
 
-use crate::permissions::{PermissionContext, UserId};
+use crate::permissions::{PermissionContext, SharedPermissions, UserId};
 use crate::published::SharedResource;
 use crate::record::{RecordCheckout, RecordOpenError, RecordStore};
 use crate::wake::{WakeHandle, WakeScopeGuard};
@@ -1132,6 +1132,42 @@ pub(crate) fn resolve_component_resource(
         visit: &mut visit,
     })?;
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
+}
+
+/// Whether any widget of `widget`'s tree, whatever component it is part
+/// of, may resolve resource `id` once what it reads lands.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn any_resource_pending(widget: &dyn Widget, id: &str) -> bool {
+    let mut pending = crate::resources::resource_pending(widget, id);
+    widget.for_each_child(&mut |child| {
+        pending = pending || any_resource_pending(child, id);
+    });
+    pending
+}
+
+/// [`unbound_resource_pending`] in the component `binding` hosts.
+pub(crate) fn component_resource_pending(
+    root: &mut dyn Widget,
+    binding: &CallbackBinding,
+    resource: &str,
+) -> bool {
+    let Ok(_entry) = binding.enter() else {
+        return false;
+    };
+    let mut pending = false;
+    let mut visit = |_: &CallbackBinding,
+                     widget: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        pending = unbound_resource_pending(widget, resource);
+        None
+    };
+    root.visit_components(&mut ComponentRequest {
+        target: Some(binding),
+        found: false,
+        visit: &mut visit,
+    })
+    .is_ok()
+        && pending
 }
 
 pub(crate) fn publication_visibility(
@@ -2528,9 +2564,12 @@ pub fn minted_items(
     if stored.is_empty() {
         return Vec::new();
     }
-    tilo_resource::minted_ids(envelope)
-        .map_while(|id| {
-            let obj = doc.import_obj(&stored.get(id.as_str())?.to_string()).ok()?;
+    tilo_resource::minted_keys(envelope)
+        .map_while(|keys| {
+            let (id, obj) = keys
+                .into_iter()
+                .find_map(|id| stored.get(id.as_str()).map(|obj| (id, obj.to_string())))?;
+            let obj = doc.import_obj(&obj).ok()?;
             automerge::ReadDoc::get(&*doc, &obj, id.as_str())
                 .ok()
                 .flatten()?;
@@ -3122,8 +3161,7 @@ pub(crate) fn invoke_resource_action(
                     // relies on it again.
                     binding
                         .permissions
-                        .borrow_mut()
-                        .spend_once(&spent)
+                        .update(|permissions| permissions.spend_once(&spent))
                         .map_err(|_| denied(spec))?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
@@ -3165,6 +3203,15 @@ pub(crate) fn invoke_resource_action(
                     } else {
                         None
                     };
+                    // A record's route names the app owning it, and one without
+                    // a route is the component's own; History reads that app's words.
+                    let owner_app = route
+                        .as_ref()
+                        .map_or(binding.app_id.as_str(), |route| route.app_id.as_str());
+                    let ambient = ambient
+                        .unwrap_or(&binding.operation_context)
+                        .clone()
+                        .with_app(owner_app, owner_app);
                     let encoded = encode_resource_action(
                         &resources,
                         &target.address.address,
@@ -3189,7 +3236,7 @@ pub(crate) fn invoke_resource_action(
                                 broker_admitted,
                                 invocation,
                                 source_invocation,
-                                ambient: ambient.or(Some(&binding.operation_context)),
+                                ambient: Some(&ambient),
                                 scope,
                                 door: match door.as_mut() {
                                     Some(door) => Some(&mut **door as &mut dyn crate::session_door::SessionDoor),
@@ -3365,6 +3412,20 @@ pub(crate) fn collect_participant_resources(
     });
 }
 
+/// Whether resource `id`, which `widget`'s subtree resolves to nothing now,
+/// may resolve once what it reads lands
+/// ([`crate::resources::PublishesResources::resource_pending`]).
+pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
+    if widget.has_separate_document_owner() {
+        return false;
+    }
+    let mut pending = crate::resources::resource_pending(widget, id);
+    widget.for_each_child(&mut |child| {
+        pending = pending || unbound_resource_pending(child, id);
+    });
+    pending
+}
+
 pub(crate) fn resolve_unbound_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -3405,7 +3466,7 @@ pub struct CallbackBinding {
     pub(crate) host_person: UserId,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
-    pub(crate) permissions: Rc<RefCell<PermissionContext>>,
+    pub(crate) permissions: SharedPermissions,
     pub(crate) author: UserId,
     pub(crate) operation_context: tilo_actions::ActionContext,
     /// Edits commit as the author's own writer on the record
@@ -5065,60 +5126,9 @@ pub(crate) fn restore_legacy_history(
         })
         .map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?
 }
-/// A read-only invalidation stamp. It contains no document text and confers no
-/// write authority; an unavailable stamp must invalidate deferred insertion.
-#[derive(Clone, PartialEq, Eq)]
-pub struct DocumentEditStamp {
-    // Exact owner lifetime and undo/redo revision, never callback admission.
-    owner: Option<(uuid::Uuid, u64)>,
-    frontier: Vec<ChangeHash>,
-    pending: usize,
-}
-impl DocumentEditStamp {
-    /// Bind an embedded field's private equality check to its record and node.
-    #[cfg(feature = "native")]
-    pub(crate) fn bind_fingerprint(
-        &self,
-        node: NodeId,
-        field: [u8; 32],
-        key: &[u8; 32],
-    ) -> [u8; 32] {
-        let mut hash = blake3::Hasher::new_keyed(key);
-        hash.update(b"tilo.ime.embedded-edit.v1");
-        hash.update(&u64::from(node).to_le_bytes());
-        if let Some((owner, history_revision)) = self.owner {
-            hash.update(owner.as_bytes());
-            hash.update(&history_revision.to_le_bytes());
-        }
-        hash.update(&self.pending.to_le_bytes());
-        for head in &self.frontier {
-            hash.update(&head.0);
-        }
-        hash.update(&field);
-        *hash.finalize().as_bytes()
-    }
-
-    pub(crate) fn for_owned_document(
-        document: &AutoCommit,
-        lifetime: uuid::Uuid,
-        history_revision: u64,
-    ) -> Self {
-        Self {
-            owner: Some((lifetime, history_revision)),
-            frontier: document.base_heads(),
-            pending: document.pending_ops(),
-        }
-    }
-
-    /// Snapshot an unbound host document without committing its open action.
-    pub fn for_document(document: &AutoCommit) -> Self {
-        Self {
-            owner: None,
-            frontier: document.base_heads(),
-            pending: document.pending_ops(),
-        }
-    }
-}
+#[path = "bound_dispatch/edit_stamp.rs"]
+mod edit_stamp;
+pub use edit_stamp::DocumentEditStamp;
 
 #[path = "bound_dispatch/a11y_owner.rs"]
 mod a11y_owner;

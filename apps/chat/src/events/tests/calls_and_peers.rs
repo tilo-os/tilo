@@ -348,13 +348,71 @@ fn leave_remains_available_after_downgrade() {
 
 // --- header Call button (was unreachable without a voice channel) ---
 
+/// The catalogue the picker searches here: the toolkit provides the real one,
+/// so a test hands over only what it is about.
+struct Dishes;
+
+static DISHES: Dishes = Dishes;
+
+const DISH_EMOJI: &[(&str, &str)] = &[("🍕", "pizza"), ("🍔", "hamburger")];
+
+impl ui::emoji_catalogue::EmojiCatalogue for Dishes {
+    fn groups(&self) -> Vec<ui::emoji_catalogue::CatalogueGroup> {
+        vec![ui::emoji_catalogue::CatalogueGroup {
+            id: "food-drink",
+            label: "Food & Drink",
+            icon: "🍔",
+        }]
+    }
+
+    fn group_emoji(&self, index: usize) -> Vec<&'static str> {
+        if index == 0 {
+            DISH_EMOJI.iter().map(|(emoji, _)| *emoji).collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Vec<&'static str> {
+        DISH_EMOJI
+            .iter()
+            .filter(|(_, name)| name.contains(query))
+            .map(|(emoji, _)| *emoji)
+            .take(limit)
+            .collect()
+    }
+
+    fn info(&self, _: &str) -> Option<ui::emoji_catalogue::EmojiInfo> {
+        None
+    }
+
+    fn tones(&self, _: &str) -> Vec<&'static str> {
+        Vec::new()
+    }
+}
+
 #[test]
 fn emoji_search_enter_picks_the_best_match() {
+    ui::emoji_catalogue::CATALOGUE.install(|_locale| &DISHES);
     let (mut app, mut doc) = app_with_doc();
     app.focus = Focus::Main;
-    app.on_hit(
-        Hit::ComposerEmoji(Rect::ZERO),
-        &mut ui::widget::Edits::lend(&mut doc),
+    let open_on_message = |app: &mut ChatApp, doc: &mut crate::testing::Room| {
+        app.on_hit(
+            Hit::AddReaction {
+                msg: "m_me1".into(),
+                anchor: Rect::ZERO,
+            },
+            &mut ui::widget::Edits::lend(doc),
+        );
+    };
+    let reacted = |app: &ChatApp| {
+        app.message("m_me1")
+            .is_some_and(|m| m.reactions.iter().any(|r| r.emoji == "🍕"))
+    };
+    open_on_message(&mut app, &mut doc);
+    assert!(
+        app.emoji_open && app.emoji_target.as_deref() == Some("m_me1"),
+        "the picker opened to react to m_me1"
     );
     type_str(&mut app, &mut doc, "pizza");
     assert_eq!(
@@ -362,15 +420,21 @@ fn emoji_search_enter_picks_the_best_match() {
         "pizza",
         "typing searches the picker"
     );
-    feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-    assert_eq!(app.draft_main, "🍕");
-    assert!(!app.emoji_open);
-    assert_eq!(ui::emoji_catalogue::recents()[0], "🍕");
-    // Reopening starts from an empty query.
-    app.on_hit(
-        Hit::ComposerEmoji(Rect::ZERO),
-        &mut ui::widget::Edits::lend(&mut doc),
+    assert_eq!(
+        app.emoji_target.as_deref(),
+        Some("m_me1"),
+        "typing in the search does not take the reaction's target away"
     );
+    feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+    assert_eq!(
+        ui::emoji_catalogue::recents().first().map(String::as_str),
+        Some("🍕"),
+        "Enter picked the search's best match"
+    );
+    assert!(reacted(&app), "the pick landed as a reaction on m_me1");
+    assert!(!app.emoji_open);
+    // Reopening starts from an empty query.
+    open_on_message(&mut app, &mut doc);
     assert!(app.emoji_picker.query().is_empty());
 }
 

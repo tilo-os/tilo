@@ -406,6 +406,9 @@ fn admit_record(
     }
 }
 
+#[path = "tile_host/window_search.rs"]
+mod window_search;
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "history policy, record refusal, focus, layout dirtiness and presentation latches are independent"
@@ -738,7 +741,7 @@ impl TileHost {
         invocation: tilo_actions::ControlInvocation,
     ) -> Result<(), tilo_actions::ControlInvocation> {
         let Some(binding) = crate::widget::Widget::callback_binding(self) else {
-            return Err(invocation);
+            return self.run_in_own_document(invocation);
         };
         let Ok(_entry) = binding.enter() else {
             return Err(invocation);

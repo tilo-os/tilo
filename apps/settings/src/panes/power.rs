@@ -300,12 +300,36 @@ pub trait PowerControl: Send + Sync {
     ///
     /// Why the cap was not applied.
     fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String>;
+    /// Follow the power services: `changed` is called, on another thread,
+    /// each time the battery, a power supply or the power profile changes,
+    /// for as long as the answer is held. `None` when nothing can be
+    /// followed.
+    fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
 }
 
 /// The device's power hardware.
 pub struct SystemPower;
 
+/// The services reporting the battery, the power supplies and the power
+/// profile.
+const POWER_SERVICES: &[&str] = &[
+    "org.freedesktop.UPower",
+    "org.freedesktop.UPower.PowerProfiles",
+];
+
 impl PowerControl for SystemPower {
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        match os_actions::bus_follow::follow_system_services(POWER_SERVICES, changed) {
+            Ok(follow) => Some(Box::new(follow)),
+            Err(error) => {
+                tracing::warn!(target: "tilo::settings", %error, "the power services' changes are not followed");
+                None
+            }
+        }
+    }
+
     fn battery(&self) -> BatteryInfo {
         crate::device_read::off_ui_thread();
         BatteryInfo::from_system()
@@ -564,6 +588,8 @@ pub struct PowerArea {
     notices: LocalState<Notices>,
     /// Which span the charge chart shows, kept while the window is open.
     span: LocalState<usize>,
+    /// What tells the area the hardware changed while a pane shows it.
+    following: std::cell::RefCell<std::rc::Weak<crate::watch::Counted>>,
 }
 
 impl PowerArea {
@@ -593,7 +619,21 @@ impl PowerArea {
             state: Reading::new(move || PowerState::read(read.as_ref())),
             notices: LocalState::new(Notices::default()),
             span: LocalState::new(0),
+            following: std::cell::RefCell::default(),
         }
+    }
+
+    /// Follow the hardware while a pane shows it; panes share one follow.
+    /// Whether it starts now: nothing was followed before.
+    fn follow(&self) -> (std::rc::Rc<crate::watch::Counted>, bool) {
+        if let Some(held) = self.following.borrow().upgrade() {
+            return (held, false);
+        }
+        let control = Arc::clone(&self.control);
+        let started = crate::watch::shared(&mut self.following.borrow_mut(), move || {
+            crate::watch::Counted::start(|changed| control.follow(changed))
+        });
+        (started, true)
     }
 
     /// Take in what a change the hardware took made of it. Before the
@@ -747,6 +787,10 @@ pub struct PowerPane {
     hardware: Reading<PowerState>,
     /// The revision of `hardware` shown.
     hardware_seen: u64,
+    /// What tells the pane the hardware changed: each change reads it again.
+    following: std::rc::Rc<crate::watch::Counted>,
+    /// The change count last read for.
+    changes_seen: Option<u64>,
     /// What the hardware reported; `None` while it is first read.
     state: Option<PowerState>,
     notices_state: LocalState<Notices>,
@@ -763,13 +807,18 @@ impl PowerPane {
     /// cards say it is being read.
     pub fn new(cx: PaneCx, area: &PowerArea) -> Self {
         let hardware = area.state.clone();
-        if hardware.get().is_none() {
+        let (following, started) = area.follow();
+        // Nothing was followed while no pane showed it: what was read before
+        // is read again once.
+        if started || hardware.get().is_none() {
             hardware.refresh();
         }
         Self {
             prefs: cx.follow::<PowerPrefs>(),
             cx,
             hardware_seen: hardware.revision(),
+            changes_seen: following.changes(),
+            following,
             state: hardware.get(),
             hardware,
             notices: area.notices.get(),
@@ -1183,6 +1232,11 @@ impl Widget for PowerPane {
         if self.prefs.refresh() {
             self.composed.invalidate();
         }
+        let changes = self.following.changes();
+        if changes != self.changes_seen {
+            self.changes_seen = changes;
+            self.hardware.refresh();
+        }
         let revision = self.hardware.revision();
         if revision != self.hardware_seen {
             self.hardware_seen = revision;
@@ -1246,6 +1300,86 @@ mod tests {
                 .any(|pair| pair[1].unix_minute - pair[0].unix_minute > 60),
             "asleep overnight"
         );
+    }
+
+    /// Power hardware whose services' changes are followed by hand.
+    #[derive(Default)]
+    struct FollowedPower {
+        sample: SamplePower,
+        reads: std::sync::atomic::AtomicUsize,
+        follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    }
+
+    impl PowerControl for FollowedPower {
+        fn battery(&self) -> BatteryInfo {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.sample.battery()
+        }
+        fn devices(&self) -> Vec<os_actions::PowerDevice> {
+            self.sample.devices()
+        }
+        fn history(&self) -> os_actions::BatteryHistory {
+            self.sample.history()
+        }
+        fn profiles(
+            &self,
+        ) -> (
+            Result<PowerProfile, String>,
+            Result<Vec<PowerProfile>, String>,
+        ) {
+            self.sample.profiles()
+        }
+        fn set_profile(&self, profile: PowerProfile) -> Result<(), String> {
+            self.sample.set_profile(profile)
+        }
+        fn charge_cap(&self) -> Option<ChargeCapCapability> {
+            self.sample.charge_cap()
+        }
+        fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+            self.sample.set_charge_limit(percent)
+        }
+        fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+            *self.follower.lock_recover() = Some(Arc::from(changed));
+            Some(Box::new(()))
+        }
+    }
+
+    /// The open page reads the hardware again when a power service reports
+    /// a change, and only then: a profile chosen elsewhere shows.
+    #[test]
+    fn the_shown_page_reads_the_hardware_again_when_a_service_reports_a_change() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let control = Arc::new(FollowedPower::default());
+        let area = PowerArea::over(Arc::clone(&control) as Arc<dyn PowerControl>);
+        let mut pane = PowerPane::new(cx, &area);
+        let reads = || control.reads.load(std::sync::atomic::Ordering::Relaxed);
+        let sync = |pane: &mut PowerPane| {
+            pane.sync(&ui::automerge::AutoCommit::new(), &ui::automerge::ROOT);
+        };
+        tilo_test_env::wait_for("the hardware is read", || area.state.get());
+        sync(&mut pane);
+        assert_eq!(reads(), 1);
+        let changed = control
+            .follower
+            .lock_recover()
+            .clone()
+            .expect("the power services are followed while the page shows");
+
+        *control.sample.profile.lock_recover() = PowerProfile::Performance;
+        changed();
+        sync(&mut pane);
+        tilo_test_env::wait_for("the hardware is read again", || {
+            sync(&mut pane);
+            pane.state
+                .as_ref()
+                .is_some_and(|state| state.profile == PowerProfile::Performance)
+                .then_some(())
+        });
+        assert_eq!(reads(), 2, "one change, one read");
+        sync(&mut pane);
+        assert_eq!(reads(), 2, "nothing reads while nothing changes");
     }
 
     /// The battery shows its charge large, how long it lasts at the rate

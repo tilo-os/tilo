@@ -18,7 +18,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::launch::LaunchError;
-use ui::permissions::{PermissionContext, Role, UserId};
+use ui::permissions::{PermissionContext, Role, SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
 mod feedback_native;
@@ -77,7 +77,21 @@ pub struct InProcessApps {
     /// The window each mounted tab is shown in, as lent to its app: the
     /// slots it declares for its bar and its asks to close its tab.
     windows: HashMap<u64, ui::hosted_window::HostedWindow>,
+    /// The records the session's windows hold, by the window instance the
+    /// launcher started each for: what a report about a window records.
+    window_routes: Option<WindowRoutes>,
+    /// The apps mounted here that declare their windows withheld from what
+    /// leaves the device (`ComponentBehaviour::capture_protected`).
+    capture_protected: DeclaredProtected,
 }
+
+/// Apps that declare their windows capture-protected, by id.
+pub(crate) type DeclaredProtected = Rc<RefCell<std::collections::HashSet<String>>>;
+
+/// The records the session's broker knows its windows to hold, by window
+/// instance.
+pub type WindowRoutes =
+    std::sync::Arc<dyn Fn() -> Vec<(u64, tilo_action_broker::route::CrdtRoute)> + Send + Sync>;
 
 /// Connects an app the session shows in its own process to the session's
 /// broker for `(app, room)`.
@@ -152,6 +166,8 @@ impl InProcessApps {
             receivers: Vec::new(),
             messaging_services: Vec::new(),
             windows: HashMap::new(),
+            window_routes: None,
+            capture_protected: DeclaredProtected::default(),
         }
     }
 
@@ -507,6 +523,23 @@ impl InProcessApps {
         record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
+        let component = self.mount_component(definition, room, tab, record, lend)?;
+        if component.capture_protected() {
+            self.capture_protected
+                .borrow_mut()
+                .insert(definition.app_id.to_owned());
+        }
+        Ok(component)
+    }
+
+    fn mount_component(
+        &mut self,
+        definition: &'static ApplicationDefinition,
+        room: &str,
+        tab: u64,
+        record: RecordId,
+        lend: impl FnOnce(&mut HostContext),
+    ) -> Result<AppComponent, LaunchError> {
         super::work_accounting::app_mounted();
         if definition.app_id() == tilo_desktop::feedback::PACKAGE {
             return match &self.feedback {
@@ -551,10 +584,10 @@ impl InProcessApps {
             views: Rc::clone(&views),
             device_id: self.device_id.clone(),
             instance_id: tab,
-            permissions: Rc::new(RefCell::new(PermissionContext::member(
+            permissions: SharedPermissions::new(PermissionContext::member(
                 &self.author.0,
                 Role::Owner,
-            ))),
+            )),
             author: self.author.clone(),
             action_context: tilo_actions::ActionContext::default(),
         };
@@ -614,6 +647,11 @@ impl InProcessApps {
         lend(&mut context);
         definition.instantiate(context, target, RestoreInput::None)
     }
+
+    /// The apps mounted here that declare their windows capture-protected.
+    pub(crate) fn declared_capture_protected(&self) -> DeclaredProtected {
+        Rc::clone(&self.capture_protected)
+    }
 }
 
 impl InProcessApps {
@@ -669,6 +707,32 @@ impl InProcessApps {
         );
         self.lend_review_model();
         Ok(())
+    }
+
+    /// Learn the records the session's windows hold from its broker.
+    pub(crate) fn bind_window_routes(&mut self, routes: WindowRoutes) {
+        self.window_routes = Some(routes);
+    }
+
+    /// The record window `instance` of `app` in `room` shows: the one record
+    /// it holds there besides the app's own record of the workspace, or that
+    /// one alone. `None` when it holds none, or several.
+    pub(crate) fn window_record(&self, room: &str, app: &str, instance: u64) -> Option<String> {
+        let routes = self.window_routes.as_ref()?();
+        let mut held: Vec<String> = routes
+            .into_iter()
+            .filter(|(at, route)| {
+                *at == instance && route.app_id == app && route.cluster_id == room
+            })
+            .map(|(_, route)| route.record_id)
+            .collect();
+        held.sort();
+        held.dedup();
+        match held.as_slice() {
+            [only] => Some(only.clone()),
+            [primary, item] if primary.is_empty() => Some(item.clone()),
+            _ => None,
+        }
     }
 
     /// Feedback opened from now on, and an open composer, is about `subject`.
@@ -865,6 +929,7 @@ mod tests {
     include!("in_process_files_clipboard_tests.rs");
     include!("in_process_publication_tests.rs");
     include!("in_process_terminal_open_tests.rs");
+    include!("in_process_window_search_tests.rs");
 
     const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
     const TAB: u64 = 41;

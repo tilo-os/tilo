@@ -223,25 +223,15 @@ pub(crate) fn apply_on_device(config: &FirewallConfig, door: &Door, allow_host: 
             door.capability()
         ));
     }
-    #[cfg(test)]
-    {
-        let _ = allow_host;
-        // A unit test must never change the host it runs on. The plan is
-        // the same data the product path would execute.
-        let mut backend = Backend::new();
+    let mut backend = Backend::new();
+    // A unit test must never change the host it runs on. The plan is the
+    // same data the product path would execute.
+    if allow_host && !cfg!(test) {
+        backend.apply(config)?;
+    } else {
         backend.plan_only(config)?;
-        return Ok(backend.last_plan().len());
     }
-    #[cfg(not(test))]
-    {
-        let mut backend = Backend::new();
-        if allow_host {
-            backend.apply(config).map(|()| backend.last_plan().len())
-        } else {
-            backend.plan_only(config)?;
-            Ok(backend.last_plan().len())
-        }
-    }
+    Ok(backend.last_plan().len())
 }
 
 /// What one apply reports.
@@ -853,5 +843,15 @@ mod reach_tests {
                 "{scenario}: published actions a drive cannot invoke"
             );
         }
+    }
+
+    /// The window bar's sidebar button flips the sidebar on every click, in a
+    /// window wide enough to dock it and in a narrow one.
+    #[test]
+    fn the_window_bars_sidebar_button_flips_the_sidebar() {
+        ui::framework::testing::check_window_sidebar_button(|| {
+            ui::framework::testing::TestApp::<super::FirewallShell>::drive("add-rule")
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
     }
 }

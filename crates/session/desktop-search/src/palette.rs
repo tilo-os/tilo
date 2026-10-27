@@ -11,6 +11,7 @@ use crate::model::{Hit, Source, Target, search};
 use crate::providers::{
     Actions, AppEntry, Applications, CommandSpec, Commands, Content, Recents, WindowEntry, Windows,
 };
+use crate::window::WindowSearch;
 use ui::search::system::ResourceKind;
 
 /// Row id prefix of the row that lists the rest of a group the palette's
@@ -26,11 +27,12 @@ pub struct SearchData {
     pub resources: Vec<Resource>,
     /// The search providers open applications publish.
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,
-    /// Search what the resources hold, not what can be done to them: a
-    /// search one app or window opened is a search of its content, which
-    /// the app's actions (named for automation, not for finding things)
-    /// would otherwise crowd out.
+    /// Search what the resources hold, not what can be done to them.
     pub content_only: bool,
+    /// Search one window, over what it publishes (`resources` and
+    /// `providers` are that window's): what it holds, then what can be done
+    /// in it ([`crate::window::WindowSearch`]), as an app's own search does.
+    pub window: bool,
     /// The part of the application a search it opened is narrowed to (a
     /// [`ui::search::ScopeDecl`] anchor): one mailbox, one folder.
     pub scope: Option<String>,
@@ -53,10 +55,22 @@ struct Sources {
     commands: Commands,
     actions: Actions,
     content: Content,
+    /// The one window searched, when the search is a window's.
+    window: Option<WindowSearch>,
 }
 
 impl Sources {
     fn new(data: SearchData) -> Self {
+        if data.window {
+            return Self {
+                applications: Applications::new(data.applications),
+                windows: Windows(data.windows),
+                commands: Commands(data.commands),
+                content: Content::new(Vec::new(), Vec::new()),
+                actions: Actions(Vec::new()),
+                window: Some(WindowSearch::new(data.resources, data.providers).within(data.scope)),
+            };
+        }
         Self {
             applications: Applications::new(data.applications),
             windows: Windows(data.windows),
@@ -67,7 +81,18 @@ impl Sources {
             } else {
                 data.resources
             }),
+            window: None,
         }
+    }
+
+    /// Ask the applications whose answers were still coming.
+    fn poll(&self) -> bool {
+        let window = self.window.as_ref().is_some_and(WindowSearch::poll);
+        self.content.poll() || window
+    }
+
+    fn waiting(&self) -> bool {
+        self.content.waiting() || self.window.as_ref().is_some_and(WindowSearch::waiting)
     }
 }
 
@@ -131,9 +156,7 @@ impl DesktopSearch {
     /// Whether an application's answer to the query is still coming: the
     /// host keeps calling [`Self::refresh`] until it arrives.
     pub fn waiting(&self) -> bool {
-        self.sources
-            .as_ref()
-            .is_some_and(|sources| sources.content.waiting())
+        self.sources.as_ref().is_some_and(Sources::waiting)
     }
 
     /// Open over `data` with an empty query.
@@ -192,7 +215,7 @@ impl DesktopSearch {
         let Some(sources) = &self.sources else {
             return false;
         };
-        let answered = sources.content.poll();
+        let answered = sources.poll();
         let query = self.palette.query().to_owned();
         let generation = ui::search::engine_generation();
         if !answered
@@ -213,18 +236,34 @@ impl DesktopSearch {
         let Some(sources) = &self.sources else {
             return;
         };
-        let groups = search(
-            &query,
-            &[
-                &self.recents as &dyn Source,
-                &sources.applications,
-                &sources.windows,
-                &sources.content,
-                &sources.actions,
-                &sources.commands,
-            ],
-            0,
-        );
+        let groups = match &sources.window {
+            // A window's search is about what the window holds: its
+            // resources lead, and what can be done follows them, those
+            // acting on the selection first.
+            Some(window) => {
+                let (mut actions, mut held): (Vec<_>, Vec<_>) =
+                    search(&query, &[window as &dyn Source], 0)
+                        .into_iter()
+                        .partition(|group| group.kind == ResourceKind::Action);
+                for group in &mut actions {
+                    crate::window::selection_first(&mut group.results);
+                }
+                held.extend(actions);
+                held
+            }
+            None => search(
+                &query,
+                &[
+                    &self.recents as &dyn Source,
+                    &sources.applications,
+                    &sources.windows,
+                    &sources.content,
+                    &sources.actions,
+                    &sources.commands,
+                ],
+                0,
+            ),
+        };
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place.
         let groups = ui::search::system::trim_groups(
@@ -406,7 +445,11 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
             }
             entry.id = id;
             entry.label.clone_from(&hit.title);
-            (entry, ui::search::system::icon_for_kind(&hit.kind))
+            (
+                entry,
+                hit.icon
+                    .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
+            )
         }
         Target::Launch { app } | Target::Window { app: Some(app), .. } => (
             CommandEntry::new(id, hit.title.clone()),
@@ -619,6 +662,82 @@ mod tests {
             ..base
         });
         (search, arrived)
+    }
+
+    /// A window's own search, listing its one place unasked.
+    struct Places;
+
+    impl ui::search::SearchProvider for Places {
+        fn name(&self) -> &'static str {
+            "Places"
+        }
+        fn search(&self, _: &str) -> Vec<ui::search::SearchResult> {
+            vec![ui::search::SearchResult::new(
+                "Places",
+                "Home",
+                "place:home",
+            )]
+        }
+        fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+            Some(tilo_actions::ActionAddress::new("notes.notebook", "open"))
+        }
+    }
+
+    /// A window's search lists what the window holds, then what can be
+    /// done in it, before anything is typed: the actions are part of it.
+    #[test]
+    fn a_windows_search_lists_its_resources_then_its_actions() {
+        let action = |id: &str, label: &str| {
+            tilo_actions::ActionSpec::immediate_encoded(
+                id,
+                label,
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction {
+                    type_id: "test.action".into(),
+                    payload: Vec::new(),
+                },
+            )
+        };
+        // The framework's `open`, which shows the item at a hit's anchor.
+        let open = tilo_actions::ActionSpec::typed_operation(
+            "open",
+            "Open",
+            "Item to open",
+            tilo_actions::OperationKind::View,
+            tilo_actions::remote::APPLICATION_OPEN_TYPE,
+            vec![tilo_actions::ActionParam::required(
+                "anchor",
+                tilo_actions::ParamType::Text,
+                "Item to open",
+            )],
+            |_| tilo_actions::EncodedAction {
+                type_id: tilo_actions::remote::APPLICATION_OPEN_TYPE.into(),
+                payload: Vec::new(),
+            },
+        );
+        let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notebook")
+            .with_action(open)
+            .with_action(action("new-note", "New note"));
+        notebook.children = vec![Resource::new("page:1", "notes.page", "Groceries")];
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            resources: vec![notebook],
+            providers: vec![Box::new(Places)],
+            window: true,
+            ..SearchData::default()
+        });
+        let rows: Vec<(&str, &ResourceKind)> = search
+            .results()
+            .iter()
+            .map(|hit| (hit.title.as_str(), &hit.kind))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Home", &ResourceKind::Custom("Places".into())),
+                ("New note", &ResourceKind::Action),
+            ]
+        );
     }
 
     fn selected(search: &DesktopSearch) -> Option<(String, String)> {

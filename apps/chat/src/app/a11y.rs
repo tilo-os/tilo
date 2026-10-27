@@ -110,7 +110,29 @@ impl ChatApp {
                     node
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // The place of the earlier messages says what it shows: a part on its
+        // way, or that the room's hosts have none of it.
+        let earlier = self
+            .scrollback
+            .pager
+            .as_ref()
+            .filter(|_| self.reads_back())
+            .and_then(|pager| {
+                if pager.unavailable() {
+                    Some(ui::widget::conversation::EarlierUnavailableFace::label())
+                } else {
+                    pager
+                        .arriving()
+                        .then(|| crate::i18n::t("chat-earlier-arriving"))
+                }
+            })
+            .map(|label| {
+                AccessNode::new(Role::StaticText)
+                    .with_name(label)
+                    .with_hashed_key(("earlier-messages", &self.active_channel))
+            });
+        let conversation: Vec<AccessNode> = earlier.into_iter().chain(conversation).collect();
         AccessNode::new(Role::List)
             .with_name(crate::i18n::t("chat-messages"))
             .with_interface_name(true)

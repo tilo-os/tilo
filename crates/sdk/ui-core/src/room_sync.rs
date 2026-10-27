@@ -111,7 +111,7 @@ thread_local! {
     static HOLDINGS: RefCell<Option<Arriving<(), RoomUnreachable>>> = const { RefCell::new(None) };
     /// The permissions of the components a workspace launch hosts, which
     /// follow [`RoomSync::writable`] (`follow_participation`).
-    static FOLLOWERS: RefCell<Vec<std::rc::Weak<RefCell<crate::permissions::PermissionContext>>>> =
+    static FOLLOWERS: RefCell<Vec<crate::permissions::WeakPermissions>> =
         const { RefCell::new(Vec::new()) };
     /// The spinner step an empty state painted last, and where (scene
     /// pixels) a new pose was painted that no presented frame has damaged
@@ -256,13 +256,11 @@ fn tell(sync: Option<RoomSync>) -> bool {
 /// Let `permissions`, a workspace launch's, follow the room's grants: when
 /// the shell says the app may write the room now, or may not any more, they
 /// become an author's or a viewer's at once ([`RoomSync::writable`]).
-pub fn follow_participation(
-    permissions: &std::rc::Rc<RefCell<crate::permissions::PermissionContext>>,
-) {
+pub fn follow_participation(permissions: &crate::permissions::SharedPermissions) {
     FOLLOWERS.with(|followers| {
         let mut followers = followers.borrow_mut();
-        followers.retain(|follower| follower.strong_count() > 0);
-        followers.push(std::rc::Rc::downgrade(permissions));
+        followers.retain(crate::permissions::WeakPermissions::is_shared);
+        followers.push(permissions.downgrade());
     });
     if let Some(writable) = current().and_then(|sync| sync.writable) {
         rebase(permissions, writable);
@@ -273,10 +271,10 @@ pub fn follow_participation(
 fn follow(writable: bool) {
     let live: Vec<_> = FOLLOWERS.with(|followers| {
         let mut followers = followers.borrow_mut();
-        followers.retain(|follower| follower.strong_count() > 0);
+        followers.retain(crate::permissions::WeakPermissions::is_shared);
         followers
             .iter()
-            .filter_map(std::rc::Weak::upgrade)
+            .filter_map(crate::permissions::WeakPermissions::upgrade)
             .collect()
     });
     for permissions in live {
@@ -284,10 +282,10 @@ fn follow(writable: bool) {
     }
 }
 
-fn rebase(permissions: &RefCell<crate::permissions::PermissionContext>, writable: bool) {
+fn rebase(permissions: &crate::permissions::SharedPermissions, writable: bool) {
     let next = permissions.borrow().with_participation(writable);
     if let Some(next) = next {
-        *permissions.borrow_mut() = next;
+        permissions.set(next);
     }
 }
 
@@ -547,24 +545,26 @@ mod tests {
 
     #[test]
     fn a_launch_opened_read_only_becomes_writable_when_its_authorship_arrives_and_back() {
-        use crate::permissions::{ActionKind, PermissionContext, PermissionScope, Role};
+        use crate::permissions::{
+            ActionKind, PermissionContext, PermissionScope, Role, SharedPermissions,
+        };
         let room = "3f2b1c00-0000-4000-8000-000000000001";
-        let writes = |permissions: &std::rc::Rc<RefCell<PermissionContext>>| {
+        let writes = |permissions: &SharedPermissions| {
             permissions
                 .borrow()
                 .check(&PermissionScope::workspace(ActionKind::Undoable))
         };
         set(None);
-        let launch = std::rc::Rc::new(RefCell::new(PermissionContext::member_of(
+        let launch = crate::permissions::SharedPermissions::new(PermissionContext::member_of(
             room,
             "person-a",
             Role::Viewer,
-        )));
-        let own = std::rc::Rc::new(RefCell::new(PermissionContext::member_of(
+        ));
+        let own = crate::permissions::SharedPermissions::new(PermissionContext::member_of(
             room,
             "person-a",
             Role::Owner,
-        )));
+        ));
         follow_participation(&launch);
         follow_participation(&own);
         assert!(!writes(&launch), "opened read-only");

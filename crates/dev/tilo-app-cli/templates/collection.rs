@@ -53,11 +53,14 @@ fn item_row(row: &mut ViewCx<Items, Item>) -> Element {
         return Box::new(Column::new());
     };
     let p = row.paths();
-    let done = row.checkbox("collection-done-label", p.done);
+    let done = row.checkbox(crate::locales::keys::COLLECTION_DONE_LABEL, p.done);
     let title = row
         .input(p.title)
-        .with_placeholder("collection-title-placeholder");
-    let remove = row.button("collection-remove", Items::REMOVE.with(id));
+        .with_placeholder(crate::locales::keys::COLLECTION_TITLE_PLACEHOLDER);
+    let remove = row.button(
+        crate::locales::keys::COLLECTION_REMOVE,
+        Items::REMOVE.with(id),
+    );
     Box::new(ui::row![done, title, remove])
 }
 
@@ -79,8 +82,8 @@ impl ResourceApp for App {
         let draft = cx
             .input(next.paths().title)
             .with_id("draft-input")
-            .with_placeholder("collection-draft-placeholder");
-        let add = cx.button("collection-add", next.submit());
+            .with_placeholder(crate::locales::keys::COLLECTION_DRAFT_PLACEHOLDER);
+        let add = cx.button(crate::locales::keys::COLLECTION_ADD, next.submit());
         // Apps start empty; say what to do instead of showing a blank list.
         let empty = cx.value(|items| items.items.is_empty());
         let hint = ModelView::from_state(&empty, |empty| -> Element {
@@ -95,7 +98,10 @@ impl ResourceApp for App {
         });
         let rows = cx.each(|items| &items.items, item_row);
         Box::new(ui::column![
-            ui::row![labeled_field("collection-draft-label", draft), add],
+            ui::row![
+                labeled_field(crate::locales::keys::COLLECTION_DRAFT_LABEL, draft),
+                add
+            ],
             hint,
             rows,
         ])

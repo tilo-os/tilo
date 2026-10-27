@@ -38,7 +38,9 @@ messages-server-acknowledged = Accepted by service
 messages-delivered = Delivered to recipient
 messages-read = Read by recipient
 messages-uncertain = Send status uncertain
-messages-more-history = Showing recent messages
+messages-load-older = Load older messages
+messages-loading-older = Loading older messages…
+messages-history-start = This is the start of the conversation.
 messages-list-people = List people
 messages-list-routes = List messaging choices
 
@@ -121,9 +123,64 @@ messages-group-leave = Leave this group
 messages-group-add-choice = Add { $person } using { $route }
 messages-group-remove-choice = Remove { $member }
 
-# History of the conversations kept in the record.
+## History: what each change did, by verb and by field
+
+# The conversations kept in the record.
 messages-deliver-message = Delivered a message from { $from }
 messages-send-message = Queued a message to { $to }
 messages-reply = Queued a reply
+
+# The people in Contacts and the service accounts Messages reaches them on.
+messages-project-contact = Added { $item } to your contacts
+messages-remove-contact = Removed the contact { $item }
+messages-confirm-endpoint = Linked the { $service } address { $recipient } for { $item }
+messages-confirm-account = Linked the { $service } account { $recipient } to { $item }
+messages-replace-endpoint = Replaced the { $service } address for { $item } with { $recipient }
+messages-replace-account = Replaced the { $service } account for { $item } with { $recipient }
+messages-project-phones = Changed the phone numbers of { $item }
+messages-project-emails = Changed the email addresses of { $item }
+messages-project-contacts = Changed your contacts
+messages-forget-endpoint = Unlinked an address from { $item }
+
+# The service accounts a person adds, removes and switches between.
+messages-publish-browser-identity = Added the account { $item } for use in this browser
+messages-save-account = Saved the account { $item }
+messages-publish-signal-account = Added the Signal account { $item }
+messages-publish-sms-account = Added the SMS account { $item }
+messages-publish-whatsapp-account = Added the WhatsApp account { $item }
+messages-publish-tilo-account = Added the Tilo account { $item }
+messages-remove-account = Removed the account { $item }
+messages-set-active-account = Switched to another account
+
+# The drafts a person has not sent yet.
+messages-keep-draft = Kept a draft
+messages-drop-draft = Discarded a draft
+
+# A field of an entry, and what the entry is called: the words say what
+# changed it, so they read on their own.
+messages-message-from = A message from { $item }
+messages-message-to = Who a message is for
+messages-message-body = What a message says
+messages-message-date = When a message was sent
+messages-message-at-ms = When a message was sent
+messages-message-outgoing = Whether a message was written here
+messages-message-queued = Whether a message is waiting to be sent
+messages-person-label = The name of { $item }
+messages-person-removed = Whether { $item } is in your contacts
+messages-person-phones = The phone numbers of { $item }
+messages-person-emails = The email addresses of { $item }
+messages-person-photo = The photo of { $item }
+messages-endpoint-service = The service { $item } is reached on
+messages-endpoint-recipient = The address { $item } is reached at
+messages-endpoint-scope = The account { $item } is reached through
+messages-endpoint-revision = The linked identity of { $item }
+messages-endpoint-removed = Whether { $item } is still linked
+messages-person-account-type-id = The kind of the account { $item }
+messages-person-account-display-name = The name of the account { $item }
+messages-person-account-config = The connection settings of { $item }
+messages-person-account-enabled = Whether { $item } is in use
+messages-person-account-tint = The colour of { $item }
+messages-person-accounts-active = The account in use for a service
+messages-message-drafts-drafts = The unsent words kept for each conversation
 
 messages-conversation-with = Conversation with {$person}

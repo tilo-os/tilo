@@ -21,9 +21,20 @@ grep -Fq 'plymouth-plugin-script' "$containerfile"
 # Names and messages on the boot sign-in screen are drawn by the label plugin.
 grep -Fq 'plymouth-plugin-label' "$containerfile"
 grep -Fq 'Image.Text(' "$script"
-if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"' "$root/os/scripts/build-initramfs.sh" \
+if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-boot-face"' "$root/os/scripts/build-initramfs.sh" \
   || ! grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$containerfile"; then
   printf 'initramfs must explicitly include crypt, TPM, Plymouth, and Tilo rollback unlock modules\n' >&2
+  exit 1
+fi
+# The label plugin draws with Plymouth.ttf and, for a "Mono" font name,
+# Plymouth-monospace.ttf: both point at the login screen's face, cut to the
+# weights tilo.script asks for.
+face_module="$root/os/usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh"
+if ! containerfile_has_copy "$containerfile" "os/usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh" \
+    /usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh \
+  || ! grep -Fq 'Plymouth.ttf:boot-face.ttf Plymouth-monospace.ttf:boot-face-strong.ttf' "$face_module" \
+  || ! grep -Fq 'face = "Mono ";' "$script"; then
+  printf "the boot screen must draw run-time text in the login screen's face, in both weights\n" >&2
   exit 1
 fi
 grep -Fq 'plymouth-set-default-theme tilo' "$containerfile"
@@ -87,7 +98,15 @@ tmp="$(mktemp -d "$scratch/boot-ux.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 python3 "$root/os/dev/make-boot-splash.py" "$tmp/splash.bmp"
 look="$root/os/usr/share/plymouth/themes/tilo/look.json"
-python3 "$root/os/dev/make-plymouth-assets.py" "$tmp/plymouth" "$look"
+# The image build draws in look.json's family (Tilo Sans) from the font
+# catalog. Where the catalog is not installed, this checks the theme's
+# structure in the variable sans fontconfig has, cut and listed the same way.
+face_args=()
+family="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["family"])' "$look")"
+if ! fc-match -f '%{family}' "$family" | tr ',' '\n' | grep -Fxq "$family"; then
+  face_args=(--face "$(fc-match -f '%{file}' 'sans-serif:slant=0')")
+fi
+python3 "$root/os/dev/make-plymouth-assets.py" "$tmp/plymouth" "$look" "${face_args[@]}"
 # Plymouth's script language reads no files: the login screen's look sits in
 # tilo.script itself, and must be the look.json the greeter's test keeps.
 python3 "$root/os/dev/make-plymouth-assets.py" --script-look "$look" >"$tmp/look.block"
@@ -137,13 +156,13 @@ fi
 python3 - "$tmp/plymouth" "$script" <<'PY'
 import pathlib, re, struct, sys
 root = pathlib.Path(sys.argv[1])
-expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
+expected = {"tilo-logo.png",
             "unlock-heading.png", "unlock-help.png", "unlock-retry.png",
             "starting-tilo.png", "shutting-down.png", "startup-help.png",
             "progress-background.png", "progress-fill.png",
             # The sign-in screen (tilo.script, "Sign-in").
             "avatar-person.png", "signin-heading.png", "field.png", "field-invalid.png",
-            "field-bullet.png", "alert.png", "placeholder-pin.png", "placeholder-password.png",
+            "field-bullet.png", "alert.png", "field-label-pin.png", "field-label-password.png",
             "note-wrong-pin.png", "note-wrong-password.png", "note-wait.png",
             "signing-in.png", "hint-other-ways.png", "hint-someone-else.png", "hint-go-back.png",
             "list-heading.png", "list-keys.png", "row.png", "row-selected.png",
@@ -151,11 +170,24 @@ expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
             "account-4.png"} | {f"avatar-{slot}.png" for slot in range(12)} \
          | {f"unlock-help-{kind}.png" for kind in ("password-recovery", "passphrase-recovery",
                                                    "password", "passphrase", "recovery")}
-assert {path.name for path in root.iterdir()} == expected
+# Run-time text: the login screen's face in its two weights, and what it
+# draws (tilo-boot-signin reads glyphs.txt; 93tilo-boot-face links the faces).
+faces = {"boot-face.ttf", "boot-face-strong.ttf", "glyphs.txt"}
+assert {path.name for path in root.iterdir()} == expected | faces
 # Every image the theme loads by name is one the build renders.
 loaded = set(re.findall(r'Image\("([^"]+\.png)"\)', open(sys.argv[2]).read()))
 assert loaded and loaded <= expected, sorted(loaded - expected)
+for name in ("boot-face.ttf", "boot-face-strong.ttf"):
+    data = (root / name).read_bytes()
+    assert data[:4] in (b"\x00\x01\x00\x00", b"OTTO", b"true"), name
+    assert b"fvar" not in data[12:12 + 16 * struct.unpack(">H", data[4:6])[0]], \
+        f"{name} must be a static cut: Plymouth draws a variable face at its default"
+ranges = [line.split("-") for line in (root / "glyphs.txt").read_text().split()]
+assert ranges and all(int(a, 16) <= int(b, 16) for a, b in ranges)
+assert any(int(a, 16) <= ord("A") <= int(b, 16) for a, b in ranges)
 for path in root.iterdir():
+    if path.suffix != ".png":
+        continue
     data = path.read_bytes()
     assert data[:8] == b"\x89PNG\r\n\x1a\n", path
     width, height = struct.unpack(">II", data[16:24])

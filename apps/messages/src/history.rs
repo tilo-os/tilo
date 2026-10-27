@@ -4,13 +4,13 @@
 use std::rc::Rc;
 
 use tilo_contact_directory::routing;
-use tilo_messaging::{Delivery, Direction, HistoryClient, HistoryPage};
+use tilo_messaging::{Delivery, Direction, HistoryClient, HistoryCursor, HistoryPage};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected};
+use ui::framework::{ActionControl, Actions, EffectAnswer, EffectCx, EffectStatus, Effected};
 use ui::i18n::ArgValue;
 use ui::widget::{
-    Column, ConversationLine, ConversationList, DeliveryState, DeliveryStep, Element, ModelView,
-    Text,
+    Button, Column, ConversationLine, ConversationList, DeliveryState, DeliveryStep, Element,
+    ModelView, Text,
 };
 
 use crate::view::{Choice, Selection, Sources, choices};
@@ -23,7 +23,14 @@ struct Projection {
     generation: u64,
     route: Option<routing::Route>,
     page: Option<Rc<HistoryPage>>,
+    /// The newest page is on its way.
     loading: bool,
+    /// The page before the conversation's oldest message is on its way.
+    loading_older: bool,
+    /// Pages read into this conversation: the newest one, and each older
+    /// page the person asked for. One page is all there was to begin with,
+    /// so the conversation's start is only worth saying once this is more.
+    pages: usize,
 }
 
 #[derive(Clone)]
@@ -66,6 +73,8 @@ impl HistoryView {
             route: Some(page.route.clone()),
             page: Some(Rc::new(page)),
             loading: false,
+            loading_older: false,
+            pages: 1,
         });
     }
 
@@ -76,6 +85,8 @@ impl HistoryView {
             route: Some(page.route.clone()),
             page: Some(Rc::new(page)),
             loading: false,
+            loading_older: false,
+            pages: 1,
         });
     }
 
@@ -128,12 +139,13 @@ impl HistoryView {
             route: Some(route.clone()),
             loading: true,
             page: None,
+            ..Projection::default()
         });
         let view = self.clone();
         let sources = sources.clone();
         let selection = selection.clone();
         Ok(cx.spawn(
-            move |_| async move { client.read(route).await },
+            move |_| async move { client.read(route, None).await },
             move |(), result, _| {
                 // Cancellation, another request, route switches and revocation
                 // all invalidate a response before any plaintext is projected.
@@ -150,10 +162,93 @@ impl HistoryView {
                         generation,
                         route: Some(route),
                         loading: false,
+                        loading_older: false,
+                        pages: 1,
                         page: Some(Rc::new(page)),
                     }),
                     _ => {
                         view.clear();
+                        return Err(CATALOG.t("messages-history-unavailable"));
+                    }
+                }
+                Ok(Effected::done())
+            },
+        ))
+    }
+
+    /// The page before the conversation's oldest message: read where that
+    /// message is, and keep the messages already shown beneath it.
+    ///
+    /// The oldest message shown is the cursor, so a page the host answered
+    /// twice cannot be read into the conversation twice, and an answer whose
+    /// route or generation moved on is dropped rather than grafted on.
+    pub(crate) fn read_older(
+        &self,
+        sources: &Sources,
+        selection: &LocalState<Selection>,
+        choice: &str,
+        cx: &mut EffectCx<Messages>,
+    ) -> EffectAnswer {
+        let client = self
+            .client
+            .clone()
+            .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
+        let selected = selection.get();
+        let requested: Choice =
+            serde_json::from_str(choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
+        let route = current_route(sources, &selected, &requested)?;
+        let projection = self.state.get();
+        if projection.loading
+            || projection.loading_older
+            || projection.route.as_ref() != Some(&route)
+        {
+            return Ok(Effected::done());
+        }
+        let page = projection
+            .page
+            .clone()
+            .filter(|page| page.more)
+            .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
+        let Some(cursor) = oldest(&page) else {
+            return Ok(Effected::done());
+        };
+        let generation = projection.generation;
+        self.state.set(Projection {
+            loading_older: true,
+            page: Some(page),
+            ..projection
+        });
+        let asked = route.clone();
+        let view = self.clone();
+        let sources = sources.clone();
+        let selection = selection.clone();
+        Ok(cx.spawn(
+            move |_| async move { client.read(asked, Some(cursor)).await },
+            move |(), result, _| {
+                let shown = view.state.get();
+                // Another request, a route switch or revocation outranks this
+                // answer: an older page belongs to the conversation it was
+                // asked of, not to whichever one is open now.
+                if shown.generation != generation
+                    || current_route(&sources, &selection.get(), &requested).as_ref() != Ok(&route)
+                {
+                    return Ok(Effected::done());
+                }
+                let Some(page) = shown.page.clone() else {
+                    return Ok(Effected::done());
+                };
+                match result {
+                    Ok(older) if older.route == route => view.state.set(Projection {
+                        loading_older: false,
+                        pages: shown.pages.saturating_add(1),
+                        page: Some(Rc::new(merge(&older, &page))),
+                        ..shown
+                    }),
+                    Ok(_) | Err(_) => {
+                        view.state.set(Projection {
+                            loading_older: false,
+                            ..shown
+                        });
                         return Err(CATALOG.t("messages-history-unavailable"));
                     }
                 }
@@ -184,15 +279,32 @@ impl HistoryView {
         choice: Option<&Choice>,
         hint: &str,
         author: &str,
+        actions: &Actions<Messages>,
     ) -> Element {
         let sources = sources.clone();
         let selected = selection.clone();
         let choice = choice.cloned();
         let hint = hint.to_owned();
         let author = author.to_owned();
+        // The way to the page before: the app's own request, bound where the
+        // page still has one.
+        let older = choice.as_ref().and_then(|choice| {
+            actions.effect(&MessagesEffect::ReadOlderHistory {
+                choice: choice.value(),
+            })
+        });
         Box::new(ModelView::from_state_by(
             &self.state,
-            |state| (state.generation, state.loading, state.page.is_some()),
+            |state| {
+                (
+                    state.generation,
+                    state.loading,
+                    state.page.is_some(),
+                    state.loading_older,
+                    state.page.as_ref().is_some_and(|page| page.more),
+                    state.pages,
+                )
+            },
             move |state| {
                 let route = choice
                     .as_ref()
@@ -205,6 +317,15 @@ impl HistoryView {
                     .as_ref()
                     .filter(|page| Some(&page.route) == route.as_ref())
                 {
+                    // What came before what shows: a button while there is a
+                    // page to read, and the conversation's start once the
+                    // person has gone back to it. Older SMS that merely stops
+                    // reads as a conversation that ended, which it did not.
+                    if page.more {
+                        body = body.push(older_control(older.clone(), state.loading_older));
+                    } else if state.pages > 1 {
+                        body = body.push(Box::new(Text::new("messages-history-start")));
+                    }
                     body = body.push(history_lines(page, &author));
                 } else {
                     body = body.push(super::view::empty(&hint, "messages-transport-unavailable"));
@@ -212,6 +333,43 @@ impl HistoryView {
                 Box::new(body)
             },
         ))
+    }
+}
+
+/// Older messages lead the conversation, so the way back to them stands
+/// above it: the button that asks for the page before, or, while that page is
+/// on its way, the words saying so.
+fn older_control(binding: Option<ui::tilo_actions::ActionBinding<()>>, loading: bool) -> Element {
+    if loading {
+        return Box::new(Text::new("messages-loading-older"));
+    }
+    match binding {
+        Some(binding) => {
+            Box::new(Button::new("messages.load-older", "messages-load-older").bind_action(binding))
+        }
+        None => Box::new(Text::new("messages-history-unavailable")),
+    }
+}
+
+/// The oldest message a page carries, whichever end of it the host wrote
+/// first: where the page before it begins.
+fn oldest(page: &HistoryPage) -> Option<HistoryCursor> {
+    page.messages
+        .iter()
+        .min_by_key(|message| message.timestamp_ms)
+        .map(HistoryCursor::before)
+}
+
+/// `older` beneath `shown`: the page before it first, then what showed, and
+/// the older page's answer to whether anything precedes that.
+fn merge(older: &HistoryPage, shown: &HistoryPage) -> HistoryPage {
+    let mut messages = older.messages.clone();
+    messages.extend(shown.messages.iter().cloned());
+    messages.dedup_by(|a, b| a.id == b.id);
+    HistoryPage {
+        route: shown.route.clone(),
+        messages,
+        more: older.more,
     }
 }
 

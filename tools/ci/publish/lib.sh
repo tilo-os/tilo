@@ -6,21 +6,9 @@
 # so main only ever publishes development artifacts; releases come from stable and release
 # tags, which only the stabilizer pushes.
 
-repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
-scratch=${TMPDIR:-/tmp}
-# Build scripts that prepare test fixtures (tilo-fs) write them to this cache; the source tree
-# is read-only in t's sandbox, so it lives in the build directory.
-export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-${CARGO_TARGET_DIR:-$repo_root/target}/test-assets}
-
-die() { printf 'publish: %s\n' "$*" >&2; exit 1; }
-
-# Under errexit a command that fails without a word (a grep that matched nothing) would end the
-# step silently: name it, its status and where it ran, in functions and substitutions too.
-set -o errtrace
-trap 'failed $? "$BASH_COMMAND" "${BASH_SOURCE[0]:-$0}" "$LINENO"' ERR
-failed() {
-  if [[ $- == *e* ]]; then printf 'publish: `%s` failed with status %s at %s:%s\n' "$2" "$1" "$3" "$4" >&2; fi
-}
+# What a build needs as well (die, the scratch directory, buildah, pinned assets, image digests)
+# is build-lib.sh's, which builds source alone, so they are not keyed on how publishing works.
+. "$(dirname -- "${BASH_SOURCE[0]}")/build-lib.sh"
 
 # The channel of this run: `dev` on main, `release` on stable and release tags, `branch` on any
 # other branch, which publishes only its own build under tags that name the branch (`t dispatch
@@ -61,49 +49,6 @@ id_token() {
     || die "t gave no identity token for $1"
   [[ -n $token ]] || die "t gave no identity token for $1"
   printf '%s' "$token"
-}
-
-# buildah without a daemon, as root in t's sandbox: chroot isolation and the vfs driver need no
-# user namespace of their own and no writable root. The store lives under $scratch/NAME; `b`
-# runs buildah on it. DRIVER `overlay` works in a micro-VM step (its scratch disk is ext4) and
-# doesn't copy every layer whole as vfs does, for images of hundreds of MB.
-use_buildah() {
-  local store=$scratch/${1:-buildah} driver=${2:-vfs}
-  export STORAGE_DRIVER=$driver BUILDAH_ISOLATION=chroot
-  mkdir -p "$store"
-  # The image's own storage.conf names an additional image store under its read-only root.
-  printf '[storage]\ndriver = "%s"\n' "$driver" > "$store/storage.conf"
-  export CONTAINERS_STORAGE_CONF=$store/storage.conf
-  buildah_root=$store/root
-  buildah_runroot=$store/run
-}
-b() { buildah --root "$buildah_root" --runroot "$buildah_runroot" "$@"; }
-
-# Copy the repository into DEST without what IGNOREFILE (a .dockerignore without `!` lines)
-# leaves out. BuildKit applies such a file to every use of the context; buildah only to COPY,
-# not to a RUN's bind mount of it, so builds that bind the context get a filtered copy.
-stage_context() {
-  local ignorefile=$1 dest=$2 pattern excludes=()
-  grep -q '^!' "$ignorefile" && die "$ignorefile has exceptions, which stage_context does not apply"
-  while IFS= read -r pattern; do
-    pattern=${pattern%/}
-    case $pattern in
-      '' | '#'*) ;;
-      '**/'*) excludes+=(--no-anchored "--exclude=${pattern#'**/'}") ;;
-      *) excludes+=(--anchored "--exclude=./$pattern") ;;
-    esac
-  done < "$ignorefile"
-  rm -rf "$dest"
-  mkdir -p "$dest"
-  tar -C "$repo_root" "${excludes[@]}" -cf - . | tar -C "$dest" -xf -
-}
-
-# The pinned external assets NAME... (os/external-assets/github-assets.tsv), checksum-verified;
-# prints their directory, for --build-context. They come from the os-assets check's outputs,
-# which the calling check needs; nothing here downloads them.
-pinned_assets() {
-  TILO_ASSET_OFFLINE=1 bash "$repo_root/os/dev/cache-github-assets.sh" "$@" >&2
-  printf '%s' "$repo_root/os/external-assets/cache"
 }
 
 # Credentials of the AWS role $1 in region $2, exported as AWS_ACCESS_KEY_ID,
@@ -152,9 +97,12 @@ registry_login() {
 }
 
 # skopeo copy SRC DST (docker://REGISTRY/...), with the auth file AUTH and further skopeo flags,
-# logged in afresh before each attempt: an identity token lasts minutes, so a push that outlives
-# it (a multi-GB image) fails to authenticate its next blob; the next attempt logs in again, and
-# the blobs already pushed are not sent twice. DOCKER_CONFIG, when set, gets the same login.
+# logged in afresh before each attempt. skopeo takes the credentials once: t's identity token lasts
+# 5 minutes and the registry token it buys 10, and when that runs out skopeo asks again with the
+# expired identity token, so a copy that takes longer fails its next blob. One that sends a GB or
+# more takes longer (the first push of a new package set, kernel or base, at the 1-2 MB/s the
+# registry takes in); the next attempt logs in again and sends only the blobs not yet there.
+# DOCKER_CONFIG, when set, gets the same login.
 registry_copy() {
   local auth=$1 src=$2 dst=$3 registry attempt
   shift 3
@@ -167,59 +115,6 @@ registry_copy() {
     printf 'publish: copy attempt %s to %s failed; logging in again\n' "$attempt" "$dst" >&2
   done
   die "could not copy $src to $dst"
-}
-
-# The board's firmware, into os/hardware/firmware/BOARD (writable_sources), where the image
-# builds take it from: the Lenovo's from its pinned artifact, the Orange Pi's Wi-Fi files from
-# their pinned public copies.
-stage_board_firmware() {
-  case $1 in
-    lenovo-83ed)
-      python3 "$repo_root/os/dev/hardware-firmware-artifact.py" import \
-        --reference "$(publication TILO_LENOVO_FIRMWARE_REF)" \
-        --manifest-sha256 "$(publication TILO_LENOVO_FIRMWARE_MANIFEST_SHA256)" \
-        --profile lenovo-83ed --architecture aarch64 --repo "$repo_root" >/dev/null ;;
-    orangepi-3b-v2-1)
-      TILO_ASSET_OFFLINE=1 bash "$repo_root/os/dev/fetch-orangepi-wifi-firmware.sh" ;;
-    *) die "no firmware source for the board $1" ;;
-  esac
-}
-
-# A value of os/publication.env, the public configuration of OS publication.
-publication() {
-  local value
-  value=$(sed -n "s/^$1=//p" "$repo_root/os/publication.env")
-  [[ -n $value ]] || die "os/publication.env sets no $1"
-  printf '%s' "$value"
-}
-
-# The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH. It comes
-# from the signing-tools check's outputs, which every check that runs this needs.
-use_cosign() {
-  command -v cosign >/dev/null && return
-  local tools=$scratch/publish-tools
-  mkdir -p "$tools"
-  RUNNER_TEMP=$tools GITHUB_PATH=$tools/path TILO_GITHUB_ASSET_CACHE=/target/signing-tools \
-    TILO_ASSET_OFFLINE=1 bash "$repo_root/os/dev/install-cached-cosign.sh" >/dev/null
-  PATH=$tools/tilo-cosign-tools:$PATH
-}
-
-# The manifest digest of the single image an OCI index.json (on stdin, from $1) names. Read
-# with grep, not a JSON parser: the publishing checks run in the skopeo image, which has neither
-# python3 nor jq. An index's only "digest" members are its manifests' (descriptors' annotations
-# and platforms have none), and whitespace never matters to them, so compact (podman's) and
-# spaced (Python's json.dump, as tools/ci/os/oci_layers.py writes layouts) read alike.
-index_digest() {
-  local digests count
-  digests=$(tr -d '[:space:]' | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | cut -d'"' -f4) || true
-  count=$(printf '%s' "$digests" | grep -c .) || true
-  [[ $count == 1 ]] || die "$1 names $count images, not one"
-  printf '%s' "$digests"
-}
-
-# The manifest digest of the single image in an OCI archive, from its index.json.
-archive_digest() {
-  tar -xOf "$1" index.json | index_digest "$1 index.json"
 }
 
 # The frozen RPM snapshot a build installs from (rpm-snapshot-ref.sh wrote SNAPSHOT): the
@@ -257,17 +152,52 @@ require_published_snapshot() {
 }
 
 # The image a build left in OUT, as an OCI archive (OUT/image.oci.tar) or an OCI layout
-# (OUT/oci, as the OS image layers compose one): a reference skopeo copies from, and the
-# manifest digest of its single image.
-built_image() {
-  if [[ -f $1/image.oci.tar ]]; then printf 'oci-archive:%s/image.oci.tar' "$1"; else printf 'oci:%s/oci' "$1"; fi
-}
+# (OUT/oci, as the OS image layers compose one): the manifest digest of its single image.
 built_digest() {
   if [[ -f $1/image.oci.tar ]]; then
     archive_digest "$1/image.oci.tar"
   else
     index_digest "$1/oci/index.json" < "$1/oci/index.json"
   fi
+}
+
+# The image a build left in OUT as an OCI layout to copy from, in `layout`: OUT/oci, or
+# OUT/image.oci.tar unpacked once. Copying from oci-archive: has skopeo unpack the whole archive
+# into TMPDIR and read it back while it sends, a write and a read of every layer more on the
+# step's disk; this unpacks it into /dev/shm where it fits beside what the step's memory already
+# holds, else into the scratch directory. `layout_unpacked` names what to remove afterwards.
+built_layout() {
+  local out=$1 size room dir=$scratch
+  layout_unpacked=
+  if [[ ! -f $out/image.oci.tar ]]; then
+    [[ -f $out/oci/index.json ]] || die "$out holds no image: neither image.oci.tar nor oci/"
+    layout=$out/oci
+    return
+  fi
+  size=$(stat -c %s "$out/image.oci.tar")
+  # Half a GiB to spare for skopeo and cosign themselves.
+  if room=$(memory_room) && ((size + 536870912 < room)); then dir=/dev/shm; fi
+  layout=$(mktemp -d "$dir/layout.XXXXXX")
+  layout_unpacked=$layout
+  tar -xf "$out/image.oci.tar" -C "$layout"
+}
+
+# Bytes a file on /dev/shm may still take: what the tmpfs has free, at most what the step's
+# memory (its cgroup's limit, the machine's available memory) has left. Fails without a tmpfs
+# there.
+memory_room() {
+  local room limit used available
+  [[ -d /dev/shm && $(stat -f -c %T /dev/shm) == tmpfs ]] || return 1
+  room=$(($(stat -f -c '%a * %S' /dev/shm)))
+  available=$(sed -n 's/^MemAvailable: *\([0-9]*\) kB$/\1/p' /proc/meminfo)
+  [[ -n $available ]] || return 1
+  ((available * 1024 < room)) && room=$((available * 1024))
+  if [[ -r /sys/fs/cgroup/memory.max && -r /sys/fs/cgroup/memory.current ]]; then
+    limit=$(cat /sys/fs/cgroup/memory.max)
+    used=$(cat /sys/fs/cgroup/memory.current)
+    if [[ $limit =~ ^[0-9]+$ ]] && ((limit - used < room)); then room=$((limit - used)); fi
+  fi
+  printf '%s' "$room"
 }
 
 # Whether a moving development tag that now names commit $1 (nothing, this commit, or an

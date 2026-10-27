@@ -812,7 +812,7 @@ mod tests {
         {
             let mut fake = FakeInstaller::new();
             let mut chosen = choices(Unlock::Passphrase);
-            chosen.username = "xaver".into();
+            chosen.username = "bob".into();
             chosen.filesystem = Some("ext4".into());
             chosen.account_secret = Secret::new("account-password-for-testing");
             chosen.disk_secret = Some(Secret::new("disk-passphrase-for-testing"));

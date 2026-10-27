@@ -8,16 +8,16 @@
 //! projection, by the same actor at the same time, which the pane
 //! summarises ("opened", "closed", "renamed") and replays exactly as it does
 //! a native room's.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ROOT};
 use tilo_automerge::WriteTyped as _;
 use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::projection::{EmptyStrips, project_owned_contents};
-use tilo_desktop_model::{RoomId, Workspace, shared_record};
+use tilo_desktop_model::{DesktopTree, RoomId, shared_record};
 
-/// A change's message names its author after this prefix.
+/// A change written before changes named their action names its author
+/// after this prefix.
 const AUTHOR_PREFIX: &str = "author:";
 /// The newest changes a room history replays; older ones stay in the log.
 pub const MAX_REPLAYED_CHANGES: usize = 600;
@@ -46,7 +46,7 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
         Ok(true) => {
             log.commit_with(
                 CommitOptions::default()
-                    .with_message(format!("{AUTHOR_PREFIX}{author}"))
+                    .with_message(shared_record::change_message(Some(author)))
                     .with_time(time),
             );
             true
@@ -74,10 +74,13 @@ pub fn save_pending<E>(
 }
 
 /// The author a change of a desktop log names.
-pub fn change_author(message: Option<&str>) -> Option<&str> {
-    message?
-        .strip_prefix(AUTHOR_PREFIX)
-        .filter(|a| !a.is_empty())
+pub fn change_author(message: Option<&str>) -> Option<String> {
+    shared_record::change_author(message).or_else(|| {
+        message?
+            .strip_prefix(AUTHOR_PREFIX)
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned)
+    })
 }
 
 /// The name of the workspace in front on a desktop a host value carries,
@@ -94,7 +97,7 @@ pub fn workspace_name(value: &serde_json::Value) -> Option<String> {
 pub fn latest_author(log: &AutoCommit) -> Option<String> {
     log.base_heads().iter().find_map(|head| {
         let change = automerge::ReadDoc::get_change_by_hash(log, head)?;
-        change_author(change.message()).map(str::to_owned)
+        change_author(change.message())
     })
 }
 
@@ -153,45 +156,30 @@ pub struct RoomHistory {
     pub authors: BTreeMap<String, String>,
 }
 
-/// Every salt the room's ids were minted under: each owns its part of the
-/// projection.
-fn salts(workspace: &Workspace) -> BTreeSet<u16> {
-    let mut salts = BTreeSet::new();
-    for strip in &workspace.strips {
-        salts.insert(tilo_desktop_model::ids::peer_salt_of(strip.id.raw()));
-        for group in &strip.window_groups {
-            salts.insert(tilo_desktop_model::ids::peer_salt_of(group.id));
-            for tab in &group.tabs {
-                salts.insert(tilo_desktop_model::ids::peer_salt_of(tab.id));
-            }
-        }
-    }
-    salts.remove(&0);
-    salts
-}
-
 /// Replay `log`'s newest [`MAX_REPLAYED_CHANGES`] changes into `room`'s
-/// projection, in causal order. A change that did not move a window of the
-/// room adds nothing.
+/// layout, in causal order. A change that did not move a window of the room
+/// adds nothing.
 pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
     let mut doc = AutoCommit::new();
     let mut authors = BTreeMap::new();
     let changes = log.get_changes(&[]);
     let skip = changes.len().saturating_sub(MAX_REPLAYED_CHANGES);
     let mut declared = false;
-    let mut projected: BTreeSet<u16> = BTreeSet::new();
     for change in changes.into_iter().skip(skip) {
-        let Some(tree) = shared_record::read(&log, Some(&[change.hash()])).map(|d| d.tree) else {
+        let Some(desktop) = shared_record::read(&log, Some(&[change.hash()])) else {
             continue;
         };
-        let Some(workspace) = tree.workspaces.iter().find(|w| w.room() == room) else {
+        let Some(workspace) = desktop
+            .tree
+            .workspaces
+            .into_iter()
+            .find(|w| w.room() == room)
+        else {
             continue;
         };
         let actor = change.actor_id().clone();
         if let Some(author) = change_author(change.message()) {
-            authors
-                .entry(actor.to_hex_string())
-                .or_insert_with(|| author.to_owned());
+            authors.entry(actor.to_hex_string()).or_insert(author);
         }
         doc.set_actor(actor);
         if !declared {
@@ -207,13 +195,18 @@ pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
             tilo_desktop_model::projection::ROOM_NAME_KEY,
             &workspace.name,
         );
-        // A salt whose windows all closed still sweeps them away.
-        let now = salts(workspace);
-        for &salt in now.union(&projected) {
-            let _ =
-                project_owned_contents(&mut doc, &workspace.strips, salt, None, EmptyStrips::Skip);
-        }
-        projected.extend(now);
+        let _ = shared_record::write(
+            &mut doc,
+            &SharedDesktop {
+                tree: DesktopTree {
+                    active: workspace.id,
+                    workspaces: vec![workspace],
+                    ..DesktopTree::default()
+                },
+                records: desktop.records,
+                authors: desktop.authors,
+            },
+        );
         let time = change.timestamp();
         doc.commit_with(CommitOptions::default().with_time(time));
     }

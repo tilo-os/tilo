@@ -4,6 +4,7 @@ db-run-query = Run query
 db-cancel-query = Cancel query
 db-copy-row = Copy row
 db-copy-result = Copy result
+db-export-csv = Export as CSV
 db-view-switcher = View
 
 ## Tabs
@@ -147,3 +148,37 @@ db-client-add-connection = Added the connection { $name }
 db-client-remove-connection = Removed the connection { $item }
 db-client-save-query = Saved the query { $name }
 db-client-remove-query = Removed the query { $item }
+
+## Running statements, exporting and what a cell shows
+
+db-runs-on = This runs on { $name }.
+db-busy-operation = Database operation…
+db-export-title = Export query results
+db-export-accept = Export CSV
+db-export-filter = CSV (comma-separated values)
+db-export-choosing = Choose where to save the CSV…
+db-exported = { $count ->
+    [one] Exported 1 row to { $path }
+   *[other] Exported { $count } rows to { $path }
+}
+db-export-failed = The CSV could not be written: { $error }
+db-export-dialog-failed = The save dialog could not open: { $error }
+db-export-dialog-closed = The save dialog closed before a place was chosen.
+db-cell-truncated = { $value }… [truncated]
+db-cell-binary = Binary, { $bytes } bytes
+db-unknown-engine = There is no engine called { $engine }.
+db-one-statement = One statement runs at a time. { $error }
+
+## Search: the catalogue this app contributes to system search
+
+db-search-kind = Database
+db-search-connected-database = Connected database
+db-search-active-database = Active database
+db-search-schema-in = Schema in { $database }
+db-search-column-in = { $type } in { $schema }.{ $table }
+db-search-current-result = Current query result
+db-search-transaction = Transaction
+db-search-query-history = Local query history
+db-search-query-entry = Query { $number }: { $summary }
+db-search-local-only = Local only. Never shared with collaborators.
+db-search-saved-query = Collaborative saved query

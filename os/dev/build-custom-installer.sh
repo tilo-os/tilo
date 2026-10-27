@@ -257,7 +257,7 @@ DISK_ARGS=(
 [ -z "$OFFLINE_TARGET_DIR" ] || DISK_ARGS+=(--offline-target-dir "$OFFLINE_TARGET_DIR")
 [ "$COMPACT_EXT4" = 0 ] || DISK_ARGS+=(--root-max 40G)
 if [ "$DEV_LOGIN" = 1 ]; then
-  DISK_ARGS+=(--user "quickuser:${TILO_INSTALLER_DEV_PASSWORD}:wheel")
+  DISK_ARGS+=(--user "tester:${TILO_INSTALLER_DEV_PASSWORD}:wheel")
 fi
 INSTALL_LOG="$(dirname "$TILO_INSTALLER_DISK")/.install.log"
 if ! "$TILO_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"; then

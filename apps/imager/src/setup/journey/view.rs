@@ -600,7 +600,7 @@ impl InstallerPreview {
                                     .secondary(t("installer-flatpak-settings-note"))
                                     .two_line_secondary()
                                     .disclosure()
-                                    .on_activate(move || {
+                                    .on_effect(move || {
                                         commands.borrow_mut().push(
                                             InstallerPreviewEffect::ToggleFlatpakAccessDetails,
                                         )
@@ -698,7 +698,7 @@ impl InstallerPreview {
                                 .two_line_secondary()
                                 .icon(Icon::Globe)
                                 .disclosure()
-                                .on_activate(move || {
+                                .on_effect(move || {
                                     commands
                                         .borrow_mut()
                                         .push(InstallerPreviewEffect::ReviewServiceSessions)

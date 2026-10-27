@@ -144,6 +144,16 @@ fn locale(app: &AndroidApp) -> Option<String> {
 
 static SAFE_AREA: [AtomicI32; 4] = [const { AtomicI32::new(0) }; 4];
 
+static ON_SAFE_AREA_CHANGED: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// Call `notify` whenever the window's insets change. Waking the looper is
+/// not enough: winit's Android loop drops a wake that brings no event or
+/// redraw request, so a soft keyboard the app hid itself would leave the
+/// layout at the keyboard's height until the next touch.
+pub(crate) fn on_safe_area_changed(notify: Box<dyn Fn() + Send + Sync>) {
+    let _ = ON_SAFE_AREA_CHANGED.set(notify);
+}
+
 /// The system bars', display cutout's and soft keyboard's current overlap of
 /// the window, in physical pixels: `[left, top, right, bottom]`.
 pub fn safe_area_insets() -> [i32; 4] {
@@ -166,7 +176,8 @@ pub extern "system" fn Java_so_tilo_android_TiloActivity_nativeSafeAreaChanged(
     for (slot, value) in SAFE_AREA.iter().zip([left, top, right, bottom]) {
         slot.store(value.max(0), Ordering::Relaxed);
     }
-    if let Some(app) = APP.get() {
-        app.create_waker().wake();
+    // Before the event loop runs, its first frame reads the insets.
+    if let Some(notify) = ON_SAFE_AREA_CHANGED.get() {
+        notify();
     }
 }

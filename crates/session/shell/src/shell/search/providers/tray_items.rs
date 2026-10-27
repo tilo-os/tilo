@@ -90,6 +90,7 @@ fn row(
         }),
         on_invoke: None,
         on_begin_invoke: None,
+        resource: None,
     }
 }
 

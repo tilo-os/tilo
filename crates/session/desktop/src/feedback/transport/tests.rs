@@ -178,7 +178,7 @@ fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
             views,
             device_id: "device".into(),
             instance_id: 7,
-            permissions: Rc::new(RefCell::new(admitted.permissions)),
+            permissions: ui::permissions::SharedPermissions::new(admitted.permissions),
             author: UserId(hex::encode([12; 32])),
             action_context: tilo_actions::ActionContext::default(),
         },
@@ -532,6 +532,60 @@ fn canonical_owner_acknowledges_a_screenshot_only_once_it_keeps_the_bytes() {
     let signed = with_content(&content)
         .receipt(&report, &enrollment())
         .unwrap();
+    assert_eq!(
+        signed.verify(&report, &enrollment()).unwrap().digest,
+        report.digest().unwrap()
+    );
+}
+
+#[test]
+fn canonical_owner_acknowledges_a_recording_only_once_it_keeps_the_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    let (records, mut frame) = canonical(root.path());
+    let recording = b"a recording of the window".to_vec();
+    let mut report = submission();
+    report.feedback.recording = Some(tilo_app::feedback::RecordingRef {
+        hash: blake3::hash(&recording).to_hex().to_string(),
+        app: "so.tilo.notes".into(),
+        app_name: "Notes".into(),
+        kind: "notes.note".into(),
+        from_ms: 1_000,
+        to_ms: 2_000,
+        steps: 2,
+        bytes: u32::try_from(recording.len()).unwrap(),
+    });
+    submit(&mut frame, &report);
+    records.try_flush().unwrap();
+    let content = ui::content::ContentStore::memory();
+    let owner = || {
+        CanonicalDestination::new(
+            enrollment().owner,
+            enrollment().destination,
+            CanonicalRecord {
+                records: records.clone(),
+                record: RecordId::package_primary(),
+                project: chat::feedback::canonical_feedback_projection,
+                content: Some(content.clone()),
+            },
+            Box::new(FixtureSigner {
+                owner: enrollment().owner,
+                key: SigningKey::from_bytes(&[41; 32]),
+            }),
+        )
+        .unwrap()
+    };
+    assert!(matches!(
+        owner().receipt(&report, &enrollment()),
+        Err(Error::NotDurable)
+    ));
+    assert!(
+        owner()
+            .receipt_when_kept(&report, &enrollment())
+            .unwrap()
+            .is_none()
+    );
+    content.put(&recording).unwrap();
+    let signed = owner().receipt(&report, &enrollment()).unwrap();
     assert_eq!(
         signed.verify(&report, &enrollment()).unwrap().digest,
         report.digest().unwrap()

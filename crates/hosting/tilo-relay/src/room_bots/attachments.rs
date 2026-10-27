@@ -4,10 +4,10 @@
 //! A member's device keeps what it posts and answers whoever asks the room
 //! for it, as long as it is online. The host asks too: each time a member's
 //! write reaches a part of the Chat's messages, it reads the attachments
-//! there, and each time one reaches the Chat's own record, the pictures of
-//! the feedback reports filed there ([`reported`]); it asks the room for
-//! every one it does not keep yet, on its own presence, as any member asks.
-//! A report's receipt waits for the host to keep its picture. The pieces members answer it with are
+//! there, and each time one reaches the Chat's own record, the pictures and
+//! recordings of the feedback reports filed there ([`reported`]); it asks the
+//! room for every one it does not keep yet, on its own presence, as any
+//! member asks. A report's receipt waits for the host to keep them. The pieces members answer it with are
 //! assembled and verified as a page assembles them
 //! ([`tilo_browser_peer::content::ContentWants`]) and kept in the host's one
 //! blob store, beside what its bots fetched ([`super::installed::FsBlobs`]),
@@ -185,8 +185,8 @@ pub fn referenced(part: &[u8]) -> Vec<Referenced> {
         .collect()
 }
 
-/// The pictures of the feedback reports filed in `record`, the saved Chat
-/// record, each by whoever filed it.
+/// The pictures and recordings of the feedback reports filed in `record`,
+/// the saved Chat record, each by whoever filed it.
 #[must_use]
 pub fn reported(record: &[u8]) -> Vec<Referenced> {
     let Ok(doc) = AutoCommit::load(record) else {
@@ -195,13 +195,20 @@ pub fn reported(record: &[u8]) -> Vec<Referenced> {
     chat::projection::read(&doc)
         .feedback
         .iter()
-        .filter_map(|(_, report)| {
-            let picture = report.submission.as_ref()?.feedback.screenshot.as_ref()?;
-            Some(Referenced {
+        .filter_map(|(_, report)| Some((report.submission.as_ref()?, &report.author)))
+        .flat_map(|(submission, author)| {
+            let feedback = &submission.feedback;
+            let picture = feedback.screenshot.as_ref().map(|picture| Referenced {
                 hash: picture.hash.to_ascii_lowercase(),
-                member: report.author.0.clone(),
+                member: author.0.clone(),
                 size: None,
-            })
+            });
+            let recording = feedback.recording.as_ref().map(|recording| Referenced {
+                hash: recording.hash.to_ascii_lowercase(),
+                member: author.0.clone(),
+                size: Some(u64::from(recording.bytes)),
+            });
+            picture.into_iter().chain(recording)
         })
         .collect()
 }
@@ -514,14 +521,15 @@ mod tests {
 
     use super::*;
 
-    /// The pictures of the reports filed in the Chat's record are the
-    /// files the host keeps for them, each for whoever filed it; a report
-    /// without one references nothing.
+    /// The pictures and recordings of the reports filed in the Chat's
+    /// record are the files the host keeps for them, each for whoever filed
+    /// it; a report without either references nothing.
     #[test]
-    fn a_filed_reports_picture_is_kept_for_its_reporter() {
+    fn a_filed_reports_picture_and_recording_are_kept_for_its_reporter() {
         let mut doc = AutoCommit::new();
         chat::demo::seed(&mut doc).unwrap();
         let picture = "ab".repeat(32);
+        let recording = "cd".repeat(32);
         let file = |id: &str, screenshot: Option<serde_json::Value>| {
             let mut feedback = serde_json::json!({
                 "text": "The picker misses a row",
@@ -529,6 +537,18 @@ mod tests {
             });
             if let Some(screenshot) = screenshot {
                 feedback["screenshot"] = screenshot;
+            }
+            if id == "c" {
+                feedback["recording"] = serde_json::json!({
+                    "hash": recording,
+                    "app": "so.tilo.notes",
+                    "app_name": "Notes",
+                    "kind": "notes.note",
+                    "from_ms": 1_000,
+                    "to_ms": 2_000,
+                    "steps": 3,
+                    "bytes": 4_096,
+                });
             }
             serde_json::json!({
                 "id": id.repeat(32),
@@ -548,6 +568,7 @@ mod tests {
         for (author, submission) in [
             ("visitor:one", file("a", Some(with_picture))),
             ("visitor:two", file("b", None)),
+            ("visitor:three", file("c", None)),
         ] {
             chat::demo::apply_as(
                 &mut doc,
@@ -559,13 +580,22 @@ mod tests {
             )
             .unwrap();
         }
+        let mut kept = reported(&doc.save());
+        kept.sort_by(|a, b| a.member.cmp(&b.member));
         assert_eq!(
-            reported(&doc.save()),
-            [Referenced {
-                hash: picture,
-                member: "visitor:one".into(),
-                size: None,
-            }]
+            kept,
+            [
+                Referenced {
+                    hash: picture,
+                    member: "visitor:one".into(),
+                    size: None,
+                },
+                Referenced {
+                    hash: recording,
+                    member: "visitor:three".into(),
+                    size: Some(4_096),
+                },
+            ]
         );
         assert!(reported(b"not a record").is_empty());
     }

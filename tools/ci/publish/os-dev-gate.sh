@@ -113,7 +113,7 @@ sys.exit("the dev image has no /usr/share/tilo-vm/base.json")
 PY
 )
 
-export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=quickuser TILO_PASS=tilo TILO_VM_DISPLAY=2d
+export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo TILO_VM_DISPLAY=2d
 for node in /dev/dri/renderD*; do
   [[ -c $node && -r $node && -w $node ]] && { TILO_VM_DISPLAY=gl; break; }
 done

@@ -283,6 +283,11 @@ pub struct DisclosureRow {
     rect: Rect,
     header: Rect,
     header_px: f64,
+    /// The row's height and whether its body was shut away, as the last
+    /// layout laid them out ([`Self::reveal_layout`]).
+    laid_reveal: (f32, bool),
+    /// The display the body's own layout gives it, while it is not shut.
+    body_display: taffy::Display,
     dirty: bool,
     /// The motion the person allows, from the last layout.
     motion: EffectiveMotion,
@@ -311,6 +316,8 @@ impl DisclosureRow {
             rect: Rect::ZERO,
             header: Rect::ZERO,
             header_px: 0.0,
+            laid_reveal: (0.0, true),
+            body_display: taffy::Display::default(),
             dirty: true,
             motion: EffectiveMotion::default(),
         }
@@ -489,6 +496,20 @@ impl DisclosureRow {
         self.state.progress()
     }
 
+    /// What the reveal lays out at this frame: the row's height, its header
+    /// and as much of its body as the reveal shows, and whether the body is
+    /// shut away (closed and at rest), taking no room and no place.
+    fn reveal_layout(&self) -> (f32, bool) {
+        let shut = !self.state.is_open() && !self.state.is_moving();
+        let revealed = Disclose::reveal(self.progress(), self.state.body_height()).height;
+        (crate::num::f32_of_f64(self.header_px + revealed), shut)
+    }
+
+    /// The reveal moved on from where the last layout laid it.
+    fn reveal_unlaid(&self) -> bool {
+        self.laid_reveal != self.reveal_layout()
+    }
+
     fn face(&self) -> TextStackFace<'_> {
         TextStackFace::new(&self.title).secondary(&self.secondary)
     }
@@ -660,13 +681,18 @@ impl Widget for DisclosureRow {
         // order `children` names them, so every walk that pairs widgets with
         // layout nodes meets each where it is. The header is the row's top
         // padding; the body follows it and is cut to what the reveal shows.
-        let shut = !self.state.is_open() && !self.state.is_moving();
+        self.header_px = header;
+        self.laid_reveal = self.reveal_layout();
+        let (height, shut) = self.laid_reveal;
         let body = self.body.build_layout(taffy, theme, node_map);
-        if shut && let Ok(style) = taffy.style(body) {
-            // A closed body takes no room and no place on screen.
-            let mut style = style.clone();
-            style.display = taffy::Display::None;
-            let _ = taffy.set_style(body, style);
+        if let Ok(style) = taffy.style(body) {
+            self.body_display = style.display;
+            if shut {
+                // A closed body takes no room and no place on screen.
+                let mut style = style.clone();
+                style.display = taffy::Display::None;
+                let _ = taffy.set_style(body, style);
+            }
         }
         let mut children = vec![body];
         if let Some(control) = &mut self.trailing {
@@ -687,14 +713,13 @@ impl Widget for DisclosureRow {
             }
             children.push(node);
         }
-        let revealed = Disclose::reveal(self.progress(), self.state.body_height()).height;
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             flex_shrink: 0.0,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::length(crate::num::f32_of_f64(header + revealed)),
+                height: taffy::Dimension::length(height),
             },
             // The body starts on the title's text column, not under the icon.
             padding: taffy::Rect {
@@ -712,8 +737,63 @@ impl Widget for DisclosureRow {
             },
             ..Default::default()
         };
-        self.header_px = header;
         taffy.widget_node(style, &children, node_map, self)
+    }
+
+    /// Each frame of the reveal is laid out at its height, and the body
+    /// shut away once the row has closed, without building the row again.
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        if !self.reveal_unlaid() {
+            return false;
+        }
+        self.laid_reveal = self.reveal_layout();
+        let (height, shut) = self.laid_reveal;
+        if let Ok(style) = taffy.style(node) {
+            let mut style = style.clone();
+            style.size.height = taffy::Dimension::length(height);
+            let _ = taffy.set_style(node, style);
+        }
+        let body = taffy
+            .children(node)
+            .ok()
+            .and_then(|nodes| nodes.first().copied());
+        if let Some(body) = body
+            && let Ok(style) = taffy.style(body)
+        {
+            let display = if shut {
+                taffy::Display::None
+            } else {
+                self.body_display
+            };
+            if style.display != display {
+                let mut style = style.clone();
+                style.display = display;
+                let _ = taffy.set_style(body, style);
+            }
+        }
+        true
+    }
+
+    /// The reveal's next height is solved again; the body's own needs are
+    /// its own.
+    fn layout_needs_measure(&self) -> bool {
+        self.reveal_unlaid()
+            || crate::widget::defaults::layout_needs_measure(&|visit| self.for_each_child(visit))
+                .unwrap_or(false)
+    }
+
+    /// A reveal in progress moves what the row lays out: the window is laid
+    /// out again on each of its frames.
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+        if self.reveal_unlaid() {
+            crate::widget::note_layout_moved();
+        }
+        crate::widget::defaults::update(self.children_mut(), state, path)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -745,6 +825,11 @@ impl Widget for DisclosureRow {
             );
             control.apply_layout(taffy, node, centre);
             self.trailing_rect = control.get_rect();
+        }
+        // A host that lays out only what moved lays the next frame of the
+        // reveal out too, whether or not it runs this row's update first.
+        if self.state.is_moving() {
+            crate::widget::note_layout_moved();
         }
     }
 
@@ -903,6 +988,8 @@ impl Widget for DisclosureRow {
 
     fn needs_animation_frame(&self) -> bool {
         self.state.is_moving()
+            // One more frame lays out where the reveal landed.
+            || self.reveal_unlaid()
             || self.body.needs_animation_frame()
             || self
                 .trailing

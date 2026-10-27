@@ -79,6 +79,8 @@ for line in sys.stdin:
         notes = state + "/notes"
         if p["name"] == "tilo_ls" and not a.get("path"):
             tool(m["id"], "\n".join(["apps"] + [f"{x.rsplit('.', 1)[-1]}  Notes  running" for x in APPS]))
+        elif p["name"] == "tilo_ls" and a["path"] == "notes":
+            tool(m["id"], "notes\nNotebook/  container\n#new-note(title)  New note")
         elif p["name"] == "tilo_ls" and a["path"] == "notes#new-note":
             tool(m["id"], "notes#new-note  New note\n  title  text")
         elif p["name"] == "tilo_do" and a["path"] == "notes#new-note":
@@ -127,6 +129,14 @@ class FakeVm:
         path.write_bytes(data)
 
     def actions(self, query=""):
+        notes = self.state / "notes"
+        if query and query != "permission-prompts":
+            # The desktop's listing for a title: Notes' page of that title, and an
+            # unrelated action that mentions nothing of it.
+            pages = notes.read_text().splitlines() if notes.exists() else []
+            return [{"provider": "app-actions", "id": "so.tilo.settings\x1foutside"}] + [
+                {"provider": "7", "application": "so.tilo.notes", "id": f"page:{t}", "title": t}
+                for t in pages if query in t]
         if not (self.state / "prompt").exists() or (self.state / "answer").exists() or not self.answer_prompts:
             return []
         return [{"provider": "permission-prompts", "id": f"{d}@p1"} for d in ("allow-once", "deny")]
@@ -137,9 +147,6 @@ class FakeVm:
         return {}
 
     def run(self, *args, **kwargs):
-        notes = self.state / "notes"
-        if args[:2] == ("control", "read") and notes.exists():
-            return json.dumps({"notes": notes.read_text().splitlines()})
         return ""
 
     def raw(self, op, timeout=60):
@@ -157,7 +164,7 @@ def make_ctx(vm: FakeVm, out: Path):
     ctx = SimpleNamespace(vm=vm, facts={}, out=out, current=None)
     ctx.reset = lambda: None
     ctx.open_app = lambda *a, **k: ({"id": 1}, 0.0)
-    ctx.settle = lambda *a: None
+    ctx.wait_presented = lambda app_id, *a, **k: {"app_id": app_id, "presented": True, "frame_seq": 1}
     ctx.shot = lambda name: None
     ctx.write = lambda name, text: (out / name).write_text(text)
     # An unlocked desktop with nothing open: what the harness's after-check guards
@@ -403,16 +410,22 @@ class InputDeviceParsers(unittest.TestCase):
         written = {}
         state = {"devices": [{"name": "tilo-vm keyboard (seat-acceptance)"}],
                  "active_keyboard": "tilo-vm keyboard"}
-        vm = SimpleNamespace(
-            exec=lambda script, **k: json.dumps(state),
-            root_exec=lambda script, **k: YOGA_DEVICES if "proc/bus" in script
-            else "ID_INPUT_KEYBOARD=1\nID_SEAT=seat-acceptance\nDEVNAME=/dev/input/event1\n")
+        def root_exec(script, **k):
+            if "proc/bus" in script:
+                return YOGA_DEVICES
+            if script.startswith("journalctl"):
+                self.assertIn("tilo-vm-session@acceptance.service", script)
+                return "event1 - hid-over-i2c 048D:8987: kernel bug: device has min == max on ABS_VOLUME\n"
+            return "ID_INPUT_KEYBOARD=1\nID_SEAT=seat-acceptance\nDEVNAME=/dev/input/event1\n"
+        vm = SimpleNamespace(slot="acceptance", exec=lambda script, **k: json.dumps(state),
+                             root_exec=root_exec)
         ctx = SimpleNamespace(vm=vm, current=SimpleNamespace(id="I02"),
                               write=lambda name, text: written.update({name: text}))
         why = input_devices.keyboard_diagnosis(ctx)
         self.assertIn("has not opened the profile keyboard", why)
         self.assertIn("'tilo-vm keyboard'", why)
         self.assertIn("ID_SEAT", why)
+        self.assertIn("min == max on ABS_VOLUME", why)
         self.assertNotIn("DEVNAME", why)
         self.assertIn("I02-keyboards.json", written)
 

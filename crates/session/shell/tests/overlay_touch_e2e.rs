@@ -5,7 +5,8 @@
 //! and the screenshot editor answer a tap, a drag and a hold the way they
 //! answer the pointer; a touch outside a dismissable overlay closes it as a
 //! click there does; a touch sequence stays with the surface it started on
-//! until it ends.
+//! until it ends. Each button of a screenshot's receipt runs its action,
+//! clicked with the pointer or tapped with a finger.
 //!
 //! Every test drives the real seat through test control's touchscreen,
 //! which uses the DRM backend's contact ownership and the compositor's one
@@ -417,4 +418,281 @@ fn a_finger_on_the_screenshot_editor_marks_it_and_never_the_window_behind() {
         "a tap on Cancel did not close the screenshot editor",
     );
     assert_the_window_behind_got_nothing(&mut client, "tapping the editor's Cancel");
+}
+
+// The screenshot's receipt: each button, clicked and tapped.
+
+/// How a button is pressed: the pointer clicked on it, or a finger tapped.
+#[derive(Clone, Copy, Debug)]
+enum Press {
+    Pointer,
+    Finger,
+}
+
+impl Press {
+    fn on(self, compositor: &Compositor, at: (f64, f64)) {
+        match self {
+            Self::Pointer => compositor.click_at(at.0, at.1),
+            Self::Finger => tap(compositor, at),
+        }
+    }
+}
+
+/// The image viewer the fixture installs, claiming PNG.
+const VIEWER: &str = "so.tilo.test.viewer";
+/// Files, as the shell knows it.
+const FILES: &str = "so.tilo.file-explorer";
+
+/// Install `package_id` into the fixture home's apps, claiming `exts`.
+fn install_app(home: &Path, package_id: &str, name: &str, exts: &[&str]) {
+    use std::fmt::Write as _;
+    let apps = home.join("apps");
+    let payload = apps.join("payloads").join(package_id);
+    std::fs::create_dir_all(payload.join("bin")).expect("create the app payload");
+    let manifest = payload.join("manifest.toml");
+    let exts = exts
+        .iter()
+        .map(|ext| format!("\"{ext}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    std::fs::write(
+        &manifest,
+        format!(
+            "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
+             version = \"1.0.0\"\nkind = \"app\"\n\
+             [publisher]\nidentity = \"ed25519:{zeros}\"\n\
+             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n\
+             [entrypoint]\nbin = \"bin/app\"\n\
+             type = \"gui\"\n[providers]\nmime = []\next = [{exts}]\n",
+            zeros = "00".repeat(32)
+        ),
+    )
+    .expect("write the app manifest");
+    let registry = apps.join("registry.toml");
+    let mut entries = std::fs::read_to_string(&registry).unwrap_or_default();
+    write!(
+        entries,
+        "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+        payload.display().to_string(),
+        manifest.display().to_string()
+    )
+    .expect("format the registry entry");
+    std::fs::write(&registry, entries).expect("write the app registry");
+}
+
+/// A stand-in `tilo-launcher` that records each launch's arguments in
+/// `launched.log`. Like the real one it first waits on its registration
+/// gate (stdin).
+fn install_recording_launcher(home: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).expect("create the fixture tools");
+    let launcher = bin.join("tilo-launcher");
+    std::fs::write(
+        &launcher,
+        format!(
+            "#!/bin/sh\nhead -c 1 >/dev/null\nprintf '%s\\n' \"$*\" >> '{}'\n",
+            home.join("launched.log").display()
+        ),
+    )
+    .expect("write the stand-in launcher");
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
+        .expect("make the stand-in launcher runnable");
+}
+
+/// Wait until the stand-in launcher recorded a launch with every one of
+/// `needles`, and return it.
+fn wait_for_launch(compositor: &Compositor, home: &Path, needles: &[&str], what: &str) -> String {
+    let started = Instant::now();
+    loop {
+        let log = std::fs::read_to_string(home.join("launched.log")).unwrap_or_default();
+        if let Some(line) = log
+            .lines()
+            .find(|line| needles.iter().all(|needle| line.contains(needle)))
+        {
+            return line.to_owned();
+        }
+        assert!(
+            started.elapsed() < deadline(),
+            "{what}: no launch with {needles:?}; the launcher ran:\n{log}\n{}",
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The one screenshot the fixture home holds.
+fn the_screenshot(home: &Path) -> PathBuf {
+    fn pngs(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pngs(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "png")
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("Tilo Screenshot"))
+            {
+                out.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    pngs(home, &mut found);
+    assert_eq!(found.len(), 1, "one screenshot was saved: {found:?}");
+    found.remove(0)
+}
+
+/// A desk with a viewer for PNGs and Files installed and a recording
+/// launcher; a screenshot of a selection is taken and its receipt rests at
+/// the top of the screen. Returns the home, the compositor, the client and
+/// the screenshot's path.
+fn a_screenshot_receipt(app_id: &str) -> (tempfile::TempDir, Compositor, TestClient, PathBuf) {
+    let home = tempfile::Builder::new()
+        .prefix("tilo-capture-receipt")
+        .tempdir()
+        .expect("create the fixture home");
+    install_app(home.path(), VIEWER, "Viewer", &["png"]);
+    install_app(home.path(), FILES, "Files", &[]);
+    install_recording_launcher(home.path());
+    give_the_desk_an_audio_device(home.path());
+    let compositor = Compositor::start_with_home(Some(home.path()));
+    let mut client = TestClient::new(compositor.connect(), app_id);
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.wait_until(
+        |state| state.touch_bound,
+        "the client did not finish binding wl_touch before injection",
+    );
+    client.roundtrip();
+    let _ = client.pointer_target(&compositor);
+    client.clear_touch_and_pointer_trace();
+
+    open_capture_tool(&compositor, &mut client);
+    touch_select_an_area(&compositor, &mut client);
+    tap_the_shutter(&compositor, &mut client);
+    compositor.wait_for_layout_to_settle(
+        |name| name.starts_with("capture."),
+        "the screenshot's receipt coming to rest",
+    );
+    let screenshot = the_screenshot(home.path());
+    client.clear_touch_and_pointer_trace();
+    (home, compositor, client, screenshot)
+}
+
+/// Press the receipt's `button`, which closes the receipt, and leave the
+/// window behind untouched.
+fn press_receipt_button(
+    compositor: &Compositor,
+    client: &mut TestClient,
+    button: &str,
+    press: Press,
+) {
+    let at = compositor.named_center(button);
+    press.on(compositor, at);
+    assert_the_window_behind_got_nothing(client, &format!("{press:?} on {button}"));
+}
+
+fn edit_opens_the_screenshot_editor(press: Press) {
+    let (_home, compositor, mut client, _) = a_screenshot_receipt("org.tilo.test.receipt-edit");
+    press_receipt_button(&compositor, &mut client, "capture.edit-screenshot", press);
+    wait_for_chrome(
+        &compositor,
+        |chrome| chrome["screenshot_markup_strokes"].as_u64() == Some(0),
+        &format!("{press:?} on Edit did not open the screenshot editor"),
+    );
+}
+
+fn open_opens_the_screenshot_in_its_app(press: Press) {
+    let (home, compositor, mut client, screenshot) =
+        a_screenshot_receipt("org.tilo.test.receipt-open");
+    press_receipt_button(&compositor, &mut client, "capture.open-screenshot", press);
+    wait_for_launch(
+        &compositor,
+        home.path(),
+        &[
+            &format!("--app-id {VIEWER}"),
+            &format!("--open {}", screenshot.display()),
+        ],
+        &format!("{press:?} on Open did not open the screenshot in the app claiming PNGs"),
+    );
+    wait_for_target(
+        &compositor,
+        |name| name == "capture.open-screenshot",
+        false,
+        "the receipt stayed after Open",
+    );
+}
+
+fn show_in_files_opens_files_on_the_screenshot(press: Press) {
+    let (home, compositor, mut client, screenshot) =
+        a_screenshot_receipt("org.tilo.test.receipt-show");
+    press_receipt_button(&compositor, &mut client, "capture.show-screenshot", press);
+    wait_for_launch(
+        &compositor,
+        home.path(),
+        &[
+            &format!("--app-id {FILES}"),
+            &format!("--open {}", screenshot.display()),
+        ],
+        &format!("{press:?} on Show in Files did not open Files on the screenshot"),
+    );
+    wait_for_target(
+        &compositor,
+        |name| name == "capture.show-screenshot",
+        false,
+        "the receipt stayed after Show in Files",
+    );
+}
+
+fn send_offers_where_to_send_it(press: Press) {
+    let (_home, compositor, mut client, _) = a_screenshot_receipt("org.tilo.test.receipt-send");
+    press_receipt_button(&compositor, &mut client, "capture.send-screenshot", press);
+    wait_for_target(
+        &compositor,
+        |name| name == "capture.send-to-workspace",
+        true,
+        &format!("{press:?} on Send did not offer where to send the screenshot"),
+    );
+}
+
+#[test]
+fn clicking_the_receipts_edit_opens_the_screenshot_editor() {
+    edit_opens_the_screenshot_editor(Press::Pointer);
+}
+
+#[test]
+fn tapping_the_receipts_edit_opens_the_screenshot_editor() {
+    edit_opens_the_screenshot_editor(Press::Finger);
+}
+
+#[test]
+fn clicking_the_receipts_open_opens_the_screenshot_in_its_app() {
+    open_opens_the_screenshot_in_its_app(Press::Pointer);
+}
+
+#[test]
+fn tapping_the_receipts_open_opens_the_screenshot_in_its_app() {
+    open_opens_the_screenshot_in_its_app(Press::Finger);
+}
+
+#[test]
+fn clicking_the_receipts_show_in_files_opens_files_on_the_screenshot() {
+    show_in_files_opens_files_on_the_screenshot(Press::Pointer);
+}
+
+#[test]
+fn tapping_the_receipts_show_in_files_opens_files_on_the_screenshot() {
+    show_in_files_opens_files_on_the_screenshot(Press::Finger);
+}
+
+#[test]
+fn clicking_the_receipts_send_offers_where_to_send_it() {
+    send_offers_where_to_send_it(Press::Pointer);
+}
+
+#[test]
+fn tapping_the_receipts_send_offers_where_to_send_it() {
+    send_offers_where_to_send_it(Press::Finger);
 }

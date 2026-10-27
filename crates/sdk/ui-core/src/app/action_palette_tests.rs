@@ -736,10 +736,17 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
 
         assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
         assert!(app.state.peek_last_undo().is_none());
+        // An app's actions rank after what it holds: narrowed to the
+        // action, its row is the top one.
+        app.actions
+            .action_palette
+            .as_mut()
+            .unwrap()
+            .set_query("Flip it");
         app.needs_sync = false;
         app.layout.layout_dirty = false;
 
-        // Enter selects the top row (the action) and dispatches it.
+        // Enter dispatches the selected action.
         let consumed = app.action_palette_handle_key(&synth_enter());
         assert!(consumed, "the open palette consumed the Enter key");
 
@@ -1202,5 +1209,50 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         calls.borrow().len(),
         3,
         "an unmounted native history must not gain a broker route"
+    );
+}
+
+/// The control holding keyboard focus must say so in the node it publishes.
+/// A screen reader, an agent and `tilo-control` read focus from that node, so
+/// a control that answers false while the keyboard is on it leaves all three
+/// telling the person nothing is focused.
+#[test]
+fn a_control_that_holds_focus_publishes_that_it_is_focused() {
+    fn published_focus(app: &App, node: NodeId) -> Option<bool> {
+        app.inspect_node(node, |widget| {
+            widget
+                .is_focusable()
+                .then(|| widget.accessibility())
+                .flatten()
+                .map(|access| access.state.focused)
+        })
+        .ok()
+        .flatten()
+    }
+
+    // The palette traps focus on its own root as it appears. That is a focus
+    // move that never passes through a Tab or a click.
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+    app.init_layout();
+    app.open_action_palette();
+    app.init_layout();
+
+    let owner = app
+        .focused_node
+        .expect("a presented palette owns the keyboard");
+    assert_eq!(
+        published_focus(&app, owner),
+        Some(true),
+        "the node of the control holding focus must report focused: true"
+    );
+
+    // And only while it is the owner: closing the palette takes the keyboard,
+    // so its node must stop claiming focus.
+    app.close_action_palette();
+    app.init_layout();
+    assert_ne!(
+        published_focus(&app, owner),
+        Some(true),
+        "a control that no longer holds the keyboard must not publish focus"
     );
 }

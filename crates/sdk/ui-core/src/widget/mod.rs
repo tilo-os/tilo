@@ -226,7 +226,9 @@ pub fn solve_layout(
     root: NodeId,
     available: taffy::Size<taffy::AvailableSpace>,
 ) -> Result<(), taffy::TaffyError> {
-    taffy.compute_layout(root, available)
+    // The tree's own method measures every leaf as empty, through a solver
+    // compiled for its own closure; the toolkit's one solver does the same.
+    layout::solve_layout(taffy, root, available, &mut |_, _, _| taffy::Size::ZERO)
 }
 
 /// Implements [`Widget::apply_layout`] and [`Widget::get_rect`] for a widget
@@ -1242,20 +1244,28 @@ pub(crate) fn take_view_only_pan() -> bool {
 }
 
 thread_local! {
-    static PLACEMENT_MOVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LAYOUT_MOVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// From a widget's `update`: it moved what it lays out with no input asking
-/// (a glide, a jump in progress, a give springing back), so its children
-/// stand where the last layout put them. The host places its widgets again
-/// in the frame; it is no change of the model, and nothing syncs.
-pub fn note_placement_moved() {
-    PLACEMENT_MOVED.with(|moved| moved.set(true));
+/// From a widget's `update`: an animation of its own moved or resized what
+/// it lays out (a glide, a jump in progress, a give springing back, a pane
+/// gliding open, a reveal growing a pill), so the last layout no longer
+/// stands. The host lays the window out again in this frame; it is no
+/// change of the model, and nothing syncs.
+///
+/// A frame only an animation asked for is otherwise only drawn: an
+/// animation that moves nothing it lays out (a spinner, a fade, a pose
+/// applied as a draw transform) costs a paint, not a layout and a
+/// republication of the app's actions. A widget whose animation moves
+/// layout calls this on every frame it runs, including the one it lands on.
+pub fn note_layout_moved() {
+    LAYOUT_MOVED.with(|moved| moved.set(true));
 }
 
-/// Whether [`note_placement_moved`] ran since the last call, clearing it.
-pub(crate) fn take_placement_moved() -> bool {
-    PLACEMENT_MOVED.with(|moved| moved.replace(false))
+/// Whether [`note_layout_moved`] ran since the last call, clearing it: a
+/// host asks after its widgets' update, and lays out again when it did.
+pub fn take_layout_moved() -> bool {
+    LAYOUT_MOVED.with(|moved| moved.replace(false))
 }
 
 /// Host services associated with one retained widget event dispatch.
@@ -2267,6 +2277,15 @@ pub trait Widget {
         None
     }
 
+    /// The whole size this window wants, in logical pixels, when the app is
+    /// the window's only content and knows how big it must be: the on-screen
+    /// keyboard parked to a strip. The host states it as the window's minimum
+    /// and maximum, so the desktop shapes the surface to it. `None`: the
+    /// window is the user's and the app lays itself out in whatever it gets.
+    fn preferred_window_size(&self) -> Option<(f64, f64)> {
+        None
+    }
+
     /// Apply the effective reduced-motion preference before the host asks this
     /// subtree whether it needs another animation frame. The default forwards
     /// recursively, making the preference a framework policy instead of an
@@ -3005,6 +3024,10 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
+pub mod action_proposal;
+pub use action_proposal::{
+    ActionProposal, ActionProposalView, DiffLine, DiffTag, ProposalDecision, ProposalTarget,
+};
 pub mod binding;
 pub mod capability;
 mod composed;
@@ -3171,6 +3194,8 @@ pub use autocomplete::{
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};
+pub mod text_completion;
+pub use text_completion::{EmojiQuery, TextCompletion};
 mod number_input;
 pub use number_input::{NumberInput, NumberStepperFace, StepperPart};
 pub mod marks;
@@ -3222,6 +3247,8 @@ pub use scrollable::{ScrollAxis, ScrollProps, Scrollable};
 mod scroll_region;
 pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
+mod overlay_scrollbar;
+pub use overlay_scrollbar::OverlayScrollbar;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{
@@ -3231,7 +3258,7 @@ mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
     AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, DocumentOpenCapability,
-    DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor,
+    DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor, WindowPublication,
 };
 pub mod command_palette;
 pub mod input_hint;
@@ -3319,6 +3346,9 @@ pub mod color_picker;
 pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
+pub mod picture;
+pub mod picture_choice;
+pub use picture_choice::{ColourFilter, Picture, PictureChoice, PictureOption, TouchpadGesture};
 pub mod popover;
 pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod emoji_picker;
@@ -3437,6 +3467,8 @@ pub use virtual_list::{
     RowSelection, VecListModel, VirtualList, VirtualListProps,
 };
 mod activation;
+mod dismissal;
+pub(crate) mod view_choice;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
 pub use media_card::{
@@ -3506,8 +3538,8 @@ pub use search_field::{
 };
 pub mod window_search;
 pub use window_search::{
-    InPlace, Queryable, SearchDriver, SearchHandoff, SearchReach, SearchableWindow, WindowSearch,
-    WindowSearchRequest, with_queryable,
+    InPlace, QueryView, Queryable, SearchDriver, SearchHandoff, SearchReach, SearchableWindow,
+    WindowSearch, WindowSearchRequest, with_queryable,
 };
 pub mod search_results;
 pub use search_results::SearchResultsView;
@@ -3522,7 +3554,7 @@ pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
     ComposerRule, ConversationClock, ConversationDay, ConversationLine, ConversationList,
     ConversationRole, DayBreaks, DayDividerFace, DeliveryFace, DeliveryState, DeliveryStep,
-    DraftBook, ListFace, SavedCopy, UploadProgress,
+    DraftBook, ListCache, ListFace, ListWork, SavedCopy, UploadProgress,
 };
 pub mod card;
 mod tone;

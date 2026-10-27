@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
 use ui::application::{
     ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget,
@@ -6,7 +6,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::permissions::{PermissionContext, Role, UserId};
+use ui::permissions::{PermissionContext, Role, SharedPermissions, UserId};
 use ui::portable_storage::PortableStorage;
 use ui::record::{RecordCheckout, RecordStore};
 
@@ -53,7 +53,7 @@ const WORKSPACE: &str = "books-room";
 struct Fixture {
     records: RecordStore,
     views: Rc<InstanceViewStore>,
-    authority: Rc<RefCell<PermissionContext>>,
+    authority: SharedPermissions,
 }
 
 impl Fixture {
@@ -64,10 +64,7 @@ impl Fixture {
                 .open(crate::definition().app_id(), WORKSPACE)
                 .unwrap(),
             views: Rc::new(InstanceViewStore::portable(cache, WORKSPACE).unwrap()),
-            authority: Rc::new(RefCell::new(PermissionContext::member(
-                "reader",
-                Role::Owner,
-            ))),
+            authority: SharedPermissions::new(PermissionContext::member("reader", Role::Owner)),
         }
     }
 

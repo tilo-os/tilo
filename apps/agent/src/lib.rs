@@ -47,6 +47,7 @@ pub mod pages;
 pub mod plan;
 pub mod providers;
 pub mod session;
+pub mod skills;
 pub mod surface;
 pub mod tools;
 pub mod transform;

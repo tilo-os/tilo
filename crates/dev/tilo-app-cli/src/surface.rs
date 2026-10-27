@@ -1121,4 +1121,23 @@ mod tests {
         .unwrap();
         assert!(!is_framework_app(temp.path()));
     }
+
+    /// Messages publishes verbs and field edits, so every one of them has to
+    /// read in the app's own words: the live report and the catalogue it is
+    /// checked against are the app's, not a fixture standing in for it.
+    #[test]
+    fn messages_history_reads_in_its_own_words() {
+        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/messages");
+        let report = check_app(&app_dir, None, Level::Error)
+            .expect("Messages reports its surface")
+            .expect("Messages is a framework app");
+        let missing: Vec<&str> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule == "history-message")
+            .map(|finding| finding.message.as_str())
+            .collect();
+        assert!(missing.is_empty(), "{missing:#?}");
+        assert!(report.passed(), "{:#?}", report.findings);
+    }
 }

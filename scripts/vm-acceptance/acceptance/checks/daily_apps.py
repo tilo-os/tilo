@@ -322,11 +322,14 @@ def _text_field(ctx, res, app: DailyApp, sid, undo: bool) -> None:
     # A pasted text followed by one typed letter: a paste that does nothing leaves just the letter.
     pasted = f"tilo{token}p"
     ctx.vm.raw({"op": "clipboard_copy", "text": pasted})
+    # An X11 app learns of the new selection through Xwayland, out of order with the keys.
     time.sleep(0.5)
     ctx.vm.key("ctrl+a", "ctrl+v")
+    # The app fetches the pasted text after the key, from the clipboard's owner, and shows
+    # no sign of having it: the letter typed next waits as a person would.
     time.sleep(0.8)
+    # The letter and the copy go through the same keyboard, so they arrive in order.
     ctx.vm.input("type", "q")
-    time.sleep(0.5)
     ctx.vm.key("ctrl+a", "ctrl+c")
     ok, got = _wait_clipboard(ctx, pasted + "q")
     res.metrics["pasted_from_tilo"] = ok
@@ -477,13 +480,27 @@ def _fullscreen(ctx, res, app: DailyApp, sid, gid) -> None:
     ok = wait_until(filled, SCALE_SETTLE_S, 0.5)
     f = last.get("f") or {}
     res.metrics["fullscreen"] = {"display": list(drect), "rect": f.get("rect"), "buffer": f.get("buffer")}
-    path = ctx.shot(f"{app.label}-fullscreen")
-    if f.get("rect"):
+    # The resize commits a buffer of the new size before the client has drawn into it: an X11
+    # client's server-side pixmap starts black, and a GL client on a CPU rasteriser takes
+    # seconds to draw its first frame at full screen (its first frame on opening took as
+    # long). Wait, bounded as on opening, for the frame with content.
+    deadline = time.monotonic() + NON_FLAT_S
+    started = time.monotonic()
+    while True:
+        path = ctx.shot(f"{app.label}-fullscreen")
+        if not f.get("rect"):
+            break
         res.metrics["fullscreen_pixels"] = core.region_stats(core.load_image(path), _rect(f))
+        if res.metrics["fullscreen_pixels"]["stddev"] > 0.02 or time.monotonic() >= deadline:
+            break
+        time.sleep(1.0)
+        f = _frame(ctx, sid) or f
+    res.metrics["fullscreen"]["seconds_to_content"] = round(time.monotonic() - started, 2)
     expect(ok, f"{app.name} full screen: its frame {f.get('rect')} (buffer {f.get('buffer')}) does not "
                f"cover output {disp} {drect} at a matching size")
     expect(res.metrics.get("fullscreen_pixels", {}).get("stddev", 0) > 0.02,
-           f"{app.name} full screen is a flat fill ({res.metrics.get('fullscreen_pixels')})")
+           f"{app.name} full screen is still a flat fill {NON_FLAT_S} s after it filled its output "
+           f"({res.metrics.get('fullscreen_pixels')})")
     ctx.vm.key("super+f")
     ctx.wait_state(lambda s: not _fullscreen_state(s, gid), 5, f"{app.name} restored after Super+F")
 

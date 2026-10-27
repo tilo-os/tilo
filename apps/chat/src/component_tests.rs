@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use crate::{ChatApp, identity::LocalIdentity};
 
 /// The chat surface over `doc` for `identity`, editing as them, as a host
@@ -373,7 +375,7 @@ fn component_mount_as(
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
-    use std::{cell::RefCell, rc::Rc};
+    use std::rc::Rc;
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
     };
@@ -384,9 +386,9 @@ fn component_mount_as(
         .open(definition.app_id(), room)
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
-    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-        author, role,
-    )));
+    let permissions = ui::permissions::SharedPermissions::new(
+        ui::permissions::PermissionContext::member(author, role),
+    );
     let primary = ui::record::RecordCheckout::package_primary(definition.record_kind.clone());
     let target = if records.try_open_record(&primary).is_ok() {
         LaunchTarget::Record {
@@ -582,7 +584,7 @@ fn captured_pointer_send_retry_does_not_duplicate_the_canonical_message() {
 
 #[test]
 fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
-    use std::{cell::RefCell, rc::Rc};
+    use std::rc::Rc;
     use ui::{
         application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
         portable_storage::{PortableStorage, StorageKey},
@@ -616,10 +618,9 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         .open(definition.app_id(), room)
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
-    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-        "author",
-        ui::permissions::Role::Owner,
-    )));
+    let permissions = ui::permissions::SharedPermissions::new(
+        ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner),
+    );
     let mut components = Vec::new();
     for instance in [1, 2] {
         let target = LaunchTarget::Record {
@@ -1502,9 +1503,10 @@ fn a_keystroke_in_the_composer_of_a_long_channel_handled() {
             .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
             .collect();
         scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
-        report.push_str(&format!(
-            "key {key:?}: handled in {elapsed:?}; scopes (name, calls, us): {scopes:?}\n"
-        ));
+        let _ = writeln!(
+            report,
+            "key {key:?}: handled in {elapsed:?}; scopes (name, calls, us): {scopes:?}"
+        );
         for _ in 0..8 {
             if !frame.poll_frame().unwrap() {
                 break;
@@ -1572,9 +1574,10 @@ fn a_new_message_leaves_the_window_at_rest() {
             .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
             .collect();
         scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
-        report.push_str(&format!(
-            "message {index}: posted and drawn in {posted:?}, then frames {frames:?}; scopes: {scopes:?}\n"
-        ));
+        let _ = writeln!(
+            report,
+            "message {index}: posted and drawn in {posted:?}, then frames {frames:?}; scopes: {scopes:?}"
+        );
         assert_eq!(
             frame.rebuilt_frames(),
             rebuilt,

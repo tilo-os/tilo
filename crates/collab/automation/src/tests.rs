@@ -19,12 +19,13 @@ use tilo_actions::remote::{
 };
 
 use crate::{
-    AGENT_APP_ID, AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND, ActionCatalog, AiTransform,
-    AskRequest, Binding, CatchUp, CheckErrorKind, Condition, ConfirmationRequest, NoShortcuts,
-    RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger,
-    SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
-    Step, StepFailure, StepKind, StepPath, StepRecord, StepStatus, StopWatch, TimeOfDay,
-    TriggerSpec, Weekday, check, run, shortcut_resource_id,
+    AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION,
+    AGENT_TRANSFORM_KIND, ActionCatalog, AskRequest, Binding, CatchUp, CheckErrorKind, Condition,
+    ConfirmationRequest, NoShortcuts, Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport,
+    RunRequest, RunTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID,
+    Schedule, Selector, Shortcut, Step, StepFailure, StepKind, StepOutcome, StepPath, StepPolicy,
+    StepRecord, StepStatus, StopWatch, TimeOfDay, TriggerSpec, Weekday, check, run,
+    shortcut_resource_id,
 };
 
 const NOTES: &str = "so.tilo.notes";
@@ -56,6 +57,8 @@ fn row(
             resource_kind: kind.into(),
             resource_label: resource.into(),
             action_label: action.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind: OperationKind::Document,
@@ -76,6 +79,42 @@ fn returning(result: ResultSpec) -> ActionContract {
     }
 }
 
+/// One of the agent's transform actions. Its result spec is what the agent
+/// publishes: text, or with `schema` a value satisfying it.
+fn agent_transform_row(action: &str, params: Vec<ActionParam>) -> CatalogueRow {
+    let schema = if action == AGENT_SUMMARISE_ACTION {
+        json!({"type": "string"})
+    } else {
+        json!({"description": "Text, or with `schema` a value satisfying it."})
+    };
+    row(
+        AGENT_APP_ID,
+        "agent.transform:default",
+        AGENT_TRANSFORM_KIND,
+        action,
+        params,
+        returning(ResultSpec::Json { schema }),
+    )
+}
+
+fn task_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("instruction", ParamType::Text, "What to do"),
+        ActionParam::optional("allow", ParamType::Array, "What it may use"),
+        ActionParam::optional("schema", ParamType::Object, "The summary's shape")
+            .with_schema(json!({"type": "object"})),
+    ]
+}
+
+fn freeform_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("prompt", ParamType::Text, "What to do"),
+        ActionParam::optional("input", ParamType::Text, "What to read"),
+        ActionParam::optional("schema", ParamType::Object, "The answer's shape")
+            .with_schema(json!({"type": "object"})),
+    ]
+}
+
 fn list_schema() -> Value {
     json!({
         "type": "object",
@@ -92,6 +131,9 @@ fn list_schema() -> Value {
 /// caller's own authority is not what these tests are about.
 struct FakeHost {
     rows: Vec<CatalogueRow>,
+    /// Actions that are unavailable while they still have refusals left:
+    /// the name and how many invocations the host turns away.
+    flaky: Mutex<Vec<(String, usize)>>,
     state: Mutex<HostState>,
 }
 
@@ -156,20 +198,10 @@ impl FakeHost {
                 )],
                 ActionContract::default(),
             ),
-            row(
-                AGENT_APP_ID,
-                "agent.transform:default",
-                AGENT_TRANSFORM_KIND,
-                AGENT_SUMMARISE_ACTION,
-                vec![ActionParam::required(
-                    "input",
-                    ParamType::Text,
-                    "Text to condense",
-                )],
-                returning(ResultSpec::Json {
-                    schema: json!({"type": "string"}),
-                }),
-            ),
+            agent_transform_row(AGENT_TASK_ACTION, task_params()),
+            agent_transform_row(AGENT_FREEFORM_ACTION, freeform_params()),
+            // Agent transforms answer either text or an object: a step that
+            // declared a shape checks the answer against the shape itself.
             row(
                 SHORTCUTS_APP_ID,
                 &shortcut_resource_id("a"),
@@ -189,8 +221,36 @@ impl FakeHost {
         ];
         Self {
             rows,
+            flaky: Mutex::new(Vec::new()),
             state: Mutex::new(HostState::default()),
         }
+    }
+
+    /// Serve `action` as unavailable for its next `refusals` invocations.
+    fn flaky(&self, action: &str, refusals: usize) {
+        self.flaky
+            .lock()
+            .unwrap()
+            .push((action.to_string(), refusals));
+    }
+
+    /// Spend one refusal of `action`, answering whether it is still flaky.
+    fn refusing(&self, action: &str) -> bool {
+        self.flaky
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find_map(|(name, left)| {
+                if name == action && *left > 0 {
+                    Some(left)
+                } else {
+                    None
+                }
+            })
+            .map(|left| {
+                *left = left.saturating_sub(1);
+            })
+            .is_some()
     }
 
     fn catalog(&self) -> ActionCatalog {
@@ -202,6 +262,21 @@ impl FakeHost {
     }
 
     fn output(request: &InvokeRequest) -> ActionOutput {
+        // The shape a step declared for its answer, when it declared one. The
+        // agent validates the answer against it as it stands.
+        let schema = || {
+            let InvokeArgument::Json(args) = &request.argument else {
+                return None;
+            };
+            let value = args.get("schema")?;
+            match value {
+                Value::String(text) => serde_json::from_str(text).ok(),
+                Value::Object(object) if object.contains_key("literal") => {
+                    object.get("literal").cloned().filter(Value::is_object)
+                }
+                other => other.is_object().then(|| other.clone()),
+            }
+        };
         let text = |name: &str| match &request.argument {
             InvokeArgument::Json(args) => args.get(name).and_then(Value::as_str).map(str::to_owned),
             InvokeArgument::None | InvokeArgument::Text(_) => None,
@@ -215,8 +290,18 @@ impl FakeHost {
                 value: None,
                 resources: vec![NOTE.into()],
             },
-            AGENT_SUMMARISE_ACTION => ActionOutput {
-                value: Some(json!(format!("summary of {}", text("input").unwrap()))),
+            // Text without a schema; an object when the step declared one.
+            AGENT_FREEFORM_ACTION => ActionOutput {
+                value: Some(match (text("input"), schema()) {
+                    (Some(input), None) => json!(format!("summary of {input}")),
+                    (Some(input), Some(_)) => json!({"summary": input, "moved": 3}),
+                    _ => json!({"done": true}),
+                }),
+                resources: Vec::new(),
+            },
+            // A task answers with its summary in the shape the step declared.
+            AGENT_TASK_ACTION => ActionOutput {
+                value: Some(json!({"tidy": true, "moved": 3})),
                 resources: Vec::new(),
             },
             _ => ActionOutput::default(),
@@ -248,6 +333,12 @@ impl ActionHost for FakeHost {
         });
         if !offered {
             return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        let action = request.target.address.action.clone();
+        if self.refusing(&action) {
+            return Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "the app is starting".into(),
+            }));
         }
         let mut state = self.state.lock().unwrap();
         let HostState { ledger, started } = &mut *state;
@@ -308,15 +399,18 @@ impl RunHooks for Hooks {
     }
 }
 
-/// Drive a future whose every answer is already known.
+/// Drive a future to its answer: every host answer is already known, so only
+/// a wait on the clock (a step's backoff) can leave it pending, and that ends
+/// on its own.
 fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("the fake host answers at once"),
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+        std::thread::yield_now();
     }
 }
 
@@ -390,8 +484,235 @@ fn run_with(
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: None,
+            parent: None,
         },
     ))
+}
+
+#[test]
+fn a_retried_step_succeeds_against_a_flaky_app_without_acting_twice() {
+    // The app turns the first two invocations away, as one starting up does:
+    // nothing was applied, so trying again with the same invocation id is
+    // exactly what the host already saw.
+    let host = FakeHost::new();
+    host.flaky("create", 2);
+    let tidy = shortcut(
+        "tidy",
+        vec![
+            Step::new(
+                "make",
+                StepKind::Invoke {
+                    action: ActionKey::new(NOTES, "notes.folder", "create"),
+                    resource: Selector::Fixed(INBOX.into()),
+                    args: BTreeMap::from([("title".to_string(), Binding::Literal(json!("Tidy")))]),
+                    appearance: None,
+                },
+            )
+            .with_policy(StepPolicy::Retry {
+                attempts: 3,
+                backoff_ms: 1,
+            }),
+        ],
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let [made] = report.steps.as_slice() else {
+        panic!("one step: {report:?}");
+    };
+    assert!(
+        matches!(made.status, StepStatus::Succeeded { .. }),
+        "{made:?}"
+    );
+    assert_eq!(made.attempts.len(), 3, "two refusals and the one that ran");
+    assert_eq!(
+        made.attempts
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        1,
+        "every try sent the same invocation id"
+    );
+    assert_eq!(
+        host.started().len(),
+        1,
+        "the app applied the draft once, on the try that succeeded"
+    );
+    assert!(!report.is_degraded(), "{report:?}");
+}
+
+#[test]
+fn a_retried_step_that_keeps_failing_stops_the_run_with_every_try_recorded() {
+    let host = FakeHost::new();
+    host.flaky("create", 9);
+    let tidy = shortcut(
+        "tidy",
+        vec![
+            Step::new(
+                "make",
+                StepKind::Invoke {
+                    action: ActionKey::new(NOTES, "notes.folder", "create"),
+                    resource: Selector::Fixed(INBOX.into()),
+                    args: BTreeMap::from([("title".to_string(), Binding::Literal(json!("Tidy")))]),
+                    appearance: None,
+                },
+            )
+            .with_policy(StepPolicy::Retry {
+                attempts: 3,
+                backoff_ms: 1,
+            }),
+        ],
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    let (path, why) = failure(&report).expect("the run stopped at the step");
+    assert_eq!(path, &StepPath::root().child(0));
+    assert_eq!(why.code(), "remote_actions_unavailable");
+    assert_eq!(report.steps[0].attempts.len(), 3, "three tries were made");
+    assert!(!report.is_degraded(), "a stopped run is not a degraded one");
+}
+
+#[test]
+fn a_step_passed_over_with_its_default_carries_on_and_degrades_the_run() {
+    let host = FakeHost::new();
+    // The list the rest of the shortcut reads never comes back, so the
+    // default stands in for it: the run carries on with an empty count and
+    // says so, rather than reading nothing as though the list were empty.
+    host.flaky("list", 99);
+    let tidy = shortcut(
+        "tidy",
+        vec![
+            invoke("list", NOTES, Selector::Fixed(INBOX.into()), "list", &[]).with_policy(
+                StepPolicy::Default {
+                    value: Binding::Literal(json!({ "notes": [], "count": "none" })),
+                },
+            ),
+            invoke(
+                "count-as-title",
+                NOTES,
+                Selector::Fixed(INBOX.into()),
+                "create",
+                &[("title", Binding::step("list", "/count"))],
+            ),
+        ],
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert!(
+        report.is_degraded(),
+        "the default was a fallback: {report:?}"
+    );
+    let (defaulted, after) = (&report.steps[0], &report.steps[1]);
+    assert!(matches!(
+        defaulted.degraded,
+        StepOutcome::Degraded {
+            recovered: Recovered::Default,
+            ..
+        }
+    ));
+    assert!(after.status.succeeded(), "the later step read the default");
+    let summary = report.degraded_summary().expect("a summary");
+    assert!(summary.contains("1 step"), "{summary}");
+    // What the run answers with carries the degradation too, so the chip
+    // that started it can say the result fell short.
+    let value = report
+        .reported_value()
+        .expect("the run answers with its degradation");
+    assert_eq!(value["degraded"], json!(summary), "{value:?}");
+}
+
+#[test]
+fn a_run_that_finished_as_intended_answers_with_its_own_output() {
+    // Nothing fell short, so the run answers with the value itself: the
+    // degradation note is only there when there is something to say.
+    let report = RunReport {
+        run: RunId::new(),
+        shortcut: "tidy".into(),
+        version: None,
+        trigger: "manual".into(),
+        mode: RunMode::Unattended,
+        steps: Vec::new(),
+        output: Some(json!("draft:1")),
+        degraded: Vec::new(),
+        outcome: RunOutcome::Completed,
+    };
+    assert_eq!(report.reported_value(), Some(json!("draft:1")));
+}
+
+#[test]
+fn a_fallback_runs_in_the_failed_steps_place_and_marks_the_run_degraded() {
+    let host = FakeHost::new();
+    host.flaky("create", 99);
+    let tidy = shortcut(
+        "tidy",
+        vec![
+            Step::new(
+                "make",
+                StepKind::Invoke {
+                    action: ActionKey::new(NOTES, "notes.folder", "create"),
+                    resource: Selector::Fixed(INBOX.into()),
+                    args: BTreeMap::from([("title".to_string(), Binding::Literal(json!("Tidy")))]),
+                    appearance: None,
+                },
+            )
+            .with_policy(StepPolicy::Fallback {
+                steps: vec![invoke(
+                    "list-after",
+                    NOTES,
+                    Selector::Fixed(INBOX.into()),
+                    "list",
+                    &[],
+                )],
+            }),
+        ],
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(
+        report
+            .steps
+            .iter()
+            .map(|s| s.step.as_str())
+            .collect::<Vec<_>>(),
+        ["make", "list-after"],
+        "the fallback ran where the step failed"
+    );
+    let (failed, fallback) = (&report.steps[0], &report.steps[1]);
+    assert!(matches!(failed.status, StepStatus::Failed { .. }));
+    assert!(matches!(
+        failed.degraded,
+        StepOutcome::Degraded {
+            recovered: Recovered::Fallback,
+            ..
+        }
+    ));
+    assert!(fallback.status.succeeded());
+    assert!(report.is_degraded());
+    let summary = report.degraded_summary().expect("a summary");
+    assert!(summary.contains("1 step"), "{summary}");
+    assert!(summary.contains("unavailable"), "{summary}");
 }
 
 fn failure(report: &RunReport) -> Option<(&StepPath, &StepFailure)> {
@@ -534,6 +855,45 @@ fn a_step_output_feeds_the_next_steps_input() {
 }
 
 #[test]
+fn a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group() {
+    let host = FakeHost::new();
+    let tidy = shortcut("tidy", vec![list()]);
+    let parent = tilo_actions::context::ActionGroup {
+        id: "task-run-7".into(),
+        label: "Sort the inbox".into(),
+        kind: "task".into(),
+    };
+    let report = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &tidy,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::Map::new(),
+            caused_by: None,
+            parent: Some(parent.clone()),
+        },
+    ));
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let started = host.started();
+    assert!(!started.is_empty());
+    for request in started {
+        let context = request.context.as_ref().unwrap();
+        let group = context.group.as_ref().unwrap();
+        assert_eq!(group.id, parent.id);
+        assert_eq!(group.kind, parent.kind);
+        assert_eq!(
+            context.purpose.as_deref(),
+            Some("Tidy inbox"),
+            "the run keeps its own name inside the task"
+        );
+    }
+}
+
+#[test]
 fn a_step_outside_the_grant_is_refused_even_when_the_caller_could_run_it() {
     let host = FakeHost::new();
     let leak = shortcut(
@@ -566,6 +926,86 @@ fn a_step_outside_the_grant_is_refused_even_when_the_caller_could_run_it() {
         "{report:?}"
     );
     assert!(host.started().is_empty(), "nothing reached the host");
+}
+
+// A shortcut's grant is checked against what each step needs, never against
+// what it does: a grant that allows only reading runs an undoable change of
+// the person's own record, which the room's grants do not reach, and still
+// refuses the same change of a shared note.
+#[test]
+fn a_shortcut_grant_answers_what_a_step_needs_not_its_kind() {
+    let mut host = FakeHost::new();
+    let own = "notes.settings:ada";
+    let mut contract = ActionContract::default();
+    contract.tags.push(tilo_actions::OWN_RECORD_SCOPE.into());
+    assert_eq!(contract.kind, tilo_actions::contract::ActionKind::Undoable);
+    assert_eq!(
+        contract.need().kind,
+        tilo_actions::contract::ActionKind::Read
+    );
+    host.rows.push(row(
+        NOTES,
+        own,
+        "notes.settings",
+        "archive",
+        Vec::new(),
+        contract,
+    ));
+    let reads_notes = vec![Rule::new(
+        TreePath::root().any(Level::Room).app(NOTES),
+        KindSet::READ,
+        Answer::Allow,
+    )];
+    let step = |resource: &str| {
+        let mut shortcut = shortcut(
+            "tidy",
+            vec![invoke(
+                "archive",
+                NOTES,
+                Selector::Fixed(resource.into()),
+                "archive",
+                &[],
+            )],
+        );
+        shortcut.grant.clone_from(&reads_notes);
+        shortcut
+    };
+
+    let own_step = step(own);
+    assert_eq!(check(&own_step, &host.catalog(), &NoShortcuts), Ok(()));
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &own_step,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert!(failure(&report).is_none(), "{report:?}");
+    assert_eq!(host.started().len(), 1);
+
+    let shared_step = step(NOTE);
+    let errors = check(&shared_step, &host.catalog(), &NoShortcuts).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, CheckErrorKind::OutsideGrant { .. })),
+        "{errors:?}"
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &shared_step,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert!(
+        matches!(
+            failure(&report),
+            Some((_, StepFailure::OutsideGrant { .. }))
+        ),
+        "{report:?}"
+    );
+    assert_eq!(host.started().len(), 1, "the shared change never ran");
 }
 
 #[test]
@@ -856,6 +1296,7 @@ fn bindings_address_into_an_object_input_and_a_loop_item() {
             trigger: RunTrigger::Manual,
             inputs,
             caused_by: None,
+            parent: None,
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
@@ -968,6 +1409,7 @@ fn an_invoke_step_carries_the_appearance_it_binds_and_refuses_a_bad_one() {
                 trigger: RunTrigger::Manual,
                 inputs,
                 caused_by: None,
+                parent: None,
             },
         ))
     };
@@ -1160,8 +1602,9 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
         vec![Step::new(
             "sum",
             StepKind::Ai {
-                transform: AiTransform::Summarise,
-                input: Binding::Literal(json!("long text")),
+                prompt: "Condense".into(),
+                output: None,
+                input: Some(Binding::Literal(json!("long text"))),
             },
         )],
     );
@@ -1181,7 +1624,140 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
     let started = host.started();
     assert_eq!(
         started[0].target.address,
-        ActionAddress::new("agent.transform:default", AGENT_SUMMARISE_ACTION)
+        ActionAddress::new("agent.transform:default", AGENT_FREEFORM_ACTION)
+    );
+}
+
+#[test]
+fn an_ai_step_declares_its_output_type() {
+    let host = FakeHost::new();
+    let schema = json!({
+        "type": "object",
+        "properties": {"moved": {"type": "integer"}},
+        "required": ["moved"]
+    });
+    let mut digest = shortcut(
+        "digest",
+        vec![Step::new(
+            "sum",
+            StepKind::Ai {
+                prompt: "Count the moves".into(),
+                output: Some(schema),
+                input: Some(Binding::Literal(json!("three notes moved"))),
+            },
+        )],
+    );
+    digest.grant.push(app_rule(AGENT_APP_ID));
+    digest.output = Some(Binding::step("sum", "/moved"));
+    assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
+
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &digest,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(report.output, Some(json!(3)));
+}
+
+#[test]
+fn a_task_step_waits_for_the_tasks_typed_summary() {
+    let host = FakeHost::new();
+    let mut tidy = shortcut(
+        "tidy",
+        vec![Step::new(
+            "task",
+            StepKind::Task {
+                instruction: "Tidy the inbox".into(),
+                allow: Vec::new(),
+                output: Some(json!({
+                    "type": "object",
+                    "properties": {"tidy": {"type": "boolean"}},
+                    "required": ["tidy"]
+                })),
+            },
+        )],
+    );
+    tidy.grant.push(app_rule(AGENT_APP_ID));
+    tidy.output = Some(Binding::step("task", "/tidy"));
+    assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
+
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(report.output, Some(json!(true)));
+    let started = host.started();
+    assert_eq!(
+        started[0].target.address,
+        ActionAddress::new("agent.transform:default", AGENT_TASK_ACTION)
+    );
+
+    // An answer the declared shape does not admit is a broken contract.
+    let host = FakeHost::new();
+    let mut loose = shortcut(
+        "tidy",
+        vec![Step::new(
+            "task",
+            StepKind::Task {
+                instruction: "Tidy the inbox".into(),
+                allow: Vec::new(),
+                output: Some(json!({
+                    "type": "object",
+                    "required": ["missing"]
+                })),
+            },
+        )],
+    );
+    loose.grant.push(app_rule(AGENT_APP_ID));
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &loose,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert!(
+        matches!(
+            report.outcome,
+            RunOutcome::Failed {
+                failure: StepFailure::Contract { .. },
+                ..
+            }
+        ),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn a_task_narrower_than_the_run_is_refused_by_the_grant() {
+    // The step's `allow` names what the task may use. Its own invocation is
+    // granted by the shortcut like any other agent step, and a shortcut
+    // whose grant leaves the agent out refuses the step before it runs.
+    let host = FakeHost::new();
+    let task = shortcut(
+        "tidy",
+        vec![Step::new(
+            "task",
+            StepKind::Task {
+                instruction: "Tidy the inbox".into(),
+                allow: Vec::new(),
+                output: None,
+            },
+        )],
+    );
+    let errors = check(&task, &host.catalog(), &NoShortcuts).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, CheckErrorKind::OutsideGrant { .. })),
+        "{errors:?}"
     );
 }
 
@@ -1193,8 +1769,9 @@ fn an_ai_step_never_reads_a_secret() {
         vec![Step::new(
             "sum",
             StepKind::Ai {
-                transform: AiTransform::Summarise,
-                input: Binding::Input("token".into()),
+                prompt: "Condense".into(),
+                output: None,
+                input: Some(Binding::Input("token".into())),
             },
         )],
     );
@@ -1227,6 +1804,7 @@ fn an_ai_step_never_reads_a_secret() {
             trigger: RunTrigger::Manual,
             inputs,
             caused_by: None,
+            parent: None,
         },
     ));
     assert!(
@@ -1242,8 +1820,9 @@ fn secret_variables_cannot_be_rendered_or_sent_to_ai() {
         Step::new(
             "sum",
             StepKind::Ai {
-                transform: AiTransform::Summarise,
-                input: Binding::Var("copy".into()),
+                prompt: "Condense".into(),
+                output: None,
+                input: Some(Binding::Var("copy".into())),
             },
         ),
         invoke(
@@ -1643,6 +2222,7 @@ fn archive_run<'a, K: RunHooks>(
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: None,
+            parent: None,
         },
     )
 }
@@ -1767,7 +2347,8 @@ fn a_stopped_run_ends_as_cancelled_and_starts_nothing_more() {
         report.steps.as_slice(),
         [StepRecord {
             status: StepStatus::Failed {
-                failure: StepFailure::Stopped { .. }
+                failure: StepFailure::Stopped { .. },
+                ..
             },
             ..
         }]
@@ -1820,7 +2401,8 @@ fn a_stop_between_steps_keeps_what_already_landed() {
     assert!(matches!(
         second.status,
         StepStatus::Failed {
-            failure: StepFailure::Stopped { .. }
+            failure: StepFailure::Stopped { .. },
+            ..
         }
     ));
 }
@@ -1868,6 +2450,7 @@ fn a_run_reports_the_version_of_the_shortcut_it_ran() {
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: None,
+            parent: None,
         },
     ));
     let edited = edit("Tidy the inbox");
@@ -2034,6 +2617,7 @@ fn every_step_of_a_caused_run_records_the_cause() {
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: Some(cause.clone()),
+            parent: None,
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");

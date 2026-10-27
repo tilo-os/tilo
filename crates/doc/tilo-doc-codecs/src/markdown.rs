@@ -1657,7 +1657,7 @@ mod tests {
             {
                 let mut dm = d.as_mut();
                 dm.set_doc_prop(PROP_TITLE, "Spec");
-                dm.set_doc_prop(PROP_AUTHOR, "Quinten");
+                dm.set_doc_prop(PROP_AUTHOR, "Ada");
             }
             let p = d.insert_block(None, "paragraph");
             d.splice_text(&p, 0, 0, "See here for details.");
@@ -1677,7 +1677,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                out.starts_with("---\ntitle: Spec\nauthor: Quinten\n---\n\n"),
+                out.starts_with("---\ntitle: Spec\nauthor: Ada\n---\n\n"),
                 "front-matter: {out:?}"
             );
             assert!(
@@ -1704,7 +1704,7 @@ mod tests {
             );
             assert_eq!(
                 snap.properties.get(PROP_AUTHOR).map(String::as_str),
-                Some("Quinten")
+                Some("Ada")
             );
             assert_eq!(snap.notes.len(), 1, "footnote survives: {:?}", snap.notes);
             assert_eq!(snap.notes[0].blocks[0].text, "the cited source");

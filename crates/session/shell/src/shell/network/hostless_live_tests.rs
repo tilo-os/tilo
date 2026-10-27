@@ -6,7 +6,7 @@ use super::{NeighbourMsg, NetCmd, NetEvent, room_topic_id, shell_network_for_tes
 use crate::shell::live_waves::roster_id;
 use crate::shell::state::{PeerOrigin, WorkspaceTree};
 
-const OWNER: &str = "quinten";
+const OWNER: &str = "ada";
 
 /// Content keys of `channel`, as a channel's member holds them.
 fn keys_of(channel: collab_types::ChannelId) -> channel_crypto::ChannelContentKeys {
@@ -33,7 +33,7 @@ fn a_wave_crosses_a_room_with_no_workspace_host() {
         room,
         &OWNER.to_string(),
         &host_net.keypair.public().to_string(),
-        "Quinten",
+        "Ada",
     ));
 
     // The guest joined the room and knows its people from its document.

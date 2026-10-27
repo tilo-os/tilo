@@ -6391,8 +6391,8 @@ mod group_tests {
         let entries = vec![
             entry(EntryKind::Text, "Ada", secs(8, 10), 1),
             entry(EntryKind::Text, "Maren", secs(7, 16), 2),
-            entry(EntryKind::Text, "Quinten", secs(5, 9), 3),
-            entry(EntryKind::Text, "Xaver", secs(2, 11), 4),
+            entry(EntryKind::Text, "Ada", secs(5, 9), 3),
+            entry(EntryKind::Text, "Bob", secs(2, 11), 4),
         ];
         let mut t = ActivityTimeline::with_entries(entries);
         t.set_now_for_test(now);

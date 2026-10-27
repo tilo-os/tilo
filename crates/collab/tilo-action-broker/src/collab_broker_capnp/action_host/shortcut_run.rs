@@ -71,6 +71,14 @@ impl CapnpBrokerState {
                     trigger: tilo_automation::RunTrigger::Manual,
                     mode: automation::run_mode(request.confirmation.as_ref()),
                     inputs,
+                    // A task that invoked this run is its parent: the caller's
+                    // context names that task's group, so the run's steps are
+                    // stamped with it and the run reads as part of that task.
+                    parent: request
+                        .context
+                        .as_ref()
+                        .and_then(|context| context.group.clone())
+                        .filter(|group| group.kind != "shortcut"),
                 },
                 |runtime, run| {
                     automation::DoorHooks::new(
@@ -121,6 +129,7 @@ impl CapnpBrokerState {
                 trigger: tilo_automation::RunTrigger::Manual,
                 mode: tilo_automation::RunMode::Interactive,
                 inputs,
+                parent: None,
             },
             hooks,
             None,
@@ -198,6 +207,7 @@ impl CapnpBrokerState {
                     trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
                     mode: tilo_automation::RunMode::Interactive,
                     inputs: serde_json::Map::new(),
+                    parent: None,
                 },
                 hooks,
                 None,
@@ -212,6 +222,7 @@ impl CapnpBrokerState {
                 trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
                 mode: tilo_automation::RunMode::Unattended,
                 inputs,
+                parent: None,
             },
             |runtime, run| {
                 automation::DoorHooks::new(
@@ -281,6 +292,7 @@ impl CapnpBrokerState {
         let state = Arc::clone(self);
         let caller = caller.clone().running_shortcut(shortcut.id.clone());
         let room = room.to_string();
+        let parent = start.parent.clone();
         // Registered before the first step, so a stop can find it; it leaves
         // as it ends, whether or not it was stopped.
         let running = automation::RunningRun {
@@ -305,6 +317,7 @@ impl CapnpBrokerState {
                     trigger: start.trigger,
                     inputs: start.inputs,
                     caused_by: None,
+                    parent,
                 },
             )
             .await;

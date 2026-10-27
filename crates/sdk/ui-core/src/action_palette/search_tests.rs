@@ -49,6 +49,8 @@ fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
             groups.contains(&"People".to_string()),
             "content group present: {groups:?}"
         );
+        // What the app holds leads; what it can do follows.
+        assert_eq!(groups.last(), Some(&ACTIONS_KIND.to_owned()), "{groups:?}");
 
         let labels = p.result_labels();
         assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");

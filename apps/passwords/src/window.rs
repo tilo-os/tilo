@@ -103,9 +103,10 @@ fn sidebar(core: &Shared, requests: &Requests) -> NavList {
     let requests = Rc::clone(requests);
     let core = Rc::clone(core);
     NavList::new(Vec::new())
-        .with_id("passwords.sidebar")
         .with_accessible_name("Vault")
-        .on_select(move |id| requests.borrow_mut().push(Request::Navigate(id)))
+        .on_view("passwords.sidebar", move |id| {
+            requests.borrow_mut().push(Request::Navigate(id));
+        })
         .follow(move || {
             let core = core.try_borrow().ok()?;
             Some((core.nav_sections(), Some(core.place_id())))

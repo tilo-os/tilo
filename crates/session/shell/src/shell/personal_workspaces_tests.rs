@@ -11,7 +11,7 @@ use crate::shell::state::{
     Workspace, WorkspaceId,
 };
 
-const PERSON: &str = "person-quinten";
+const PERSON: &str = "person-ada";
 const LAPTOP: u16 = 0x1A97;
 const BOARD: u16 = 0xB0A2;
 

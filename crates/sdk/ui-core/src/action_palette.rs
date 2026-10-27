@@ -44,7 +44,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::search::{
     Facet, FacetFilter, FieldWeight, ListIndex, PagePoll, PendingToken, ScopeDecl, SearchCursor,
-    SearchGroup, SearchProvider, SearchQuery, SearchResult, result_relevance,
+    SearchProvider, SearchQuery, SearchResult,
 };
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -123,15 +123,25 @@ pub(crate) fn tile_rect(widget: &dyn Widget) -> Option<Rect> {
 mod confirm;
 use confirm::{ConfirmState, confirmation_evidence};
 
+#[path = "action_palette_ranking.rs"]
+mod ranking;
+use ranking::rank_and_group;
+
 const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
 /// One row of facet chips, a small control's height.
 const FACET_H: f64 = 28.0;
+/// The suffix the catalogue appends to the resource id a view's `open` acts
+/// on, so a search opened on a resource finds the row that opens it.
+const VIEW_OPEN_SUFFIX: &str = "#open";
 /// Cap per group so one busy provider can't flood the overlay.
 // Dense resource types routinely expose a handful of collection actions plus
 // contextual item actions. Eight hid basic operations such as Rename/Delete
 // as soon as Notes added one platform-visible daily-note action.
 const PER_GROUP_CAP: usize = 12;
+
+mod row_text;
+pub(crate) use row_text::{found_by, merged_facets, scope_token_label, shows_a_hit, without_token};
 /// Maximum number of provider hits materialised for one keystroke. Providers
 /// may emit several groups, so leave room for each while keeping work bounded.
 const PROVIDER_HIT_BUDGET: usize = 32;
@@ -1707,6 +1717,42 @@ impl ActionPalette {
         self.results.set_cursor(index);
     }
 
+    /// Put the row that acts on `resource` under the cursor, so pressing
+    /// Enter acts on it: what a search opened on a resource of the app's
+    /// does (`SearchRequest::on`). A row of it, else a row inside it (its
+    /// item view); `false` when the search lists none, which leaves the
+    /// palette as it was.
+    pub fn select_resource(&mut self, resource: &str) -> bool {
+        let found = self
+            .results
+            .groups()
+            .iter()
+            .flat_map(|group| group.results.iter())
+            .position(|result| {
+                self.row_address(&result.action_id).is_some_and(|address| {
+                    address.strip_suffix(VIEW_OPEN_SUFFIX).unwrap_or(address) == resource
+                })
+            });
+        if let Some(index) = found {
+            self.set_cursor(index);
+            return true;
+        }
+        false
+    }
+
+    /// The resource an exported action of the app's row acts on, from the
+    /// address the palette retained for activation: a provider hit keeps its
+    /// canonical address (with the `#<view>` suffix a view's `open` carries)
+    /// whatever id the palette filed the row under, and a resource-scoped row
+    /// is its own action's target.
+    fn row_address<'a>(&'a self, row_id: &str) -> Option<&'a str> {
+        match self.provider_index.get(row_id)? {
+            RowResolution::Address(address) => Some(address.resource.as_str()),
+            RowResolution::Bound(target) => Some(target.address.address.resource.as_str()),
+            RowResolution::Navigate(_, _) => None,
+        }
+    }
+
     /// The highlighted flat row index.
     pub fn cursor(&self) -> usize {
         self.results.cursor()
@@ -3185,94 +3231,6 @@ impl ActionPalette {
     }
 }
 
-/// Every provider's facets, merged by key in first-declared order.
-fn merged_facets(providers: &[Box<dyn SearchProvider>]) -> Vec<Facet> {
-    let mut merged: Vec<Facet> = Vec::new();
-    for facet in providers.iter().flat_map(|provider| provider.facets()) {
-        if let Some(existing) = merged.iter_mut().find(|known| known.key == facet.key) {
-            for value in facet.values {
-                if !existing
-                    .values
-                    .iter()
-                    .any(|known| known.value == value.value)
-                {
-                    existing.values.push(value);
-                }
-            }
-        } else {
-            merged.push(facet);
-        }
-    }
-    merged
-}
-
-/// What the field's scope token reads.
-fn scope_token_label(scope: &ScopeDecl) -> String {
-    format!("Only {}", scope.label)
-}
-
-/// `text` without the typed token(s) for `filter`.
-fn without_token(text: &str, filter: &FacetFilter) -> String {
-    text.split_whitespace()
-        .filter(|token| {
-            token.split_once(':').is_none_or(|(key, value)| {
-                !(key.eq_ignore_ascii_case(&filter.key)
-                    && value.trim_matches('"').eq_ignore_ascii_case(&filter.value))
-            })
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// The words besides its title a row is found by: what it acts on (named
-/// under it or not: "Apply" of the open "Sealed" is found by "sealed"). Never
-/// its description, which is written for agents and would pull unrelated
-/// actions into a query.
-fn found_by(row: &tilo_actions::ListedRow, resource: &str) -> Option<String> {
-    let resource = Some(resource).filter(|name| Some(*name) != row.subtitle.as_deref());
-    let words = [row.subtitle.as_deref(), resource]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ");
-    (!words.is_empty()).then_some(words)
-}
-
-/// Whether `action` only shows an item as picking its search hit does: the
-/// hit is the row for that, so the palette lists no second one.
-fn shows_a_hit(action: &tilo_actions::ActionSpec) -> bool {
-    action.operation_type.as_deref() == Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
-}
-
-/// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
-/// [`result_relevance`] ranker so a hit from one source is comparable to a
-/// hit from another. Caps each group so no single source floods the overlay.
-fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
-    /// A provider bias notch is worth this many query-match points.
-    const BIAS_WEIGHT: i32 = 4;
-    let key = |r: &SearchResult| -> i32 {
-        r.score
-            .saturating_mul(BIAS_WEIGHT)
-            .saturating_add(result_relevance(query, r))
-    };
-    let mut ranked = rows;
-    ranked.sort_by_cached_key(|b| std::cmp::Reverse(key(b)));
-    let mut groups: Vec<SearchGroup> = Vec::new();
-    for r in ranked {
-        if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
-            if g.results.len() < PER_GROUP_CAP {
-                g.results.push(r);
-            }
-        } else {
-            groups.push(SearchGroup {
-                kind: r.kind.clone(),
-                results: vec![r],
-            });
-        }
-    }
-    groups
-}
-
 impl Widget for ActionPalette {
     fn name(&self) -> &str {
         "ActionPalette"
@@ -3288,10 +3246,7 @@ impl Widget for ActionPalette {
     }
     fn is_focused(&self) -> bool {
         self.is_presented()
-            && (self
-                .field
-                .accessibility()
-                .is_some_and(|field| field.state.focused)
+            && (self.field.is_focused()
                 || self
                     .confirm
                     .as_ref()
@@ -3424,9 +3379,11 @@ impl Widget for ActionPalette {
         {
             children.push(results.with_hashed_key(self.target("results")));
         }
+        let confirm = self.confirm.as_ref();
+        let description = confirm.map_or("", |confirm| confirm.detail.as_str());
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
-                .with_name(self.confirm.as_ref().map_or_else(
+                .with_name(confirm.map_or_else(
                     || {
                         if self.in_argument_mode() {
                             "Action confirmation"
@@ -3436,12 +3393,12 @@ impl Widget for ActionPalette {
                     },
                     |confirm| confirm.question.as_str(),
                 ))
-                .with_description(
-                    self.confirm
-                        .as_ref()
-                        .map_or("", |confirm| confirm.detail.as_str()),
+                .with_description(description)
+                .with_state(
+                    crate::a11y::AccessState::new()
+                        .modal(true)
+                        .focused(self.is_focused()),
                 )
-                .with_state(crate::a11y::AccessState::new().modal(true))
                 .with_children(children),
         )
     }

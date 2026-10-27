@@ -762,7 +762,13 @@ impl App {
         else {
             return;
         };
-        let own = ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""));
+        // The window's own lane, the one its record content travels on:
+        // what another window of this app in this process asked for is not
+        // this window's to send.
+        let own = {
+            let _entry = self.enter_wake_scope();
+            ContentLane::of_window()
+        };
         let lanes = std::iter::once((None, own)).chain(
             ContentLane::routed(&route.app_id)
                 .into_iter()
@@ -847,6 +853,7 @@ impl App {
                 crate::history_source::set_room_agents(&cluster_id, agents);
             }
             CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
+            CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),
             CollabEvent::FollowChanged { peer_id } => match peer_id {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
@@ -1325,6 +1332,7 @@ impl App {
                 crate::history_source::set_room_agents(&cluster_id, agents);
             }
             CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
+            CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),
             CollabEvent::Invocation {
                 invocation,
                 id,

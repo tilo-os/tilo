@@ -61,11 +61,12 @@ class ActionsPagingTest(unittest.TestCase):
 
     def test_restart_retries_a_malformed_state_response(self):
         replies = [subprocess.CompletedProcess([], 0, output, "") for output in
-                   ("restarted", '{"chrome":', '{"chrome": {}}')]
+                   ("restarted", '{"chrome":', '{"chrome": {}}',
+                    '{"chrome": {}, "workspace_tree": {"outputs": {"displays": [{"id": 1}]}}}')]
         with (patch("acceptance.vm.subprocess.run", side_effect=replies) as run,
               patch("acceptance.vm.time.sleep")):
             self.vm.restart_session()
-        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_count, 4)
         self.assertEqual(self.vm.requested_restarts, 1)
 
     def test_a_closer_past_the_first_page_is_listed(self):

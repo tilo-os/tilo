@@ -1924,15 +1924,15 @@ impl FilePicker {
         };
         style.min_size = Size::auto();
         let _ = taffy.set_style(node, style);
-        if taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(px(rect.width())),
-                    height: taffy::AvailableSpace::Definite(px(rect.height())),
-                },
-            )
-            .is_ok()
+        if super::solve_layout(
+            &mut taffy,
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(px(rect.width())),
+                height: taffy::AvailableSpace::Definite(px(rect.height())),
+            },
+        )
+        .is_ok()
         {
             part.apply_layout(&taffy, node, rect.origin());
         }

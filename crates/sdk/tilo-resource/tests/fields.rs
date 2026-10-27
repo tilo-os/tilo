@@ -1129,9 +1129,9 @@ fn items_of_a_nested_collection_are_resources_of_their_own() {
 
 #[test]
 fn a_verb_reads_who_its_invoker_acted_for() {
-    let mut board = Replica::<Board>::new().as_agent_for("claude", "quinten");
+    let mut board = Replica::<Board>::new().as_agent_for("claude", "ada");
     board.apply(Board::ADD_CARD_FOR.with(())).unwrap();
-    assert_eq!(board.state().unwrap().author, "Agent for quinten");
+    assert_eq!(board.state().unwrap().author, "Agent for ada");
 }
 
 #[test]
@@ -1224,4 +1224,107 @@ fn a_nested_item_verb_is_known_offered_without_building_children() {
         "an element"
     );
     assert_eq!(Deck::children_offer_bound(&deck), ["nudge"]);
+}
+
+/// A record whose fields declare what they may hold.
+#[derive(Model, Debug, Clone, PartialEq)]
+#[model(defaults)]
+pub struct Comfort {
+    /// How large text is drawn.
+    #[model(range = 0.5..=3.0)]
+    pub text_scale: f64,
+    /// When the dark look starts.
+    #[model(choices = ["sun", "custom"])]
+    pub schedule: String,
+    /// The cursor's size in pixels, when it is not the theme's.
+    #[model(range = 24..=64)]
+    pub cursor: Option<u32>,
+    pub note: String,
+}
+
+impl Default for Comfort {
+    fn default() -> Self {
+        Self {
+            text_scale: 1.0,
+            schedule: "sun".into(),
+            cursor: None,
+            note: String::new(),
+        }
+    }
+}
+
+#[resource(kind = "test.comfort", label = "Comfort")]
+impl Comfort {
+    /// Draw text at `scale`.
+    #[action]
+    pub fn scale_text(&mut self, scale: f64) {
+        self.text_scale = scale;
+    }
+}
+
+fn comfort_schema(key: &str) -> serde_json::Value {
+    let fields = match Comfort::SHAPE {
+        tilo_resource::Shape::Record(fields) => fields,
+        _ => &[],
+    };
+    let field = fields.iter().find(|field| field.key == key).unwrap();
+    (field.schema)()
+}
+
+/// What a field declares is published with it, so an agent knows the
+/// bounds, the choices and the default before it changes the field.
+#[test]
+fn a_field_publishes_what_it_declares() {
+    let scale = comfort_schema("text_scale");
+    assert_eq!(
+        (&scale["minimum"], &scale["maximum"], &scale["default"]),
+        (
+            &serde_json::json!(0.5),
+            &serde_json::json!(3.0),
+            &serde_json::json!(1.0)
+        )
+    );
+    let schedule = comfort_schema("schedule");
+    assert_eq!(schedule["enum"], serde_json::json!(["sun", "custom"]));
+    assert_eq!(schedule["default"], serde_json::json!("sun"));
+    let cursor = comfort_schema("cursor").to_string();
+    assert!(
+        cursor.contains("\"minimum\":24") && cursor.contains("\"maximum\":64"),
+        "{cursor}"
+    );
+    assert_eq!(comfort_schema("note")["default"], serde_json::json!(""));
+}
+
+/// A change outside what a field declares is refused, through a field edit
+/// and through a verb alike; within it, it applies.
+#[test]
+fn a_field_holds_only_what_it_declares() {
+    let paths = Comfort::paths();
+    let mut comfort = Replica::<Comfort>::new();
+    comfort.apply(paths.text_scale.set(2.0)).unwrap();
+    let refused = format!(
+        "{:?}",
+        comfort.apply(paths.text_scale.set(9.0)).unwrap_err()
+    );
+    assert!(refused.contains("between 0.5 and 3"), "{refused}");
+    assert!(comfort.apply(Comfort::SCALE_TEXT.with(0.1)).is_err());
+    assert!(
+        comfort
+            .apply(paths.schedule.set("dusk".to_owned()))
+            .is_err()
+    );
+    comfort
+        .apply(paths.schedule.set("custom".to_owned()))
+        .unwrap();
+    comfort.apply(paths.cursor.set(Some(32))).unwrap();
+    assert!(comfort.apply(paths.cursor.set(Some(8))).is_err());
+    comfort.apply(paths.cursor.set(None)).unwrap();
+    comfort
+        .apply(paths.note.set("anything".to_owned()))
+        .unwrap();
+    let state = comfort.state().unwrap();
+    assert_eq!(
+        (state.text_scale, state.schedule.as_str(), state.cursor),
+        (2.0, "custom", None)
+    );
 }

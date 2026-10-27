@@ -24,9 +24,8 @@ dev=/target/publish/os-dev/$arch
 fault=${T_INPUT_FAULT:-unlock}
 case $fault in unlock|greetd|greeter) ;; *) echo "fault must be unlock, greetd or greeter" >&2; exit 2 ;; esac
 
-dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
-  qemu-kvm qemu-img edk2-ovmf ipxe-roms-qemu openssh-clients sshpass socat \
-  btrfs-progs dosfstools e2fsprogs fuse-overlayfs podman jq skopeo systemd util-linux
+# The check's setup layer has these already (t.toml); without it, they come from dnf.
+bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
 command -v qemu-system-x86_64 qemu-img ssh sshpass socat podman systemd-repart >/dev/null
 
 ./os/dev/assert-native-arch.sh "$arch"
@@ -68,7 +67,7 @@ podman build -q -t localhost/tilo-boot-assessment:update -f "$work/update/Contai
 podman save --format oci-archive -o "$work/update.tar" localhost/tilo-boot-assessment:update
 podman rmi -f localhost/tilo-boot-assessment:update localhost/tilo-vm:ci "$image" >/dev/null 2>&1 || true
 
-export TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER=quickuser TILO_PASS=tilo
+export TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER=tester TILO_PASS=tilo
 export TILO_RUN=$work/run TILO_DISK=$disk
 mkdir -p "$TILO_RUN"
 finish() {

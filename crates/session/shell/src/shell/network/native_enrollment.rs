@@ -1,3 +1,4 @@
+use super::hosted_sites::{JoinProgress, SiteJoinState};
 use super::{Arc, Mutex, NetCmd, RoomId, ShellNetwork, SystemTime, room_topic_id};
 use crate::{
     network::invite::enrollment_driver,
@@ -258,7 +259,46 @@ impl ShellNetwork {
             .write()
             .join_native_room(&crate::shell::i18n::t("workspace-joined-name"), room)
             .ok_or("that invitation is for a room that is not joined")?;
-        self.accept_invitation_via(local, token.trim(), via)
+        // The join shows in the workspace from the start, as a site's does:
+        // it says Joining… until the room installs into it, and why it did
+        // not when it fails.
+        self.hosted_sites.set_join(SiteJoinState {
+            room,
+            site: None,
+            workspace: Some(local),
+            progress: JoinProgress::Joining,
+        });
+        // The invitation names the room's host by the devices that answer
+        // for it: a site whose entry names that host makes it its workspace.
+        let hosts: Vec<[u8; 32]> = join
+            .grant()
+            .transport
+            .iter()
+            .map(|hint| hint.host.device_public_key)
+            .chain([join.grant().issuer.device_public_key])
+            .collect();
+        self.expect_arrival(
+            room,
+            &super::site_join::Arriving {
+                hosts: &hosts,
+                ..Default::default()
+            },
+        );
+        let answer = self.accept_invitation_via(local, token.trim(), via);
+        if let Ok(PeerSyncResponse::EnrollmentPending { id }) = &answer
+            && let Err(error) = self.finish_when_enrolled(room, *id, true)
+        {
+            self.hosted_sites.end_join(room);
+            return Err(error);
+        }
+        answer.inspect_err(|error| {
+            self.hosted_sites.set_join(SiteJoinState {
+                room,
+                site: None,
+                workspace: Some(local),
+                progress: JoinProgress::Failed(error.clone()),
+            });
+        })
     }
 
     /// Redeem `token` into `local`, the workspace made for the room it

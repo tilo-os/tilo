@@ -261,8 +261,6 @@ fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
 /// brings draws it, with no wait.
 #[test]
 fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() {
-    use ui::collaboration::record_content::ContentLane;
-
     // No caret in the editor: its blink is a timer of its own.
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
@@ -295,7 +293,12 @@ fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_bef
             .image_decoded_for_test(&source, ui::time::Duration::ZERO),
         "the bytes are not on this device yet"
     );
-    let lane = ContentLane::of_record("so.tilo.notes", app.record());
+    // The lane this window keeps: what it asked for is its own to ask, not
+    // the process's lane for the record.
+    let lane = app
+        .harness()
+        .component_record_content_lane()
+        .expect("the window keeps a lane for its record's content");
     assert_eq!(
         lane.take_requests().wants,
         vec![digest.clone()],

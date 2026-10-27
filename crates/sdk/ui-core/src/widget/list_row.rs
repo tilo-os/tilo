@@ -339,6 +339,8 @@ pub struct ListRowFace<'a> {
     count: Option<usize>,
     leading: Option<RowLeading<'a>>,
     leading_column: Option<f64>,
+    /// Indented one leading column under the row above it.
+    nested: bool,
     status: Option<RowStatus<'a>>,
     disclosure: bool,
     /// How far the chevron has turned towards pointing down, 0 to 1: a row
@@ -435,6 +437,7 @@ impl<'a> ListRowFace<'a> {
             count: None,
             leading: None,
             leading_column: None,
+            nested: false,
             status: None,
             disclosure: false,
             disclosure_turn: 0.0,
@@ -595,6 +598,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn leading_column(mut self, width: f64) -> Self {
         self.leading_column = Some(width);
+        self
+    }
+
+    /// Indent the row one leading column, under the row above it: an
+    /// option that belongs to the one above and shows only while it applies.
+    #[must_use]
+    pub fn nested(mut self, nested: bool) -> Self {
+        self.nested = nested;
         self
     }
 
@@ -802,6 +813,7 @@ impl<'a> ListRowFace<'a> {
         let extra = self.extra_lines() > 0;
         let avatar = RowMetrics::avatar(theme, extra);
         let own = match self.leading {
+            None if self.nested => (m.icon, m.icon),
             None => (0.0, 0.0),
             Some(
                 RowLeading::Icon(_)
@@ -1893,6 +1905,7 @@ pub struct ListRow {
     count: Option<usize>,
     leading: Option<Leading>,
     leading_column: Option<f64>,
+    nested: bool,
     /// Every badge of the row's list, measured into `leading_column` at
     /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
@@ -1962,6 +1975,7 @@ impl ListRow {
             count: None,
             leading: None,
             leading_column: None,
+            nested: false,
             column_badges: None,
             shared_leading: None,
             shared_after_trailing: None,
@@ -2237,6 +2251,13 @@ impl ListRow {
     #[must_use]
     pub fn leading_column(mut self, width: f64) -> Self {
         self.leading_column = Some(width);
+        self
+    }
+
+    /// See [`ListRowFace::nested`].
+    #[must_use]
+    pub fn nested(mut self) -> Self {
+        self.nested = true;
         self
     }
 
@@ -2723,6 +2744,7 @@ impl ListRow {
         if let Some(width) = self.leading_column.or(self.shared_leading) {
             face = face.leading_column(width);
         }
+        face = face.nested(self.nested);
         if let Some(leading) = &self.leading {
             face = face.leading(match leading {
                 Leading::Avatar {

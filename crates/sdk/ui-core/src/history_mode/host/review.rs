@@ -75,17 +75,22 @@ impl HistoryHost {
                 } else {
                     "history-review-refresh"
                 },
-                move || confirm.borrow_mut().push_back(Command::Review(command)),
+                move || {
+                    confirm.borrow_mut().push_back(Command::Review(command));
+                    super::super::note_news();
+                },
             )
             .secondary_action("history-review-cancel", move || {
                 cancel
                     .borrow_mut()
                     .push_back(Command::Review(ReviewCommand::Cancel));
+                super::super::note_news();
             })
             .on_dismiss(move || {
                 dismiss
                     .borrow_mut()
                     .push_back(Command::Review(ReviewCommand::Cancel));
+                super::super::note_news();
             }),
         });
     }

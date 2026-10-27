@@ -107,6 +107,7 @@ pub enum DisplayEffect {
     SetPrimaryDisplay { display: String },
     /// A display's scale. Staged until applied.
     #[effect(returns, row, idempotent)]
+    #[effect(keywords = "scaling, zoom, text size, dpi")]
     SetOutputScale { display: String, scale: String },
     /// Place a display beside another: `Right of …`, `Left of …`, `Above …`,
     /// `Below …`. Staged until applied.
@@ -149,9 +150,11 @@ pub enum DisplayEffect {
     MirrorDisplay { display: String, mirror: String },
     /// A display's resolution and refresh rate. Staged until applied.
     #[effect(returns, row, idempotent)]
+    #[effect(keywords = "resolution, refresh rate, hz, screen size")]
     SetDisplayMode { display: String, mode: String },
     /// A display's rotation. Staged until applied.
     #[effect(returns, row, idempotent)]
+    #[effect(keywords = "rotate screen, portrait, landscape, orientation")]
     RotateDisplay { display: String, rotation: String },
     /// High dynamic range on a display that offers it. Staged until applied.
     #[effect(returns, row, idempotent)]
@@ -346,20 +349,6 @@ fn temperature_label(kelvin: u32) -> String {
         .min_by_key(|(_, value)| value.abs_diff(kelvin))
         .map_or("Warm, 3700 K", |(label, _)| *label);
     temperature_shown(english)
-}
-
-fn temperature_from_label(label: &str) -> Option<u32> {
-    NIGHT_LIGHT_TEMPERATURES
-        .iter()
-        .find(|(english, _)| *english == label || temperature_shown(english) == label)
-        .map(|(_, value)| *value)
-}
-
-fn temperature_options() -> Vec<String> {
-    NIGHT_LIGHT_TEMPERATURES
-        .iter()
-        .map(|(english, _)| temperature_shown(english))
-        .collect()
 }
 
 /// Offered `HiDPI` display scales as `(display label, factor)`. The label is
@@ -2760,31 +2749,37 @@ impl DisplayModel {
 
     /// Night Light: a comfort of every display, so it is not one display's
     /// setting and carries no brightness.
+    /// Night light: its switch heads the group; when it comes on and how
+    /// warm it makes the screen, as pictures of the screen at each warmth.
     fn build_night_light_card(&self) -> SettingsSection {
         let prefs = *self.prefs.get();
-        section(
+        let paths = crate::prefs::DisplayPrefs::paths();
+        let switch = self.cx.bind_field(
+            ui::widget::Toggle::from_state(&self.prefs.shown(&paths.night_light, bool::clone))
+                .with_id("display.night_light")
+                .with_accessible_name(&t("display-night-light")),
+            paths.night_light,
+        );
+        crate::widgets::section_with(
             &t("display-night-light"),
+            Box::new(switch),
             rows(vec![
-                night_light(&self.cx, &self.prefs),
                 self.cx
                     .row(t("display-night-light-schedule"))
                     .described(t("display-night-light-schedule-desc"))
                     .id("display.night_light_schedule")
                     .toggle(
                         &LocalState::new(prefs.night_light_schedule),
-                        crate::prefs::DisplayPrefs::paths().night_light_schedule,
+                        paths.night_light_schedule,
                     ),
                 self.cx
                     .row(t("display-night-light-warmth"))
                     .id("display.night_light_temperature")
-                    .choice(
-                        temperature_options(),
-                        &LocalState::new(temperature_label(prefs.night_light_temperature)),
-                        crate::prefs::DisplayPrefs::paths().night_light_temperature,
-                        |label: String| {
-                            temperature_from_label(&label)
-                                .ok_or_else(|| format!("`{label}` is not a night light warmth"))
-                        },
+                    .of(&self.prefs, paths.night_light_temperature)
+                    .pictures(
+                        NIGHT_LIGHT_TEMPERATURES.iter().map(|(_, kelvin)| *kelvin),
+                        |kelvin: &u32| temperature_label(*kelvin),
+                        |kelvin: &u32| ui::widget::Picture::Warmth(*kelvin),
                     ),
                 note(&t("display-night-light-caption")),
             ]),

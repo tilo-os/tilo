@@ -1,5 +1,5 @@
 {
-  "description": "Lenovo Yoga Slim 7x 83ED internal keyboard (hid-over-i2c). Captured read-only from /sys/class/input/event1/device on the device: ids, bitmaps. hwdb scancode remaps cannot apply through uinput.",
+  "description": "Lenovo Yoga Slim 7x 83ED internal keyboard (hid-over-i2c). Captured read-only from /sys/class/input/event1/device on the device: ids, bitmaps. hwdb scancode remaps cannot apply through uinput. The device also reports ABS_VOLUME, left out: sysfs bitmaps carry no axis range, and a 0..0 range makes libinput reject the whole keyboard; add it back with the range EVIOCGABS reads on the device.",
   "class": "keyboard",
   "name": "hid-over-i2c 048D:8987",
   "bus": 24,
@@ -12,7 +12,5 @@
   "msc": [4],
   "led": [0, 1, 2, 3, 4],
   "rep": true,
-  "abs": [
-    {"code": 32, "min": 0, "max": 0, "fuzz": 0, "flat": 0, "resolution": 0}
-  ]
+  "abs": []
 }

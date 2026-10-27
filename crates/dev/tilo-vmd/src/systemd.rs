@@ -598,6 +598,14 @@ impl Apply for SystemdApply {
         crate::apply::slot_identity_environment(Path::new(&home))
     }
 
+    fn machine_identity(&mut self) -> crate::apply::MachineIdentity {
+        let paths = tilo_user_identity::IdentityPaths::default_system();
+        crate::apply::MachineIdentity {
+            person: paths.user_pubkey.is_file(),
+            certified: paths.device_cert.is_file(),
+        }
+    }
+
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
         if uid_of(user).is_none() {
             return Ok(());
@@ -1837,13 +1845,13 @@ mod tests {
     fn changed_user_unit_is_reloaded_before_restart_and_reload_failure_stops_it() {
         let mut calls = Vec::new();
         let mut loaded_pin = false;
-        try_restart_unit_with(Some("xaver"), "tilo-ush.service", |_, command| {
+        try_restart_unit_with(Some("bob"), "tilo-ush.service", |_, command| {
             assert_eq!(command.get_program(), "systemctl");
             let args: Vec<_> = command
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect();
-            assert_eq!(&args[..2], ["--machine=xaver@", "--user"]);
+            assert_eq!(&args[..2], ["--machine=bob@", "--user"]);
             calls.push(args[2].clone());
             match args[2].as_str() {
                 "daemon-reload" => loaded_pin = true,
@@ -1866,7 +1874,7 @@ mod tests {
         assert_eq!(calls, ["daemon-reload", "show", "try-restart"]);
 
         let mut calls = 0;
-        let error = try_restart_unit_with(Some("xaver"), "tilo-ush.service", |_, _| {
+        let error = try_restart_unit_with(Some("bob"), "tilo-ush.service", |_, _| {
             calls += 1;
             Err(DaemonError::Apply {
                 step: "reload".into(),
@@ -1915,7 +1923,7 @@ mod tests {
 
     #[test]
     fn component_restart_validates_units_and_preserves_manager_failures() {
-        for user in [None, Some("xaver")] {
+        for user in [None, Some("bob")] {
             for state in ["not-found", "masked", "error", ""] {
                 let mut tried = false;
                 let result = try_restart_unit_with(user, "optional.service", |_, command| {
@@ -1951,7 +1959,7 @@ mod tests {
 
     #[test]
     fn component_restart_uses_conditional_operation_for_both_managers() {
-        for user in [None, Some("xaver")] {
+        for user in [None, Some("bob")] {
             let mut verbs = Vec::new();
             try_restart_unit_with(user, "optional.service", |_, command| {
                 let args: Vec<_> = command
@@ -2020,15 +2028,15 @@ mod tests {
         }
         {
             let listing = "tilo-board-headless-session@old.service loaded inactive dead Tilo board session for old\n\
-                           tilo-board-headless-session@quickuser.service loaded active running Tilo board session for quickuser\n";
+                           tilo-board-headless-session@tester.service loaded active running Tilo board session for tester\n";
             assert_eq!(
                 device_session_unit(listing).as_deref(),
-                Some("tilo-board-headless-session@quickuser.service")
+                Some("tilo-board-headless-session@tester.service")
             );
-            let stopped = "tilo-board-headless-session@quickuser.service loaded inactive dead x\n";
+            let stopped = "tilo-board-headless-session@tester.service loaded inactive dead x\n";
             assert_eq!(
                 device_session_unit(stopped).as_deref(),
-                Some("tilo-board-headless-session@quickuser.service")
+                Some("tilo-board-headless-session@tester.service")
             );
             assert_eq!(device_session_unit(""), None);
             assert_eq!(
@@ -2050,7 +2058,7 @@ mod tests {
             );
             let ssh = shown(
                 "2",
-                "Name=quickuser\nSeat=\nClass=user\nRemote=yes\nState=active\nLeader=700\nScope=session-2.scope\n",
+                "Name=tester\nSeat=\nClass=user\nRemote=yes\nState=active\nLeader=700\nScope=session-2.scope\n",
             );
             let slot = shown(
                 "4",
@@ -2058,7 +2066,7 @@ mod tests {
             );
             let owner = shown(
                 "3",
-                "Name=quickuser\nSeat=seat0\nClass=user\nRemote=no\nState=active\nLeader=901\nScope=session-3.scope\n",
+                "Name=tester\nSeat=seat0\nClass=user\nRemote=no\nState=active\nLeader=901\nScope=session-3.scope\n",
             );
             assert_eq!(owner.leader, 901);
             assert_eq!(owner.scope, "session-3.scope");

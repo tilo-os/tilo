@@ -36,6 +36,8 @@ model = ["dep:tilo-resource"]
 
 [dev-dependencies]
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+# Thread-scoped wall-clock scopes for the tests that place a row in time.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 

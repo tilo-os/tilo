@@ -120,6 +120,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         assert!(created.created);
@@ -133,6 +134,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         assert!(!again.created, "create is idempotent");
@@ -241,6 +243,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         let owner = Owner {
@@ -501,6 +504,7 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
                     owner: Owner::default(),
                     outputs: vec![],
                     identity: false,
+                    device_identity: false,
                 })
                 .unwrap();
         }
@@ -604,7 +608,7 @@ fn the_device_slot_is_the_machines_own_session() {
         let mut daemon = Daemon::spawn_with(root.path(), "record-device");
         let client = &mut daemon.client;
         client.hello("test").unwrap();
-        let unit = "tilo-board-headless-session@quickuser.service";
+        let unit = "tilo-board-headless-session@tester.service";
         // Listed before anything was swapped into it: it is the machine's session.
         let fresh = client.call(Status { slot: None }).unwrap();
         assert_eq!(fresh.slots.len(), 1, "{:?}", fresh.slots);
@@ -667,7 +671,7 @@ fn the_device_slot_is_the_machines_own_session() {
             .unwrap();
         let device = &status.slots[0];
         assert_eq!(device.kind, SlotKind::Device);
-        assert_eq!(device.user.as_deref(), Some("quickuser"));
+        assert_eq!(device.user.as_deref(), Some("tester"));
         assert_eq!(device.components["shell"], v2);
         assert_eq!(device.generations, [0, 1, 2]);
         assert!(status.issues.is_empty(), "{:?}", status.issues);
@@ -724,6 +728,7 @@ fn the_device_slot_is_the_machines_own_session() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })),
             rpc_error(client.call(SlotRm {
                 name: "device".into(),
@@ -752,6 +757,7 @@ fn the_device_slot_is_the_machines_own_session() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         assert!(created.actions.contains(&Action::StartUnit {
@@ -932,6 +938,7 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         let shell = import(client, "shell", &tarball("usr/bin/shell", b"old shell"));

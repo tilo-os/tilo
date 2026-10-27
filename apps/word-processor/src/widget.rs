@@ -1993,6 +1993,26 @@ impl WordProcessorWidget {
             })
     }
 
+    /// The page is this window's content, so the window's zoom gestures
+    /// reach it ([`ui::content_zoom::ContentZoom`]): Ctrl+Plus, Ctrl+Minus
+    /// and Ctrl+0, Ctrl+scroll and a pinch scale the sheet under the bar,
+    /// and the bar says the level. They are the same steps the status
+    /// band's zoom field takes, so a key and a typed percentage agree.
+    pub(crate) fn zoom_page(&mut self, step: ui::content_zoom::ZoomStep) -> f32 {
+        match step {
+            ui::content_zoom::ZoomStep::In => self.zoom_by(ZOOM_STEP),
+            ui::content_zoom::ZoomStep::Out => self.zoom_by(-ZOOM_STEP),
+            // Actual size for a page: 100 %, the size its type is set in.
+            ui::content_zoom::ZoomStep::Reset => self.set_zoom(1.0),
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a zoom factor is a small positive float"
+        )]
+        let factor = self.zoom.factor() as f32;
+        factor
+    }
+
     /// Set the zoom factor (clamped) and request a repaint. Returns whether it
     /// changed.
     fn set_zoom(&mut self, z: f64) -> bool {

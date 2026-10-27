@@ -213,7 +213,7 @@ fn legacy_rdp_seed() -> (u128, ConnectionSeed<'static>) {
             name: "Windows workstation",
             host: "10.0.0.31",
             port: 3389,
-            user: "quinten",
+            user: "ada",
             kind: ConnectionKind::Rdp,
             auth: AuthMethod::Password,
             used_minutes_ago: Some(40 * 24 * 60),

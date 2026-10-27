@@ -54,11 +54,7 @@ impl<T> Section for T where
 }
 
 /// The published actions of section `T`, held for the panes.
-#[allow(
-    clippy::implicit_hasher,
-    reason = "the panes' sections are held in the window's one map, by its own hasher"
-)]
-pub fn held<T: Section>(
+fn held<T: Section>(
     cx: &ui::framework::SurfaceCx<Settings>,
     sections: &mut HashMap<TypeId, Box<dyn Any>>,
 ) {
@@ -84,9 +80,15 @@ fn sections(cx: &ui::framework::SurfaceCx<Settings>) -> HashMap<TypeId, Box<dyn 
     held::<crate::prefs::DisplayPrefs>(cx, &mut sections);
     held::<tilo_locale::Locale>(cx, &mut sections);
     held::<crate::continuity::ContinuityPrivacy>(cx, &mut sections);
-    for section in &crate::area::registry().sections {
-        (section.held)(cx, &mut sections);
-    }
+    held::<crate::shortcut_settings::ShortcutPrefs>(cx, &mut sections);
+    held::<crate::prefs::DesktopControls>(cx, &mut sections);
+    held::<crate::prefs::DefaultApps>(cx, &mut sections);
+    held::<crate::prefs::ClockPrefs>(cx, &mut sections);
+    held::<crate::prefs::SharedDisplayPrefs>(cx, &mut sections);
+    held::<crate::prefs::AutomaticDisplayPrefs>(cx, &mut sections);
+    held::<crate::prefs::AgentProviders>(cx, &mut sections);
+    held::<crate::prefs::OskSourceSettings>(cx, &mut sections);
+    held::<crate::prefs::DeviceVpnPrefs>(cx, &mut sections);
     sections
 }
 
@@ -424,6 +426,24 @@ impl PaneCx {
             Some(actions) => actions.bind(control, verb),
             None => control.unavailable(),
         }
+    }
+
+    /// Run `invoke`, one of section `T`'s actions, as its control runs it:
+    /// where the session keeps the section, as a step of the person's they
+    /// undo there; from an effect, continuing it as its caller's. A refusal
+    /// is told in [`Self::refused`].
+    ///
+    /// # Errors
+    /// Outside a host, where no section is kept.
+    pub fn invoke_section<T: Section>(
+        &self,
+        invoke: impl Into<ui::tilo_resource::Invoke<T>>,
+    ) -> Result<(), String> {
+        let (Some(door), Some(actions)) = (self.door.as_ref(), self.section::<T>()) else {
+            return Err(format!("{} is not kept here", T::LABEL));
+        };
+        door.dispatcher.invoke_on(actions, invoke.into());
+        Ok(())
     }
 
     /// Bind to a published item operation rather than exporting a row effect

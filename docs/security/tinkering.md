@@ -223,7 +223,7 @@ Read from the tree; build on these rather than duplicating them.
 
 - **distrobox and podman are installed in the image and completely unconfigured.** `os/Containerfile:255-268` installs `distrobox podman fuse3 bubblewrap`. There is **no `/etc/subuid` or `/etc/subgid` entry**, no `/etc/containers/{containers,storage}.conf`, no `user_allow_other` in `/etc/fuse.conf`, no podman socket. `apps/containers/` is a podman/distrobox manager built on `ui` but is not packaged and its binary is not in the image.
 
-- **`os/config.toml` puts `quickuser` in `wheel`.** Tilo today has ordinary password `sudo`. There is one polkit rule, for the greeter's power actions. No `run0` usage. `os/dev/switch-to-stock-kernel.sh` is the tree's only `bootc usr-overlay` use, and it needs root.
+- **`os/config.toml` puts `tester` in `wheel`.** Tilo today has ordinary password `sudo`. There is one polkit rule, for the greeter's power actions. No `run0` usage. `os/dev/switch-to-stock-kernel.sh` is the tree's only `bootc usr-overlay` use, and it needs root.
 
 - SELinux targeted and expected Enforcing, with `tilo_fs_t` enforcing too (it shipped `permissive` until its allow-set was captured from a VM run). Kargs include `lockdown=integrity`. Unprivileged user namespaces intentionally allowed (bwrap needs them). `grep -rni tinker` returned nothing — greenfield.
 
@@ -574,7 +574,7 @@ Must change:
   in `os/` writes them today, and without them `apt` fails in a layer and
   rootless podman cannot work either. `os/usr/libexec/tilo-firstboot-user` is the
   place.
-- **`sudo` should go.** `os/config.toml` puts `quickuser` in `wheel`, so Tilo has
+- **`sudo` should go.** `os/config.toml` puts `tester` in `wheel`, so Tilo has
   ambient password root today. Removing it depends on `tilo-hold` covering the
   operations people need; remove it only after that replacement is available.
 - **`docs/app-model/sandbox.md`**'s hostname-allowlist section still describes a

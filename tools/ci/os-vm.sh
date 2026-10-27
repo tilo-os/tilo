@@ -43,7 +43,7 @@ curl -fsS --retry 3 -H "authorization: Bearer $T_ATTACH_TOKEN" -o "$agent" \
   || die "the t server at $T_ATTACH_URL served no attach agent"
 
 revision=$(cat "$disk_dir/revision")
-export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=quickuser TILO_PASS=tilo
+export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
 export TILO_RUN=/var/tmp/tilo-os-vm-$arch TILO_SSH_PORT=2222
 export TILO_DISK=$TILO_RUN/disk.qcow2
 export TILO_SERIAL_SOCKET=$TILO_RUN/serial.sock TILO_VNC_SOCKET=$TILO_RUN/vnc.sock

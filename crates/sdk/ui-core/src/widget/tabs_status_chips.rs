@@ -41,10 +41,14 @@ impl TabBar {
     /// Mark `id` as running a developer's build installed by `installer`,
     /// or clear the mark. `true` when that changed what the bar shows.
     pub fn set_dev_build(&mut self, id: u64, installer: Option<String>) -> bool {
-        match installer {
+        let changed = match installer {
             Some(name) => self.dev_build.installers.insert(id, name.clone()) != Some(name),
             None => self.dev_build.installers.remove(&id).is_some(),
+        };
+        if changed {
+            self.touch();
         }
+        changed
     }
 
     /// Where the "Dev build · by …" mark of the window in front stands,
@@ -89,6 +93,7 @@ impl TabBar {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.touch();
         self.dev_build.painted = None;
         if let Some((rect, label)) = self.dev_build_chip(tr, theme) {
             ChipFace::new(rect, &label)
@@ -112,11 +117,15 @@ impl TabBar {
     /// Mark `id` as a window whose app may control the desktop, or clear
     /// the mark. `true` when that changed what the bar shows.
     pub fn set_desktop_control(&mut self, id: u64, on: bool) -> bool {
-        if on {
+        let changed = if on {
             self.desktop_control.ids.insert(id)
         } else {
             self.desktop_control.ids.remove(&id)
+        };
+        if changed {
+            self.touch();
         }
+        changed
     }
 
     pub fn controls_desktop(&self, id: u64) -> bool {
@@ -171,6 +180,7 @@ impl TabBar {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.touch();
         self.desktop_control.painted = None;
         if let Some((rect, label)) = self.desktop_control_chip(tr, theme) {
             ChipFace::new(rect, &label)
@@ -184,6 +194,7 @@ impl TabBar {
 
     /// A press at `at` on the chip: report it. Whether it was on the chip.
     pub(super) fn press_desktop_control(&mut self, at: Point) -> bool {
+        self.touch();
         let Some(rect) = self
             .desktop_control
             .painted
@@ -201,6 +212,7 @@ impl TabBar {
     /// The chip activated without a pointer: report it from where it
     /// stands. Whether the bar shows it.
     pub fn activate_desktop_control(&mut self) -> bool {
+        self.touch();
         match self.desktop_control.painted {
             Some(rect) => self.press_desktop_control(rect.center()),
             None => false,

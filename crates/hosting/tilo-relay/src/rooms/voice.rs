@@ -41,6 +41,18 @@
 //! a person a guest is linked to must still be a member, whose denials hold
 //! for the guest as for them.
 //!
+//! A room this relay only carries, governed elsewhere or by no one (a
+//! person's own workspace, synced across their devices through it), has
+//! calls all the same: every workspace has voice. Its calls are held here
+//! ([`carried_call_room`]), not in governance this relay cannot author:
+//! any device subscribed to the room, and so admitted to it, opens a voice
+//! channel's call and takes part with both directions, and a call stands
+//! until the relay restarts. The room's admission is the only authority:
+//! each envelope is answered only for a device still subscribed, so one
+//! that leaves the room stops being granted, and its participation ends
+//! within [`PARTICIPATION_TTL`] of its last heartbeat. No one moderates
+//! such a call (there is no governor to), and it has no window carrier.
+//!
 //! Every device that asked for a room's calls ([`Rooms::voice_calls`]) is
 //! sent the room's call list again whenever it changes: someone joins or
 //! leaves a call, a participation ends, or a call starts or ends. A voice
@@ -72,6 +84,8 @@ use super::authority::RoomOp;
 use super::{GovernedRoom, Rooms};
 use tilo_lock::MutexRecover as _;
 
+/// The longest record or channel id a call in a carried room is opened on.
+const MAX_CARRIED_NAME: usize = 256;
 /// How long a grant's token admits new carrier sessions.
 const GRANT_TTL: Duration = Duration::from_secs(60);
 /// A heartbeat renews a token with less than this left.
@@ -116,6 +130,23 @@ struct State {
     watchers: HashMap<String, Vec<Watcher>>,
     /// Rooms whose call list changed since their watchers were last told.
     changed: std::collections::BTreeSet<String>,
+    /// The calls of each room this relay carries but does not govern, by
+    /// [`carried_call_room`]: the policy it would otherwise read from the
+    /// room's governance.
+    carried: HashMap<String, RoomMediaV1>,
+}
+
+/// The name a room this relay carries, but does not govern, has among the
+/// rooms with calls: no governed room is named so, as those are uuids.
+pub(crate) fn carried_call_room(workspace_id: u64) -> String {
+    format!("{CARRIED}{workspace_id:016x}")
+}
+
+const CARRIED: &str = "carried-";
+
+/// Whether `room` names a room this relay only carries.
+fn carried(room: &str) -> bool {
+    room.starts_with(CARRIED)
 }
 
 /// A device told a room's call list whenever it changes.
@@ -493,6 +524,9 @@ struct Policy {
     /// The devices of the bots acting in the room that may show other
     /// people's names: those that may bridge a call.
     bridges: Vec<[u8; 32]>,
+    /// Whether the room is one this relay carries: its admission, which
+    /// every call envelope is checked against, decides who is a member.
+    carried: bool,
 }
 
 impl Policy {
@@ -529,7 +563,21 @@ impl Policy {
             windows: protocol::windows_call(room.room()),
             shares_layout: !peer.governance().room_layout().is_personal(),
             bridges,
+            carried: false,
         })
+    }
+
+    /// The policy of `room`, one this relay carries: the calls it holds
+    /// for it, and no windows or bridges.
+    fn carried(room: &str, calls: Option<RoomMediaV1>) -> Self {
+        Self {
+            calls,
+            access: GovernedAccess::default(),
+            windows: protocol::windows_call(room),
+            shares_layout: false,
+            bridges: Vec::new(),
+            carried: true,
+        }
     }
 }
 
@@ -700,7 +748,8 @@ impl GovernedRoom {
 
 /// Whether `device` of person `user` is a member of the room under `policy`.
 fn member(policy: &Policy, device: [u8; 32], user: [u8; 32]) -> bool {
-    policy.access.member_devices.contains(&device)
+    policy.carried
+        || policy.access.member_devices.contains(&device)
         || policy.access.member_user_roots.contains(&user)
 }
 
@@ -1067,16 +1116,100 @@ impl Rooms {
         self.inner.calls.carrier.get().is_some()
     }
 
-    /// Open, start, end or moderate a call of `room` for `caller`: opening
-    /// a channel's call takes a member, everything else a device of the
-    /// relay's user, or of a member the room lets run its calls.
+    /// Open, start, end or moderate a call of `room` for `caller`: opening a channel's call takes a member, everything else a
+    /// device of the relay's user, or of a member the room lets run its
+    /// calls. In a room this relay carries, the caller is a member by its
+    /// subscription and opening is all there is.
     pub(crate) async fn voice_call(
         &self,
         room: &str,
         caller: &AuthenticatedPeer,
         operation: &CallOperation,
     ) -> Result<CallState, String> {
+        if carried(room) {
+            return self.carried_voice_call(room, operation);
+        }
         self.voice_call_as(room, &caller.cert, operation).await
+    }
+
+    /// Open the call of a voice channel of `room`, one this relay carries:
+    /// started when the channel has none, restarted when it ended. Its
+    /// Chat is the members' to read, sealed with keys this relay does not
+    /// hold, so the call is bound to the channel as named.
+    fn carried_voice_call(
+        &self,
+        room: &str,
+        operation: &CallOperation,
+    ) -> Result<CallState, String> {
+        let CallOperation::Open {
+            app_id,
+            record_id,
+            channel_id,
+        } = operation
+        else {
+            return Err("no one moderates the calls of a room without a governor here".into());
+        };
+        if app_id != "so.tilo.chat"
+            || record_id.len() > MAX_CARRIED_NAME
+            || channel_id.is_empty()
+            || channel_id.len() > MAX_CARRIED_NAME
+            || [record_id, channel_id]
+                .iter()
+                .any(|name| name.chars().any(char::is_control))
+        {
+            return Err("calls are opened on a Chat's voice channel".into());
+        }
+        let binding = media::ChatCallBindingV1 {
+            app_id: app_id.clone(),
+            record_id: record_id.clone(),
+            channel_id: channel_id.clone(),
+            channel_object: String::new(),
+            chat_workspace_id: String::new(),
+        };
+        let calls = &self.inner.calls;
+        let mut state = calls.state();
+        let policy = state
+            .carried
+            .entry(room.to_owned())
+            .or_insert_with(|| RoomMediaV1 {
+                version: 1,
+                room: [0; 16],
+                authorization_revision: 0,
+                authorization_basis: [0; 32],
+                calls: BTreeMap::default(),
+            });
+        let before = policy.clone();
+        let call = open(policy, binding)?;
+        let entry = policy.calls.get(&call).ok_or("the call vanished")?;
+        let opened = CallState {
+            call,
+            epoch: entry.epoch,
+            active: entry.phase == CallPhaseV1::Active,
+            allowed: from_v1(entry.allowed),
+        };
+        if *policy != before {
+            tracing::info!(%room, call = %hex::encode(call), "call opened in a carried room");
+            state.changed.insert(room.to_owned());
+        }
+        drop(state);
+        self.tell_call_lists();
+        Ok(opened)
+    }
+
+    /// The workspace of `room` and the call policy it is under now: its
+    /// governance's when this relay governs it, else the calls it holds
+    /// for a room it carries.
+    async fn call_policy(&self, room: &str) -> Result<(u64, Policy), String> {
+        if let Some(workspace_id) = room
+            .strip_prefix(CARRIED)
+            .and_then(|id| u64::from_str_radix(id, 16).ok())
+        {
+            let calls = self.inner.calls.state().carried.get(room).cloned();
+            return Ok((workspace_id, Policy::carried(room, calls)));
+        }
+        let governed = self.room(room).await.map_err(|error| error.to_string())?;
+        let governed = governed.lock().await;
+        Ok((governed.workspace_id(), Policy::read(&governed)?))
     }
 
     /// [`Self::voice_call`] for the device `caller` certifies, however it
@@ -1242,18 +1375,9 @@ impl Rooms {
         if !self.serves_voice() {
             return Err("this relay serves no voice carrier".into());
         }
-        let governed = self.room(room).await.map_err(|error| error.to_string())?;
-        let (workspace_id, epoch, directions, windows) = {
-            let governed = governed.lock().await;
-            let policy = Policy::read(&governed)?;
-            let (epoch, directions) = current(&policy, device, user, &call, bridged.as_ref())?;
-            (
-                governed.workspace_id(),
-                epoch,
-                directions,
-                call == policy.windows,
-            )
-        };
+        let (workspace_id, policy) = self.call_policy(room).await?;
+        let (epoch, directions) = current(&policy, device, user, &call, bridged.as_ref())?;
+        let windows = call == policy.windows;
         let mut state = calls.state();
         let mut changed = participation.is_none();
         let id = if let Some(id) = participation {
@@ -1373,11 +1497,7 @@ impl Rooms {
         (device, user): ([u8; 32], [u8; 32]),
         outbound: mpsc::Sender<Envelope>,
     ) -> Result<Vec<CallSummary>, String> {
-        let governed = self.room(room).await.map_err(|error| error.to_string())?;
-        let (workspace_id, policy) = {
-            let governed = governed.lock().await;
-            (governed.workspace_id(), Policy::read(&governed)?)
-        };
+        let (workspace_id, policy) = self.call_policy(room).await?;
         if !member(&policy, device, user) {
             return Err("not a member of the room".into());
         }
@@ -1411,10 +1531,7 @@ impl Rooms {
     async fn send_call_lists(&self) {
         let changed = std::mem::take(&mut self.inner.calls.state().changed);
         for room in changed {
-            let Ok(governed) = self.room(&room).await else {
-                continue;
-            };
-            let Ok(policy) = Policy::read(&*governed.lock().await) else {
+            let Ok((_, policy)) = self.call_policy(&room).await else {
                 continue;
             };
             let mut state = self.inner.calls.state();
@@ -1809,6 +1926,7 @@ mod tests {
             windows: protocol::windows_call("room"),
             shares_layout: true,
             bridges: Vec::new(),
+            carried: false,
         };
         let windows = policy.windows;
         assert_eq!(
@@ -1927,6 +2045,7 @@ mod tests {
             windows: protocol::windows_call("room"),
             shares_layout: true,
             bridges: vec![bridge],
+            carried: false,
         }
     }
 

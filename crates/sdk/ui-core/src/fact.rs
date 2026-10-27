@@ -1,6 +1,6 @@
 //! A value that carries its measure, its provenance and its as-of.
 //!
-//! A number on screen is a claim. [`Fact`] keeps the three things that make
+//! A number on screen is a claim. [`Measured`] keeps the three things that make
 //! the claim honest together, so an app cannot render the number without also
 //! having the answer to "measured how?", "from where?" and "when?":
 //!
@@ -22,7 +22,7 @@
 //!
 //! ```
 //! use std::time::Duration;
-//! use tilo_ui::fact::{Fact, Measure};
+//! use tilo_ui::fact::{Measure, Measured};
 //! use tilo_ui::time::{SystemTime, UNIX_EPOCH};
 //!
 //! let at = UNIX_EPOCH + Duration::from_secs(120);

@@ -261,6 +261,12 @@ enum PendingResourceOperation {
         session_generation: u64,
         acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
     },
+    FileTransfer {
+        reply: Option<ui::framework::EffectReply>,
+        connection_id: ConnectionId,
+        session_generation: u64,
+        completion: std::sync::mpsc::Receiver<Result<u64, String>>,
+    },
 }
 
 /// Everything a control can ask for. Queued by the views
@@ -687,9 +693,6 @@ pub struct RemoteApp {
     shell: NavShell,
     /// The session alone, while it fills the window.
     immersive: Option<SessionPane>,
-    /// When the session went full screen, while the way out is said over
-    /// it ([`FULLSCREEN_HINT`]).
-    fullscreen_hint: Option<ui::time::Instant>,
     /// The queue every control reports to.
     requests: Requests,
     /// Search hits picked in the platform search, waiting to be shown.
@@ -742,7 +745,6 @@ impl RemoteApp {
                 .with_window_toolbar()
                 .mode(NavMode::Docked),
             immersive: None,
-            fullscreen_hint: None,
             requests: Requests::default(),
             opened: Rc::default(),
             built: None,
@@ -1006,9 +1008,6 @@ impl RemoteApp {
         }
         self.fullscreen = fullscreen;
         self.immersive = fullscreen.then(|| SessionPane::new(Rc::clone(&self.session)));
-        // Full screen hides the window's bar: the way out is said over the
-        // session for a moment.
-        self.fullscreen_hint = fullscreen.then(ui::time::now);
         self.layout_dirty = true;
         self.dirty = true;
     }
@@ -1144,7 +1143,7 @@ impl RemoteApp {
     /// action), in the window's bar. It holds no credential material.
     /// Record what happened in the ledger: Remote's outcomes do not expire
     /// and nothing of them takes the keyboard.
-    fn notify(&mut self, message: impl Into<String>) {
+    fn notify(message: impl Into<String>) {
         ui::attention::publish(ui::attention::Notice::did(owner(), message));
     }
 
@@ -1187,7 +1186,7 @@ impl RemoteApp {
                 .item(purpose, &id.to_string())
                 .put_blocking(secret.as_bytes())
         {
-            self.notify(format!(
+            Self::notify(format!(
                 "Couldn't save the password on this device: {error}"
             ));
         }
@@ -1784,7 +1783,6 @@ impl Widget for RemoteApp {
     ) {
         self.body_mut()
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        self.draw_fullscreen_hint(scene, transform, text_renderer, theme);
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
@@ -1794,7 +1792,6 @@ impl Widget for RemoteApp {
         self.children()
             .into_iter()
             .filter_map(Widget::next_wake_deadline)
-            .chain(self.fullscreen_hint_deadline())
             .min()
     }
 
@@ -1940,7 +1937,6 @@ impl ui::widget::controls::ActionControls for RemoteApp {
 
 mod connect;
 mod effects;
-mod fullscreen_hint;
 mod keys;
 mod live_session;
 mod secrets;

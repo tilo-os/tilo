@@ -14,11 +14,17 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::conversation::{ConversationClock, DayBreaks, DayDividerFace};
+use ui::widget::conversation::{
+    ConversationClock, DayBreaks, DayDividerFace, EarlierUnavailableFace, UnreadDividerFace,
+};
+use ui::widget::{ArrivalFace, SkeletonFace, SkeletonShape};
 use ui::widget::{
     AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ControlSize,
     EmptyState, EmptyStateContent, MediaArt,
 };
+
+/// The skeleton standing for the messages of an earlier part on their way.
+const EARLIER_SHAPE: SkeletonShape = SkeletonShape::Text { lines: 3 };
 
 use super::agent_work::{
     AgentWorkLineStyle, AgentWorkPresentation, draw_agent_work_line, measure_agent_work,
@@ -211,71 +217,54 @@ impl ChatApp {
             text_width: text_w,
         };
 
+        // Earlier parts of the chat's messages are read back into from the
+        // top of a channel's timeline ([`crate::scrollback`]).
+        let reads_back = self.reads_back();
+
         // An empty channel or direct Agent conversation explains the exact
         // capability the composer currently offers.
         if self.messages.is_empty() {
-            self.draw_empty_messages(PaintCtx::new(scene, tf, tr, theme), area);
+            self.draw_no_messages(
+                PaintCtx::new(scene, tf, tr, theme),
+                area,
+                text_w,
+                reads_back,
+            );
             return;
         }
 
         let groups = self.timeline_groups();
         let clock = ConversationClock::local();
-        let (items, total) = self.measure_message_rows(tr, theme, &groups, text_w, clock);
+        let (items, measured) = self.measure_message_rows(tr, theme, &groups, text_w, clock);
+        let first_unread = self.scrollback.first_unread.clone();
+        let earlier_h = if reads_back {
+            Self::earlier_height(tr, theme, text_w)
+        } else {
+            0.0
+        };
+        let new_h = first_unread
+            .as_ref()
+            .map_or(0.0, |_| UnreadDividerFace::height(theme));
+        let total = measured + earlier_h + new_h;
+        let tops = Self::item_tops(&items, theme, earlier_h, new_h, first_unread.as_deref());
 
-        // The origin is pinned to the newest edge. If a message arrives while
-        // the reader is looking back through history, compensate for the new
-        // height so the message they were reading stays in the same place.
-        // A fresh search reveal deliberately owns its initial position instead.
-        if !self.timeline_at_end && !self.reveal_scroll_pending && self.timeline_total_height > 0.0
-        {
-            self.scroll += total - self.timeline_total_height;
-        }
+        // The newest edge at the bottom; content shorter than the view
+        // starts at its top.
+        let start_y = (area.y1 - total).min(area.y0);
+        self.keep_view(&items, &tops, area, start_y, total);
 
         self.scroll_content = total;
         self.scroll_viewport = area.height().max(0.0);
-        let start_y = if total > area.height() {
-            area.y1 - total
-        } else {
-            area.y0
-        };
-        let max_start = area.y0;
-        let min_start = (area.y1 - total).min(area.y0);
-        if self.reveal_scroll_pending {
-            // A message shown from search, or one opened in the editor. The
-            // sum above the target counts the day dividers too, so the row
-            // lands where it is painted rather than a divider's height early.
-            let target = self.revealed_message.as_deref().or(self.editing.as_deref());
-            let target_index = target.and_then(|target| {
-                items.iter().position(|item| match item {
-                    TimelineItem::Row(row) => row.idx_id == target,
-                    TimelineItem::Divider { .. } => false,
-                })
-            });
-            if let Some(target_index) = target_index {
-                let before: f64 = items
-                    .iter()
-                    .take(target_index)
-                    .map(|item| Self::item_height(item, theme))
-                    .sum();
-                if let Some(TimelineItem::Row(row)) = items.get(target_index) {
-                    let target_mid = before + row.height() / 2.0;
-                    self.scroll = area.center().y - start_y - target_mid;
-                }
-            }
-            // A result can disappear between search and paint. Either way,
-            // make this a one-shot request so a stale selection never fights
-            // normal reader-driven scrolling on later frames.
-            self.reveal_scroll_pending = false;
-        }
+        self.scroll_to_revealed(&items, &tops, area, start_y);
         self.scroll = self.scroll.clamp(0.0, (total - area.height()).max(0.0));
-        let mut y = (start_y + self.scroll).clamp(min_start, max_start);
+        let mut y = (start_y + self.scroll).clamp(start_y, area.y0);
         // Store the normalised (bounded) offset, not the raw wheel accumulator.
         // This prevents an unbounded value from leaking across a resize or a
         // channel switch, and gives sync an accurate read-edge answer.
         self.scroll = y - start_y;
         // `scroll == 0` is the newest edge: `start_y` starts the timeline at
         // its bottom-aligned position, while increasing offsets travel back
-        // through history toward `max_start`.
+        // through history toward the view's top.
         let at_end = self.scroll <= 0.5;
         // Scrolling back to the newest message reads it. The read receipt
         // is the sync's, asked for once when the timeline arrives at its
@@ -286,6 +275,15 @@ impl ChatApp {
         }
         self.timeline_at_end = at_end;
         self.timeline_total_height = total;
+        // The message at the top of the view, kept there next frame.
+        self.scrollback.anchor = (!at_end)
+            .then(|| view_anchor(&items, &tops, area, y))
+            .flatten();
+        // Reading within a view of the earlier messages' place opens the
+        // part before.
+        if reads_back && self.messages_read_current() && y + earlier_h >= area.y0 - area.height() {
+            self.scrollback.reached_top();
+        }
 
         let first_row_hit = hits.len();
         // Only what stands in view is painted; a row keeps its scene for
@@ -293,7 +291,13 @@ impl ChatApp {
         self.begin_timeline_paint(theme, tf, column);
         self.message_rows.clear();
         self.message_bar.lifted = self.bar_message();
+        if reads_back {
+            y = self.draw_earlier_at(PaintCtx::new(scene, tf, tr, theme), column, y, earlier_h);
+        }
         for item in &items {
+            if unread_starts(item, first_unread.as_deref()) {
+                y = self.draw_unread_line(PaintCtx::new(scene, tf, tr, theme), area, y, new_h);
+            }
             let height = Self::item_height(item, theme);
             if y >= area.y1 || y + height <= area.y0 {
                 y += height;
@@ -327,6 +331,192 @@ impl ChatApp {
         if !self.timeline_at_end {
             self.draw_jump_to_latest(scene, tf, tr, theme, area, hits);
         }
+    }
+
+    /// Where each timeline item starts below the timeline's top: after the
+    /// earlier messages' place, the items before it and the "new messages"
+    /// line.
+    fn item_tops(
+        items: &[TimelineItem],
+        theme: &Theme,
+        earlier_h: f64,
+        new_h: f64,
+        first_unread: Option<&str>,
+    ) -> Vec<f64> {
+        let mut tops = Vec::with_capacity(items.len());
+        let mut top = earlier_h;
+        for item in items {
+            if unread_starts(item, first_unread) {
+                top += new_h;
+            }
+            tops.push(top);
+            top += Self::item_height(item, theme);
+        }
+        tops
+    }
+
+    /// The origin is pinned to the newest edge. While the reader looks back
+    /// through history, the message at the top of the view stays where it
+    /// was as rows arrive: newer messages below it, earlier parts above it.
+    /// A fresh search reveal deliberately owns its initial position
+    /// instead, and a scroll alone moves the view.
+    fn keep_view(
+        &mut self,
+        items: &[TimelineItem],
+        tops: &[f64],
+        area: Rect,
+        start_y: f64,
+        total: f64,
+    ) {
+        let moved = self.timeline_total_height > 0.0
+            && (total - self.timeline_total_height).abs() > f64::EPSILON;
+        if self.timeline_at_end || self.reveal_scroll_pending || !moved {
+            return;
+        }
+        let anchored = self.scrollback.anchor.as_ref().and_then(|(id, offset)| {
+            let at = items
+                .iter()
+                .position(|item| matches!(item, TimelineItem::Row(row) if row.idx_id == *id))?;
+            Some(area.y0 + offset - tops.get(at).copied()? - start_y)
+        });
+        match anchored {
+            Some(scroll) => self.scroll = scroll,
+            None => self.scroll += total - self.timeline_total_height,
+        }
+    }
+
+    /// A message shown from search, or one opened in the editor, lands
+    /// where it is painted: below the day dividers and lines above it.
+    fn scroll_to_revealed(
+        &mut self,
+        items: &[TimelineItem],
+        tops: &[f64],
+        area: Rect,
+        start_y: f64,
+    ) {
+        if !self.reveal_scroll_pending {
+            return;
+        }
+        let target = self.revealed_message.as_deref().or(self.editing.as_deref());
+        let target_index = target.and_then(|target| {
+            items
+                .iter()
+                .position(|item| matches!(item, TimelineItem::Row(row) if row.idx_id == target))
+        });
+        if let Some(target_index) = target_index
+            && let (Some(TimelineItem::Row(row)), Some(row_top)) =
+                (items.get(target_index), tops.get(target_index))
+        {
+            let target_mid = row_top + row.height() / 2.0;
+            self.scroll = area.center().y - start_y - target_mid;
+        }
+        // A result can disappear between search and paint. Either way,
+        // make this a one-shot request so a stale selection never fights
+        // normal reader-driven scrolling on later frames.
+        self.reveal_scroll_pending = false;
+    }
+
+    /// Whether the messages shown are read from the parts the chain holds
+    /// now: a head taken up since the last sync is not empty or short.
+    fn messages_read_current(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| Some(chain.revision()) == self.chain_seen)
+    }
+
+    /// A timeline with no message held: a channel's whose messages may all
+    /// be in earlier parts reads back to them; else the empty state.
+    fn draw_no_messages(&mut self, paint: PaintCtx<'_>, area: Rect, text_w: f32, reads_back: bool) {
+        if reads_back {
+            // Only once the messages shown are read from the parts held: a
+            // head taken up since the last sync is not empty for it.
+            if self.messages_read_current() {
+                self.scrollback.reached_top();
+            }
+            self.scrollback.anchor = None;
+            self.draw_earlier_only(paint, area, text_w);
+        } else {
+            self.draw_empty_messages(paint, area);
+        }
+    }
+
+    /// The "new messages" line, `height` tall at `y`: the cursor beneath it.
+    fn draw_unread_line(&self, mut paint: PaintCtx<'_>, area: Rect, y: f64, height: f64) -> f64 {
+        let band = Rect::new(area.x0, y, area.x1, y + height);
+        let (leading, trailing) = (area.x0 + self.chrome.gutter, area.x1 - self.chrome.gutter);
+        UnreadDividerFace::paint(&mut paint, band, leading, trailing);
+        y + height
+    }
+
+    /// What the place of the earlier messages takes: the skeleton of the
+    /// lines a part brings, at the column's text width.
+    fn earlier_height(tr: &mut TextRenderer, theme: &Theme, text_w: f32) -> f64 {
+        SkeletonFace::new(EARLIER_SHAPE).height(tr, theme, f64::from(text_w))
+    }
+
+    /// The place of the earlier messages, above the oldest held, in `band`:
+    /// its ground until a part is asked for, then the part arriving, or,
+    /// when the room's hosts have none of it, that they are not available.
+    fn draw_earlier(&self, mut paint: PaintCtx<'_>, band: Rect, column: MessageColumn) {
+        let Some(pager) = self.scrollback.pager.as_ref() else {
+            return;
+        };
+        if pager.unavailable() {
+            let leading = column.text_x;
+            let trailing = column.text_x + f64::from(column.text_width);
+            EarlierUnavailableFace::paint(&mut paint, band, leading, trailing);
+            return;
+        }
+        let Some(asked) = pager.asked() else {
+            return;
+        };
+        let now = ui::motion::frame_now();
+        if let Some(next) = asked.next_step_at(now) {
+            let wake = self.arriving_wake.get().map_or(next, |at| at.min(next));
+            self.arriving_wake.set(Some(wake));
+        }
+        let rect = Rect::new(
+            column.text_x,
+            band.y0,
+            column.text_x + f64::from(column.text_width),
+            band.y1,
+        );
+        ArrivalFace::new(EARLIER_SHAPE, asked, now).paint(&mut paint, rect);
+    }
+
+    /// The place of the earlier messages, `height` tall at `y` above the
+    /// oldest held: the cursor beneath it.
+    fn draw_earlier_at(
+        &self,
+        paint: PaintCtx<'_>,
+        column: MessageColumn,
+        y: f64,
+        height: f64,
+    ) -> f64 {
+        let band = Rect::new(column.area.x0, y, column.area.x1, y + height);
+        self.draw_earlier(paint, band, column);
+        y + height
+    }
+
+    /// A channel none of whose messages is held yet, while earlier parts
+    /// are opened: their place, centred.
+    fn draw_earlier_only(&mut self, mut paint: PaintCtx<'_>, area: Rect, text_w: f32) {
+        self.scroll_content = 0.0;
+        self.scroll_viewport = area.height().max(0.0);
+        self.scroll = 0.0;
+        self.timeline_at_end = true;
+        let height = Self::earlier_height(paint.text, paint.theme, text_w);
+        let y = area.center().y - height / 2.0;
+        let column = MessageColumn {
+            area,
+            text_x: area.x0 + self.chrome.text_inset(),
+            text_width: text_w,
+        };
+        self.draw_earlier(
+            paint.reborrow(),
+            Rect::new(area.x0, y, area.x1, y + height),
+            column,
+        );
     }
 
     /// A visible, keyboard-reachable way back from history. It only changes
@@ -524,6 +714,8 @@ impl ChatApp {
                 self.share_card_height(m, f64::from(text_w), tr, theme)
             } else if !editing && m.reference.is_some() && m.source_provider.is_some() {
                 2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
+            } else if !editing && self.report_recordings.contains_key(&m.id) {
+                ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2)
             } else {
                 0.0
             },
@@ -644,11 +836,8 @@ impl ChatApp {
         if !rm.editing {
             parts.lines = self.body_lines(&m.id);
         }
-        if rm.resource_h > 0.0 && m.share.is_some() {
-            let place = (column.text_x, f64::from(column.text_width), column.area);
-            self.draw_share_card(PaintCtx::new(scene, tf, tr, theme), &m, place, y, hits);
-        } else if rm.resource_h > 0.0 {
-            self.draw_resource_navigation(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
+        if rm.resource_h > 0.0 {
+            self.draw_message_resource(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
         }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
@@ -695,6 +884,60 @@ impl ChatApp {
         if !parts.is_empty() {
             self.painted_messages.insert(id.to_owned(), parts);
         }
+    }
+
+    /// What a message shows under its body: the window it shares, the
+    /// recording its report carries, or the resource it is about.
+    fn draw_message_resource(
+        &self,
+        paint: PaintCtx<'_>,
+        m: &Message,
+        column: MessageColumn,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        if m.share.is_some() {
+            let place = (column.text_x, f64::from(column.text_width), column.area);
+            self.draw_share_card(paint, m, place, y, hits);
+        } else if self.report_recordings.contains_key(&m.id) {
+            self.draw_recording_replay(paint, m, column, y, hits);
+        } else {
+            self.draw_resource_navigation(paint, m, column, y, hits);
+        }
+    }
+
+    /// The control under a report's message that replays the recording it
+    /// carries in the app it recorded.
+    fn draw_recording_replay(
+        &self,
+        paint: PaintCtx<'_>,
+        m: &Message,
+        column: MessageColumn,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        *y += f64::from(theme.tokens.spacing.s2);
+        let caption = self.resource_navigation.replay_label(&m.id, false);
+        let width = ButtonFace::new(Rect::ZERO, &caption)
+            .intrinsic_width(tr, theme)
+            .min(f64::from(column.text_width));
+        let rect = Rect::new(column.text_x, *y, column.text_x + width, *y + height);
+        Button::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
+        );
+        ChatApp::push_hit(hits, rect, Hit::ReplayRecording(m.id.clone()));
+        *y += height;
     }
 
     fn draw_resource_navigation(
@@ -1317,4 +1560,20 @@ impl ChatApp {
             self.hovered(card),
         );
     }
+}
+
+/// Whether the "new messages" line goes before `item`.
+fn unread_starts(item: &TimelineItem, first_unread: Option<&str>) -> bool {
+    matches!(item, TimelineItem::Row(row) if first_unread == Some(row.idx_id.as_str()))
+}
+
+/// The message at the top of the view, painted from `y`, and how far below
+/// the view's top it starts.
+fn view_anchor(items: &[TimelineItem], tops: &[f64], area: Rect, y: f64) -> Option<(String, f64)> {
+    items.iter().zip(tops).find_map(|(item, top)| match item {
+        TimelineItem::Row(row) if y + top + row.height() > area.y0 => {
+            Some((row.idx_id.clone(), y + top - area.y0))
+        }
+        _ => None,
+    })
 }

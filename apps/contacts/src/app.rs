@@ -45,6 +45,7 @@ use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane};
 mod dialogs;
 mod effects;
 mod files;
+mod handoff;
 
 use dialogs::{DialogKey, ExportDraft};
 
@@ -123,6 +124,9 @@ enum MoreAction {
 
 /// The action ids of the window bar's slots ([`ContactsApp::window_toolbar`]).
 const BAR_NEW: &str = "new-contact";
+const BAR_CALL: &str = "call";
+const BAR_MESSAGE: &str = "message";
+const BAR_EMAIL: &str = "email";
 const BAR_FAVORITE: &str = "favorite";
 const BAR_EDIT: &str = "edit";
 const BAR_DELETE: &str = "delete";
@@ -212,6 +216,9 @@ pub struct ContactsApp {
     show_pane: Option<NavPane>,
     /// The last website opened from a contact.
     opened_url: Option<String>,
+    /// Calls, messages and email drafts handed to the desktop, waiting for
+    /// its answer.
+    hand_off: Vec<handoff::PendingHandOff>,
     /// Where the person's page is scrolled to, kept while the same person
     /// shows.
     detail_scroll: (Option<ContactId>, std::rc::Rc<std::cell::Cell<(f32, f32)>>),
@@ -581,6 +588,7 @@ impl ContactsApp {
             menu_follows: None,
             show_pane: None,
             opened_url: None,
+            hand_off: Vec::new(),
             detail_scroll: (None, std::rc::Rc::default()),
             last_mouse: Point::ZERO,
             list_stale: true,
@@ -1236,6 +1244,17 @@ impl ContactsApp {
                 .and_then(|id| self.store.contact(id))
                 .filter(|_| !self.store.is_empty())
             {
+                // Reaching the person where they are: the number and the
+                // address go to whichever app on this device serves `tel:`,
+                // `sms:` and `mailto:`. A verb with nothing to act on is not
+                // drawn, rather than drawn and dead.
+                if crate::detail::primary_phone(contact).is_some() {
+                    actions.push(ToolbarAction::new(BAR_CALL, "phone", "Call"));
+                    actions.push(ToolbarAction::new(BAR_MESSAGE, "message-square", "Text"));
+                }
+                if crate::detail::primary_email(contact).is_some() {
+                    actions.push(ToolbarAction::new(BAR_EMAIL, "mail", "Email"));
+                }
                 actions.push(
                     ToolbarAction::new(BAR_FAVORITE, "star", "Favorite").on(contact.favorite),
                 );
@@ -1277,6 +1296,24 @@ impl ContactsApp {
             };
             let request = match id.as_str() {
                 BAR_NEW => Request::NewContact,
+                BAR_CALL | BAR_MESSAGE | BAR_EMAIL => {
+                    let slot = id.as_str();
+                    let Some(contact) = self.selected.and_then(|id| self.store.contact(id)) else {
+                        continue;
+                    };
+                    let address = match slot {
+                        BAR_CALL | BAR_MESSAGE => crate::detail::primary_phone(contact),
+                        _ => crate::detail::primary_email(contact),
+                    };
+                    let Some(address) = address.map(str::to_owned) else {
+                        continue;
+                    };
+                    match slot {
+                        BAR_CALL => Request::Call(address),
+                        BAR_MESSAGE => Request::WriteMessage(address),
+                        _ => Request::WriteEmail(address),
+                    }
+                }
                 BAR_FAVORITE => Request::ToggleFavorite,
                 BAR_EDIT => Request::EditSelected,
                 BAR_DELETE => Request::DeleteSelected,
@@ -1687,10 +1724,10 @@ impl ContactsApp {
                     form.calendar_open = false;
                 }
             }
-            Request::OpenWebsite(url) => {
-                ui::widget::open_external_url(&url);
-                self.opened_url = Some(url);
-            }
+            Request::OpenWebsite(url) => self.open_website(url),
+            Request::Call(value) => self.hand_off_value(handoff::HandOff::Call, &value),
+            Request::WriteMessage(value) => self.hand_off_value(handoff::HandOff::Message, &value),
+            Request::WriteEmail(value) => self.hand_off_value(handoff::HandOff::Email, &value),
             Request::Dialog(choice) => self.answer_dialog(doc, choice),
         }
         self.dirty = true;
@@ -1825,6 +1862,7 @@ impl Widget for ContactsApp {
         self.import_opened_cards();
         self.announce_answers();
         self.poll_destination();
+        self.drain_hand_off();
         if let Some(scenario) = self.scenario.take() {
             self.stage(&scenario);
         }

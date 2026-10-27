@@ -296,7 +296,10 @@ impl Cell {
         while !value.is_char_boundary(end) {
             end -= 1;
         }
-        Self::Text(format!("{}… [truncated]", &value[..end]))
+        Self::Text(crate::i18n::t_args(
+            "db-cell-truncated",
+            &[("value", crate::i18n::text(&value[..end]))],
+        ))
     }
 
     /// Approximate owned payload retained by this cell. Blob payloads are not
@@ -316,7 +319,9 @@ impl Cell {
             Cell::Integer(i) => i.to_string(),
             Cell::Real(r) => format_real(*r),
             Cell::Text(s) => s.clone(),
-            Cell::Blob(n) => format!("Binary, {n} bytes"),
+            Cell::Blob(n) => {
+                crate::i18n::t_args("db-cell-binary", &[("bytes", crate::i18n::count(*n))])
+            }
         }
     }
 

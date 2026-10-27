@@ -109,6 +109,7 @@ impl Widget for ShellOverlayHost {
         // Read the person's region formats here, on the tick, so painting
         // the dates and numbers it formats never reads the settings file.
         let _ = ui::format::region::current();
+        self.reread_control_hints(Instant::now());
         let mut steps = UpdateSteps::start();
         // The roster, the display sheet's list and the quick settings page
         // glide on after a flick, repainted as a wheel's scroll is.
@@ -263,6 +264,7 @@ impl Widget for ShellOverlayHost {
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
         self.run_device_local_actions();
+        self.run_window_controls();
         self.latch_overview_transition();
         steps.mark("launchpad-and-shortcut-actions");
         // Workspace switch before anything walking `group_row_ptrs` (it
@@ -275,6 +277,11 @@ impl Widget for ShellOverlayHost {
         // would otherwise put the dragged tab back where it came from.
         self.harvest_pending_group_topology();
         let ws_swapped = self.resync_workspace_content();
+        // The kept workspaces' woken apps, but not on the tick that switches:
+        // the next one does them, and the switch's own frame stays cheap.
+        if !ws_swapped {
+            self.parked_workspaces.service_woken(doc, path);
+        }
         self.follow_brought_forward();
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
@@ -530,15 +537,12 @@ impl Widget for ShellOverlayHost {
         }
         self.push_display_layout();
         let content_node = self.content.build_layout(taffy, theme, node_map);
-        // The list grows with its rows up to most of the display it is on,
-        // then scrolls; what fits decides how many rows each group shows.
-        let palette_area = self.overlay_area();
-        if palette_area.height() > 0.0 {
-            self.palette.set_max_list_height(
-                (palette_area.height() * PALETTE_LIST_SHARE)
-                    .min(PALETTE_LIST_MAX * f64::from(theme.text_scale))
-                    .max(160.0),
-            );
+        // The list grows with its rows up to most of the display it is on
+        // (or of the window an app's search stands in), then scrolls; what
+        // fits decides how many rows each group shows.
+        let (palette_frame, palette_list_max) = self.palette_place(theme);
+        if self.overlay_area().height() > 0.0 {
+            self.palette.set_max_list_height(palette_list_max);
         }
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         // Match children(): a closed composer has no live controls to measure
@@ -578,13 +582,14 @@ impl Widget for ShellOverlayHost {
         // inserted above — but the override is skippable, so a failure
         // here degrades to the widget's own default layout instead of
         // panicking.
-        // Centred on the focused display: across two, the host's own
-        // centre is the seam between them.
+        // Where `palette_place` puts it: centred on the focused display
+        // (across two, the host's own centre is the seam between them), or
+        // in the window of the app a search is scoped to.
         let area = self.overlay_area();
         if let Ok(style) = taffy.style(palette_node) {
             let mut palette_style = style.clone();
             palette_style.position = Position::Absolute;
-            let frame = self.palette_frame(theme.text_scale);
+            let frame = palette_frame;
             let palette_target_w = frame.width();
             palette_style.max_size.height =
                 Dimension::length(f32_of_f64((area.height() - 112.0).max(200.0)));
@@ -609,7 +614,7 @@ impl Widget for ShellOverlayHost {
         // `self.rect` is last frame's, so frame 1 sizes off a zero-width
         // host and lands on the 560 floor; remembering what it sized
         // against lets `apply_layout` re-dirty and converge.
-        self.palette_layout_host = Some((self.rect, area));
+        self.palette_layout_host = Some((self.rect, area, self.searched_window()));
 
         self.content_node = Some(content_node);
         self.palette_node = Some(palette_node);
@@ -718,7 +723,9 @@ impl Widget for ShellOverlayHost {
         }
         // One more pass if the card sized against stale host dimensions or
         // focus moved to another display; settles in a single extra frame.
-        if self.palette_layout_host != Some((self.rect, self.overlay_area())) {
+        if self.palette_layout_host
+            != Some((self.rect, self.overlay_area(), self.searched_window()))
+        {
             self.palette_layout_dirty = true;
         }
         // Re-derive strip widths now the host's rect is known: frame 1's
@@ -876,6 +883,25 @@ impl Widget for ShellOverlayHost {
         "ShellOverlayHost"
     }
 
+    /// The desk's showing widgets are controls like the bar's: Tab reaches
+    /// them while the desk is on screen, and the focused one takes Enter,
+    /// Space and Tab between them.
+    fn is_focusable(&self) -> bool {
+        self.desk_is_focusable()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.set_desk_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.desk_is_focused()
+    }
+
+    fn wants_tab_input(&self) -> bool {
+        self.desk_wants_tab()
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         Some(self.host_accessibility())
     }
@@ -916,6 +942,9 @@ impl Widget for ShellOverlayHost {
                 self.bump_chrome();
                 return true;
             }
+        }
+        if target.starts_with("desk.widget:") {
+            return self.desk_semantic_action(action, target);
         }
         if target.starts_with("participant:") && target.ends_with(":chat") {
             if self.person_cursor_controls_suppressed() {
@@ -1818,6 +1847,15 @@ impl ShellOverlayHost {
                 *ctx.handled = true;
                 return;
             }
+        }
+        // While Tab has reached the desk, its controls own the keys they
+        // act on; the rest still fall through to the window and the shell.
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::ModifiersChanged(_)
+        ) && self.handle_desk_keyboard(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
+            return;
         }
         // Desk widgets above the windows: a press on a showing one is
         // theirs, before the palette reads it as a click away.

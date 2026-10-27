@@ -177,6 +177,10 @@ impl WorkspaceStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
+        // A lineage still being retained is read again next time, whether or
+        // not another is added meanwhile: until then the store does not know
+        // which part of its chain is the head.
+        let mut unread = false;
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name();
@@ -194,13 +198,16 @@ impl WorkspaceStore {
             match (read, channel) {
                 // Read again next time: its first frame is still being
                 // retained.
-                (LineageRecord::Empty, _) => continue,
+                (LineageRecord::Empty, _) => {
+                    unread = true;
+                    continue;
+                }
                 (LineageRecord::Record(record), Some(channel)) => classes.learn(channel, &record),
                 _ => {}
             }
             classes.lineages.insert(name);
         }
-        self.classes().scanned = changed;
+        self.classes().scanned = changed.filter(|_| !unread);
         Ok(())
     }
 

@@ -756,6 +756,10 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
         .transpose()?;
     let search = crate::os_search::start(host.clone(), session.room(), session.actor())?;
     let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
+    // Tasks learned in legacy apps live in the profile beside everything else
+    // this device keeps, so a connection that learns one leaves it for the
+    // next run.
+    let adapters = Some(Arc::new(crate::adapters::Adapters::in_profile(profile)));
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
     // endpoint, and a second --daemon cannot reach this point.
@@ -797,6 +801,7 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
         session_factory: session.mcp_session_factory(session.room())?,
         status,
         computer,
+        adapters,
         joiner: session.joiner(),
         search,
         media: session.media(),
@@ -809,6 +814,8 @@ struct Endpoint<H> {
     session_factory: crate::mcp::SessionFactory<H>,
     status: Status,
     computer: Option<Arc<crate::computer::Computer>>,
+    /// Tasks learned in legacy apps, which every connection can replay.
+    adapters: Option<Arc<crate::adapters::Adapters>>,
     joiner: Option<crate::Joiner>,
     /// Opens the host search results another process was handed.
     search: Arc<tilo_os_search::OsSearch>,
@@ -829,6 +836,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
             let factory = Arc::clone(&self.session_factory);
             let status = self.status.clone();
             let computer = self.computer.clone();
+            let adapters = self.adapters.clone();
             let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
             let media = self.media.clone();
@@ -840,7 +848,12 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .spawn(move || {
                     let _slot = slot;
                     let server = match factory() {
-                        Ok(server) => Arc::new(server.with_computer(computer).with_media(media)),
+                        Ok(server) => Arc::new(
+                            server
+                                .with_computer(computer)
+                                .with_adapters(adapters)
+                                .with_media(media),
+                        ),
                         Err(error) => {
                             tracing::debug!(%error, "native MCP session admission unavailable");
                             return;

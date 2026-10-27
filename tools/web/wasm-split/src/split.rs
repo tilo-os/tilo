@@ -841,7 +841,9 @@ impl<'a> Splitter<'a> {
     fn create_ifunc_initializers(&self, out: &mut Module, unique_symbols: &HashSet<Node>) {
         let ifunc_table = self.load_funcref_table(out);
 
-        let mut initializers = HashMap::new();
+        // The segments are emitted in this map's order: by table offset, so
+        // the same input always yields the same module bytes.
+        let mut initializers = BTreeMap::new();
         for segment in out.elements.iter_mut() {
             let ElementKind::Active { offset, .. } = &mut segment.kind else {
                 continue;

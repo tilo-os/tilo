@@ -178,16 +178,16 @@ https://app.example/app/#/@rooms.example/w/0b5e7a62-4d0f-4c55-9d2a-58d3a3f0c001/
 https://app.example/#/@rooms.example/w/commons~0b5e7a62-4d0f-4c55-9d2a-58d3a3f0c001/so.tilo.chat/-/chat.message:01JA2C7Q
     A message with Chat focused on its desktop (what a bridge bot posts).
 
-https://tilo.so/#/@quinten.tilo.cloud/w/reading-group~6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90/so.tilo.word-processor/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/word_processor.block:b12?chars=40-96
+https://tilo.so/#/@ada.tilo.cloud/w/reading-group~6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90/so.tilo.word-processor/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/word_processor.block:b12?chars=40-96
     A passage in a private workspace's document, on the desktop.
 
 https://tilo.so/app/#/me/so.tilo.calculator
     Calculator full tab in the person's own room; what `tilo-app dev` opens.
 
-https://tilo.so/app/#/@quinten.tilo.cloud/w/reading-group~6f1c…/so.tilo.word-processor/uuid:3e0d…?invite=AAECAwQF…
+https://tilo.so/app/#/@ada.tilo.cloud/w/reading-group~6f1c…/so.tilo.word-processor/uuid:3e0d…?invite=AAECAwQF…
     The document full tab, with an invitation for someone not yet a member.
 
-tilo://open#/@quinten.tilo.cloud/w/reading-group~6f1c…/so.tilo.chat/-/chat.channel:general
+tilo://open#/@ada.tilo.cloud/w/reading-group~6f1c…/so.tilo.chat/-/chat.channel:general
     The same channel, handed to an installed Tilo (§7).
 ```
 
@@ -320,7 +320,7 @@ one view; a resource with no view has nothing to open, so it has no link.
   list.
 - When a person invokes either through a view, the view copies the URL to
   the clipboard and says so; when an agent or bot invokes it, it gets the URL
-  as output. Same action, same contract, visible in history as "Quinten
+  as output. Same action, same contract, visible in history as "Ada
   copied a link to #general" or "Discord bridge shared a link to #general".
 - `mode` defaults to `app` for a link to a resource or an app: a recipient
   wants the thing first, may not be a member of the room whose desktop the

@@ -39,18 +39,18 @@ MANIFEST = ROOT / "tools" / "ci" / "products.toml"
 PUBLISH = "tools/ci/publish"
 PLATFORMS = {"x86_64": "linux/amd64", "aarch64": "linux/arm64"}
 # What every build, signing and publishing check reads besides the product's own inputs.
-BUILD_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-build.sh", f"{PUBLISH}/oci-run.sh"]
+BUILD_INPUTS = [f"{PUBLISH}/build-lib.sh", f"{PUBLISH}/oci-build.sh", f"{PUBLISH}/oci-run.sh"]
 # The check whose outputs hold the pinned Cosign (lib.sh use_cosign), for every check that runs it.
 SIGNING_TOOLS = "signing-tools"
 COSIGN_INPUTS = ["os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh",
                  "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub",
                  "keys/release/**", "keys/operational/**"]
-SIGN_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-sign.sh", "os/dev/configure-cosign-kms.sh",
+SIGN_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/build-lib.sh", f"{PUBLISH}/oci-sign.sh", "os/dev/configure-cosign-kms.sh",
                "tools/signing/sign-blob-certified.sh", *COSIGN_INPUTS]
 # Repositories installed systems verify (tools/signing/release_trust.py, lib.sh device_verified):
 # their releases also carry the certified signatures oci-sign.sh keeps in OUT/certified.
 DEVICE_VERIFIED = {"registry.tilo.so/tilo/tilo", "code.tilo.so/tilo/tilo", "registry.tilo.so/tilo/legacy-guest"}
-PUBLISH_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-publish.sh", *COSIGN_INPUTS]
+PUBLISH_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/build-lib.sh", f"{PUBLISH}/oci-publish.sh", *COSIGN_INPUTS]
 # Signing and publishing read only what the build produced, so they run on any architecture (as
 # micro-VM steps, since they hold credentials, booting the guest of the node they land on).
 CREDENTIAL_REQUIRES = ["arch=any"]
@@ -62,7 +62,7 @@ STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "a
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
 # The order fields appear in, as the hand-written checks of t.toml have them.
-FIELD_ORDER = ["name", "image", "run", "inputs", "cargo_packages", "cargo_dev_dependencies", "needs",
+FIELD_ORDER = ["name", "image", "run", "setup", "inputs", "cargo_packages", "cargo_dev_dependencies", "needs",
                "optional_needs", "outputs", "pointers", "id_token", "env", "git", "requires",
                "isolation", "privileged", "writable_sources", "cost", "requirement", "timeout_secs", "on",
                "default"]
@@ -277,7 +277,7 @@ class Product:
                 "requires": self.requires(self.arches[0], dict(fields)),
                 "default": fields.get("default", False),
             }
-            fields["inputs"] = dedupe([f"{PUBLISH}/lib.sh", *fields.get("inputs", [])])
+            fields["inputs"] = dedupe([f"{PUBLISH}/lib.sh", f"{PUBLISH}/build-lib.sh", *fields.get("inputs", [])])
             out.append(check(fields, about))
             about = None
         out.append(per_arch([self.build(arch, context_name) for arch in self.arches],

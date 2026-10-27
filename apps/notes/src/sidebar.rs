@@ -66,6 +66,7 @@ pub enum OutEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidebarTransfer {
     ImportMarkdown,
+    ImportNotion,
     CopyLink(PageId),
     ExportMarkdown(PageId),
     InsertImage(PageId),
@@ -115,6 +116,11 @@ fn empty_area_items() -> Vec<MenuItem> {
     vec![
         MenuItem::icon_action(Icon::FilePlus, ui::i18n!("notes-empty-action"), || {}),
         MenuItem::icon_action(Icon::CloudDownload, ui::i18n!("notes-import-title"), || {}),
+        MenuItem::icon_action(
+            Icon::CloudDownload,
+            ui::i18n!("notes-notion-menu-import"),
+            || {},
+        ),
     ]
 }
 
@@ -379,7 +385,6 @@ impl PageSidebar {
         let on_row_action = (Rc::clone(&outbox), Rc::clone(&keys));
         let on_menu = (Rc::clone(&outbox), Rc::clone(&keys));
         let tree = TreeView::from_model(model)
-            .with_id("page_tree")
             .with_accessible_name(ui::i18n!("notes-title"))
             .hide_root()
             .fill()
@@ -426,7 +431,9 @@ impl PageSidebar {
                     true
                 },
             )
-            .on_select(move |key| push_for(&on_select.0, &on_select.1, key, OutEvent::Select))
+            .on_view("page_tree", move |key| {
+                push_for(&on_select.0, &on_select.1, key, OutEvent::Select);
+            })
             .on_rename(move |key, new_title| {
                 push_for(&on_rename.0, &on_rename.1, key, |id| OutEvent::Rename {
                     id,
@@ -448,6 +455,7 @@ impl PageSidebar {
                     (None, _) => match index {
                         0 => outbox.events.push(OutEvent::CreateChild { parent: None }),
                         1 => outbox.transfer = Some(SidebarTransfer::ImportMarkdown),
+                        2 => outbox.transfer = Some(SidebarTransfer::ImportNotion),
                         _ => {}
                     },
                     (Some(key), Some(page)) => match index {

@@ -114,6 +114,10 @@ const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfo
 /// location's picker) runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MenuEntry {
+    /// The sidebar's toggle, where the row has no room for it.
+    Sidebar,
+    /// Forward, where the row has no room for it.
+    Forward,
     /// Declared action `n`.
     Action(usize),
     /// Leading action `n`, where the row has no room for it.
@@ -704,6 +708,13 @@ impl ToolbarRow {
         &self.slots
     }
 
+    /// What the location's breadcrumb painted last ([`Breadcrumb::painted`];
+    /// none: the location has no levels).
+    #[cfg(test)]
+    pub(crate) fn crumbs_painted(&self) -> Option<(Vec<(Option<String>, Rect)>, Rect)> {
+        self.crumbs.as_ref().map(|(_, crumbs)| crumbs.painted())
+    }
+
     /// Say a notice in a strip of its own under the row (`compact`), or in
     /// the location's place. Takes hold at the next [`Self::show`].
     pub(crate) fn set_compact(&mut self, compact: bool) {
@@ -956,6 +967,18 @@ impl ToolbarRow {
         };
         let mut items = Vec::new();
         let mut entries = Vec::new();
+        // The navigation the row has no room for leads the menu, in the
+        // row's order.
+        for entry in self.folded_navigation() {
+            if let Some(item) = self.navigation_item(entry) {
+                items.push(item);
+                entries.push(Some(entry));
+            }
+        }
+        if !items.is_empty() && self.views_in_overflow() && toolbar.views.is_some() {
+            items.push(MenuItem::separator());
+            entries.push(None);
+        }
         if self.views_in_overflow() {
             for (item, entry) in self.view_items() {
                 items.push(item);
@@ -1005,6 +1028,43 @@ impl ToolbarRow {
         }
         self.open_menu(items, entries, Slot::Overflow, self.slots.overflow);
         true
+    }
+
+    /// The navigation the row has no room for, in the row's order: the
+    /// sidebar's toggle, then Forward.
+    fn folded_navigation(&self) -> Vec<MenuEntry> {
+        let Some(toolbar) = self.toolbar() else {
+            return Vec::new();
+        };
+        let mut entries = Vec::new();
+        if self.slots.sidebar_folded(toolbar) {
+            entries.push(MenuEntry::Sidebar);
+        }
+        if self.slots.forward_folded(toolbar) {
+            entries.push(MenuEntry::Forward);
+        }
+        entries
+    }
+
+    /// The overflow menu's row for a navigation button the row has no room
+    /// for: its name, icon and state, as its button has them.
+    fn navigation_item(&self, entry: MenuEntry) -> Option<MenuItem> {
+        let toolbar = self.toolbar()?;
+        let lookup = crate::i18n::I18nManager::lookup_plain;
+        match entry {
+            MenuEntry::Sidebar => Some(
+                MenuItem::selection(lookup(sidebar_key(toolbar)))
+                    .with_icon(Icon::PanelLeft)
+                    .with_enabled(!toolbar.sidebar_unavailable)
+                    .with_checked(toolbar.sidebar == Some(true)),
+            ),
+            MenuEntry::Forward => Some(
+                MenuItem::selection(lookup("window-toolbar-forward"))
+                    .with_icon(Icon::ArrowRight)
+                    .with_enabled(toolbar.navigation.is_some_and(|nav| nav.forward)),
+            ),
+            _ => None,
+        }
     }
 
     /// Whether the overflow menu lists the views: the row has room neither
@@ -1157,6 +1217,8 @@ impl ToolbarRow {
     /// Run what open menu row `row` stands for.
     fn run_menu_entry(&mut self, row: usize) -> bool {
         match self.menu_entries.get(row).copied().flatten() {
+            Some(MenuEntry::Sidebar) => self.activate(&Slot::Sidebar),
+            Some(MenuEntry::Forward) => self.activate(&Slot::Forward),
             Some(MenuEntry::Action(index)) => self.run_action(index),
             Some(MenuEntry::Leading(index)) => self.run_leading(index),
             Some(MenuEntry::View(index)) => self.choose_view(index),

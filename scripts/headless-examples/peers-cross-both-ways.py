@@ -328,39 +328,39 @@ def main() -> int:
     sessions: list[Session] = []
     try:
         print("\n[1] two real sessions")
-        quinten = Session("quinten", root, runtime_root)
-        sessions.append(quinten)
-        xaver = Session("xaver", root, runtime_root)
-        sessions.append(xaver)
+        ada = Session("ada", root, runtime_root)
+        sessions.append(ada)
+        bob = Session("bob", root, runtime_root)
+        sessions.append(bob)
         for s in sessions:
             if not check(f"{s.name} came up", s.wait_up(), f"see {s.log_path}"):
                 return 1
 
         print("\n[2] one room, nothing open in it")
-        exported = {f"{a['provider']}:{a['id']}" for a in quinten.enumerate("")}
+        exported = {f"{a['provider']}:{a['id']}" for a in ada.enumerate("")}
         if not check("peer-sync is on", f"{ACTIONS}:peer.invite" in exported):
-            print(f"        check {quinten.log_path} for 'device key load failed'")
+            print(f"        check {ada.log_path} for 'device key load failed'")
             return 1
         # Named, both ways. An unnamed invite leaves the room knowing
         # only the host's name, and then attribution resolves in one
         # direction — the guest sees a person and the host sees a
         # handle. The invitee's own invite is how it says who it is.
-        own = mint_invite(xaver)
-        xaver_peer = peer_id_of(own or "")
-        if not check("xaver's peer id is known", bool(xaver_peer)):
+        own = mint_invite(bob)
+        bob_peer = peer_id_of(own or "")
+        if not check("bob's peer id is known", bool(bob_peer)):
             return 1
-        token = mint_named_invite(quinten, xaver_peer, "xaver")
-        if not check("quinten minted an invite naming xaver", bool(token)):
+        token = mint_named_invite(ada, bob_peer, "bob")
+        if not check("ada minted an invite naming bob", bool(token)):
             return 1
-        if not check("xaver joined the room", join(xaver, token)):
+        if not check("bob joined the room", join(bob, token)):
             return 1
 
-        host_room = quinten.active_room()
-        guest_room = xaver.active_room()
-        print(f"        quinten is looking at room {host_room}")
-        print(f"        xaver   is looking at room {guest_room}")
-        print(f"        quinten holds rooms {quinten.rooms()}")
-        print(f"        xaver   holds rooms {xaver.rooms()}")
+        host_room = ada.active_room()
+        guest_room = bob.active_room()
+        print(f"        ada is looking at room {host_room}")
+        print(f"        bob   is looking at room {guest_room}")
+        print(f"        ada holds rooms {ada.rooms()}")
+        print(f"        bob   holds rooms {bob.rooms()}")
         # The asymmetry that makes the reverse direction a separate
         # question. A session publishes its pointer under the room it is
         # *looking at*, and folds in only rooms it is a member of, so if
@@ -375,62 +375,62 @@ def main() -> int:
         print("\n[3] both move, on an empty desktop")
         WHERE_Q = (880.0, 520.0)
         WHERE_X = (420.0, 300.0)
-        drift_to(quinten, *WHERE_Q)
-        drift_to(xaver, *WHERE_X, frm=(700.0, 600.0))
+        drift_to(ada, *WHERE_Q)
+        drift_to(bob, *WHERE_X, frm=(700.0, 600.0))
         time.sleep(1.0)
 
         print("\n[4] the guest paints the host")
-        on_xaver = wait_for(lambda: near(xaver.pointers(), WHERE_Q) or None, timeout=40)
-        check("xaver holds quinten's cursor where quinten put it", bool(on_xaver),
-              json.dumps(xaver.pointers())[:300])
-        if on_xaver:
-            check("and the room names him", on_xaver[0].get("name") == "quinten",
-                  json.dumps(on_xaver[0]))
+        on_bob = wait_for(lambda: near(bob.pointers(), WHERE_Q) or None, timeout=40)
+        check("bob holds ada's cursor where ada put it", bool(on_bob),
+              json.dumps(bob.pointers())[:300])
+        if on_bob:
+            check("and the room names him", on_bob[0].get("name") == "ada",
+                  json.dumps(on_bob[0]))
             check("not a raw handle",
-                  not str(on_xaver[0].get("name", "")).startswith("peer@"),
-                  json.dumps(on_xaver[0]))
+                  not str(on_bob[0].get("name", "")).startswith("peer@"),
+                  json.dumps(on_bob[0]))
 
         print("\n[5] and the host paints the guest — the other way")
-        on_quinten = wait_for(lambda: near(quinten.pointers(), WHERE_X) or None,
+        on_ada = wait_for(lambda: near(ada.pointers(), WHERE_X) or None,
                               timeout=40)
-        check("quinten holds xaver's cursor where xaver put it", bool(on_quinten),
-              json.dumps(quinten.pointers())[:300])
-        if on_quinten:
-            check("and the room names him", on_quinten[0].get("name") == "xaver",
-                  json.dumps(on_quinten[0]))
+        check("ada holds bob's cursor where bob put it", bool(on_ada),
+              json.dumps(ada.pointers())[:300])
+        if on_ada:
+            check("and the room names him", on_ada[0].get("name") == "bob",
+                  json.dumps(on_ada[0]))
             check("not a raw handle",
-                  not str(on_quinten[0].get("name", "")).startswith("peer@"),
-                  json.dumps(on_quinten[0]))
+                  not str(on_ada[0].get("name", "")).startswith("peer@"),
+                  json.dumps(on_ada[0]))
 
         print("\n[6] and they stay there with nobody moving")
         # An edge-triggered cursor looks identical to this one for a
         # second and then leaves an empty desktop behind. Nothing is
         # moved here on purpose.
         time.sleep(3.5)
-        check("quinten's cursor is still on xaver's screen 3s after it stopped",
-              bool(near(xaver.pointers(), WHERE_Q)),
-              json.dumps(xaver.pointers())[:300])
-        check("xaver's cursor is still on quinten's screen 3s after it stopped",
-              bool(near(quinten.pointers(), WHERE_X)),
-              json.dumps(quinten.pointers())[:300])
+        check("ada's cursor is still on bob's screen 3s after it stopped",
+              bool(near(bob.pointers(), WHERE_Q)),
+              json.dumps(bob.pointers())[:300])
+        check("bob's cursor is still on ada's screen 3s after it stopped",
+              bool(near(ada.pointers(), WHERE_X)),
+              json.dumps(ada.pointers())[:300])
 
         print("\n[7] a person can be found by their name")
         # The question every reader of this store actually asks: "which
-        # of these rows is quinten's". A row carries two things — the
+        # of these rows is ada's". A row carries two things — the
         # identity, which is the handle the frames arrive under, and the
         # name, which is what the room calls that handle — and only one
         # of them is a person. A harness that looks a person up in the
         # other field finds nothing while the cursor is on screen,
         # correctly drawn and correctly named, and reports that presence
         # never crossed. That has happened, so it is asserted here.
-        for watcher, rows, who in ((xaver, xaver.pointers(), "quinten"),
-                                   (quinten, quinten.pointers(), "xaver")):
+        for watcher, rows, who in ((bob, bob.pointers(), "ada"),
+                                   (ada, ada.pointers(), "bob")):
             hit = [r for r in rows if who in (r.get("name"), r.get("user"))]
             check(f"{watcher.name}'s store can be asked for {who} by name",
                   bool(hit), json.dumps(rows)[:300])
 
         print("\n[8] nobody is painted at the origin")
-        for s, rows in (("xaver", xaver.pointers()), ("quinten", quinten.pointers())):
+        for s, rows in (("bob", bob.pointers()), ("ada", ada.pointers())):
             ghosts = [r for r in rows
                       if abs(float(r.get("x", 9))) < 1 and abs(float(r.get("y", 9))) < 1]
             check(f"{s}'s screen has no cursor at the origin", not ghosts,
@@ -438,7 +438,7 @@ def main() -> int:
 
         print("\n[9] the pictures")
         os.makedirs(args.out, exist_ok=True)
-        for s, at, other in ((xaver, WHERE_Q, "quinten"), (quinten, WHERE_X, "xaver")):
+        for s, at, other in ((bob, WHERE_Q, "ada"), (ada, WHERE_X, "bob")):
             p = os.path.join(args.out, f"{s.name}-sees-{other}.png")
             s.snapshot(p)
             ok = wait_for(lambda p=p: os.path.exists(p) and os.path.getsize(p) > 5000,

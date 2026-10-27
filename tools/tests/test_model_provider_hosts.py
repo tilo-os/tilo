@@ -54,7 +54,7 @@ class ModelProviderHosts(unittest.TestCase):
                          ["so.tilo.settings", "so.tilo.model-providers"])
         self.assertIn("handle.is_available() && !provider_admin_app(context.app_id())", services)
         desktop = (base / "desktop.rs").read_text()
-        self.assertIn("if crate::host_services::provider_admin_app(definition.app_id)", desktop)
+        self.assertIn("if crate::host_services::provider_admin_app(definition.app_id())", desktop)
         self.assertIn("self.inputs.provider_admin.clone()", desktop)
         browser = (base / "browser.rs").read_text()
         self.assertIn("provide_provider_admin(&mut context, config.provider_admin()?)", browser)

@@ -13,7 +13,7 @@ loses it.
 
 ```sh
 tilo-vm vm add opi --ssh root@10.0.0.108   # makes keys/opi_ed25519, prints the key install
-ssh -t -o StrictHostKeyChecking=accept-new -p 22 quickuser@10.0.0.108 'sudo install ...'   # the printed command, once
+ssh -t -o StrictHostKeyChecking=accept-new -p 22 tester@10.0.0.108 'sudo install ...'   # the printed command, once
 tilo-vm vm status opi                      # reachable, tilo-vmd version and architecture
 tilo-vm vm use opi                         # this worktree (writes .tilo-vm); --global for every worktree
 ```
@@ -21,7 +21,7 @@ tilo-vm vm use opi                         # this worktree (writes .tilo-vm); --
 `vm add` makes the device's own root key beside `vms.toml` and asks the
 device for tilo-vmd. A new device does not know the key yet, so `vm add`
 prints the one command that installs it for root, with the dev account
-`quickuser`'s password (`tilo`, from `os/account.env`; SSH asks for it, then
+`tester`'s password (`tilo`, from `os/account.env`; SSH asks for it, then
 sudo). After that every connection is root with that key and the device's
 own `known_hosts`, never a password. Without a terminal to type the
 password into, an agent asks a human to run the printed command.

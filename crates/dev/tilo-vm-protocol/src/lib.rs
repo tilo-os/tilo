@@ -289,6 +289,13 @@ pub struct SlotCreate {
     /// dev-only control op, and start the session with fresh desktop state.
     #[serde(default)]
     pub identity: bool,
+    /// Make the slot's user this VM's person instead, as a device's first
+    /// login does: no private identity root, and the session's own
+    /// onboarding creates their identity and certifies the machine's device
+    /// key, which starts `fs`. One slot per VM; refused once the machine
+    /// holds an identity.
+    #[serde(default)]
+    pub device_identity: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -859,6 +866,11 @@ pub enum Action {
     },
     /// The session gave its user a throwaway test identity.
     ProvisionTestIdentity {
+        created: bool,
+    },
+    /// The session's onboarding made its user this VM's person, and the
+    /// machine's device certificate started `fs`.
+    CompleteOnboarding {
         created: bool,
     },
     /// The slot user's desktop layout removed, so the next session starts
@@ -1550,6 +1562,7 @@ mod tests {
             owner: Owner::default(),
             outputs: display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
             identity: false,
+            device_identity: false,
         });
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(

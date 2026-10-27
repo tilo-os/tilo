@@ -16,7 +16,8 @@ policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 fail=0
 ok() { printf 'ok: %s\n' "$*"; }
 bad() { printf 'FAIL: %s\n' "$*" >&2; fail=1; }
-rule() { sed 's/;.*//' "$policy" | grep -qxF "$1"; }
+# No -q: grep leaving at the first match would SIGPIPE sed and fail the pipeline.
+rule() { sed 's/;.*//' "$policy" | grep -xF "$1" >/dev/null; }
 
 # The services that run bootc, found from their ExecStart scripts.
 bootc_units=()

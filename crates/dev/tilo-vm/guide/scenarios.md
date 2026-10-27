@@ -169,7 +169,7 @@ through the compositor. A wrong or missing phrase is
 
 - Disposable scenarios use a fixed public unlock secret
   (`scenario-passphrase-2026`, or the PIN `804927`). For a retained install,
-  pass `--username xaver --credentials-stdin` and pipe exactly one UTF-8 JSON
+  pass `--username bob --credentials-stdin` and pipe exactly one UTF-8 JSON
   object: `{"account_password":"...","disk_passphrase":"..."}`. Both values
   must be distinct, lowercase ASCII letters and digits. Generate long random
   values (at least 24 characters each). This alphabet is exactly typable at

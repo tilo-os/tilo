@@ -143,6 +143,9 @@ pub struct ChatApp {
     pub(crate) search_users: Vec<User>,
     /// The reviewed feedback reports filed here: each one's id and text.
     pub(crate) reports: Vec<(Id, String)>,
+    /// The recordings filed reports carry, by the report's message: each
+    /// replays in the app it recorded.
+    pub(crate) report_recordings: HashMap<Id, ui::feedback::RecordingRef>,
     /// The items a search hit or an agent's `open` asked to show, by their
     /// published ids, shown on the next sync.
     pub(crate) opened: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
@@ -232,6 +235,7 @@ pub struct ChatApp {
     pub(crate) reveal_scroll_pending: bool,
     pub(crate) revealed_person: Option<Id>,
     pub(crate) emoji_open: bool,
+    /// The message the open picker reacts to.
     pub(crate) emoji_target: Option<Id>,
     pub(crate) emoji_anchor: Rect,
     /// The toolkit's shared picker, placed at `emoji_anchor` while
@@ -426,6 +430,8 @@ pub struct ChatApp {
     /// and reacts through. `None` where the window has none (a past
     /// version).
     pub(crate) chain: Option<ui::framework::Chain<crate::parts::ChatPart>>,
+    /// Where the window stands reading back through the chain's parts.
+    pub(crate) scrollback: crate::scrollback::Scrollback,
     /// The chain's revision the window last read its messages at.
     pub(crate) chain_seen: Option<u64>,
     /// The messages the chat record kept in itself, read once for the
@@ -640,9 +646,6 @@ impl ChatApp {
         reason = "the complete app state is deliberately initialized together so bounded channels and their lifecycles cannot drift"
     )]
     fn bare(content: ContentStore) -> Self {
-        // The shared picker and reaction strip name and search emoji through
-        // Chat's catalogue.
-        crate::i18n::offer_emoji_catalogue();
         // The host call tile is a real VideoPlayer with no frame until a live
         // capture feeds one; there is no synthesised stand-in. Its honest
         // "camera off" state is painted over the empty surface.
@@ -658,6 +661,7 @@ impl ChatApp {
             search_messages: Vec::new(),
             search_users: Vec::new(),
             reports: Vec::new(),
+            report_recordings: HashMap::new(),
             opened: std::rc::Rc::default(),
             voice_members: HashMap::new(),
             draft_main: String::new(),
@@ -779,6 +783,7 @@ impl ChatApp {
             read_asked: None,
             read_refused: None,
             chain: None,
+            scrollback: crate::scrollback::Scrollback::default(),
             chain_seen: None,
             kept_messages: None,
             kept_names: std::collections::BTreeMap::new(),
@@ -1478,6 +1483,7 @@ impl Widget for ChatApp {
         // The record is lent to the settle pass: the room's other records
         // take writes now.
         self.flush_staged_parts();
+        self.settle_scrollback();
         self.apply_window_toolbar(edits);
         self.take_sidebar_events(edits);
         self.follow_window_shares(edits);
@@ -1646,6 +1652,7 @@ impl Widget for ChatApp {
         }
         self.join_pending_call();
         self.open_requested();
+        self.reveal_sought();
         // The channel in view is read: advance its watermark (no-op when
         // nothing new arrived) so its unread badge stays cleared. Only a
         // presented instance has a viewer; a headless host worker never
@@ -1657,6 +1664,10 @@ impl Widget for ChatApp {
         self.request_visible_images();
         self.sync_call_pictures();
         // Native capture/transport belongs to the shell's lease-bound service.
+        // The bar's slots follow the shell's every frame, also while a
+        // narrow window's sidebar covers the conversation and it is not
+        // drawn.
+        self.declare_window_toolbar();
     }
 
     fn composition_follows_allocation(&self) -> bool {
@@ -2262,6 +2273,14 @@ impl Widget for ChatApp {
         let model_changed = self.pump_model();
         let room_changed = self.take_room();
         self.settle_attachment_save();
+        // The call's video tile is the one child laid out: dragged, handed
+        // off or following the grid, it is placed again where it went.
+        if self
+            .laid_video
+            .is_some_and(|laid| laid != (self.call.expanded, self.call_video_rect()))
+        {
+            ui::widget::note_layout_moved();
+        }
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
         std::mem::take(&mut self.read_on_present) || model_changed || room_changed
@@ -2282,6 +2301,9 @@ impl Widget for ChatApp {
                 surface.placement.is_dragging() || surface.placement.is_handoff_animating()
             })
             || !self.images.is_idle()
+            // The reader reached the top of what is held, or a message is
+            // looked for: the next settle pass opens the part before.
+            || self.scrollback.wants_settle()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {

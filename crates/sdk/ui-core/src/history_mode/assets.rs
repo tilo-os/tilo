@@ -88,6 +88,7 @@ impl HistoricalAssetResponse {
             Ok(FrozenPreviewAssets::new(assets))
         });
         if self.sender.send((self.key, admitted)).is_ok() {
+            super::note_news();
             self.wake.notify_events();
         }
     }

@@ -1977,10 +1977,14 @@ impl PdfApp {
             return;
         }
         self.position_restored = true;
+        // Where a document opens with no place to take up is not a place
+        // the reader chose: it is written back only once they move.
         let Some((page_id, fraction, zoom)) = self.pending_reading.take() else {
+            self.last_reading = self.current_reading();
             return;
         };
         let Some(index) = self.resource_page_ids.iter().position(|id| id == &page_id) else {
+            self.last_reading = self.current_reading();
             return;
         };
         let page = index + 1;
@@ -9741,7 +9745,7 @@ mod tests {
         // and elides before the Resolve and delete buttons, whatever its
         // length, at every text scale, and every piece shares one centre line.
         eprintln!("phase comment_header_never_overlaps_even_with_a_long_name");
-        let long = "quinten.van.der.berg.reviewer@really-long-domain.example.com";
+        let long = "ada.van.der.berg.reviewer@really-long-domain.example.com";
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
             let mut tr = ui::text_render::TextRenderer::new();
@@ -9857,6 +9861,24 @@ mod tests {
         assert!(
             app.pending_reading.is_none() && app.position_restored,
             "one window takes the hint once"
+        );
+    }
+
+    /// Opening a document with no recorded place writes none: the place it
+    /// opens at is not one the reader chose.
+    #[test]
+    fn opening_with_no_recorded_place_writes_none_until_the_reader_moves() {
+        let mut app = PdfApp::sample();
+        app.canvas_rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        app.sync_viewport_frame();
+        app.pending_reading = None;
+        app.position_restored = false;
+        app.restore_reading();
+        assert!(app.current_reading().is_some());
+        assert_eq!(
+            app.last_reading,
+            app.current_reading(),
+            "the opening place counts as already kept"
         );
     }
 }

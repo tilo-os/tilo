@@ -4,52 +4,10 @@ use super::{
     DisplayEffect, DisplayModel, Dropdown, LiveRow, LocalState, SettingsEffect, SettingsSection,
     Toggle, effect, note, rows, section, setting_row, setting_row_described, t, t_args,
 };
-use settings_store::person_displays::{Arrangement, Layout, ResolvedDisplay};
-use ui::tilo_resource::{self, Effect};
+use settings_store::person_displays::{Layout, ResolvedDisplay};
+use ui::tilo_resource::Effect;
 
-#[derive(
-    Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
-)]
-#[serde(default)]
-pub struct SharedDisplayPrefs {
-    #[model(readonly)]
-    pub arrangement: Arrangement,
-}
-
-impl ui::storage::SettingsSchema for SharedDisplayPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
-}
-
-#[ui::tilo_resource::resource(kind = "settings.display-arrangement", label = "Display arrangement")]
-impl SharedDisplayPrefs {}
-
-#[derive(
-    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
-)]
-#[serde(default)]
-pub struct AutomaticDisplayPrefs {
-    /// A device administrator's choice: changed only through its effect.
-    #[model(readonly)]
-    pub automatic_display_input: bool,
-}
-
-impl Default for AutomaticDisplayPrefs {
-    fn default() -> Self {
-        Self {
-            automatic_display_input: settings_store::continuity_privacy::ON_UNLESS_SET,
-        }
-    }
-}
-
-impl ui::storage::SettingsSchema for AutomaticDisplayPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
-}
-
-#[ui::tilo_resource::resource(
-    kind = "settings.automatic-display",
-    label = "Automatic display input"
-)]
-impl AutomaticDisplayPrefs {}
+pub use crate::prefs::{AutomaticDisplayPrefs, SharedDisplayPrefs};
 
 impl DisplayModel {
     pub(super) fn set_automatic_display_input(&mut self, on: bool) -> Result<String, String> {

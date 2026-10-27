@@ -1446,6 +1446,15 @@ pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
     str_at(doc, &c.meta, key)
 }
 
+/// Read a document-level meta flag; a key that was never set reads `false`,
+/// so a document from before the flag existed reads as the flag's default.
+pub fn meta_flag(doc: &AutoCommit, c: &Containers, key: &str) -> bool {
+    matches!(
+        doc.get(&c.meta, key),
+        Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), ScalarValue::Boolean(true))
+    )
+}
+
 /// The document-wide multi-column layout: `(column_count, optional_gap_px)`. Reads the `meta.columns` /
 /// `meta.column_gap` registers, defaulting to a single column ([`DEFAULT_COLUMNS`]) with no gap when unset
 /// so documents predating this setting read as single-column. A stored count of zero is clamped up to one.
@@ -3009,6 +3018,16 @@ impl DocMut<'_> {
 
     /// Set a document-level meta string (e.g. the serialized stylesheet).
     pub fn set_meta_str(&mut self, key: &str, value: &str) {
+        let _ = self.doc.put(&self.c.meta, key, value);
+    }
+
+    /// Set a document-level meta flag. Setting it to what it already reads
+    /// writes nothing: a flag set on every edit costs one register, not a
+    /// change per keystroke.
+    pub fn set_meta_flag(&mut self, key: &str, value: bool) {
+        if meta_flag(self.doc, self.c, key) == value {
+            return;
+        }
         let _ = self.doc.put(&self.c.meta, key, value);
     }
 

@@ -330,7 +330,7 @@ mod tests {
         HistoryVersion {
             change: change.into(),
             action: action.into(),
-            author: run.unwrap_or("quinten").into(),
+            author: run.unwrap_or("ada").into(),
             run: run.map(Into::into),
             ..HistoryVersion::default()
         }

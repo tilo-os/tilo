@@ -59,6 +59,7 @@ mod published_invocations;
 mod retirement_assembly;
 #[cfg(test)]
 mod retirement_lifecycle_tests;
+mod surface_route;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
 mod retained_layout;
@@ -203,6 +204,10 @@ pub enum UserEvent {
     /// The soft keyboard queued edits for the focused field.
     #[cfg(all(feature = "native", target_os = "android"))]
     PlatformTextInput,
+    /// The system bars, cutout or soft keyboard now cover a different part
+    /// of the window. Android reports it (`launch::android::safe_area_insets`).
+    #[cfg(feature = "native")]
+    SafeAreaChanged,
     /// The shell opens one more window of the app in this process
     /// ([`crate::window_door`]).
     #[cfg(feature = "native")]
@@ -1330,6 +1335,8 @@ impl App {
             crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)
         })?;
         self.history = Some(Box::new(host));
+        // What the frame's walks found held for the window without it.
+        self.layout.walks = runtime::TreeWalks::default();
         if let Some(history) = &mut self.history {
             history.set_control_domain(&self.control_domain);
         }
@@ -1828,6 +1835,8 @@ impl App {
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),
+            keywords: action.keywords.clone(),
+            icon: action.icon.clone(),
             description: action.description.clone(),
             locus: action.locus,
             kind: action.kind,
@@ -2858,6 +2867,7 @@ impl App {
         // What the window's layout needs follows the tree and the theme it
         // was built with; asked once per build, not per frame.
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
+        self.window.preferred_size = self.root_widget.preferred_window_size();
     }
 
     /// The narrowest the window's layout works at, in logical pixels, as of
@@ -2866,17 +2876,38 @@ impl App {
         self.window.minimum_width
     }
 
-    /// Tell the window system the narrowest the layout works at, when it
-    /// changed: Wayland's `xdg_toplevel.set_min_size`, so the desktop stops
-    /// a resize at the app's compact layout instead of squeezing it.
+    /// Tell the window system the size the window may be, when it changed:
+    /// Wayland's `xdg_toplevel.set_min_size`/`set_max_size`, so the desktop
+    /// stops a resize at the app's compact layout instead of squeezing it.
+    /// An app that is the whole window and knows its own size (the on-screen
+    /// keyboard, parked to a strip) states it as the minimum *and* the
+    /// maximum, so the surface shrinks to it rather than leaving its empty
+    /// part over whatever is behind.
     #[cfg(feature = "native")]
     fn reconcile_minimum_size(&mut self, window: &Window) {
+        if self.window.preferred_size != self.window.preferred_size_stated {
+            self.window.preferred_size_stated = self.window.preferred_size;
+            let size = self
+                .window
+                .preferred_size
+                .map(|(width, height)| winit::dpi::LogicalSize::new(width.ceil(), height.ceil()));
+            window.set_min_inner_size(size);
+            window.set_max_inner_size(size);
+            if let Some(size) = size {
+                let _ = window.request_inner_size(size);
+            }
+        }
+        // The narrowest the layout works at, when the app states no size of
+        // its own. Height stays unconstrained (winit's own floor of one
+        // pixel).
+        if self.window.preferred_size.is_some() {
+            return;
+        }
         let wanted = self.window.minimum_width;
         if wanted == self.window.minimum_width_stated {
             return;
         }
         self.window.minimum_width_stated = wanted;
-        // Height stays unconstrained (winit's own floor of one pixel).
         window.set_min_inner_size(
             wanted.map(|width| winit::dpi::LogicalSize::new(width.ceil(), 1.0)),
         );
@@ -3983,8 +4014,9 @@ pub(crate) mod ordinary_confirmation_tests {
         }
         fn revoke(&self) {
             if let Self::Component { binding, .. } = self {
-                *binding.permissions.borrow_mut() =
-                    crate::permissions::PermissionContext::stranger("fixture");
+                binding
+                    .permissions
+                    .set(crate::permissions::PermissionContext::stranger("fixture"));
             }
         }
     }

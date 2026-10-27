@@ -29,10 +29,14 @@ fn directory_permission_fresh_sampler_and_seconds_preserve_actual_bound_revision
     let time = Arc::new(AtomicU64::new(100));
     let fail = Arc::new(AtomicBool::new(false));
     let mut fixture = ActionFixture::broker();
-    *fixture.permissions.borrow_mut() = directory_sampled_permission(time.clone(), fail.clone());
+    fixture
+        .permissions
+        .set(directory_sampled_permission(time.clone(), fail.clone()));
     let revision = capture_bound_directory(&mut fixture);
     time.store(101, Ordering::Release);
-    *fixture.permissions.borrow_mut() = directory_sampled_permission(time, fail);
+    fixture
+        .permissions
+        .set(directory_sampled_permission(time, fail));
     assert_eq!(
         fixture.app.action_directory_revision(),
         revision,
@@ -76,8 +80,9 @@ fn directory_permission_retained_clock_expiry_invalidates_actual_bound_revision(
             policy::Subject::person("owner"),
         )
         .with_lifetime(policy::Lifetime::Until(105_000));
-        *fixture.permissions.borrow_mut() =
-            directory_sampled_permission(time.clone(), fail).with_grant(grant);
+        fixture
+            .permissions
+            .set(directory_sampled_permission(time.clone(), fail).with_grant(grant));
         let revision = capture_bound_directory(&mut fixture);
         time.store(105, Ordering::Release);
         assert_ne!(
@@ -97,7 +102,9 @@ fn directory_permission_clock_failure_refuses_cached_resolution() {
     let time = Arc::new(AtomicU64::new(100));
     let fail = Arc::new(AtomicBool::new(false));
     let mut fixture = ActionFixture::broker();
-    *fixture.permissions.borrow_mut() = directory_sampled_permission(time, fail.clone());
+    fixture
+        .permissions
+        .set(directory_sampled_permission(time, fail.clone()));
     let revision = capture_bound_directory(&mut fixture);
     let alias = fixture
         .app
@@ -154,7 +161,7 @@ fn directory_permission_actor_and_capability_semantics_invalidate_revision() {
         let mut fixture = ActionFixture::broker();
         let revision = capture_bound_directory(&mut fixture);
         let old = fixture.permissions.borrow().clone();
-        *fixture.permissions.borrow_mut() = if actor_change {
+        fixture.permissions.set(if actor_change {
             PermissionContext::new(
                 Actor::person("other-user"),
                 old.capabilities().to_vec(),
@@ -167,7 +174,7 @@ fn directory_permission_actor_and_capability_semantics_invalidate_revision() {
                 Scope::FsPath("/new".into()),
                 Access::Read,
             ))
-        };
+        });
         assert_ne!(fixture.app.action_directory_revision(), revision);
     }
 }
@@ -189,8 +196,10 @@ fn directory_filtered_cache_expired_sole_grant_cannot_republish_old_rows() {
     };
     let time = Arc::new(AtomicU64::new(100));
     let mut fixture = ActionFixture::broker();
-    *fixture.permissions.borrow_mut() =
-        directory_sampled_permission(time.clone(), Arc::new(AtomicBool::new(false)));
+    fixture.permissions.set(directory_sampled_permission(
+        time.clone(),
+        Arc::new(AtomicBool::new(false)),
+    ));
     let old = capture_bound_directory(&mut fixture);
     let alias = fixture
         .app
@@ -232,9 +241,10 @@ fn directory_filtered_cache_expired_restriction_restores_republished_action() {
     )
     .with_lifetime(policy::Lifetime::Until(105_000));
     let mut fixture = ActionFixture::broker();
-    *fixture.permissions.borrow_mut() =
+    fixture.permissions.set(
         directory_sampled_permission(time.clone(), Arc::new(AtomicBool::new(false)))
-            .with_grant(restriction);
+            .with_grant(restriction),
+    );
     let (old, resources) = republish_directory(&mut fixture);
     let alias = fixture
         .app
@@ -286,8 +296,9 @@ fn hosted_directory_expiry_failure_and_owner_close_never_restore_old_revision() 
         let time = Arc::new(AtomicU64::new(100));
         let fail = Arc::new(AtomicBool::new(false));
         let mut fixture = ActionFixture::broker();
-        *fixture.permissions.borrow_mut() =
-            directory_sampled_permission(time.clone(), fail.clone());
+        fixture
+            .permissions
+            .set(directory_sampled_permission(time.clone(), fail.clone()));
         let old = capture_bound_directory(&mut fixture);
         let alias = fixture
             .app
@@ -320,7 +331,7 @@ fn directory_permission_action_authority_revoke_invalidates_actual_bound_revisio
     let current = Arc::new(Mutex::new(Some(Role::Owner)));
     let source = current.clone();
     let mut fixture = ActionFixture::broker();
-    *fixture.permissions.borrow_mut() =
+    fixture.permissions.set(
         crate::permissions::PermissionContext::member("fixture-user", Role::Editor)
             .with_action_authority(
                 "so.tilo.binding-probe".into(),
@@ -330,7 +341,8 @@ fn directory_permission_action_authority_revoke_invalidates_actual_bound_revisio
                         None => PermissionContext::stranger("fixture-user"),
                     })
                 }),
-            );
+            ),
+    );
     let revision = capture_bound_directory(&mut fixture);
     let alias = fixture
         .app

@@ -789,7 +789,7 @@ mod authentication_tests {
             .unwrap();
         assert_eq!(
             read_request(stream),
-            json!({"type":"create_session","username":"quinten"})
+            json!({"type":"create_session","username":"ada"})
         );
         respond(
             stream,
@@ -952,7 +952,7 @@ mod authentication_tests {
         );
         assert_eq!(configured["answer"]["status"], "accepted");
         assert_eq!(app.selected_session, 0);
-        assert_eq!(app.attempt_username(), "quinten");
+        assert_eq!(app.attempt_username(), "ada");
         assert!(!app.console_state().to_string().contains(SECRET));
         let _updates = start_worker(&mut app, std::path::Path::new(&socket));
         // The worker exits this process once greetd starts the session; the
@@ -1155,7 +1155,7 @@ mod authentication_tests {
                 .unwrap();
             assert_eq!(
                 read_request(&mut stream),
-                json!({"type":"create_session","username":"quinten"})
+                json!({"type":"create_session","username":"ada"})
             );
             respond(
                 &mut stream,

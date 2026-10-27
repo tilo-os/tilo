@@ -73,6 +73,9 @@ pub struct Hit {
     /// it), laid out apart rather than joined; empty when `subtitle` says it.
     pub facts: Vec<String>,
     pub score: i32,
+    /// The row's own picture, when its source gives one (an app's hit, an
+    /// action's declared icon); else its kind's.
+    pub icon: Option<ui::icons::Icon>,
     pub target: Target,
 }
 

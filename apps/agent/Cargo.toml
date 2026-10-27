@@ -28,6 +28,9 @@ runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # windowed app.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
+# A skill's selector: the kinds of thing it is for, and what they say.
+tilo-selector = { path = "../../crates/platform/tilo-selector" }
+tilo-action-policy = { path = "../../crates/collab/action-policy" }
 # The transform action names shortcuts lower their `Ai` steps to.
 tilo-automation = { path = "../../crates/collab/automation" }
 # The runner reads the same provider profile Settings writes. Resolving the
@@ -50,7 +53,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-action-policy = { path = "../../crates/collab/action-policy" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }

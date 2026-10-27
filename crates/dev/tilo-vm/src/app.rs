@@ -4068,9 +4068,10 @@ impl App {
                     kind,
                     owner,
                     outputs,
-                    identity,
+                    identity: identity == Some(crate::cli::SlotIdentity::Throwaway),
+                    device_identity: identity == Some(crate::cli::SlotIdentity::Device),
                 })?;
-                if identity && result.identity.is_none() {
+                if identity.is_some() && result.identity.is_none() {
                     return Err(CliError::Unsupported {
                         what: "slot create --identity by this VM's tilo-vmd".into(),
                         alternative:
@@ -6419,6 +6420,7 @@ fn slot_created_text(
             !matches!(
                 action,
                 tilo_vm_protocol::Action::ProvisionTestIdentity { .. }
+                    | tilo_vm_protocol::Action::CompleteOnboarding { .. }
             )
         })
         .any(|action| !matches!(action, tilo_vm_protocol::Action::SetOutputs { .. }));
@@ -6435,6 +6437,14 @@ fn slot_created_text(
         format!("slot {name} already exists and its session is running; nothing to do")
     };
     let text = match &result.identity {
+        Some(identity) if !identity.throwaway => format!(
+            "{text}\n{}; fs runs on the machine's certified device key",
+            if identity.created {
+                "its user is this VM's person, made through onboarding; the session restarted with fresh desktop state"
+            } else {
+                "its user is this VM's person"
+            }
+        ),
         Some(identity) if identity.created => format!(
             "{text}\nthrowaway test identity \"{}\" minted; the session restarted with fresh desktop state",
             identity.display_name
@@ -8038,7 +8048,7 @@ mod tests {
                 error.hint()
             );
             assert!(
-                error.hint().contains("quickuser@192.168.64.5"),
+                error.hint().contains("tester@192.168.64.5"),
                 "{}",
                 error.hint()
             );
@@ -8239,7 +8249,7 @@ mod tests {
             let error = app
                 .vm_add(&AddArgs {
                     key: Some(dir.path().join("missing")),
-                    ..add("pi2", "quickuser@10.0.0.109")
+                    ..add("pi2", "tester@10.0.0.109")
                 })
                 .err()
                 .unwrap();

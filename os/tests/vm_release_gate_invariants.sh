@@ -85,7 +85,7 @@ if grep -Fq 'cmd_wait_greeter_return()' "$vm" \
   && grep -Fq '! busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$vm" \
   && grep -Fq 'systemctl is-active --quiet greetd.service' "$vm" \
   && grep -Fq 'cmd_shutdown()' "$vm" \
-  && grep -Fq 'sudo systemctl poweroff' "$vm" \
+  && grep -Fq "sudo -S -p '' systemctl poweroff" "$vm" \
   && grep -Fq 'guest did not power off' "$vm"; then
   ok 'VM helpers prove UI logout returned to greetd and bound clean guest shutdown'
 else

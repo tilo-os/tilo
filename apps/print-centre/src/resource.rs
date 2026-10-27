@@ -212,6 +212,28 @@ pub enum PrintCentreEffect {
         #[param("The printer's queue name")]
         printer: String,
     },
+    /// Previous document page.
+    ///
+    /// Shows the page before the one under review, so a wrong page is caught
+    /// before anything is sent.
+    #[effect(view)]
+    PreviousPrintPage,
+    /// Next document page.
+    ///
+    /// Shows the page after the one under review.
+    #[effect(view)]
+    NextPrintPage,
+    /// Choose a printing option.
+    ///
+    /// Sets one option the chosen printer reports: its paper size, colour
+    /// mode, two-sided mode or orientation.
+    #[effect(view)]
+    SetPrintOption {
+        #[param("The option's name")]
+        option: String,
+        #[param("The value the printer reported")]
+        value: String,
+    },
     /// Send to printer.
     ///
     /// Prints the document being set up, with its copies and sides.
