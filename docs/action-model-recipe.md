@@ -84,6 +84,16 @@ that exposes when on, a list from the strongest to the weakest value for a
 choice. Every door reads the confirmation from the published field edit,
 without the app's code.
 
+Say what a field may hold where it is declared, not in a `check` of its own:
+`#[model(range = 0.5..=3.0)]` on a number, `#[model(choices = ["sun",
+"custom"])]` on a text, and `#[model(defaults)]` on the record to publish what
+each field holds until someone changes it (its `Default`). The bounds, choices
+and default go into the field's published schema, so an agent builds a valid
+edit without trying one, and the record's own check holds every change to them,
+a verb's included. Keep `check` for what spans fields (a critical battery level
+at most the low one). A record whose fields a shared macro writes gives them on
+the type: `#[model(field(cursor_size, range = 24..=64))]`.
+
 ## 3. Verbs
 
 Operations that are more than setting a field are methods:

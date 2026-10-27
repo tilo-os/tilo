@@ -622,9 +622,10 @@ pub struct ShellOverlayHost {
     /// palette's entries, so `take_structure_dirty` rebuilds the taffy
     /// node with the new row count — without this only ~1 result shows.
     palette_layout_dirty: bool,
-    /// Host rect and display area the palette's taffy style was last
-    /// computed against. See the sizing comment in `build_layout`.
-    palette_layout_host: Option<(Rect, Rect)>,
+    /// Host rect, display area and searched window (an app's search) the
+    /// palette's taffy style was last computed against. See the sizing
+    /// comment in `build_layout`.
+    palette_layout_host: Option<(Rect, Rect, Option<Rect>)>,
     content_node: Option<NodeId>,
     palette_node: Option<NodeId>,
     /// Shared chrome state; drives whether overview / quick-settings /

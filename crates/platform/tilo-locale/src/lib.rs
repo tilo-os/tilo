@@ -158,12 +158,19 @@ impl Measurement {
 /// default so a brand-new install needs no file at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
+#[model(defaults)]
 pub struct Locale {
+    /// The currency amounts are shown in.
     pub currency: Currency,
+    /// How dates are written, or as the language writes them.
     pub date_format: DateStyle,
+    /// A 12- or 24-hour clock, or as the language writes times.
     pub time_format: TimeStyle,
+    /// Metric or imperial units.
     pub measurement: Measurement,
+    /// Which marks group thousands and separate decimals.
     pub number_style: NumberStyle,
+    /// The day a week starts on, in calendars and date pickers.
     pub first_day_of_week: FirstDayOfWeek,
 }
 

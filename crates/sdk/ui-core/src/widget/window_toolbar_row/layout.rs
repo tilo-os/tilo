@@ -266,12 +266,16 @@ pub(super) fn picks_views(toolbar: &WindowToolbar) -> bool {
 
 /// What one layout keeps in the row: the first `plain` leading actions
 /// that do not move through the content, the first `navigating` that do,
-/// and the first `inline` actions.
+/// the first `inline` actions, and whether the forward button and the
+/// sidebar's toggle stand in the row (where not, they are in the overflow
+/// menu).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Kept {
     pub(super) plain: usize,
     pub(super) navigating: usize,
     pub(super) inline: usize,
+    pub(super) forward: bool,
+    pub(super) sidebar: bool,
 }
 
 impl Kept {
@@ -286,6 +290,8 @@ impl Kept {
             plain: toolbar.leading.len().saturating_sub(navigating),
             navigating,
             inline,
+            forward: true,
+            sidebar: true,
         }
     }
 
@@ -441,6 +447,8 @@ impl Slots {
             slots.leading.iter().map(|rect| rect.area() > 0.0).collect()
         };
         shown(self) == shown(other)
+            && (self.sidebar.area() > 0.0) == (other.sidebar.area() > 0.0)
+            && (self.forward.area() > 0.0) == (other.forward.area() > 0.0)
             && self.views.len() == other.views.len()
             && (self.views_menu.area() > 0.0) == (other.views_menu.area() > 0.0)
             && self.views_in_location() == other.views_in_location()
@@ -541,7 +549,10 @@ impl Slots {
     /// narrow for the location beside everything else: the plain leading
     /// actions, the last first; then the views (the views menu's place);
     /// then the leading actions that move through the content, the last
-    /// first. The location yields to none of them: it stays, elided.
+    /// first; then, where the location still has not its least width (a
+    /// phone's), the forward button and after it the sidebar's toggle. The
+    /// location yields to none of them: it stays, elided. Back and the
+    /// window's own controls never go.
     pub(super) fn yielding(all: Kept, measured: ViewsSize) -> Vec<(Kept, ViewsPlace)> {
         let all = Kept { inline: 0, ..all };
         let views = measured.map_or(ViewsPlace::Overflow, folded_views);
@@ -553,10 +564,29 @@ impl Slots {
                 plain: 0,
                 navigating,
                 inline: 0,
+                ..all
             };
             (kept, ViewsPlace::Overflow)
         });
-        plain.chain(navigating).collect()
+        let bare = Kept {
+            plain: 0,
+            navigating: 0,
+            inline: 0,
+            ..all
+        };
+        let navigation = [
+            Kept {
+                forward: false,
+                ..bare
+            },
+            Kept {
+                forward: false,
+                sidebar: false,
+                ..bare
+            },
+        ]
+        .map(|kept| (kept, ViewsPlace::Overflow));
+        plain.chain(navigating).chain(navigation).collect()
     }
 
     /// The slots with the leading actions and the actions `kept` keeps in
@@ -574,16 +604,26 @@ impl Slots {
         let y0 = row.center().y - CONTROL_PX / 2.0;
         let square = |x0: f64| Rect::new(x0, y0, x0 + CONTROL_PX, y0 + CONTROL_PX);
         let mut x0 = row.x0;
+        let mut folded = false;
         if toolbar.sidebar.is_some() {
-            slots.sidebar = square(x0);
-            x0 = slots.sidebar.x1 + SECTION_GAP;
+            if kept.sidebar {
+                slots.sidebar = square(x0);
+                x0 = slots.sidebar.x1 + SECTION_GAP;
+            } else {
+                folded = true;
+            }
         }
         if toolbar.navigation.is_some() {
             slots.back = square(x0);
-            slots.forward = square(slots.back.x1 + CONTROL_GAP);
-            x0 = slots.forward.x1 + SECTION_GAP;
+            x0 = slots.back.x1;
+            if kept.forward {
+                slots.forward = square(x0 + CONTROL_GAP);
+                x0 = slots.forward.x1;
+            } else {
+                folded = true;
+            }
+            x0 += SECTION_GAP;
         }
-        let mut folded = false;
         let mut any = false;
         for index in 0..toolbar.leading.len() {
             if kept.shows(toolbar, index) {
@@ -658,11 +698,14 @@ impl Slots {
 
     /// Every button stands inside `row`, clear of the ones before it.
     pub(super) fn fits(&self, row: Rect) -> bool {
-        let lead = self
-            .leading
-            .iter()
-            .map(|rect| rect.x1)
-            .fold(self.forward.x1.max(self.sidebar.x1).max(row.x0), f64::max);
+        let lead = self.leading.iter().map(|rect| rect.x1).fold(
+            self.forward
+                .x1
+                .max(self.back.x1)
+                .max(self.sidebar.x1)
+                .max(row.x0),
+            f64::max,
+        );
         self.actions
             .iter()
             .chain(self.views.first())
@@ -674,6 +717,18 @@ impl Slots {
     /// Whether the location is the views' picker.
     pub(crate) fn views_in_location(&self) -> bool {
         self.views_menu.area() > 0.0 && self.views_menu == self.location
+    }
+
+    /// Whether the forward button is in the overflow menu, the row having
+    /// no room for it.
+    pub(super) fn forward_folded(&self, toolbar: &WindowToolbar) -> bool {
+        toolbar.navigation.is_some() && self.forward.area() <= 0.0
+    }
+
+    /// Whether the sidebar's toggle is in the overflow menu, the row having
+    /// no room for it.
+    pub(super) fn sidebar_folded(&self, toolbar: &WindowToolbar) -> bool {
+        toolbar.sidebar.is_some() && self.sidebar.area() <= 0.0
     }
 
     /// The leading actions the row has no room for, in their order.

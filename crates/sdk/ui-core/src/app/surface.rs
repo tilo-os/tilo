@@ -888,6 +888,15 @@ impl App {
         self.needs_sync || self.layout.layout_dirty || self.layout.structure_dirty
     }
 
+    /// Whether the app's model woke the window for a frame it has not run
+    /// yet: background work that ended, or a read that goes on frame by
+    /// frame. A window that rests has none.
+    pub fn wake_pending(&self) -> bool {
+        self.wake_scope
+            .as_ref()
+            .is_some_and(crate::wake::WakeScope::is_pending)
+    }
+
     /// The modifier keys held, as the surface reports them.
     pub fn set_surface_modifiers(&mut self, modifiers: winit::event::Modifiers) {
         self.input.modifiers = modifiers;

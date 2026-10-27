@@ -297,6 +297,9 @@ pub struct RecordDesc {
     pub label: Option<usize>,
     /// The positions of the fields its label joins (`#[model(label = "..")]`).
     pub label_parts: &'static [usize],
+    /// What names it, where its name is not a field's text as stored
+    /// (`#[model(label = path)]`).
+    pub label_with: Option<fn(&dyn Any) -> Option<String>>,
     /// Its type's name: what a deferred check is known by.
     pub name: fn() -> &'static str,
     /// Its stored shape.
@@ -1712,10 +1715,14 @@ fn first_line(record: &RecordDesc, value: &dyn Any, index: usize) -> Option<Stri
     crate::__private::first_line_of(text)
 }
 
-/// [`Model::label`] of a record: the texts of its label fields joined by
-/// spaces, else its `#[model(label)]` field.
+/// [`Model::label`] of a record: what its `label = path` names it, else the
+/// texts of its label fields joined by spaces, else its `#[model(label)]`
+/// field.
 #[must_use]
 pub fn label(record: &RecordDesc, value: &dyn Any) -> Option<String> {
+    if let Some(name) = record.label_with {
+        return name(value).filter(|label| !label.is_empty());
+    }
     if !record.label_parts.is_empty() {
         let mut parts = Vec::new();
         for index in record.label_parts {

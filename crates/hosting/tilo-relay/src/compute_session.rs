@@ -167,6 +167,29 @@ impl ProtocolHandler for ComputeProtocol {
     }
 }
 
+/// The workspace a message offers this device's compute in, if it is an
+/// offer.
+fn advertised_in(incoming: &ComputeEnvelope) -> Option<u64> {
+    match incoming {
+        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
+        _ => None,
+    }
+}
+
+/// What a device that does not drive this host's compute is told: a ping is
+/// answered, so the device learns it reaches the relay at all, and anything
+/// else is refused. Answers whether the session carries on.
+async fn controls_refused(
+    incoming: &ComputeEnvelope,
+    send: &mut SendStream,
+) -> Result<bool, ComputeSessionError> {
+    if matches!(incoming, ComputeEnvelope::Ping) {
+        write_compute(send, &ComputeEnvelope::Pong).await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 async fn run_server_session(
     protocol: ComputeProtocol,
     connection: Connection,
@@ -224,11 +247,7 @@ async fn run_server_session(
                     let controls =
                         host_person && !protocol.trust().is_agent(&peer.device_public_key);
                     if !controls {
-                        // Another user's device reaches environments on its
-                        // own streams; the control stream is the host's
-                        // person's.
-                        if matches!(incoming, ComputeEnvelope::Ping) {
-                            write_compute(&mut send, &ComputeEnvelope::Pong).await?;
+                        if controls_refused(&incoming, &mut send).await? {
                             continue;
                         }
                         break Err(ComputeSessionError::Protocol(
@@ -256,10 +275,7 @@ async fn run_server_session(
                             "compute message sent before workspace attach".into(),
                         ));
                     }
-                    let advertising = match &incoming {
-                        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
-                        _ => None,
-                    };
+                    let advertising = advertised_in(&incoming);
                     if let Some(reply) = dispatch_compute(&protocol.workspaces, &peer, incoming).await? {
                         write_compute(&mut send, &reply).await?;
                     }

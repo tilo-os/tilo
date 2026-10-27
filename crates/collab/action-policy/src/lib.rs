@@ -30,7 +30,7 @@ mod room;
 pub mod share;
 mod standing;
 
-pub use admission::{Admission, Asker, Invoked, Refused, admit};
+pub use admission::{Admission, Asker, Invoked, Reach, Refused, admit};
 pub use decide::{Authority, Basis, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use grant::{Answer, Context, Grant, GrantId, Lifetime, Role, Subject};

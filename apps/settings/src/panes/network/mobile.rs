@@ -296,7 +296,11 @@ impl MobileArea {
         let mut statuses = Vec::new();
         let mut unavailable = |id: &'static str, code: &str, reason: &str| {
             statuses.push(EffectStatus::unavailable(
-                ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                ActionRef::<SettingsEffect, ()>::new(
+                    id,
+                    &[],
+                    <SettingsEffect as ui::tilo_resource::Effect>::kind(),
+                ),
                 code,
                 reason,
             ));

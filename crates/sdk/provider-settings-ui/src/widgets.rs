@@ -266,6 +266,15 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> Ite
     )))
 }
 
+/// A setting that belongs to the row above it and is shown only while that
+/// one applies (drag lock under tap-and-drag): indented one leading column
+/// under it, so the pair reads as one choice and its refinement.
+pub fn nested_setting_row(label: &str, description: Option<&str>, control: El) -> Item {
+    row(Box::new(
+        setting_list_row(label, description, control).nested(),
+    ))
+}
+
 /// A setting whose control wants the whole measure (a slider, a text
 /// field): the label (and its explanation) over the control.
 fn stacked(label: &str, description: Option<&str>, control: El) -> Item {

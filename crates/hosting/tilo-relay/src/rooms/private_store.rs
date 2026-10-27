@@ -314,7 +314,7 @@ impl GovernedRoom {
         for contact in &mut contacts {
             contact.conversation = store.pairs.values().any(|pair| {
                 !pair.messages.is_empty()
-                    && pair.people.iter().any(|p| *p == contact.public_key)
+                    && pair.people.contains(&contact.public_key)
                     && pair.people.iter().any(|p| p == own)
             });
         }

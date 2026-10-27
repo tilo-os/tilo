@@ -282,15 +282,6 @@ mod tests {
     static INSTALLED: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
     static RESTARTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-    fn runs_v1(_: &str) -> Option<String> {
-        Some(hex::encode([1; 32]))
-    }
-    fn install_for_test(release: &AppRelease, bytes: &[u8]) -> Result<(), String> {
-        INSTALLED
-            .lock_recover()
-            .push((release.package.clone(), bytes.to_vec()));
-        Ok(())
-    }
     fn restart_for_test(app: &str) -> bool {
         RESTARTED.lock_recover().push(app.into());
         true
@@ -310,8 +301,13 @@ mod tests {
             dev: true,
         };
         let device = Device {
-            installed: runs_v1,
-            install: install_for_test,
+            installed: |_| Some(hex::encode([1; 32])),
+            install: |release, bytes| {
+                INSTALLED
+                    .lock_recover()
+                    .push((release.package.clone(), bytes.to_vec()));
+                Ok(())
+            },
             restart: restart_for_test,
         };
         let room = Arc::new(Room::default());
@@ -347,7 +343,7 @@ mod tests {
         worker.join().unwrap();
         assert_eq!(
             *INSTALLED.lock_recover(),
-            vec![(release.package.clone(), package)],
+            vec![(release.package, package)],
             "the checked file is installed, bound to the version's package"
         );
         assert_eq!(*RESTARTED.lock_recover(), vec![APP.to_owned()]);

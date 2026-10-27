@@ -64,6 +64,24 @@ pub trait AppDirectory {
     fn resources(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// The workspace's resources the host knows, each by the title its app
+    /// publishes for it: what a person picks an existing resource from.
+    fn titled_resources(&self) -> Vec<TitledResource> {
+        Vec::new()
+    }
+}
+
+/// A resource of the workspace by the title its app publishes for it, as a
+/// search finds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitledResource {
+    /// The app that keeps it.
+    pub app: String,
+    /// Its kind: an item's (`notes.notebook.pages`), else the resource's own.
+    pub kind: String,
+    /// Its id in that app.
+    pub resource: String,
+    pub title: String,
 }
 
 /// A host with no application catalogue: apps are named by their id.
@@ -416,8 +434,9 @@ pub struct Picked {
 
 /// What a person may pick for `pick` in `ws`, as `local_user` sees it, with
 /// `apps` naming apps and resources: the workspace's people, agents and
-/// apps; the whole workspace, each app and each resource; or each grant
-/// they could revoke, by what it allows.
+/// apps; the whole workspace, each app and each resource; each grant they
+/// could revoke, by what it allows; or each existing resource of a kind, by
+/// its title, as a reference to it.
 pub fn picks(
     ws: &Workspace,
     local_user: &str,
@@ -464,6 +483,32 @@ pub fn picks(
                         node.to_string()
                     }),
                     detail: None,
+                    person: None,
+                })
+                .collect()
+        }
+        tilo_actions::Pick::Resource { kind } => {
+            let mut found: Vec<TitledResource> = apps
+                .titled_resources()
+                .into_iter()
+                .filter(|titled| titled.kind == kind)
+                .collect();
+            found.sort_by(|a, b| {
+                a.title
+                    .cmp(&b.title)
+                    .then_with(|| a.resource.cmp(&b.resource))
+            });
+            found
+                .into_iter()
+                .map(|titled| Picked {
+                    value: serde_json::json!({
+                        "app": titled.app,
+                        "kind": kind,
+                        "id": titled.resource,
+                        "label": titled.title,
+                    }),
+                    detail: Some(app_display_name(apps, &titled.app)),
+                    label: titled.title,
                     person: None,
                 })
                 .collect()
