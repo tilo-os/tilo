@@ -1122,6 +1122,9 @@ mod tests {
     }
 }
 
+/// The bytes of committed reads this process holds at once, beyond a single
+/// capture larger than that.
+const CAPTURE_LIMIT: usize = MAX_DOCUMENT_BYTES * 2;
 fn capture_budget() -> &'static ByteBudget {
     static BUDGET: std::sync::OnceLock<ByteBudget> = std::sync::OnceLock::new();
     BUDGET.get_or_init(ByteBudget::new)
@@ -1131,18 +1134,24 @@ fn capture_budget() -> &'static ByteBudget {
 const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
 /// Only local deadlines permit retiring a capture and renewing its read epoch,
-/// or retrying a renewal. Broker refusals, invalid replies and authority
-/// failures remain terminal.
+/// or retrying a renewal, and only a full local budget makes a read wait and
+/// Open again. Broker refusals, invalid replies and authority failures remain
+/// terminal.
 #[derive(Debug)]
 enum CaptureFailure {
     Deadline(&'static str),
     Rejected(String),
+    /// This process's committed read budget had no room for a capture of
+    /// this many bytes. The broker's capture was cancelled; the read waits
+    /// for room ([`ByteBudget::until_room`]) and Opens again.
+    Capacity(usize),
 }
 impl std::fmt::Display for CaptureFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Deadline(message) => formatter.write_str(message),
             Self::Rejected(message) => formatter.write_str(message),
+            Self::Capacity(_) => formatter.write_str("SDK committed read capacity"),
         }
     }
 }
@@ -1211,14 +1220,15 @@ async fn capture_using(
     };
     let prepared = (|| {
         if total == 0 || total > MAX_DOCUMENT_BYTES {
-            return Err("committed document initial bounds".into());
+            return Err(CaptureFailure::from("committed document initial bounds"));
         }
         // Charge the validated raw payload before allocating its destination.
-        // Clones share this one lease; the aggregate limit is unchanged.
+        // Clones share this one lease; the aggregate limit is unchanged. A
+        // capture alone in the budget always fits, so waiting for room ends.
         let reservation = budget
-            .reserve(total, MAX_DOCUMENT_BYTES * 2)
-            .ok_or("SDK committed read capacity")?;
-        Ok::<_, String>((reservation, Assembly::start(first)?))
+            .reserve_sole(total, CAPTURE_LIMIT)
+            .ok_or(CaptureFailure::Capacity(total))?;
+        Ok::<_, CaptureFailure>((reservation, Assembly::start(first)?))
     })();
     let (reservation, mut assembly) = match prepared {
         Ok(prepared) => prepared,
@@ -1231,7 +1241,7 @@ async fn capture_using(
                 }),
             )
             .await;
-            return Err(error.into());
+            return Err(error);
         }
     };
     let id = assembly.id;
@@ -1477,14 +1487,23 @@ pub(super) async fn install(
         return Ok(false);
     }
     let mut ready = inbound.state.document_reads.pending(&key)?;
+    // What the first read waits for before it Opens again, when it could
+    // not be read yet: its turn in the broker's queue, or room here.
+    let mut waiting = None;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } | Reply::Created { .. } => {
-            let (read, revision) = read_capture(channel, first)
-                .await
-                .map_err(|error| error.to_string())?;
-            (Some(read), Some(revision))
-        }
+        Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {
+            Ok((read, revision)) => (Some(read), Some(revision)),
+            Err(CaptureFailure::Capacity(bytes)) => {
+                waiting = Some(Waiting::Room(bytes));
+                (None, None)
+            }
+            Err(error) => return Err(error.to_string()),
+        },
         Reply::Unavailable => (None, None),
+        Reply::Busy => {
+            waiting = Some(Waiting::Turn);
+            (None, None)
+        }
         _ => return Err("invalid initial committed read mode".into()),
     };
     let mut channel = channel.clone();
@@ -1500,6 +1519,16 @@ pub(super) async fn install(
         let mut current = initial;
         let mut revision = revision;
         let mut last_open;
+        // Whether the broker may hold this channel's place in its byte
+        // budget's queue: after `Busy`, or an Open whose answer never came.
+        let mut queued = matches!(waiting, Some(Waiting::Turn));
+        match waiting {
+            Some(Waiting::Turn) => {
+                until_stale(&channel, None, &inbound, &key, &ready).await;
+            }
+            Some(Waiting::Room(bytes)) => capture_budget().until_room(bytes, CAPTURE_LIMIT).await,
+            None => {}
+        }
         'read: loop {
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
                 break;
@@ -1568,6 +1597,7 @@ pub(super) async fn install(
             let result =
                 tokio::time::timeout(Duration::from_secs(2), channel.committed_document(&request))
                     .await;
+            queued = matches!(result, Ok(Ok(Reply::Busy)) | Err(_));
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
                     set_read_ready(&inbound, &ready, true);
@@ -1583,6 +1613,13 @@ pub(super) async fn install(
                         Ok((read, next)) => {
                             current = Some(read);
                             revision = Some(next);
+                            continue;
+                        }
+                        Err(CaptureFailure::Capacity(bytes)) => {
+                            // Load, not a failure: wait for this process
+                            // to release committed bytes, then Open again.
+                            drop(turn);
+                            capture_budget().until_room(bytes, CAPTURE_LIMIT).await;
                             continue;
                         }
                         Err(error) => {
@@ -1602,6 +1639,13 @@ pub(super) async fn install(
                 Ok(Ok(Reply::Unavailable)) => {
                     set_read_ready(&inbound, &ready, false);
                     revision = None;
+                    false
+                }
+                // The broker's byte budget is held by other reads. This read
+                // keeps its place in the queue and what it holds; the Await
+                // below answers once its turn has come.
+                Ok(Ok(Reply::Busy)) => {
+                    set_read_ready(&inbound, &ready, false);
                     false
                 }
                 Err(_) if !renewed => true,
@@ -1650,6 +1694,9 @@ pub(super) async fn install(
                     break;
                 };
                 ready = next_ready;
+                if std::mem::take(&mut queued) {
+                    leave_queue(&channel);
+                }
                 let mut turn = Some(turn);
                 loop {
                     match join.renew(&spec, &inbound.state.document_reads).await {
@@ -1677,7 +1724,7 @@ pub(super) async fn install(
                                 break 'read;
                             }
                         }
-                        Err(CaptureFailure::Rejected(_)) => {
+                        Err(CaptureFailure::Rejected(_) | CaptureFailure::Capacity(_)) => {
                             inbound
                                 .state
                                 .fail_closed("committed read renewal unavailable");
@@ -1699,8 +1746,32 @@ pub(super) async fn install(
         if inbound.state.document_reads.current(&key, &ready) {
             inbound.state.document_reads.discard_stage(&key);
         }
+        if queued {
+            leave_queue(&channel);
+        }
     });
     Ok(true)
+}
+
+/// What a reader waits for before it Opens again, when its read could not
+/// be taken yet. Neither is a refusal.
+enum Waiting {
+    /// The broker answered `Busy`: its turn in the byte budget's queue,
+    /// which the channel's `Await` announces.
+    Turn,
+    /// This process had no room for a capture of this many bytes.
+    Room(usize),
+}
+
+/// Give up `channel`'s place in the broker's byte budget queue: this reader
+/// reads no more on it (it renewed onto another channel, or stopped), and
+/// reads behind it must not wait for a turn it would never take. The
+/// channel itself lives on with its route.
+fn leave_queue(channel: &runtime_collab::ChannelHandle) {
+    let channel = channel.clone();
+    tokio::task::spawn_local(async move {
+        let _ = channel.committed_document(&Request::Leave).await;
+    });
 }
 
 /// The variant of `reply`, for a log line that must not carry its bytes.
@@ -1717,5 +1788,6 @@ fn reply_kind(reply: &Reply) -> &'static str {
         Reply::Stale => "stale",
         Reply::Changes { .. } => "changes",
         Reply::ConnectionSnapshot(_) => "connection snapshot",
+        Reply::Busy => "busy",
     }
 }

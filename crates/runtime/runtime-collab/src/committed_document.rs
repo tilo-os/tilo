@@ -152,6 +152,11 @@ pub enum Request {
     },
     /// Original authenticated principal and exact channel route; no caller claims.
     ConnectionSnapshot,
+    /// The caller reads no more on this channel: give up its place in the
+    /// broker's byte budget queue (after a [`Reply::Busy`]), and the room it
+    /// was granted, so reads behind it are served. Answered
+    /// [`Reply::Cancelled`]; an active capture is untouched.
+    Leave,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
@@ -199,6 +204,12 @@ pub enum Reply {
         token: [u8; 16],
     },
     ConnectionSnapshot(ConnectionSnapshot),
+    /// An Open the broker cannot capture yet: its byte budget is held by
+    /// other reads. The read is queued in order, and nothing is refused: an
+    /// [`Request::Await`] on this channel answers [`Reply::Stale`] once the
+    /// read's turn has come, and the next Open captures. A caller that
+    /// stops reading on the channel sends [`Request::Leave`].
+    Busy,
 }
 impl Request {
     /// Encode a valid request for the wire.
@@ -234,7 +245,8 @@ impl Request {
             | Self::ConnectionSnapshot
             | Self::PrivateWindowBinding
             | Self::Await { .. }
-            | Self::OpenChanges { .. } => true,
+            | Self::OpenChanges { .. }
+            | Self::Leave => true,
             Self::Next {
                 capture,
                 offset,
@@ -345,6 +357,14 @@ impl Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn busy_is_a_tag_of_its_own_after_every_earlier_reply() {
+        assert_eq!(Reply::Busy.encode().unwrap(), [11]);
+        assert_eq!(Reply::decode(&[11]).unwrap(), Reply::Busy);
+        assert_eq!(Request::Leave.encode().unwrap(), [8]);
+        assert_eq!(Request::decode(&[8]).unwrap(), Request::Leave);
+    }
+
     #[test]
     fn connection_snapshot_is_bounded_and_keeps_original_principal_and_route() {
         assert_eq!(Request::ConnectionSnapshot.encode().unwrap(), [7]);
