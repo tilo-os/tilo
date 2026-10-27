@@ -436,6 +436,7 @@ impl SearchField {
                 scope,
                 query: None,
                 offer: None,
+                action: None,
             }
             .with_query(self.input.value()),
         );
