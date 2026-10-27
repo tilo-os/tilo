@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 #[cfg(unix)]
 use std::io::{Read, Write};
-#[cfg(all(unix, feature = "local-daemons"))]
+#[cfg(all(unix, any(test, feature = "local-daemons")))]
 use std::os::fd::{FromRawFd, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -784,7 +784,7 @@ pub struct FloatingSurfaceServiceClient {
     /// Tells the readable watcher ([`Self::from_stream_waking`]) the app
     /// has read; dropping it stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
-    rearm_wake: Option<std::sync::mpsc::Sender<()>>,
+    rearm_wake: Option<Rearm>,
     /// The last appearance the shell told: the shell says it once per
     /// change, so a window this connection is handed to next
     /// ([`Self::hand_to_next_window`]) hears it from here.
@@ -874,7 +874,7 @@ impl FloatingSurfaceServiceClient {
     /// [`Self::from_stream`], calling `wake` whenever the shell has written
     /// something the app has not read yet: one wake, then nothing until the
     /// app has read ([`Self::pump`] rearms it), so unread bytes never spin
-    /// it. Dropping the client stops the watcher within one poll interval.
+    /// it. Dropping the client stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
     fn from_stream_waking(
         stream: UnixStream,
@@ -988,7 +988,7 @@ impl FloatingSurfaceServiceClient {
         }
         #[cfg(any(test, feature = "local-daemons"))]
         if let Some(rearm) = &self.rearm_wake {
-            let _ = rearm.send(());
+            rearm.rearm();
         }
 
         let mut messages = std::mem::take(&mut self.replay);
@@ -1040,64 +1040,109 @@ impl FloatingSurfaceServiceClient {
     }
 }
 
+/// Tells a readable watcher ([`spawn_readable_watcher`]) that the app has
+/// read what woke it; dropping it stops the watcher at once.
+#[cfg(all(unix, any(test, feature = "local-daemons")))]
+pub(crate) struct Rearm(OwnedFd);
+
+#[cfg(all(unix, any(test, feature = "local-daemons")))]
+impl Rearm {
+    /// The app has read: the next arrival wakes it again.
+    pub(crate) fn rearm(&self) {
+        use std::os::fd::AsRawFd as _;
+        // A full pipe already holds a rearm the watcher has not taken.
+        // SAFETY: one byte from a live buffer to a descriptor this owns.
+        let _ = unsafe { libc::write(self.0.as_raw_fd(), [1_u8].as_ptr().cast(), 1) };
+    }
+}
+
 /// Watch `stream` for what the shell writes, calling `wake` once each time
 /// it has written something the app has not read yet; the app rearms the
-/// watch through the returned sender after reading, and dropping it stops
-/// the watcher within one poll interval. `parked` is called each time the
-/// watcher, having woken the app, starts waiting for that rearm.
+/// watch through the returned [`Rearm`] after reading, and dropping it stops
+/// the watcher. `parked` is called each time the watcher, having woken the
+/// app, starts waiting for that rearm.
+///
+/// The watcher sleeps in one `poll` on the socket and the rearm pipe with no
+/// timeout: an idle app's watcher is never scheduled.
 #[cfg(all(unix, any(test, feature = "local-daemons")))]
 fn spawn_readable_watcher(
     stream: &UnixStream,
     wake: impl Fn() + Send + 'static,
     parked: impl Fn() + Send + 'static,
-) -> std::io::Result<std::sync::mpsc::Sender<()>> {
+) -> std::io::Result<Rearm> {
     use std::os::fd::AsRawFd as _;
-    use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
-    const POLL: std::time::Duration = std::time::Duration::from_millis(500);
     // Its own descriptor for the same socket: closing the client's never
     // leaves the watcher polling a number the process reused.
     let watched = stream.try_clone()?;
-    let (rearm, armed) = std::sync::mpsc::channel::<()>();
+    let mut ends = [0 as libc::c_int; 2];
+    // SAFETY: `ends` has room for the two descriptors pipe2 writes.
+    if unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: pipe2 succeeded, so both are fresh descriptors owned here alone.
+    let (rearms, rearm) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
     tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
+        let mut armed = true;
         loop {
-            let mut readable = libc::pollfd {
-                fd: watched.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let timeout = libc::c_int::try_from(POLL.as_millis()).unwrap_or(500);
-            // SAFETY: one valid pollfd for a descriptor this thread owns.
-            let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
+            let mut fds = [
+                libc::pollfd {
+                    // A negative descriptor is skipped: parked, unread bytes
+                    // must not wake the watcher again and again.
+                    fd: if armed { watched.as_raw_fd() } else { -1 },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: rearms.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: two valid pollfds for descriptors this thread owns.
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
             if ready < 0 {
                 if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                     continue;
                 }
                 return;
             }
-            if ready == 0 {
-                // Idle: stop once the client is gone. A rearm that
-                // arrives while armed means nothing.
-                match armed.try_recv() {
-                    Err(TryRecvError::Disconnected) => return,
-                    Ok(()) | Err(TryRecvError::Empty) => continue,
+            if fds[1].revents != 0 {
+                let mut drained = [0_u8; 64];
+                loop {
+                    // SAFETY: reads into a live buffer of its own length.
+                    let read = unsafe {
+                        libc::read(
+                            rearms.as_raw_fd(),
+                            drained.as_mut_ptr().cast(),
+                            drained.len(),
+                        )
+                    };
+                    match read {
+                        // The client dropped its end: it is gone.
+                        0 => return,
+                        n if n > 0 => armed = true,
+                        _ if std::io::Error::last_os_error().kind()
+                            == std::io::ErrorKind::Interrupted => {}
+                        _ if std::io::Error::last_os_error().kind()
+                            == std::io::ErrorKind::WouldBlock =>
+                        {
+                            break;
+                        }
+                        _ => return,
+                    }
                 }
             }
-            wake();
-            if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                return;
-            }
-            parked();
-            loop {
-                match armed.recv_timeout(POLL) {
-                    Ok(()) => break,
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => return,
+            if armed && fds[0].revents != 0 {
+                wake();
+                if fds[0].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    return;
                 }
+                armed = false;
+                parked();
             }
-            while armed.try_recv().is_ok() {}
         }
     })?;
-    Ok(rearm)
+    Ok(Rearm(rearm))
 }
 
 /// Non-Unix hosts cannot receive Tilo session-service file descriptors. Keep
@@ -2810,6 +2855,47 @@ mod tests {
             FloatingSurfaceHostMessage::Closed { id: "pip".into() }.window_appearance(),
             None
         );
+    }
+
+    /// The watcher is never scheduled while nothing arrives: armed, or
+    /// parked over bytes the app has not read. Dropping the client ends it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_idle_watcher_is_never_scheduled_and_ends_with_its_client() {
+        use std::sync::{Arc, Mutex};
+
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let watcher = Arc::new(Mutex::new(None::<String>));
+        let seen = Arc::clone(&watcher);
+        let mut client = FloatingSurfaceServiceClient::from_stream_watched(
+            app_side,
+            move || {
+                let tid = tilo_test_env::idle::current_thread_id().unwrap();
+                *seen.lock().unwrap() = Some(tid.to_string());
+            },
+            || {},
+        )
+        .unwrap();
+        let mut bytes =
+            serde_json::to_vec(&FloatingSurfaceHostMessage::Closed { id: "pip".into() }).unwrap();
+        bytes.push(b'\n');
+        shell_side.write_all(&bytes).unwrap();
+        let tid = tilo_test_env::wait_for("the watcher wakes the app", || {
+            watcher.lock().unwrap().clone()
+        });
+        // Two windows back to back outlast any poll interval a watcher could
+        // hide in one of them.
+        for _ in 0..2 {
+            tilo_test_env::idle::assert_stays_asleep(&tid, "watcher parked over unread bytes");
+        }
+        assert_eq!(client.pump().unwrap().len(), 1);
+        for _ in 0..2 {
+            tilo_test_env::idle::assert_stays_asleep(&tid, "armed watcher with nothing to read");
+        }
+        drop(client);
+        tilo_test_env::wait_until("the watcher ends with its client", || {
+            !std::path::Path::new(&format!("/proc/self/task/{tid}")).exists()
+        });
     }
 
     #[cfg(unix)]
