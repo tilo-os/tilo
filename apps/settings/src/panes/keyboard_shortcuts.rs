@@ -75,6 +75,7 @@ fn rebindable_ids() -> impl Iterator<Item = &'static str> {
 pub enum ShortcutEffect {
     /// Bind a desktop shortcut to a chord.
     #[effect(idempotent)]
+    #[effect(keywords = "hotkey, keybinding, keyboard shortcut")]
     BindShortcut {
         #[param("The shortcut", choices = rebindable_ids())]
         shortcut: String,

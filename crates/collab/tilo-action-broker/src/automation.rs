@@ -85,23 +85,25 @@ pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
     .collect()
 }
 
+/// The one parameter saving a shortcut takes: the shortcut itself.
+fn shortcut_param() -> ActionParam {
+    let mut param = ActionParam::required(
+        "shortcut",
+        ParamType::Object,
+        "The shortcut, as JSON: id, name, inputs, steps, output and grant",
+    );
+    param.schema = Some(
+        serde_json::json!({
+            "type": "object",
+            "required": ["id", "name", "steps"]
+        })
+        .into(),
+    );
+    param
+}
+
 #[must_use]
 pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
-    let shortcut_param = || {
-        let mut param = ActionParam::required(
-            "shortcut",
-            ParamType::Object,
-            "The shortcut, as JSON: id, name, inputs, steps, output and grant",
-        );
-        param.schema = Some(
-            serde_json::json!({
-                "type": "object",
-                "required": ["id", "name", "steps"]
-            })
-            .into(),
-        );
-        param
-    };
     let saved = ResultSpec::Resource {
         resource_kind: SHORTCUT_RESOURCE_KIND.into(),
     };
@@ -170,6 +172,7 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         resource_kind: LIBRARY_RESOURCE_KIND.into(),
         resource_label: "Shortcuts".into(),
         action_label: label.into(),
+        keywords: Vec::new(),
         description: Some(description.into()),
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
@@ -199,6 +202,7 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         resource_kind: SHORTCUT_RESOURCE_KIND.into(),
         resource_label: shortcut.name.clone(),
         action_label: format!("Run {}", shortcut.name),
+        keywords: Vec::new(),
         description: Some(run_description(shortcut)),
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,

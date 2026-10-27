@@ -9,12 +9,12 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tilo_search::{Document, Hit, Hits, Matching, Page, SearchIndex};
-use ui::search::FieldWeight;
+use tilo_search::{Hit, Hits, Page, SearchIndex};
 
 use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::i18n::{t, t_args};
+
 use crate::shell::search::ActionReceipt;
 use crate::shell::search::action_api::{ActionError, ActionHierarchy, ActionParam, ParamType};
 use crate::shell::search::{
@@ -29,6 +29,10 @@ use tilo_actions::remote::{
     ActionHostError, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow, Confirmation,
     InvocationReceipt, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
 };
+
+#[path = "live_app_actions/index.rs"]
+mod index;
+use index::index_actions;
 
 pub const PROVIDER_ID: &str = "app-actions";
 /// How long the palette waits for a local action's admission. A closed app
@@ -3607,35 +3611,6 @@ impl SearchProvider for LiveAppActionsProvider {
     }
 }
 
-/// Index the fields a local action row ranks by, keyed by position.
-fn index_actions(
-    entries: &[(PublishedSurface, PublishedAction)],
-    include_programmatic: bool,
-) -> SearchIndex {
-    let mut index = SearchIndex::new(Matching {
-        spanning: true,
-        typos: false,
-    });
-    index.replace_all(
-        entries
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, action))| include_programmatic || action.contract.reaches_people())
-            .map(|(at, (surface, action))| {
-                Document::new(at as u64)
-                    .field(action.action_label.as_str(), FieldWeight::TITLE)
-                    .field(action.resource_label.as_str(), FieldWeight::SUBTITLE)
-                    .field(action.action.as_str(), FieldWeight::IDENTITY)
-                    .field(action.resource.as_str(), FieldWeight::IDENTITY)
-                    .field(surface.app_id.as_str(), FieldWeight::METADATA)
-            }),
-    );
-    if let Err(error) = index.commit() {
-        tracing::error!(%error, "could not index live app actions");
-    }
-    index
-}
-
 #[cfg(test)]
 pub(crate) fn fixture_with_directory_page(
     broker: AppActionBroker,
@@ -4042,6 +4017,7 @@ mod tests {
             resource_kind: "fixture".into(),
             resource_label: "Fixture".into(),
             action_label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::View,
@@ -4283,6 +4259,7 @@ mod tests {
             resource_kind: "fixture".into(),
             resource_label: "Fixture".into(),
             action_label: label.into(),
+            keywords: Vec::new(),
             description: None,
             operation_kind: tilo_actions::OperationKind::View,
             params: Vec::new(),
@@ -6504,3 +6481,7 @@ mod row_order_tests;
 #[cfg(test)]
 #[path = "live_app_actions/catalogue_paging_tests.rs"]
 mod catalogue_paging_tests;
+
+#[cfg(test)]
+#[path = "live_app_actions/keyword_tests.rs"]
+mod keyword_tests;

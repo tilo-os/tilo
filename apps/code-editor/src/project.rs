@@ -142,7 +142,7 @@ impl Project {
     ///
     /// A new file named `name` in the folder `folder` (the project's root
     /// when none), holding `text`.
-    #[action]
+    #[action(keywords = "create file, add file, touch")]
     pub fn new_file(
         &mut self,
         cx: &mut ActionCx,
@@ -165,7 +165,7 @@ impl Project {
     ///
     /// A new folder named `name` in the folder `folder` (the project's root
     /// when none).
-    #[action]
+    #[action(keywords = "mkdir, make directory, create folder")]
     pub fn new_folder(
         &mut self,
         cx: &mut ActionCx,
@@ -241,7 +241,7 @@ impl Project {
     /// Replace the file's whole text with `text`, written as the smallest
     /// change to the text it has, so a collaborator's typing elsewhere in
     /// the file stays.
-    #[action(item = files)]
+    #[action(keywords = "find and replace, search and replace, substitute", item = files)]
     pub fn replace_text(
         &mut self,
         file: &Id,
@@ -310,7 +310,7 @@ impl Project {
     /// Delete
     ///
     /// Delete the file and its text, or the folder once it is empty.
-    #[action(item = files, destructive)]
+    #[action(keywords = "remove file, delete file", item = files, destructive)]
     pub fn delete(&mut self, entry: &Id) -> Result<(), Refusal> {
         self.files.get(entry).ok_or("no such file")?;
         if self
@@ -432,7 +432,7 @@ impl Project {
     ///
     /// Run a command line in the embedded terminal's session, and answer
     /// with the run once it ends.
-    #[action(id = "run")]
+    #[action(keywords = "run command, execute, build", id = "run")]
     pub fn run_in_terminal(
         &mut self,
         cx: &mut ActionCx,

@@ -91,6 +91,7 @@ impl CapnpBrokerState {
             resource_kind: own_device::RESOURCE.into(),
             resource_label: "Device".into(),
             action_label: "Invoke".into(),
+            keywords: Vec::new(),
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::Effect,

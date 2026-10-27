@@ -55,7 +55,7 @@ pub struct Browser {
 )]
 impl Browser {
     /// Bookmark a page.
-    #[action]
+    #[action(keywords = "bookmark, favourite, favorite, save page")]
     pub fn add_bookmark(
         &mut self,
         cx: &mut ActionCx,
@@ -93,7 +93,7 @@ impl Browser {
     }
 
     /// Turn tracker protection on or off for a site.
-    #[action]
+    #[action(keywords = "ad blocker, tracking protection, block trackers, privacy")]
     pub fn set_site_protection(
         &mut self,
         #[param("The site's address or exact origin, such as https://example.org")] origin: String,

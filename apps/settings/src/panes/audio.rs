@@ -133,15 +133,18 @@ fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, b
 pub enum AudioEffect {
     /// Set the output volume, from 0 to 1.
     #[effect(job, idempotent)]
+    #[effect(keywords = "volume, loudness, sound level")]
     SetOutputVolume { volume: f64 },
     /// Mute or unmute the output.
     #[effect(job, idempotent)]
+    #[effect(keywords = "mute, silence, sound off")]
     SetOutputMuted { muted: bool },
     /// Set the microphone level, from 0 to 1.
     #[effect(job, idempotent)]
     SetInputVolume { volume: f64 },
     /// Play sound through another output device.
     #[effect(job, idempotent)]
+    #[effect(keywords = "speakers, headphones, audio output, sound output")]
     SelectOutput {
         #[param("The output device's name")]
         device: String,
@@ -155,6 +158,7 @@ pub enum AudioEffect {
     },
     /// Record from another input device.
     #[effect(job, idempotent)]
+    #[effect(keywords = "microphone, mic, audio input")]
     SelectInput {
         #[param("The input device's name")]
         device: String,

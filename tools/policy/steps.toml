@@ -158,6 +158,13 @@ inputs = ["**/locales/*.ftl", "apps/**/*.rs", "crates/**/*.rs", "tools/policy/co
 pre_push = true
 
 [[step]]
+name = "action-keywords"
+label = "The other words actions declare for search are plain words"
+run = "python3 tools/policy/check_action_keywords.py"
+inputs = ["**/locales/*.ftl", "apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs"]
+pre_push = true
+
+[[step]]
 name = "primitives"
 label = "Surfaces are built from the design system primitives"
 run = "python3 tools/policy/check_primitives.py"

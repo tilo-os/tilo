@@ -806,6 +806,7 @@ fn membership_action(
         resource_kind: "workspace-membership".into(),
         resource_label: label.into(),
         action_label: action_label.into(),
+        keywords: Vec::new(),
         description: None,
         operation_kind: tilo_actions::OperationKind::Effect,
         params,

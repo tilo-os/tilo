@@ -83,6 +83,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
             resource_kind: "files.entry".into(),
             resource_label: "Synthetic report".into(),
             action_label: "Refresh".into(),
+            keywords: Vec::new(),
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),

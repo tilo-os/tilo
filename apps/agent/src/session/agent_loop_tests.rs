@@ -413,6 +413,7 @@ fn descriptor(
         resource_kind: "word-processor.document".into(),
         resource_label: "Brief".into(),
         action_label: label.into(),
+        keywords: Vec::new(),
         description: None,
         operation_kind: kind,
         params,

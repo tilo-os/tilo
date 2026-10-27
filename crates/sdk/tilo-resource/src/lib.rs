@@ -310,6 +310,8 @@ pub mod __private {
     pub struct VerbDecl {
         pub id: &'static str,
         pub label: &'static str,
+        /// The other words people use for it (`keywords = "…"`).
+        pub keywords: &'static [&'static str],
         pub description: &'static str,
         pub kind: ActionKind,
         /// Whether one invocation's kind is decided by its arguments
@@ -460,6 +462,11 @@ pub mod __private {
             build,
         );
         decl.kind = verb.kind;
+        decl.keywords = verb
+            .keywords
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect();
         decl.by_arguments = verb.by_arguments;
         decl.writes = crate::footprint::declared(verb.shape, verb.item_field, verb.writes);
         // What the description says beyond its first line, the label.

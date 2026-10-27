@@ -21,6 +21,7 @@ use ui::tilo_resource::Effect;
 pub enum FilesEffect {
     /// Refresh folder.
     #[effect(kind = "read", idempotent)]
+    #[effect(keywords = "reload, update folder")]
     Refresh,
     /// Select entries.
     ///
@@ -102,6 +103,7 @@ pub enum FilesEffect {
     /// Shows the folder at this absolute path; answers with its resource and
     /// entries.
     #[effect(view, returns)]
+    #[effect(keywords = "open path, go to path, location, address bar")]
     GoTo {
         #[param("Absolute path of the folder to show")]
         path: String,
@@ -111,6 +113,7 @@ pub enum FilesEffect {
     /// Shows this workspace's private Trash and the user's already granted
     /// home Trash. Opening it grants no filesystem access.
     #[effect(kind = "read", view, returns)]
+    #[effect(keywords = "recycle bin, bin, deleted files, wastebasket")]
     OpenTrash,
     /// Open folder.
     ///
@@ -123,6 +126,7 @@ pub enum FilesEffect {
     },
     /// Parent folder.
     #[effect(view)]
+    #[effect(keywords = "go up, parent directory, up one level")]
     Up,
     /// Back.
     #[effect(view)]
@@ -132,15 +136,19 @@ pub enum FilesEffect {
     Forward,
     /// Show recent files.
     #[effect(view)]
+    #[effect(keywords = "recent files, recently opened, last opened")]
     Recent,
     /// Toggle hidden files.
     #[effect(view)]
+    #[effect(keywords = "show hidden files, hidden files, dotfiles")]
     ToggleHidden,
     /// Use list view.
     #[effect(view)]
+    #[effect(keywords = "details view, list view")]
     List,
     /// Use grid view.
     #[effect(view)]
+    #[effect(keywords = "icon view, thumbnails")]
     Grid,
     /// Sort by name.
     #[effect(view)]
@@ -171,11 +179,13 @@ pub enum FilesEffect {
     KeyboardShortcuts,
     /// Open terminal here.
     #[effect(kind = "read")]
+    #[effect(keywords = "command line, shell, console")]
     OpenTerminal,
     /// Empty Trash.
     ///
     /// Deletes everything in Trash for good, from the Trash folder.
     #[effect(destructive)]
+    #[effect(keywords = "empty bin, empty recycle bin, clear trash")]
     EmptyTrash,
     /// Open.
     #[effect(view, row)]
@@ -206,6 +216,7 @@ pub enum FilesEffect {
     /// New file from template.
     ///
     /// Creates a file from a template in the folder shown.
+    #[effect(keywords = "new file, create file, empty file")]
     NewFromTemplate {
         #[param("The template's row id (a files.template child)")]
         template: String,
@@ -294,12 +305,14 @@ pub enum FilesEffect {
     },
     /// Delete permanently.
     #[effect(row, destructive)]
+    #[effect(keywords = "delete forever, remove permanently, shred")]
     DeletePermanently {
         #[param("The Trash entry's row id")]
         entry: String,
     },
     /// Properties.
     #[effect(view, row)]
+    #[effect(keywords = "get info, details, file info, file size")]
     Properties {
         #[param("The entry's row id")]
         entry: String,
@@ -374,6 +387,7 @@ pub enum FilesEffect {
     },
     /// Create one-time share link.
     #[effect(row, job)]
+    #[effect(keywords = "share, send link, share file")]
     ShareLink {
         #[param("The entry's row id")]
         entry: String,

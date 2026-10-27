@@ -172,6 +172,7 @@ pub enum NetworkEffect {
     SetAirplaneMode { on: bool },
     /// Share this device's connection as a Wi-Fi hotspot, or stop.
     #[effect(job, idempotent, label = "Hotspot")]
+    #[effect(keywords = "tethering, share internet, personal hotspot")]
     SetHotspot { on: bool },
     /// Connect to a Wi-Fi network. Without a password a secure network uses
     /// one the person's devices share, else asks for it with the password
@@ -343,6 +344,7 @@ pub enum NetworkEffect {
     },
     /// Forget a saved network and its password.
     #[effect(job, row, destructive, label = "Forget network")]
+    #[effect(keywords = "remove network, forget wifi, delete network")]
     ForgetNetwork {
         #[param("The saved network's id")]
         profile: String,

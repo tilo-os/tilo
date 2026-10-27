@@ -136,6 +136,7 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
         resource_kind: wire::RESOURCE.into(),
         resource_label: t("shell-activity-title"),
         action_label: t(label),
+        keywords: Vec::new(),
         description: None,
         locus: ExecutionLocus::default(),
         kind,

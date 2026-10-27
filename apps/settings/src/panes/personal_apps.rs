@@ -75,6 +75,7 @@ impl DefaultApps {
 pub enum DefaultAppsEffect {
     /// Open a kind of file or link with an installed app.
     #[effect(idempotent)]
+    #[effect(keywords = "default app, open with, file association")]
     SetDefaultApp {
         #[param("The kind of file or link: `ext:pdf`, `mime:text/html`, `scheme:https`")]
         kind: String,

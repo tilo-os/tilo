@@ -164,6 +164,9 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
 struct ActionOptions {
     id: Option<String>,
     label: Option<String>,
+    /// `keywords = "mkdir, make directory"`: the other words people use
+    /// for the action.
+    keywords: Vec<String>,
     field: Option<String>,
     destructive: bool,
     irreversible: bool,
@@ -195,6 +198,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
     let mut options = ActionOptions {
         id: None,
         label: None,
+        keywords: Vec::new(),
         field: None,
         destructive: false,
         irreversible: false,
@@ -219,6 +223,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.id = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("label") {
             options.label = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("keywords") {
+            options.keywords = crate::keyword_list(&meta.value()?.parse::<syn::LitStr>()?)?;
         } else if meta.path.is_ident("field") {
             options.field = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("moderation") {
@@ -268,7 +274,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.audience = Some(crate::audience_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `keywords`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -1404,6 +1410,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             ),
         };
         let description = &verb.description;
+        let keywords = &verb.options.keywords;
         let field = verb.options.field.as_deref().map_or_else(
             || quote!(::core::option::Option::None),
             |field| {
@@ -1417,6 +1424,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #krate::__private::VerbDecl {
                 id: #id,
                 label: #label_text,
+                keywords: &[#(#keywords),*],
                 description: #description,
                 kind: #krate::ActionKind::#action_kind,
                 by_arguments: #by_arguments,
