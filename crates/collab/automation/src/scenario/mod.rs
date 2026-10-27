@@ -126,7 +126,8 @@ impl Scenario {
                 | StepKind::ForEach { .. }
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
-                | StepKind::Ai { .. } => {
+                | StepKind::Ai { .. }
+                | StepKind::Task { .. } => {
                     return Err(UnrunnableStep {
                         path: path.as_str().to_owned(),
                         step: step.id.clone(),
@@ -505,6 +506,7 @@ impl StepKind {
             Self::SetVar { .. } => "set_var",
             Self::Ask { .. } => "ask",
             Self::Ai { .. } => "ai",
+            Self::Task { .. } => "task",
         }
     }
 }
@@ -536,7 +538,10 @@ fn collect(steps: &[Step], path: &StepPath, out: &mut Vec<ScenarioStep>) {
                 collect(otherwise, &here.else_branch(), out);
             }
             StepKind::ForEach { body, .. } => collect(body, &here.each(None), out),
-            StepKind::SetVar { .. } | StepKind::Ask { .. } | StepKind::Ai { .. } => {}
+            StepKind::SetVar { .. }
+            | StepKind::Ask { .. }
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. } => {}
         }
     }
 }

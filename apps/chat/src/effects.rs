@@ -621,6 +621,17 @@ impl ChatApp {
     }
 
     pub(crate) fn reveal_message(&mut self, message: &str) -> Result<(), String> {
+        // A message no held part has may be in an earlier one: revealed
+        // once the parts before are opened and one has it.
+        if !self.search_messages.iter().any(|item| item.id == message) && self.seek_earlier(message)
+        {
+            return Ok(());
+        }
+        self.reveal_held_message(message)
+    }
+
+    /// Reveal `message`, which a held part has.
+    pub(crate) fn reveal_held_message(&mut self, message: &str) -> Result<(), String> {
         let found = self
             .search_messages
             .iter()

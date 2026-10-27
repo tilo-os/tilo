@@ -760,6 +760,31 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(took_in)
     }
 
+    /// Deliver what this window holds of `id`, a record the app keeps
+    /// beside its own (a part of a chain), to `other`, which holds it too,
+    /// as the room's record sync sends a device a record it opened: `other`
+    /// takes it in and draws its next frame. Whether `other` changed.
+    ///
+    /// # Errors
+    /// Returns why either window does not hold the record, or why `other`
+    /// refused it.
+    pub fn deliver_record_to(&mut self, other: &mut Self, id: &RecordId) -> Result<bool, String> {
+        let checkout = other
+            .records
+            .open_records()
+            .into_iter()
+            .find(|checkout| checkout.id == *id)
+            .ok_or_else(|| format!("the other window does not hold {id}"))?;
+        let mut frontier = ui_core::DocumentFrontier::default();
+        let (changes, _) = self
+            .records
+            .replication_delta(id, &mut frontier)
+            .map_err(|error| error.to_string())?;
+        let took_in = other.records.merge_peer_changes(&checkout, changes)?;
+        other.harness().relayout();
+        Ok(took_in)
+    }
+
     /// The room's default records of the app's windows kept on this
     /// profile, as [`SeedCx::window_records`](super::SeedCx::window_records)
     /// reads them.

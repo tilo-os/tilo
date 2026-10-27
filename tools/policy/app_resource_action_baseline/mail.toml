@@ -1,0 +1,3 @@
+[ratchets.closure_control]
+"apps/mail/src/app.rs" = 1
+"apps/mail/src/sidebar.rs" = 2

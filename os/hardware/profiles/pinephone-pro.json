@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "id": "pinephone-pro",
+  "architecture": "aarch64",
+  "devicetree": "rockchip/rk3399-pinephone-pro.dtb",
+  "system_firmware": [],
+  "firmware": {},
+  "firmware_exclude": [
+    "nvidia-gpu-firmware",
+    "amd-gpu-firmware",
+    "intel-gpu-firmware",
+    "intel-audio-firmware",
+    "intel-npu-firmware",
+    "amd-ucode-firmware"
+  ],
+  "always_on": false,
+  "kernel_args": [
+    "console=ttyS2,1500000n8",
+    "nmi_watchdog=panic"
+  ],
+  "boot_modules": [
+    "dw_mmc_rockchip",
+    "mmc_block",
+    "mmc_core",
+    "pwrseq_simple",
+    "pinctrl_rockchip",
+    "gpio_rockchip",
+    "io-domain",
+    "fan53555",
+    "rk808-regulator",
+    "clk-rk808",
+    "fixed",
+    "i2c_hid_of",
+    "hid_multitouch",
+    "usbhid",
+    "rockchipdrm",
+    "dw_mipi_dsi",
+    "analogix_dp",
+    "dw_hdmi",
+    "brcmutil",
+    "brcmfmac",
+    "cfg80211",
+    "bluetooth",
+    "btrtl",
+    "hci_uart"
+  ],
+  "crash_record": {
+    "storage": "ramoops",
+    "watchdog": "none",
+    "lockup": "buddy"
+  },
+  "internal_keyboards": [],
+  "hardening_defaults": [
+    {
+      "action": "camera",
+      "driver": "CONFIG_MEDIA_SUPPORT"
+    },
+    {
+      "action": "microphone",
+      "driver": "CONFIG_SND"
+    }
+  ]
+}
