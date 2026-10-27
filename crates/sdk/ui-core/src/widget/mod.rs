@@ -3218,7 +3218,7 @@ pub use board::{Board, BoardDrop};
 pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
-pub use scrollable::{ScrollAxis, Scrollable};
+pub use scrollable::{ScrollAxis, ScrollProps, Scrollable};
 mod scroll_region;
 pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
@@ -3244,7 +3244,8 @@ pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
 pub use context_menu::{
-    ContextMenu, MenuButton, MenuItem, note_shift, shift_held, shift_skips_confirmation,
+    ContextMenu, MenuButton, MenuButtonProps, MenuItem, MenuItemProps, note_shift, shift_held,
+    shift_skips_confirmation,
 };
 mod row_menu;
 pub use primitives::{
@@ -3432,8 +3433,8 @@ pub use tree_view::{
 };
 pub mod virtual_list;
 pub use virtual_list::{
-    DescribedList, DuplicateListKey, ListEdges, ListModel, RowSelection, VecListModel, VirtualList,
-    VirtualListProps,
+    DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
+    RowSelection, VecListModel, VirtualList, VirtualListProps,
 };
 mod activation;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
@@ -3475,7 +3476,7 @@ pub use property_list::{
 pub mod list_row;
 pub use list_row::{
     ControlRow, ListRow, ListRowFace, ListRowProps, RowAction, RowLeading, RowLeadingShape,
-    RowShape, RowStatus, RowValue, SwipeAction, badge_column_width,
+    RowShape, RowStatus, RowValue, SwipeAction, SwipeActionProps, badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{
@@ -3490,6 +3491,8 @@ pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
+pub mod docked;
+pub use docked::{Docked, DockedProps};
 pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout, EmptyStateProps};
 pub mod find_bar;
