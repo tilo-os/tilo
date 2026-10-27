@@ -34,21 +34,37 @@ pub fn hosted() -> Option<&'static PackageMeta> {
     crate::installed_bundle().map(|bundle| &bundle.meta)
 }
 
-/// Load what a window of the hosted package runs into `host`: the installed package, with the
-/// record schemas of the packages it uses; in the window's tests, every built-in package.
-pub fn load(host: &Host) {
+/// Load what a window of the hosted package runs into `host`: the installed package, or the
+/// latest later build of it a development session handed over ([`crate::updates`]), with the
+/// record schemas of the packages it uses; in the window's tests, every built-in package. The
+/// later build it loaded, 0 for the installed package.
+pub fn load(host: &Host) -> u64 {
     #[cfg(test)]
     if builtin::chosen().is_some() {
         builtin::load(host);
-        return;
+        if let Some(update) = crate::updates::latest()
+            && host.load_bundle(&update.bundle).is_ok()
+        {
+            return update.generation;
+        }
+        return 0;
+    }
+    if let Some(update) = crate::updates::latest() {
+        match host.load_bundle(&update.bundle) {
+            Ok(_) => return update.generation,
+            Err(error) => {
+                tracing::error!(app = update.bundle.meta.app, %error, "the later build did not load");
+            }
+        }
     }
     let Some(bundle) = crate::installed_bundle() else {
         tracing::error!("no package is installed in this runtime");
-        return;
+        return 0;
     };
     if let Err(error) = host.load_bundle(bundle) {
         tracing::error!(app = bundle.meta.app, %error, "the installed package did not load");
     }
+    0
 }
 
 /// The scenario names of `meta`, kept for the process (the framework lists them statically).

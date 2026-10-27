@@ -27,6 +27,7 @@ pub const DEV_OVERRIDE_VARS: &[&str] = &[
     crate::hardening::POLICY_PATH_ENV,
     NET_GATE_ENV,
     DBUS_PROXY_BIN_ENV,
+    crate::live_module::LIVE_MODULES_ENV,
 ];
 
 #[cfg(test)]
