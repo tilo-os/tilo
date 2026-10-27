@@ -56,7 +56,7 @@ impl Fixture {
     /// pinned material, a signature that no longer verifies.
     fn install_device_cert_label(&self, label: &str) {
         let pinned = unsafe { &*Arc::as_ptr(&self.other) };
-        let custody = pinned.certificate() as *const PinnedCert;
+        let custody = std::ptr::from_ref::<PinnedCert>(pinned.certificate());
         // SAFETY: the fixture holds the only admissions, and this runs
         // before any of them is checked.
         unsafe { (*(custody.cast_mut())).device_label = label.into() };

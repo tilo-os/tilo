@@ -14,7 +14,11 @@ pub struct Entry {
     pub done: bool,
 }
 
-#[resource(kind = "test.shopping", label = "Shopping list")]
+#[resource(
+    kind = "test.shopping",
+    label = "Shopping list",
+    app = "so.tilo.test-shopping"
+)]
 impl Shopping {
     /// Rename the list.
     #[action]

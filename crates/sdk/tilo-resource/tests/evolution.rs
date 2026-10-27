@@ -241,7 +241,8 @@ fn a_replica_acts_through_the_door() {
     contact.apply_confirmed(Contact::INVITE.invoke()).unwrap();
     assert_eq!(contact.state().unwrap().outbox.len(), 1);
     // An action the resource does not publish is unknown.
-    let unknown: tilo_resource::ActionRef<Contact, ()> = tilo_resource::ActionRef::new("nope", &[]);
+    let unknown: tilo_resource::ActionRef<Contact, ()> =
+        tilo_resource::ActionRef::new("nope", &[], tilo_resource::ResourceKind::of::<Contact>());
     assert!(matches!(
         contact.apply(unknown.invoke()),
         Err(tilo_actions::DoorError::Unknown(_))

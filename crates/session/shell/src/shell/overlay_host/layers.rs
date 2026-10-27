@@ -134,14 +134,10 @@ impl LayerId {
                 Material::SeeThrough,
                 false,
             ),
-            Self::EmojiPicker => Surface::shell(
-                Role::Overlay,
-                Anchor::Center,
-                Modality::WindowModal,
-                Material::Floating,
-                false,
-            ),
-            Self::DisplayLayouts | Self::WorkspaceSettings | Self::MemberSheet => Surface::shell(
+            Self::DisplayLayouts
+            | Self::WorkspaceSettings
+            | Self::MemberSheet
+            | Self::ShortcutHelp => Surface::shell(
                 Role::Dialog,
                 Anchor::Center,
                 Modality::SystemModal,
@@ -162,7 +158,7 @@ impl LayerId {
                 Material::Floating,
                 false,
             ),
-            Self::CommandPalette | Self::Overview => Surface::shell(
+            Self::EmojiPicker | Self::CommandPalette | Self::Overview => Surface::shell(
                 Role::Overlay,
                 Anchor::Center,
                 Modality::WindowModal,
@@ -173,13 +169,6 @@ impl LayerId {
                 Role::Dialog,
                 Anchor::TopTrailing(0.0),
                 Modality::Passive,
-                Material::Floating,
-                false,
-            ),
-            Self::ShortcutHelp => Surface::shell(
-                Role::Dialog,
-                Anchor::Center,
-                Modality::SystemModal,
                 Material::Floating,
                 false,
             ),
@@ -671,7 +660,7 @@ impl OverlayStack {
     /// Whether overlay `id` is on screen, by the same answer assistive
     /// technology gets ([`ShellLayer::is_shown`]).
     pub(crate) fn is_open(&self, id: LayerId) -> bool {
-        self.layer(id).map_or(false, ShellLayer::is_shown)
+        self.layer(id).is_some_and(ShellLayer::is_shown)
     }
 
     /// Every open surface, topmost first in [`LayerId`] order.
@@ -923,12 +912,12 @@ mod tests {
             "a passive surface shares the desktop"
         );
         assert!(
-            !Surface {
+            Surface {
                 modality: Modality::SystemModal,
                 ..bridge
             }
             .scrim(geometry())
-            .is_none()
+            .is_some()
         );
     }
 

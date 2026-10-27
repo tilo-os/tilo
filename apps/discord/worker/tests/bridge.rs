@@ -13,6 +13,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use base64::Engine as _;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -792,7 +793,6 @@ async fn a_linked_account_lends_its_picture_and_handle() {
         link.photo.clone().zip(link.photo_avatar.clone())
     })
     .await;
-    use base64::Engine as _;
     assert_eq!(
         photo,
         (
