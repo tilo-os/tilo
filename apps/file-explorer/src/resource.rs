@@ -60,7 +60,7 @@ impl FileExplorer {
     /// ([`crate::search_provider::PlacesSearch`]), and the folder's entries
     /// as the window shows them; a second row for each place would only
     /// repeat them.
-    fn search(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+    fn search(_: &Self) -> Vec<ui::tilo_resource::SearchEntry> {
         Vec::new()
     }
 }
