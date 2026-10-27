@@ -204,8 +204,8 @@ pub enum UserEvent {
     #[cfg(all(feature = "native", target_os = "android"))]
     PlatformTextInput,
     /// The system bars, cutout or soft keyboard now cover a different part
-    /// of the window (`launch::android::safe_area_insets`).
-    #[cfg(all(feature = "native", target_os = "android"))]
+    /// of the window. Android reports it (`launch::android::safe_area_insets`).
+    #[cfg(feature = "native")]
     SafeAreaChanged,
     /// The shell opens one more window of the app in this process
     /// ([`crate::window_door`]).
