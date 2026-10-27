@@ -51,6 +51,8 @@ def open_two(ctx, res):
     expect(g1 in order and g2 in order, f"both windows in the active strip (strip holds {order})")
     expect(core.active_group_id(st) == g2, f"newest window {g2} focused, focused is {core.active_group_id(st)}")
     ctx.facts["two_windows"] = (g1, g2)
+    # W02-W07 work on these two: the harness leaves them open between checks.
+    ctx.facts[core.KEPT_WINDOWS] = {g1, g2}
     ctx.shot("W01-two-windows")
 
 
