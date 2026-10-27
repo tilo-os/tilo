@@ -345,6 +345,8 @@ async fn catch_up_first_connection(
             | Inbound::Live { .. }
             | Inbound::Member { .. }
             | Inbound::RecordOpened { .. }
+            | Inbound::Committed { .. }
+            | Inbound::CommitRefused { .. }
             | Inbound::Voice(_)) => {
                 panic!("unexpected inbound {other:?}")
             }
