@@ -11,6 +11,14 @@ use super::lists::{Entry, Pages};
 /// A list of entries in order: read from the index page by page, or held.
 pub enum Base {
     Pages(Pages<Snapshot>),
+    /// The entries `start..end` of a list read page by page: a run of a column's values, last
+    /// first when `reversed`.
+    Slice {
+        pages: Pages<Snapshot>,
+        start: usize,
+        end: usize,
+        reversed: bool,
+    },
     Held(Vec<(String, Rc<str>)>),
 }
 
@@ -22,6 +30,7 @@ impl Base {
     pub fn len(&self) -> usize {
         match self {
             Self::Pages(pages) => pages.len(),
+            Self::Slice { start, end, .. } => end.saturating_sub(*start),
             Self::Held(held) => held.len(),
         }
     }
@@ -29,14 +38,47 @@ impl Base {
     pub fn get(&self, index: usize) -> Option<Rc<str>> {
         match self {
             Self::Pages(pages) => pages.get(index),
+            Self::Slice {
+                pages,
+                start,
+                end,
+                reversed,
+            } => {
+                if index >= end.saturating_sub(*start) {
+                    return None;
+                }
+                let at = if *reversed {
+                    end.checked_sub(1)?.checked_sub(index)?
+                } else {
+                    start.checked_add(index)?
+                };
+                pages.get(at)
+            }
             Self::Held(held) => held.get(index).map(|(_, id)| Rc::clone(id)),
         }
     }
 
-    /// Where `(key, id)` is or would go, and whether it is there.
+    /// Where `(key, id)` is or would go, and whether it is there. A reversed slice is never
+    /// merged with entries, so it answers nothing.
     pub fn rank(&self, key: &str, id: &str) -> (usize, bool) {
         match self {
             Self::Pages(pages) => pages.rank(key, id),
+            Self::Slice {
+                pages,
+                start,
+                end,
+                reversed,
+            } => {
+                if *reversed {
+                    return (0, false);
+                }
+                let (at, found) = pages.rank(key, id);
+                let inside = at >= *start && at < *end;
+                (
+                    at.clamp(*start, *end).saturating_sub(*start),
+                    found && inside,
+                )
+            }
             Self::Held(held) => {
                 let at = held.partition_point(|(k, i)| (k.as_str(), &**i) < (key, id));
                 let found = held

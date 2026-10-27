@@ -104,6 +104,50 @@ impl Overlay {
         out
     }
 
+    /// The items of the collection `field` of `resource` the writes may have moved in or out
+    /// of a query that reads the item fields `reads` holds of: added, removed or moved, made or
+    /// removed whole, or one of those fields written. An item whose other fields alone were
+    /// written stays where it was.
+    pub fn touched_reading(
+        &self,
+        resource: &str,
+        field: &str,
+        list: &str,
+        reads: &dyn Fn(&str) -> bool,
+    ) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        match self.lists.get(list) {
+            Some(ListState::Delta { added, removed }) => {
+                out.extend(added.iter().chain(removed).map(|(_, id)| id.clone()));
+            }
+            Some(ListState::Whole(entries)) => {
+                out.extend(entries.iter().map(|(_, id)| id.clone()));
+            }
+            None => {}
+        }
+        let prefix = format!("{resource}/{field}:");
+        // The item itself, not a resource inside it.
+        let item = |path: &str| -> Option<String> {
+            let rest = path.strip_prefix(&prefix)?;
+            (!rest.contains('/')).then(|| rest.to_owned())
+        };
+        out.extend(
+            self.fields
+                .keys()
+                .filter(|(_, written)| reads(written))
+                .filter_map(|(path, _)| item(path)),
+        );
+        out.extend(self.texts.keys().filter_map(|(path, _)| item(path)));
+        out.extend(self.removed.iter().filter_map(|path| item(path)));
+        // A collection inside an item that a query counts.
+        out.extend(self.lists.keys().filter_map(|name| {
+            let rest = name.strip_prefix("m\u{1}")?;
+            let (path, inner) = rest.split_once('\u{1}')?;
+            reads(inner).then(|| item(path)).flatten()
+        }));
+        out
+    }
+
     fn drop_within(&mut self, resource: &str) {
         let inside = format!("{resource}/");
         let within = |path: &str| path == resource || path.starts_with(&inside);
@@ -261,6 +305,14 @@ impl Sink for OverlaySink<'_> {
             }
             None => base()?,
         })
+    }
+
+    fn len(&mut self, list: &str) -> Result<usize, IndexError> {
+        Ok(self.entries(list)?.len())
+    }
+
+    fn count(&mut self, _list: &str, _value: &str, _delta: i64) -> Result<(), IndexError> {
+        Ok(())
     }
 
     fn drop_lists(&mut self, _prefix: &str) -> Result<(), IndexError> {

@@ -11,15 +11,15 @@ use tilolang_runtime::store::{
     FieldKey, FieldRead, FieldValue, Listing, Lit, Pred, Splice, StoreError,
 };
 
-use super::derive::{column_prefix, columned, item_of, member_list, value_of_column};
-use super::lists::{Entry, read_dir, read_page};
+use super::derive::{item_of, member_list};
+use super::lists::Entry;
 use super::merged::{Base, Merged};
 use super::overlay::{ListState, Overlay};
 use super::{IndexError, KEY, Snapshot, TYPE};
 use crate::reads::{default_value, may_hold_text};
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
 
-fn index_error(error: IndexError) -> StoreError {
+pub(super) fn index_error(error: IndexError) -> StoreError {
     StoreError::Backend(match error {
         IndexError::Corrupt => error.to_string(),
         IndexError::Io(message) => format!("the index cannot be read or written: {message}"),
@@ -114,123 +114,25 @@ impl View<'_> {
             .unwrap_or_else(|| default_value(item_field)))
     }
 
-    /// Whether `pred` holds of the item at `path`.
-    fn holds(&self, path: &str, item_schema: &TypeSchema, pred: &Pred) -> Result<bool, StoreError> {
+    /// Whether `pred` holds of the resource at `path` (of `schema`): its fields read from the
+    /// index, a collection as how many items it holds.
+    pub(super) fn holds(
+        &self,
+        path: &str,
+        schema: &TypeSchema,
+        pred: &Pred,
+    ) -> Result<bool, StoreError> {
         pred.eval(&mut |read: &FieldRead| -> Result<Lit, StoreError> {
-            let value = match item_schema.field(&read.spec.id) {
+            let value = match schema.field(&read.spec.id) {
+                Some(spec) if spec.kind == MergeKind::Collection => {
+                    let len = self.list(path, &spec.id).map_err(index_error)?.len();
+                    FieldValue::Counter(i64::try_from(len).unwrap_or(i64::MAX))
+                }
                 Some(spec) => self.item_value(path, spec).map_err(index_error)?,
                 None => FieldValue::Absent,
             };
             read.lit(value)
         })
-    }
-
-    /// The items of the collection `field` (of items of `item_schema`) of `resource` that
-    /// `pred` holds of, in order.
-    ///
-    /// A filter of one field the index keeps a column of is answered from the column's lists:
-    /// those of the values it holds of, read page by page when one does, else merged. Any other
-    /// filter is evaluated on every item, its fields read from the index.
-    ///
-    /// # Errors
-    /// The index cannot be read, or `pred` cannot compare what a field holds.
-    pub fn filtered(
-        &self,
-        (resource, field): (&str, &str),
-        item_schema: &TypeSchema,
-        pred: &Pred,
-        evaluated: &std::cell::Cell<u64>,
-    ) -> Result<Listing, StoreError> {
-        let read: BTreeSet<&str> = pred.fields().iter().map(|r| r.spec.id.as_str()).collect();
-        if read.is_empty() {
-            let holds = pred.eval(&mut |_: &FieldRead| -> Result<Lit, StoreError> {
-                Err(StoreError::Invalid("a field".into()))
-            })?;
-            return if holds {
-                self.listing(resource, field).map_err(index_error)
-            } else {
-                Ok(Listing::default())
-            };
-        }
-        if let [only] = read.iter().copied().collect::<Vec<_>>().as_slice()
-            && let Some(spec) = item_schema.field(only).filter(|spec| columned(spec))
-            && let Some(listing) = self.by_column((resource, field), item_schema, spec, pred)?
-        {
-            return Ok(listing);
-        }
-        let all = self.list(resource, field).map_err(index_error)?;
-        let mut items = Vec::new();
-        for index in 0..all.len() {
-            let Some(id) = all.get(index) else {
-                break;
-            };
-            evaluated.set(evaluated.get().saturating_add(1));
-            if self.holds(&child(resource, field, &id), item_schema, pred)? {
-                items.push(id);
-            }
-        }
-        Ok(Listing::from_items(items))
-    }
-
-    /// [`Self::filtered`] from the lists of the column of `spec`; `None` when a value the
-    /// column holds is one a filter does not compare.
-    fn by_column(
-        &self,
-        (resource, field): (&str, &str),
-        item_schema: &TypeSchema,
-        spec: &FieldSchema,
-        pred: &Pred,
-    ) -> Result<Option<Listing>, StoreError> {
-        let prefix = column_prefix(resource, field, &spec.id);
-        let lists = self.snapshot.lists_from(&prefix).map_err(index_error)?;
-        let mut matched = Vec::new();
-        for (name, dir) in lists {
-            let Some(value) = name.strip_prefix(&prefix).and_then(value_of_column) else {
-                return Ok(None);
-            };
-            let holds = pred.eval(&mut |read: &FieldRead| read.lit(value.clone()));
-            match holds {
-                Ok(true) => matched.push(name),
-                // As evaluating it on an item holding the value would.
-                Err(error) if !dir.is_empty() => return Err(error),
-                Ok(false) | Err(_) => {}
-            }
-        }
-        let base = match matched.as_slice() {
-            [] => Base::Held(Vec::new()),
-            [one] => Base::Pages(self.snapshot.pages(one).map_err(index_error)?),
-            several => {
-                let mut entries = Vec::new();
-                for name in several {
-                    let dir = read_dir(&**self.snapshot, name).map_err(index_error)?;
-                    for page in &dir.pages {
-                        entries.extend(
-                            read_page(&**self.snapshot, name, page.seq).map_err(index_error)?,
-                        );
-                    }
-                }
-                entries.sort();
-                held(entries)
-            }
-        };
-        // The items the open writes touched: out as the index has them, in as they are now.
-        let member = member_list(resource, field);
-        let mut added = Vec::new();
-        let mut removed = Vec::new();
-        for id in self.overlay.touched_items(resource, field, &member) {
-            let path = child(resource, field, &id);
-            if let Some(key) = self.snapshot.text(&path, KEY).map_err(index_error)? {
-                removed.push((key, id.clone()));
-            }
-            if let Some(key) = self.text(&path, KEY).map_err(index_error)?
-                && self.holds(&path, item_schema, pred)?
-            {
-                added.push((key, id));
-            }
-        }
-        Ok(Some(Listing::paged(Rc::new(Merged::new(
-            base, added, &removed,
-        )))))
     }
 
     /// Where the item `id` is in the collection `field` of `resource`.
