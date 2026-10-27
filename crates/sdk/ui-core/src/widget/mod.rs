@@ -3238,7 +3238,7 @@ mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
     AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, DocumentOpenCapability,
-    DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor,
+    DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor, WindowPublication,
 };
 pub mod command_palette;
 pub mod input_hint;
