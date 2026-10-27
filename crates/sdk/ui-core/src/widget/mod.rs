@@ -1260,8 +1260,9 @@ pub fn note_layout_moved() {
     LAYOUT_MOVED.with(|moved| moved.set(true));
 }
 
-/// Whether [`note_layout_moved`] ran since the last call, clearing it.
-pub(crate) fn take_layout_moved() -> bool {
+/// Whether [`note_layout_moved`] ran since the last call, clearing it: a
+/// host asks after its widgets' update, and lays out again when it did.
+pub fn take_layout_moved() -> bool {
     LAYOUT_MOVED.with(|moved| moved.replace(false))
 }
 

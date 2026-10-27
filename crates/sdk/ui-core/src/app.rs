@@ -1334,6 +1334,8 @@ impl App {
             crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)
         })?;
         self.history = Some(Box::new(host));
+        // What the frame's walks found held for the window without it.
+        self.layout.walks = runtime::TreeWalks::default();
         if let Some(history) = &mut self.history {
             history.set_control_domain(&self.control_domain);
         }
