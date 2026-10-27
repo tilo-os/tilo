@@ -278,7 +278,6 @@ impl Expr {
             | Self::Not { value }
             | Self::Length { value }
             | Self::Field { value, .. }
-            | Self::Filter { items: value, .. }
             | Self::Map { items: value, .. }
             | Self::Sort { items: value }
             | Self::First { items: value } => value.reads(binding_reads),
@@ -364,6 +363,7 @@ fn describe_binding(binding: &Binding) -> String {
         }
         Binding::Template(text) => format!("“{text}”"),
         Binding::Object(_) => "a dictionary".into(),
+        Binding::Expression(expr) => expr.to_string(),
         Binding::List(_) => "a list".into(),
         Binding::Expression(expr) => expr.to_string(),
     }
