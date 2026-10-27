@@ -2552,11 +2552,13 @@ impl Mount {
         self.place_remote_pointers();
         // The input method stays on the field the screen shows focused. A
         // status between frames (the tree delivered in the task after a
-        // frame) says the presented frame's field: read from the harness
-        // there, the field Notes' editor types into came back missing
-        // after every keystroke, and the page moved its focus from its
-        // text editor to the canvas and back around every key, ending and
-        // restarting input for the app each time.
+        // frame) says the presented frame's field. The harness has none
+        // then whenever a component's model was served since the frame
+        // (a keystroke's record write landing): serving retires its layout
+        // tree until the next frame lays it out again, and a retired tree
+        // names no keyboard owner. Read from it, the page moved its focus
+        // from its text editor to the canvas and back around every key,
+        // ending and restarting input for the app each time.
         if presented {
             self.presented_ime = self.frame.ime_window();
         }
