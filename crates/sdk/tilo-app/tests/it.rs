@@ -80,6 +80,8 @@ pub mod reactivity;
 pub mod record_reactions;
 #[path = "references.rs"]
 pub mod references;
+#[path = "render_anchor.rs"]
+pub mod render_anchor;
 #[path = "render_view.rs"]
 pub mod render_view;
 #[path = "room_arrival.rs"]
