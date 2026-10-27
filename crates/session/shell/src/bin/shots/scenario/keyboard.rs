@@ -124,32 +124,26 @@ pub(super) fn apply(driver: &mut ShellDriver, action: &Action) {
 /// `stated` purpose stands in where the field cannot report one, and is
 /// checked against the field's own when the field does report it.
 fn show_keyboard(driver: &mut ShellDriver, stated: Option<ui::ime::InputPurpose>) {
-    let content = match driver.active_ime_content_for_shots() {
-        // The field reports its own purpose: that is what a live desktop
-        // would take off the wire, so it is what the shot shows.
-        Some(content) => {
-            if let Some(stated) = stated {
-                debug_assert_eq!(
-                    content.purpose, stated,
-                    "the shot states a {stated:?} field, and the focused field reports \
-                     {:?}; one of them is wrong",
-                    content.purpose
-                );
-            }
-            content
+    let reported = driver.active_ime_content_for_shots();
+    // The field reports its own purpose: that is what a live desktop would
+    // take off the wire, so it is what the shot shows.
+    if let Some(content) = reported {
+        if let Some(stated) = stated {
+            debug_assert_eq!(
+                content.purpose, stated,
+                "the shot states a {stated:?} field, and the focused field reports \
+                 {:?}; one of them is wrong",
+                content.purpose
+            );
         }
-        // The field cannot report one in a capture (no session, or it lives
-        // in the shell's chrome rather than the app's tree): this is the
-        // purpose it declares, which is what the live keyboard would get.
-        None => {
-            let Some(stated) = stated else {
-                driver.set_shots_keyboard(None);
-                return;
-            };
-            ui::ime::InputContent::of(stated)
-        }
-    };
-    driver.set_shots_keyboard(Some(content));
+        driver.set_shots_keyboard(Some(content));
+        return;
+    }
+    // The field cannot report one in a capture (no session, or it lives in
+    // the shell's chrome rather than the app's tree): this is the purpose it
+    // declares, which is what the live keyboard would get. Neither leaves
+    // the keyboard down, where a live desktop would keep it down too.
+    driver.set_shots_keyboard(stated.map(ui::ime::InputContent::of));
 }
 
 #[cfg(test)]
@@ -176,31 +170,41 @@ mod tests {
     #[test]
     fn the_keyboard_is_docked_at_the_bottom_centred_and_capped() {
         let wide = shell::shell::shots_keyboard::keyboard_panel(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        assert_eq!(wide.width(), 960.0_f64.min(1600.0 - 40.0));
-        assert_eq!(
-            wide.x0,
-            (1600.0 - wide.width()) / 2.0,
-            "centred horizontally"
-        );
-        assert_eq!(
-            wide.y1,
-            900.0 - 20.0,
-            "one margin above the display's bottom"
-        );
-        assert_eq!(wide.height(), 360.0, "forty percent of 900");
+        // Capped at 960 wide, centred on a 1600 display, 360 tall and one
+        // margin above the bottom.
+        assert_eq!(edges(wide), [320, 520, 1280, 880]);
 
         // A short display takes the floor height rather than forty percent.
         let short =
             shell::shell::shots_keyboard::keyboard_panel(Rect::new(0.0, 0.0, 1600.0, 400.0));
-        assert_eq!(short.height(), 220.0, "the floor of 220 on a short display");
-        assert!(short.y1 <= 400.0 && short.y0 >= 0.0, "inside the display");
+        assert_eq!(
+            edges(short)[3] - edges(short)[1],
+            220,
+            "the floor of 220 on a short display"
+        );
+        assert_eq!(edges(short), [320, 160, 1280, 380], "inside the display");
 
         // A display that does not start at the desktop's top-left is docked
         // inside itself, not on the desktop.
         let beside =
             shell::shell::shots_keyboard::keyboard_panel(Rect::new(1600.0, 0.0, 3200.0, 900.0));
-        assert_eq!(beside.x0, 1600.0 + (1600.0 - beside.width()) / 2.0);
-        assert_eq!(beside.y1, 900.0 - 20.0);
+        assert_eq!(
+            edges(beside),
+            [1920, 520, 2880, 880],
+            "inside the display beside it"
+        );
+    }
+
+    /// A rect's edges in whole pixels, for a geometry comparison.
+    fn edges(rect: Rect) -> [i64; 4] {
+        [rect.x0, rect.y0, rect.x1, rect.y1].map(|edge| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a panel's edges are whole pixels well inside i64"
+            )]
+            let whole = edge.round() as i64;
+            whole
+        })
     }
 
     /// The scenarios run to the end, and each takes its keyboard-up picture
@@ -209,17 +213,19 @@ mod tests {
     #[test]
     fn every_keyboard_scenario_reaches_its_keyboard_shot() {
         for scenario in all() {
-            let mut driver = ShellDriver::new((1600, 900));
-            let mut sink = CountingSink::default();
-            run(&mut driver, &scenario, &mut sink);
+            let (taken, content) = {
+                let mut driver = ShellDriver::new((1600, 900));
+                let mut sink = CountingSink::default();
+                run(&mut driver, &scenario, &mut sink);
+                (sink.seen, driver.active_ime_content_for_shots())
+            };
             assert!(
-                sink.seen.iter().any(|n| n == "02-keyboard-up"),
-                "{} should snapshot the keyboard up; it took {:?}",
-                scenario.name,
-                sink.seen
+                taken.iter().any(|n| n == "02-keyboard-up"),
+                "{} should snapshot the keyboard up; it took {taken:?}",
+                scenario.name
             );
             assert!(
-                driver.active_ime_content_for_shots().is_some()
+                content.is_some()
                     || scenario
                         .actions
                         .iter()

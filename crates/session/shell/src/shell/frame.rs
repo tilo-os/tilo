@@ -4581,27 +4581,7 @@ impl FrameBuilder {
     /// one a finger would reach first.
     #[cfg(feature = "hosted-test-control")]
     pub fn active_ime_content_for_shots(&self) -> Option<ui::ime::InputContent> {
-        let host = self.host.active_app_host()?;
-        fn walk(
-            widget: &dyn Widget,
-            first: &mut Option<ui::ime::InputContent>,
-            focused: &mut Option<ui::ime::InputContent>,
-        ) {
-            if let Some(content) = widget.ime_content() {
-                if widget.is_focused() && focused.is_none() {
-                    *focused = Some(content);
-                }
-                if first.is_none() {
-                    *first = Some(content);
-                }
-            }
-            for child in widget.children() {
-                walk(child, first, focused);
-            }
-        }
-        let (mut first, mut focused) = (None, None);
-        walk(host, &mut first, &mut focused);
-        focused.or(first)
+        crate::shell::shots_keyboard::field_content(self.host.active_app_host()?)
     }
 
     /// Stand a capture in for a keyboard client: `content` is what the
