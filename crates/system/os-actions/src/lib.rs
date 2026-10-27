@@ -40,6 +40,7 @@ pub mod battery;
 pub mod bluetooth;
 pub mod bluez;
 pub mod brightness;
+pub mod bus_follow;
 pub mod codec_pack;
 pub mod ddc;
 pub mod disk;

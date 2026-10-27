@@ -40,8 +40,11 @@ The recording is therefore a resource of the recorded app's kind whose whole
 history is the window. Its steps are its History entries, and its state at
 step *n* is History's state at that entry.
 
-Apps that withhold themselves from captures (`capture_protected`: passwords,
-authenticators) are never recorded. Recordings are bounded in steps and bytes
+Apps that declare their windows withheld from captures
+(`ComponentBehaviour::capture_protected`: passwords, authenticators) are
+never recorded. Each desktop reads that declaration from the app's own
+windows, the native one also as an app in its own process asks for it, and
+the recorder checks nothing else. Recordings are bounded in steps and bytes
 (`recording::Limits`). A window with more steps than the bound starts later,
 so the last steps before the report are always there; a recording larger
 than the byte bound is not offered.
@@ -49,7 +52,13 @@ than the byte bound is not offered.
 ## How a person includes one
 
 The composer offers "Include a recording" only when the window the report is
-about shows a record of an app that may be recorded. It starts off, like the
+about shows a record of an app that may be recorded. Every way a report
+starts names that window the same way, on the native desktop and in a
+browser alike: Feedback from the palette or the Tilo menu, a click on the
+control it is about, and parts picked in the window in front (parts picked
+in other apps are about no one window, and offer none). One recorder makes
+every recording (`tilo_desktop::feedback::recorder`); each desktop lends it
+only where it reads committed records and keeps content. It starts off, like the
 screenshot. The person sees, before they send, exactly what it includes: the
 app, the time range and the number of changes, and that whoever can read the
 report can see the record's whole state at the start of the range and every

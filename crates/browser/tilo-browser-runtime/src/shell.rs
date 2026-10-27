@@ -1038,14 +1038,27 @@ impl BrowserShell {
         }
     }
 
+    /// The window in front, as a report about it names it: its app and
+    /// the record it shows, which a recording of it records.
+    fn front(&self) -> tilo_desktop::feedback::Focused {
+        self.handle.read(|tree| {
+            let focused = tilo_desktop::feedback::focused(tree, |app| {
+                crate::desktop::known_application(app).map(str::to_owned)
+            });
+            match focused {
+                tilo_desktop::feedback::Focused::App(mut subject) => {
+                    subject.record = tilo_desktop::feedback::focused_tab(tree)
+                        .and_then(|tab| self.chrome.shared.shown_record(tree, tab));
+                    tilo_desktop::feedback::Focused::App(subject)
+                }
+                other => other,
+            }
+        })
+    }
+
     /// Feedback about the window in front, in the one private composer.
     fn open_feedback(&self) {
-        let focused = self.handle.read(|tree| {
-            tilo_desktop::feedback::focused(tree, |app| {
-                crate::desktop::known_application(app).map(str::to_owned)
-            })
-        });
-        let subject = match focused {
+        let subject = match self.front() {
             // Asked again from the composer: it keeps its subject.
             tilo_desktop::feedback::Focused::Composer => None,
             tilo_desktop::feedback::Focused::Nothing => Some(None),
@@ -1131,13 +1144,18 @@ impl BrowserShell {
         let Some(report) = crate::feedback_crops::take_ready() else {
             return false;
         };
+        let subject = tilo_desktop::feedback::picked_subject(&report.draft, self.front());
         let started = self
             .chrome
             .shared
             .feedback
             .borrow()
             .as_ref()
-            .map(|feedback| feedback.services().begin_report(report));
+            .map(|feedback| {
+                feedback
+                    .about(subject)
+                    .and_then(|()| feedback.services().begin_report(report))
+            });
         match started {
             Some(Ok(())) => match self.handle.read(tilo_desktop::feedback::composer_tab) {
                 Some((.., tab)) => {

@@ -886,7 +886,16 @@ impl Widget for CollaborationLaunchpad {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let button = match event {
+            WindowEvent::MouseInput { state, .. } => Some(*state),
+            _ => None,
+        };
         if *ctx.handled {
+            if let Some(state) = button {
+                // The compositor's session log keeps this target
+                // (tilo_startup_metrics::INPUT_ROUTE_TARGET).
+                tracing::info!(target: "tilo::input_route", ?state, "launchpad: a button another widget handled first");
+            }
             return;
         }
         let before = (self.hover_target(), self.selected, self.focused);
@@ -895,7 +904,25 @@ impl Widget for CollaborationLaunchpad {
             self.last_cursor = ctx.logical(position);
         }
         if !self.navigate(event, ctx) {
+            let before = button.map(|_| {
+                (
+                    self.targets.hovered().map(str::to_owned),
+                    self.targets.pressed().map(str::to_owned),
+                )
+            });
             self.dirty |= self.targets.handle_event(event, ctx);
+            if let (Some(state), Some((hovered, pressed))) = (button, before) {
+                tracing::info!(
+                    target: "tilo::input_route",
+                    ?state,
+                    x = self.last_cursor.x,
+                    y = self.last_cursor.y,
+                    ?hovered,
+                    pressed_before = ?pressed,
+                    pressed_after = ?self.targets.pressed(),
+                    "launchpad: a button reached the cards"
+                );
+            }
             if let Some(id) = self.targets.focused() {
                 self.selected = LaunchpadAction::ALL
                     .iter()

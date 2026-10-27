@@ -21,6 +21,7 @@
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
+. os/dev/guest-disks.sh
 
 # Root's tools in the guest: podman and what build-image.sh verifies its inputs with.
 guest_tools() {
@@ -36,6 +37,9 @@ guest_tools() {
     mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm
   fi
   use_cosign
+  guest_writeback
+  guest_memory_watch
+  in_guest=1
   # /var/lib/containers is the step's own scratch disk: native overlay, no loop volume needed.
   podman info --format '{{.Store.GraphDriverName}} {{.Store.GraphRoot}}'
 }
@@ -177,9 +181,10 @@ install_board_disk() {
 }
 
 # How long each part took, for finding what a build spends its time on.
-phase_started=$SECONDS phase_name=start
+phase_started=$SECONDS phase_name=start in_guest=0
 phase() {
   printf 'TILO_IMAGE_TIMING phase=%s seconds=%s\n' "$phase_name" "$((SECONDS - phase_started))"
+  [[ $in_guest == 0 ]] || guest_disk_report "$phase_name"
   phase_name=$1 phase_started=$SECONDS
 }
 trap 'phase end' EXIT
@@ -226,7 +231,7 @@ case ${1:-} in
     printf '{"inputs":{},"inputsDigest":""}' > "$scratch/dev-inputs.json"
     python3 -I tools/ci/os/oci_layers.py take "$in/oci" "$dev" "$scratch/dev-fragment" dev-image "$scratch/dev-inputs.json"
     rm -rf "$dev"
-    python3 -I tools/ci/os/oci_layers.py compose "$out" "$in/oci" "$scratch/dev-fragment"
+    python3 -I tools/ci/os/oci_layers.py compose --copy "$out" "$in/oci" "$scratch/dev-fragment"
     printf '%s\n' "$revision" > "$out/revision"
     ;;
   board)

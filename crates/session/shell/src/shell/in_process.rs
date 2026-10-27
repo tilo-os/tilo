@@ -22,7 +22,6 @@ use ui::permissions::{PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
 mod feedback_native;
-mod feedback_recording;
 #[cfg(target_os = "linux")]
 mod feedback_review;
 #[cfg(test)]
@@ -81,7 +80,13 @@ pub struct InProcessApps {
     /// The records the session's windows hold, by the window instance the
     /// launcher started each for: what a report about a window records.
     window_routes: Option<WindowRoutes>,
+    /// The apps mounted here that declare their windows withheld from what
+    /// leaves the device (`ComponentBehaviour::capture_protected`).
+    capture_protected: DeclaredProtected,
 }
+
+/// Apps that declare their windows capture-protected, by id.
+pub(crate) type DeclaredProtected = Rc<RefCell<std::collections::HashSet<String>>>;
 
 /// The records the session's broker knows its windows to hold, by window
 /// instance.
@@ -162,6 +167,7 @@ impl InProcessApps {
             messaging_services: Vec::new(),
             windows: HashMap::new(),
             window_routes: None,
+            capture_protected: DeclaredProtected::default(),
         }
     }
 
@@ -517,6 +523,23 @@ impl InProcessApps {
         record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
+        let component = self.mount_component(definition, room, tab, record, lend)?;
+        if component.capture_protected() {
+            self.capture_protected
+                .borrow_mut()
+                .insert(definition.app_id.to_owned());
+        }
+        Ok(component)
+    }
+
+    fn mount_component(
+        &mut self,
+        definition: &'static ApplicationDefinition,
+        room: &str,
+        tab: u64,
+        record: RecordId,
+        lend: impl FnOnce(&mut HostContext),
+    ) -> Result<AppComponent, LaunchError> {
         super::work_accounting::app_mounted();
         if definition.app_id == tilo_desktop::feedback::PACKAGE {
             return match &self.feedback {
@@ -623,6 +646,11 @@ impl InProcessApps {
         }
         lend(&mut context);
         definition.instantiate(context, target, RestoreInput::None)
+    }
+
+    /// The apps mounted here that declare their windows capture-protected.
+    pub(crate) fn declared_capture_protected(&self) -> DeclaredProtected {
+        Rc::clone(&self.capture_protected)
     }
 }
 

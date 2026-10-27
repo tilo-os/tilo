@@ -124,7 +124,7 @@
 "crates/session/shell/examples/redraw_bench.rs" = 7000
 "crates/session/shell/src/bin/shots/driver.rs" = 4492
 "crates/session/shell/src/bin/shots/scenario.rs" = 6400
-"crates/session/shell/src/compositor/backend/drm/mod.rs" = 5000
+"crates/session/shell/src/compositor/backend/drm/mod.rs" = 4500
 "crates/session/shell/src/compositor/backend/drm/runtime.rs" = 9500
 "crates/session/shell/src/compositor/backend/drm/scanout.rs" = 5500
 "crates/session/shell/src/compositor/client_input.rs" = 4000

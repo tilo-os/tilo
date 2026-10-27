@@ -228,6 +228,7 @@ history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernt
 history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
+history-sync-reconnecting = Verbinde. Änderungen werden synchronisiert, sobald die Verbindung steht.
 arriving-loading = Wird geladen
 arriving-from = Von { $source }
 arriving-received-of = { $received } von { $total }

@@ -3418,15 +3418,15 @@ impl ForeignFrameStore {
             .fetch_add(1, Ordering::Release);
     }
 
-    /// Whether every window of `app_id` is withheld from captures: an app
-    /// known to hold secrets, or one that asked for it.
-    pub fn is_app_capture_protected(&self, app_id: &str) -> bool {
+    /// Whether `app_id`, running in its own process, asked over its
+    /// shell-ui connection for its windows to be withheld: how such an app
+    /// states its declaration (`ComponentBehaviour::capture_protected`).
+    pub fn app_asked_capture_protection(&self, app_id: &str) -> bool {
         self.capture_protection
             .lock_recover()
             .apps
             .values()
             .any(|app| app == app_id)
-            || crate::shell::capture_protection::holds_secrets(app_id)
     }
 
     /// Whether a capture must draw surface `id`, owned by `app_id`, as a

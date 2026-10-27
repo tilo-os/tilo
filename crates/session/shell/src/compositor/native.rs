@@ -11252,7 +11252,12 @@ pub fn run() {
             session_changed = true;
         }
         let mut event_step = "accessibility";
+        // Pointer events a touch contact became, still at the front of the
+        // queue: the input-route lines say a click came from a finger.
+        let mut from_touch_ahead = 0_usize;
         while let Some(event) = pending_events.pop_front() {
+            let from_touch = from_touch_ahead > 0;
+            from_touch_ahead = from_touch_ahead.saturating_sub(1);
             // Another of the person's devices' input is this device's own,
             // except that it does not say someone is here.
             let (event, origin) = match event {
@@ -11731,6 +11736,20 @@ pub fn run() {
                                 wev,
                                 &test_control_ctx.modifiers,
                             );
+                        if let WindowEvent::MouseInput { state: button, .. } = wev {
+                            // Where a click went before the chrome saw it: a
+                            // client's surface, or on to the chrome.
+                            tracing::info!(
+                                target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                                ?button,
+                                from_touch,
+                                to_client,
+                                cursor = ?state.client_input.pointer_position(),
+                                grab = %state.client_input.grab_label(),
+                                pointer_focus = ?state.client_input.pointer_focus(),
+                                "click routed"
+                            );
+                        }
                         if let Some(steps) = key_steps.as_mut() {
                             steps.steps.mark("client");
                         }
@@ -11760,6 +11779,15 @@ pub fn run() {
                                 &mut test_control_ctx.focus,
                             );
                             session_changed |= chrome_handled;
+                            if let WindowEvent::MouseInput { state: button, .. } = wev {
+                                tracing::info!(
+                                    target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                                    ?button,
+                                    from_touch,
+                                    chrome_handled,
+                                    "click reached the chrome"
+                                );
+                            }
                             if let Some(steps) = key_steps.as_mut() {
                                 steps.steps.mark("chrome");
                             }
@@ -11790,6 +11818,7 @@ pub fn run() {
                         .rev()
                         {
                             pending_events.push_front(BackendEvent::Input(event));
+                            from_touch_ahead = from_touch_ahead.saturating_add(1);
                         }
                     }
                 }

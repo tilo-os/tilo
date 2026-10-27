@@ -54,14 +54,17 @@ thread_local! {
 /// thread: its composition passes settle against the state of the app its
 /// model pass took in, as they read their motions at one instant
 /// ([`pin_frame`]).
+#[cfg(feature = "native")]
 pub(crate) fn laying_out_frame() -> LayingOutFrame {
     LAYING_OUT.with(|count| count.set(count.get().saturating_add(1)));
     LayingOutFrame(())
 }
 
 /// Ends what [`laying_out_frame`] began.
+#[cfg(feature = "native")]
 pub(crate) struct LayingOutFrame(());
 
+#[cfg(feature = "native")]
 impl Drop for LayingOutFrame {
     fn drop(&mut self) {
         LAYING_OUT.with(|count| count.set(count.get().saturating_sub(1)));

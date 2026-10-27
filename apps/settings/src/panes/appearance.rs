@@ -439,9 +439,10 @@ impl AppearancePane {
                     .described(t("settings-appearance-density-desc"))
                     .id("appearance.density")
                     .of(&self.prefs, paths.density)
-                    .among(
+                    .pictures(
                         DENSITIES.iter().map(|(_, density)| f64::from(*density)),
                         |density: &f64| density_label(*density),
+                        |density: &f64| ui::widget::Picture::Density(*density as f32),
                     ),
                 cx.row(t("settings-appearance-ui-scale"))
                     .id("appearance.ui_scale")

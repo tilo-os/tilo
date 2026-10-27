@@ -73,7 +73,6 @@ pub(crate) fn build(
         return crate::widgets::page(Vec::new());
     };
     let map_input = app.keyboard_map_input();
-    let map_cache = std::rc::Rc::clone(&input.map_cache);
     Box::new(
         MouseKeyboardPane::new(app.host().clone(), input)
             .with_page(match category {
@@ -81,8 +80,7 @@ pub(crate) fn build(
                 Category::Spelling => InputPage::Spelling,
                 _ => InputPage::Keyboard,
             })
-            .with_map_input(map_input)
-            .with_map_cache(map_cache),
+            .with_map_input(map_input),
     )
 }
 
@@ -446,7 +444,7 @@ impl InputSections {
 #[effect(operation = "settings.effect")]
 pub enum InputEffect {
     /// Read configured input sources and the mounted Add language selector.
-    #[effect(returns, idempotent, kind = "read")]
+    #[effect(job, returns, idempotent, kind = "read")]
     InspectInputSources {
         query: Option<String>,
         page: Option<u32>,
@@ -502,9 +500,10 @@ pub enum InputEffect {
     #[effect(idempotent)]
     CloseSourcePicker,
     /// Preview an installed source in the Add screen.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     ChooseSourceToAdd { source: String },
     /// Add the previewed source without changing the active source.
+    #[effect(job)]
     ConfirmSourceToAdd,
     /// Move a configured source before or after another stable source id.
     ReorderSource {
@@ -513,7 +512,7 @@ pub enum InputEffect {
         after: bool,
     },
     /// Inspect any installed XKB layout without changing what the keyboard types.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     PreviewLayout { source: String },
     /// Show the actual focused keyboard group and modifier state.
     #[effect(idempotent)]
@@ -522,10 +521,10 @@ pub enum InputEffect {
     #[effect(idempotent)]
     SetPreviewExtraLevels { on: bool },
     /// Inspect one of the compiled native modifier levels without applying it.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     SetPreviewLevel { level: String },
     /// Read a physical key’s complete legends without applying a layout.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     InspectKeyboardKey { key: String },
     /// Choose an explicit physical model for the preview and keyboard.
     #[effect(idempotent)]
@@ -534,13 +533,16 @@ pub enum InputEffect {
         model: String,
     },
     /// Type with the inspected layout, adding it when space is available.
+    #[effect(job)]
     ApplyPreview,
     /// Add an installed input source and type with it.
+    #[effect(job)]
     AddSource {
         #[param("The source's id, such as `us` or `de`")]
         source: String,
     },
     /// Replace one input source by another, in place.
+    #[effect(job)]
     ReplaceSource {
         #[param("The source to replace")]
         from: String,
@@ -751,12 +753,13 @@ fn apply(
                 .keyboard_preview
                 .as_deref()
                 .unwrap_or(&input.keyboard_layout);
-            let map = crate::keyboard_preview::map_with_options(
+            let map = crate::keyboard_preview::Preview::new(
                 source,
                 &input.keyboard_model,
-                String::new(),
                 Some(""),
-            )?;
+                false,
+            )
+            .needed(String::new())?;
             if level >= map.level_count() {
                 return Err("the layout does not supply this level".into());
             }
@@ -769,12 +772,13 @@ fn apply(
                 .keyboard_preview
                 .as_deref()
                 .unwrap_or(&input.keyboard_layout);
-            let map = crate::keyboard_preview::map_with_options(
+            let map = crate::keyboard_preview::Preview::new(
                 source,
                 &input.keyboard_model,
-                String::new(),
                 Some(""),
-            )?;
+                false,
+            )
+            .needed(String::new())?;
             if map.inspection_values(&key).is_none() {
                 return Err("the physical model does not supply this key".into());
             }
@@ -943,8 +947,51 @@ fn position(input: &InputPrefs, source: &str) -> Result<usize, String> {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: InputEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    // An effect on the input sources needs this device's list of them,
+    // which is read off the UI thread: it answers once the list is in.
+    if effect.reads_sources()
+        && let Some(area) = area(app)
+        && area.catalog.pending()
+    {
+        let wait = area.catalog.waiting();
+        return Ok(crate::device_read::job(cx, wait, move |app, (), cx| {
+            answer(app, effect, cx)
+        }));
+    }
+    let answered = answer_read(app, effect.clone());
+    // One that checks a level or a key against the keyboard's drawing
+    // answers once the drawing is compiled, off the UI thread.
+    if let Some(drawing) = crate::keyboard_preview::take_needed() {
+        return Ok(crate::device_read::job(
+            cx,
+            move || drawing.compile(),
+            move |app, (), cx| answer(app, effect, cx),
+        ));
+    }
+    answered
+}
+
+impl InputEffect {
+    /// Whether the effect checks a source against this device's list of
+    /// them (the list, a source to show or to add). Each answers as a job.
+    fn reads_sources(&self) -> bool {
+        matches!(
+            self,
+            Self::InspectInputSources { .. }
+                | Self::ChooseSourceToAdd { .. }
+                | Self::ConfirmSourceToAdd
+                | Self::PreviewLayout { .. }
+                | Self::ApplyPreview
+                | Self::AddSource { .. }
+                | Self::ReplaceSource { .. }
+        )
+    }
+}
+
+/// [`answer`] once what the effect reads is in.
+fn answer_read(app: &SettingsApp, effect: InputEffect) -> EffectAnswer {
     if let InputEffect::InspectInputSources { query, page } = &effect {
         return inspect_input_sources(app, query.as_deref(), page.unwrap_or(0))
             .map(Effected::value);
@@ -1123,8 +1170,6 @@ pub struct InputArea {
     editor: ui::LocalState<keyboard_editor::EditorState>,
     osk_always: bool,
     document: ui::storage::SettingsDocument,
-    /// The keyboard drawing last compiled, kept across rebuilds of the page.
-    map_cache: KeyboardPreviewCacheHandle,
 }
 
 impl InputArea {
@@ -1158,7 +1203,6 @@ impl InputArea {
                 .get()
                 .on_screen_keyboard
                 == tilo_accessibility_settings::OnScreenKeyboard::Always,
-            map_cache: std::rc::Rc::default(),
         }
     }
 
@@ -1256,40 +1300,34 @@ impl InputArea {
 }
 
 /// The input sources an area offers and, when this device's layout list
-/// could not be read, why. A device's are read once, when first asked for
-/// or off the UI thread ([`InputArea::prefetch_catalog`]) — never while the
-/// window opens, which shows no input source on its first page.
+/// could not be read, why. A device's are read off the UI thread, once,
+/// when first asked for ([`InputArea::prefetch_catalog`]) — never while the
+/// window opens, which shows no input source on its first page. Until they
+/// are in, the list is empty and an effect that needs it answers once it is
+/// ([`answer`]).
 pub(crate) struct SourceCatalog {
-    read: std::cell::OnceCell<(Vec<CatalogEntry>, Option<String>)>,
-    background: crate::device_read::DeviceRead<(Vec<CatalogEntry>, Option<String>)>,
+    read: std::sync::Arc<std::sync::OnceLock<(Vec<CatalogEntry>, Option<String>)>>,
+    started: std::cell::Cell<bool>,
 }
 
 impl SourceCatalog {
     /// This device's input sources, read when first asked for.
     fn of_device() -> Self {
         Self {
-            read: std::cell::OnceCell::new(),
-            background: crate::device_read::DeviceRead::default(),
+            read: std::sync::Arc::default(),
+            started: std::cell::Cell::new(false),
         }
     }
 
     /// `entries`, already read; `error` says why they stand in for the
     /// device's own list.
     pub(crate) fn ready(entries: Vec<CatalogEntry>, error: Option<String>) -> Self {
-        let read = std::cell::OnceCell::new();
+        let read = std::sync::OnceLock::new();
         let _ = read.set((entries, error));
         Self {
-            read,
-            background: crate::device_read::DeviceRead::default(),
+            read: std::sync::Arc::new(read),
+            started: std::cell::Cell::new(true),
         }
-    }
-
-    fn read(&self) -> &(Vec<CatalogEntry>, Option<String>) {
-        self.read.get_or_init(|| {
-            self.background
-                .take()
-                .unwrap_or_else(crate::input_sources::read_installed)
-        })
     }
 
     /// The name of source `id`, where the catalogue was read; never reads
@@ -1304,30 +1342,52 @@ impl SourceCatalog {
         )
     }
 
+    /// The sources, once read; none before.
     pub(crate) fn entries(&self) -> &[CatalogEntry] {
-        &self.read().0
+        self.read.get().map_or(&[], |(entries, _)| entries)
     }
 
     pub(crate) fn error(&self) -> Option<&str> {
-        self.read().1.as_deref()
+        self.read.get()?.1.as_deref()
     }
 
-    /// Whether the catalogue is being read off the UI thread, started here
-    /// if it has not been read. `false` once it is read, or when the host
-    /// runs no background work and it is read when asked.
+    /// Whether the catalogue is still being read off the UI thread,
+    /// starting that read if none has.
     fn pending(&self) -> bool {
-        if self.read.get().is_some() {
-            return false;
-        }
         self.prefetch();
-        !self.background.is_finished()
+        self.read.get().is_none()
     }
 
     /// Start reading the device's catalogue off the UI thread, unless it
-    /// has been read or is being read.
+    /// has been read or is being read. The window is woken when it is in.
     fn prefetch(&self) {
-        if self.read.get().is_none() {
-            let _ = self.background.start(crate::input_sources::read_installed);
+        if self.started.replace(true) {
+            return;
+        }
+        let read = std::sync::Arc::clone(&self.read);
+        let wake = ui::WakeHandle::new();
+        let started = crate::device_read::thread(
+            "settings-input-sources",
+            Box::new(move || {
+                let _ = read.set(crate::input_sources::read_installed());
+                wake.wake();
+            }),
+        );
+        if let Err(error) = started {
+            let _ = self.read.set((
+                Vec::new(),
+                Some(format!("the input sources could not be read: {error}")),
+            ));
+        }
+    }
+
+    /// Wait, off the UI thread, until the catalogue is in: what an effect
+    /// that needs it runs before it answers.
+    fn waiting(&self) -> impl FnOnce() + Send + 'static {
+        self.prefetch();
+        let read = std::sync::Arc::clone(&self.read);
+        move || {
+            read.wait();
         }
     }
 }
@@ -1363,16 +1423,6 @@ pub(crate) fn show_live_map(area: &InputArea) {
     editor.view = keyboard_editor::SourceView::Live;
     area.editor.set(editor);
 }
-
-pub(crate) struct KeyboardPreviewCache {
-    source: String,
-    model: String,
-    options: Option<String>,
-    map: ui::KeyboardMap,
-}
-
-pub(crate) type KeyboardPreviewCacheHandle =
-    std::rc::Rc<std::cell::RefCell<Option<KeyboardPreviewCache>>>;
 
 /// Which of the three pages the pane shows: the keyboard (layouts and
 /// typing), the pointing devices, or spelling.
@@ -1412,7 +1462,9 @@ pub struct MouseKeyboardPane {
     composed_text_growth_bits: u32,
     source_row_height: f32,
     composed_locale_revision: u64,
-    map_cache: KeyboardPreviewCacheHandle,
+    /// The keyboard drawing the page waits for while it is compiled off
+    /// the UI thread.
+    drawing: RefCell<Option<crate::keyboard_preview::Preview>>,
     osk_always: bool,
     /// When the attached devices are read again if their snapshot is not
     /// watched.
@@ -1456,7 +1508,7 @@ impl MouseKeyboardPane {
             composed_text_growth_bits: 1.0_f32.to_bits(),
             source_row_height: ui::tokens::Metrics::default().panel_row_height,
             composed_locale_revision: ui::i18n::I18nManager::revision(),
-            map_cache: std::rc::Rc::default(),
+            drawing: RefCell::new(None),
             osk_always: area.osk_always,
             next_device_poll: None,
             devices_watch: area.follow(),
@@ -1495,13 +1547,9 @@ impl MouseKeyboardPane {
         self
     }
 
-    /// Retain one compiled preview while search reconstructs the page widgets.
-    pub(crate) fn with_map_cache(mut self, cache: KeyboardPreviewCacheHandle) -> Self {
-        self.map_cache = cache;
-        self
-    }
-
-    fn keyboard_preview(&self, source: &str) -> Result<ui::KeyboardMap, String> {
+    /// The drawing of `source` on the keyboard the page shows, once it is
+    /// compiled; until then `None`, and it is compiled off the UI thread.
+    fn keyboard_preview(&self, source: &str) -> Option<Result<ui::KeyboardMap, String>> {
         let input = self.preview_input(source);
         let options = settings_store::hardware::RichInputConfig {
             compose_key: input.compose_key.clone(),
@@ -1510,30 +1558,18 @@ impl MouseKeyboardPane {
         }
         .xkb_options()
         .join(",");
-        let options = Some(options);
-        let mut cache = self.map_cache.borrow_mut();
-        if let Some(cache) = cache.as_ref()
-            && cache.source == source
-            && cache.model == input.keyboard_model
-            && cache.options == options
-        {
-            return Ok(cache.map.clone());
-        }
-        let map = crate::keyboard_preview::map_for_form(
+        let preview = crate::keyboard_preview::Preview::new(
             source,
             &input.keyboard_model,
-            t("input-map-title"),
-            options.as_deref(),
+            Some(&options),
             crate::keyboard_preview::device_keyboard_is_compact(),
-        )?
-        .with_input(self.map_input.clone());
-        *cache = Some(KeyboardPreviewCache {
-            source: source.to_owned(),
-            model: input.keyboard_model,
-            options,
-            map: map.clone(),
-        });
-        Ok(map)
+        );
+        let drawn = preview.drawn(t("input-map-title"));
+        if drawn.is_none() {
+            preview.draw_in_background();
+            *self.drawing.borrow_mut() = Some(preview);
+        }
+        drawn.map(|drawn| drawn.map(|map| map.with_input(self.map_input.clone())))
     }
 
     fn source_label(&self, id: &str) -> String {
@@ -2144,6 +2180,17 @@ impl Widget for MouseKeyboardPane {
             self.composed.invalidate();
             self.composed.clear();
         }
+        // The drawing the page waited for was compiled.
+        let drawn = self
+            .drawing
+            .borrow()
+            .as_ref()
+            .is_some_and(crate::keyboard_preview::Preview::is_drawn);
+        if drawn {
+            self.drawing.borrow_mut().take();
+            self.composed.invalidate();
+            self.composed.clear();
+        }
         self.composed.sync(state, root);
     }
 
@@ -2514,7 +2561,6 @@ mod tests {
             }),
             osk_always: false,
             document: cx.storage().settings_document().clone(),
-            map_cache: std::rc::Rc::default(),
         };
         MouseKeyboardPane::new(cx, &area)
     }
@@ -2573,7 +2619,6 @@ mod tests {
             editor: ui::LocalState::new(keyboard_editor::EditorState::default()),
             osk_always: false,
             document: pane.cx.storage().settings_document().clone(),
-            map_cache: std::rc::Rc::default(),
         };
         let watch = area.follow().expect("a live area follows its devices");
         assert!(watch.is_complete());
@@ -3369,12 +3414,13 @@ mod input_inspection_tests {
         assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Read);
         let before = app.settings::<InputPrefs>().get();
         let value = app
-            .call_on(
+            .call_on_finished(
                 &action.address.resource,
                 &action.address.action,
                 serde_json::json!({}),
             )
             .unwrap()
+            .value
             .unwrap();
         assert_eq!(value["active_source"], before.keyboard_layout);
         assert_eq!(
@@ -3406,8 +3452,9 @@ mod input_inspection_tests {
             .address;
         let before = app.settings::<InputPrefs>().get();
         let closed = app
-            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .call_on_finished(&address.resource, &address.action, serde_json::json!({}))
             .unwrap()
+            .value
             .unwrap();
         assert_eq!(closed["add_picker"]["selected"], "");
         assert_eq!(closed["add_picker"]["open"], false);
@@ -3417,8 +3464,9 @@ mod input_inspection_tests {
             .unwrap();
         app.harness().type_text("French");
         let open = app
-            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .call_on_finished(&address.resource, &address.action, serde_json::json!({}))
             .unwrap()
+            .value
             .unwrap();
         assert_eq!(open["add_picker"]["selected"], "");
         assert_eq!(open["add_picker"]["open"], true);
@@ -3426,17 +3474,18 @@ mod input_inspection_tests {
         assert_eq!(open["add_picker"]["value"], "French");
         assert_eq!(app.settings::<InputPrefs>().get(), before);
         let filtered = app
-            .call_on(
+            .call_on_finished(
                 &address.resource,
                 &address.action,
                 serde_json::json!({"query":"French"}),
             )
             .unwrap()
+            .value
             .unwrap();
         assert_eq!(filtered["total"], 1);
         assert_eq!(filtered["sources"][0]["id"], "fr");
         assert!(
-            app.call_on(
+            app.call_on_finished(
                 &address.resource,
                 &address.action,
                 serde_json::json!({"page":1})
@@ -3444,7 +3493,7 @@ mod input_inspection_tests {
             .is_err()
         );
         assert!(
-            app.call_on(
+            app.call_on_finished(
                 &address.resource,
                 &address.action,
                 serde_json::json!({"query":"x".repeat(129)})

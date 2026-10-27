@@ -704,3 +704,263 @@ mod tests {
         assert_eq!(offered, vec![other]);
     }
 }
+
+/// What a subscription to the print service's notifications made by
+/// [`follow_changes`] carries as its user data: whose it is, by process.
+const FOLLOWER: &str = "tilo-follow:";
+
+/// The notifications a follower asks the print service for: queues added,
+/// removed or changed, and jobs made, moving on or done.
+const FOLLOWED_EVENTS: &str = "printer-added,printer-deleted,printer-state-changed,\
+printer-config-changed,job-created,job-state-changed,job-completed";
+
+/// The subscription a [`PrintFollow`] made, and whether it was let go
+/// before the subscription was.
+#[derive(Debug, Default)]
+struct Subscribed {
+    id: Option<u32>,
+    dropped: bool,
+}
+
+/// Following the print service for [`follow_changes`]; it stops, and its
+/// subscription is cancelled, when this is dropped.
+#[derive(Debug)]
+pub struct PrintFollow {
+    task: tilo_rt::JoinHandle<()>,
+    subscribed: std::sync::Arc<std::sync::Mutex<Subscribed>>,
+}
+
+impl Drop for PrintFollow {
+    fn drop(&mut self) {
+        self.task.abort();
+        let mut subscribed = self
+            .subscribed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        subscribed.dropped = true;
+        if let Some(id) = subscribed.id.take() {
+            // Cancelling asks the print service: never on the caller's thread.
+            let _ = std::thread::Builder::new()
+                .name("tilo-print-unfollow".into())
+                .spawn(move || cancel_subscription(id));
+        }
+    }
+}
+
+/// Call `on_change` on the app runtime each time the print service reports
+/// a queue or a job changed: it subscribes to the service's notifications,
+/// which it sends on the system bus, and listens for them. Nothing polls.
+/// The subscription is made off the calling thread, and subscriptions an
+/// earlier follower left behind (a process that ended without cancelling)
+/// are cancelled first.
+///
+/// # Errors
+///
+/// When the app runtime cannot start. A print service or a system bus that
+/// cannot be reached is logged and followed no further.
+pub fn follow_changes(on_change: impl Fn() + Send + Sync + 'static) -> Result<PrintFollow, String> {
+    follow_boxed(Box::new(on_change))
+}
+
+fn follow_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<PrintFollow, String> {
+    let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
+    let subscribed = std::sync::Arc::new(std::sync::Mutex::new(Subscribed::default()));
+    let task = runtime.spawn(async move {
+        use futures_util::StreamExt as _;
+        let signals = async {
+            let connection = zbus::Connection::system().await?;
+            zbus::MessageStream::for_match_rule(
+                zbus::MatchRule::builder()
+                    .msg_type(zbus::message::Type::Signal)
+                    .interface("org.cups.cupsd.Notifier")?
+                    .build(),
+                &connection,
+                Some(64),
+            )
+            .await
+        };
+        let mut signals = match signals.await {
+            Ok(signals) => signals,
+            Err(error) => {
+                tracing::warn!(%error, "could not follow the print service");
+                return;
+            }
+        };
+        while signals.next().await.is_some() {
+            on_change();
+        }
+    });
+    let held = std::sync::Arc::clone(&subscribed);
+    std::thread::Builder::new()
+        .name("tilo-print-follow".into())
+        .spawn(move || {
+            cancel_left_behind();
+            let id = match subscribe() {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::warn!(%error, "could not subscribe to the print service's changes");
+                    return;
+                }
+            };
+            let mut subscribed = held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if subscribed.dropped {
+                drop(subscribed);
+                cancel_subscription(id);
+            } else {
+                subscribed.id = Some(id);
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(PrintFollow { task, subscribed })
+}
+
+/// Run the IPP request `test` (an `ipptool` test) at the print service with
+/// `values` defined; what `ipptool` printed.
+fn ipp_request(test: &str, values: &[(&str, &str)]) -> Result<String, String> {
+    if !crate::process::which("ipptool") {
+        return Err("ipptool not installed".into());
+    }
+    let defines: Vec<String> = values
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    let mut args = vec!["-tv"];
+    for define in &defines {
+        args.extend(["-d", define.as_str()]);
+    }
+    args.extend(["ipp://localhost/", "/dev/stdin"]);
+    let output = bounded_command::run(
+        "ipptool",
+        &args,
+        Some(test.as_bytes()),
+        crate::process::MAX_CAPTURE_BYTES,
+        crate::DEFAULT_TIMEOUT,
+    )
+    .map_err(|error| error.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if output.status.success() {
+        Ok(stdout)
+    } else {
+        Err(format!("ipptool: {stdout}"))
+    }
+}
+
+const SUBSCRIBE_TEST: &str = "{
+ OPERATION Create-Printer-Subscriptions
+ GROUP operation-attributes-tag
+ ATTR charset attributes-charset utf-8
+ ATTR language attributes-natural-language en
+ ATTR uri printer-uri $uri
+ GROUP subscription-attributes-tag
+ ATTR uri notify-recipient-uri dbus://
+ ATTR keyword notify-events $events
+ ATTR octetString notify-user-data $follower
+ ATTR integer notify-lease-duration 0
+ STATUS successful-ok
+ EXPECT notify-subscription-id OF-TYPE integer WITH-VALUE >0
+}
+";
+
+const LIST_TEST: &str = "{
+ OPERATION Get-Subscriptions
+ GROUP operation-attributes-tag
+ ATTR charset attributes-charset utf-8
+ ATTR language attributes-natural-language en
+ ATTR uri printer-uri $uri
+ ATTR boolean my-subscriptions true
+ STATUS successful-ok
+ STATUS client-error-not-found
+}
+";
+
+const CANCEL_TEST: &str = "{
+ OPERATION Cancel-Subscription
+ GROUP operation-attributes-tag
+ ATTR charset attributes-charset utf-8
+ ATTR language attributes-natural-language en
+ ATTR uri printer-uri $uri
+ ATTR integer notify-subscription-id $id
+ STATUS successful-ok
+ STATUS client-error-not-found
+}
+";
+
+/// Subscribe to the print service's notifications on the system bus; the
+/// subscription's id.
+fn subscribe() -> Result<u32, String> {
+    let follower = format!("{FOLLOWER}{}", std::process::id());
+    let output = ipp_request(
+        SUBSCRIBE_TEST,
+        &[("events", FOLLOWED_EVENTS), ("follower", &follower)],
+    )?;
+    subscriptions(&output)
+        .into_iter()
+        .map(|(id, _)| id)
+        .next()
+        .ok_or_else(|| "the print service named no subscription".to_owned())
+}
+
+fn cancel_subscription(id: u32) {
+    if let Err(error) = ipp_request(CANCEL_TEST, &[("id", &id.to_string())]) {
+        tracing::warn!(%error, id, "a print service subscription stayed");
+    }
+}
+
+/// Cancel the subscriptions a follower whose process has ended left.
+fn cancel_left_behind() {
+    let Ok(listed) = ipp_request(LIST_TEST, &[]) else {
+        return;
+    };
+    for (id, follower) in subscriptions(&listed) {
+        let ended = follower
+            .as_deref()
+            .and_then(|data| data.strip_prefix(FOLLOWER))
+            .and_then(|pid| pid.parse::<u32>().ok())
+            .is_some_and(|pid| !std::path::Path::new(&format!("/proc/{pid}")).exists());
+        if ended {
+            cancel_subscription(id);
+        }
+    }
+}
+
+/// Each subscription `ipptool -tv` printed, with its user data.
+fn subscriptions(output: &str) -> Vec<(u32, Option<String>)> {
+    output
+        .split("-- separator --")
+        .filter_map(|group| {
+            let value = |name: &str| {
+                group.lines().find_map(|line| {
+                    let line = line.trim();
+                    let (attribute, value) = line.split_once(" = ")?;
+                    (attribute.split_whitespace().next() == Some(name)).then(|| value.to_owned())
+                })
+            };
+            let id = value("notify-subscription-id")?.parse().ok()?;
+            Some((id, value("notify-user-data")))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod follow_tests {
+    /// What `ipptool -tv` prints of two subscriptions is read as their ids
+    /// and user data, each group on its own.
+    #[test]
+    fn subscriptions_are_read_group_by_group() {
+        let output = "    /dev/stdin [PASS]
+        status-code = successful-ok (successful-ok)
+        notify-events (keyword) = printer-added
+        notify-user-data (octetString) = tilo-follow:11
+        notify-subscription-id (integer) = 1
+        -- separator --
+        notify-events (keyword) = printer-added
+        notify-subscription-id (integer) = 2
+";
+        assert_eq!(
+            super::subscriptions(output),
+            vec![(1, Some("tilo-follow:11".to_owned())), (2, None)]
+        );
+    }
+}

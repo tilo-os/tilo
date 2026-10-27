@@ -306,9 +306,8 @@ mod native_mount_selection_tests {
             mountpoint.path(),
             &fuser::Config::default(),
         );
-        let error = match result {
-            Ok(_) => panic!("native mounting must remain unavailable"),
-            Err(error) => error,
+        let Err(error) = result else {
+            panic!("native mounting must remain unavailable")
         };
         assert_eq!(error.kind(), std::io::ErrorKind::Other);
         assert_eq!(
