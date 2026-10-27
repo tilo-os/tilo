@@ -22,7 +22,7 @@ action decrement(c: Counter) (icon: .minus) {
 
 /// The counter's window: the value, and the two buttons that change it.
 view counter(c: Counter) {
-    page {
+    std.page(c) {
         section("Count") {
             text("{c.value}", role: .numeric)
         }

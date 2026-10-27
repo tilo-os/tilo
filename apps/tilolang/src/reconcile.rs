@@ -43,8 +43,9 @@ pub enum UiEvent {
     Toggle(String, bool),
     /// The suggestion in the invocation card `key` was allowed or declined.
     Resolve(String, bool),
-    /// The node `key`'s event `event` happened: a case of a `choice` was picked.
-    Fire(String, String),
+    /// The node `key`'s event `event` happened (a case of a `choice` was picked, a row of a
+    /// list selected), carrying a value when the event carries one.
+    Fire(String, String, Option<Value>),
     /// A row of a resource was activated: show the resource.
     Open(tilolang_tilo::runtime::ResourceRef),
 }
@@ -82,6 +83,8 @@ pub struct Reconciler {
     people: People,
     /// What the components it builds report, shared with every reconciler of the same view.
     adapter: Adapter,
+    /// Where the rows of the virtual lists it builds come from.
+    rows: Option<crate::adapter::RowsOf>,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -357,6 +360,7 @@ impl Reconciler {
             cases: Rc::new(|_| Vec::new()),
             people: Rc::new(str::to_owned),
             adapter: Adapter::default(),
+            rows: None,
         }
     }
 
@@ -373,7 +377,21 @@ impl Reconciler {
             cases: Rc::clone(&other.cases),
             people: Rc::clone(&other.people),
             adapter: other.adapter.clone(),
+            rows: other.rows.clone(),
         }
+    }
+
+    /// Read the rows of the virtual lists it builds from `rows`.
+    #[must_use]
+    pub fn with_rows(mut self, rows: crate::adapter::RowsOf) -> Self {
+        self.rows = Some(rows);
+        self
+    }
+
+    /// The rows of the virtual list `key`, as the host renders them.
+    #[must_use]
+    pub fn rows_of(&self, key: &str) -> Option<ui::component::SharedRows> {
+        self.rows.as_ref().and_then(|rows| rows(key))
     }
 
     /// What the components of the view report.
@@ -544,30 +562,8 @@ impl Reconciler {
                 }
             }
         }
-        let old_views = crate::adapter::views_of(old_node, description);
-        let new_views = crate::adapter::views_of(new_node, description);
-        let shape = |views: &[(&str, &UiNode)]| {
-            views
-                .iter()
-                .map(|(slot, node)| (slot.to_string(), node.key.clone(), node.kind.clone()))
-                .collect::<Vec<_>>()
-        };
-        if shape(&old_views) == shape(&new_views) {
-            // The same views: each is reconciled where it stands.
-            let mut panes = Vec::new();
-            collect_panes(widget.as_mut(), &mut panes);
-            if panes.len() != new_views.len() {
-                return Some(self.build(new_node));
-            }
-            for ((pane, (_, before)), (_, after)) in panes.into_iter().zip(old_views).zip(new_views)
-            {
-                if let Some(replaced) = self.update_in(pane.content_mut(), before, after) {
-                    pane.replace(replaced);
-                }
-            }
-            return None;
-        }
-        // Views came, went or moved: each slot of the widget takes them by key, in place.
+        // Each slot of the widget takes its views by key, in place: those gone removed, those
+        // kept moved and reconciled where they stand, those new built.
         for slot in description
             .slots
             .iter()
@@ -607,7 +603,13 @@ impl Reconciler {
         }
         for (index, &child) in new.iter().enumerate() {
             let Some(at) = held.iter().position(|old| old.key == child.key) else {
-                views.insert(index, Box::new(Pane::new(self.build(child))));
+                let built = self.build(child);
+                let view = if crate::adapter::description_of(child).is_some() {
+                    built
+                } else {
+                    Box::new(Pane::new(built)) as Element
+                };
+                views.insert(index, view);
                 held.insert(index, child);
                 continue;
             };
@@ -1036,8 +1038,11 @@ impl Reconciler {
             Box::new(
                 ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_change(move |index| {
                     if let Some(case) = names.get(index) {
-                        sink.borrow_mut()
-                            .push(UiEvent::Fire(key.clone(), format!("pick.{case}")));
+                        sink.borrow_mut().push(UiEvent::Fire(
+                            key.clone(),
+                            format!("pick.{case}"),
+                            None,
+                        ));
                     }
                 }),
             )
@@ -1055,8 +1060,11 @@ impl Reconciler {
                         .position(|shown| shown == label)
                         .and_then(|index| names.get(index))
                     {
-                        sink.borrow_mut()
-                            .push(UiEvent::Fire(key.clone(), format!("pick.{case}")));
+                        sink.borrow_mut().push(UiEvent::Fire(
+                            key.clone(),
+                            format!("pick.{case}"),
+                            None,
+                        ));
                     }
                 }),
             )
@@ -1070,14 +1078,14 @@ impl Reconciler {
         let avatars = node
             .children
             .iter()
-            .any(|item| find(item, &row_kind).is_some_and(crate::window::shows_avatar));
+            .any(|item| find(item, &row_kind).is_some_and(shows_avatar));
         let rows: Vec<Element> = node
             .children
             .iter()
             .map(|item| {
                 let row = find(item, &row_kind).unwrap_or(item);
                 if row.kind == row_kind {
-                    self.build(&crate::window::in_avatar_column(row, avatars))
+                    self.build(&in_avatar_column(row, avatars))
                 } else {
                     self.build(row)
                 }
@@ -1299,6 +1307,23 @@ pub(crate) fn presence_path(node: &UiNode) -> Vec<PathSegment> {
             ]
         })
         .unwrap_or_default()
+}
+
+/// Whether a list's row node shows an avatar: a participant's, or the item's own glyph.
+fn shows_avatar(row: &UiNode) -> bool {
+    crate::adapter::description_of(row).is_some_and(|description| {
+        !crate::adapter::slot_parts(row, description, "avatar").is_empty()
+    })
+}
+
+/// The row node as its list shows it: the room an avatar takes is kept while the list shows
+/// avatars, and given up while no row of it does.
+fn in_avatar_column(row: &UiNode, avatars: bool) -> UiNode {
+    let mut row = row.clone();
+    if !avatars {
+        row.props.remove("avatar_space");
+    }
+    row
 }
 
 /// Whether `node` is a document's body: a text field the window shows as the block editor

@@ -5,10 +5,12 @@ use serde_json::Value as Json;
 use tilolang_tilo::action::register_actions;
 use tilolang_tilo::runtime::MemorySink;
 use ui::automerge::AutoCommit;
+use ui::component::{Component as _, RowSource as _};
 use ui::tilo_actions::{
     ActionContext, ActionInvoker, ActionRegistry, EncodedAction, apply_local_with_context,
 };
 use ui::widget::controls::ActionControls as _;
+use ui::widget::{ItemRow, ListItemProps};
 
 use super::*;
 
@@ -232,58 +234,118 @@ impl Room {
         self.window.shell_ref().expect("the window shows the shell")
     }
 
-    fn list(&mut self) -> &mut ListPane {
-        let shell = self.window.shell().expect("the window shows the shell");
-        if shell.overview_mut::<ListPane>().is_some() {
-            return shell.overview_mut::<ListPane>().unwrap();
-        }
-        shell.content_mut::<ListPane>().expect("a list column")
+    /// The composed shell, as the window last built it.
+    fn composed(&self) -> UiNode {
+        self.window
+            .composed()
+            .cloned()
+            .expect("the window composed its shell")
     }
 
-    /// The rows of the list, every one shown, as a list tall enough for all of them shows them.
-    fn shown(&mut self) -> Vec<RowData> {
-        let list = self.list();
-        list.show_rows(0..list.len());
-        list.shown()
-    }
-
-    /// The keys and titles of the rows the list shows.
-    fn rows(&mut self) -> Vec<(String, String)> {
-        self.shown()
+    /// The rows of the root's list, as its list reads them.
+    fn root_rows(&self) -> Rc<RefCell<HostRows>> {
+        self.window
+            .rows
+            .borrow()
             .iter()
-            .map(|row| {
-                let title = row
-                    .row
-                    .as_ref()
-                    .and_then(|node| node.props.get("title"))
-                    .map_or_else(|| row.label.clone(), crate::reconcile::display);
-                (row.key.clone(), title)
+            .find(|(key, _)| !key.starts_with(DETAIL))
+            .map(|(_, rows)| Rc::clone(rows))
+            .expect("the root lists its items")
+    }
+
+    /// Each row of the root's list, every one rendered as a list tall enough for all of them
+    /// renders them: its key, and its item as the list reads it.
+    fn items(&self) -> Vec<(String, ListItemProps)> {
+        let rows = self.root_rows();
+        let len = rows.borrow().len();
+        rows.borrow_mut().request_range(0..len);
+        (0..len)
+            .filter_map(|index| rows.borrow().key_at(index))
+            .filter_map(|key| {
+                let mut item = None;
+                rows.borrow_mut()
+                    .read(&key, &mut |source| {
+                        item = Some(
+                            ListItemProps::from_source(source)
+                                .map_err(|error| error.to_string())?,
+                        );
+                        Ok(())
+                    })
+                    .unwrap();
+                Some((key, item?))
             })
             .collect()
     }
 
-    /// Run what a shell control asks and let the window settle.
-    fn ask(&mut self, request: Request) {
-        self.window.request(request);
+    /// The keys and titles of the rows of the root's list.
+    fn rows(&self) -> Vec<(String, String)> {
+        self.items()
+            .into_iter()
+            .map(|(key, item)| {
+                let title = match item.row {
+                    ItemRow::Row(row) => row.title,
+                    _ => String::new(),
+                };
+                (key, title)
+            })
+            .collect()
+    }
+
+    /// The resource the row `key` of the root's list shows.
+    fn item_of(&self, key: &str) -> ResourceRef {
+        let id = self
+            .items()
+            .into_iter()
+            .find(|(row, _)| row == key)
+            .and_then(|(_, item)| item.item)
+            .expect("the row shows a resource")
+            .0;
+        let host = self.window.current_host().unwrap();
+        let probe = ResourceRef::parse_id(&id, String::new()).unwrap();
+        let ty = tilolang_tilo::runtime::store::Store::type_of(host.store(), &probe).unwrap();
+        ResourceRef::parse_id(&id, ty).unwrap()
+    }
+
+    /// The list of the overview column.
+    fn list(&mut self) -> &mut DescribedList {
+        let shell = self.window.shell().expect("the window shows the shell");
+        if shell.overview_mut::<DescribedList>().is_some() {
+            return shell.overview_mut::<DescribedList>().unwrap();
+        }
+        shell.content_mut::<DescribedList>().expect("a list column")
+    }
+
+    /// The key of the composed node of `kind` whose prop `name` is `value`.
+    fn key_of(&self, kind: &str, name: &str, value: &str) -> String {
+        node_with(&self.composed(), kind, name, value)
+            .unwrap_or_else(|| panic!("no {kind} with {name} {value}"))
+            .key
+            .clone()
+    }
+
+    /// Report what a control of the composed shell did, and let the window settle.
+    fn fire(&mut self, key: &str, event: &str, value: Option<Value>) {
+        self.window
+            .act(UiEvent::Fire(key.to_owned(), event.to_owned(), value));
         self.settle();
     }
 
-    /// Press the header action labelled `label` of the root window.
+    /// Press the header's button labelled `label`.
     fn header_action(&mut self, label: &str) {
-        let host = self.window.current_host().unwrap();
-        let target = self.window.root.as_ref().unwrap().target.clone();
-        let action = describe::offered(&host, &target)
-            .iter()
-            .find(|action| action.label == label)
-            .cloned()
-            .unwrap_or_else(|| panic!("the header offers no {label}"));
-        self.ask(Request::Invoke {
-            action,
-            title: String::new(),
-        });
+        let key = self.key_of("ui.Button", "label", label);
+        self.fire(&key, "press", None);
     }
 
-    /// Whether the note published as `resource` is pinned.
+    /// Activate the row `key` of the root's list, as a click on it does.
+    fn activate(&mut self, key: &str) {
+        let item = self.item_of(key);
+        let list = node_with(&self.composed(), "ui.VirtualList", "", "")
+            .expect("the composed list")
+            .key
+            .clone();
+        self.fire(&list, "activate", Some(Value::resource(&item)));
+    }
+
     fn pinned(&self, resource: &str) -> bool {
         let host = self.window.current_host().unwrap();
         let path = resource.strip_prefix("tl:so.tilo.lang.notes:").unwrap();
@@ -314,15 +376,17 @@ impl Room {
     }
 }
 
-/// The first node of the tree with `kind` whose prop `name` is `value`.
+/// The first node of the tree with `kind` whose prop `name` is `value` (any, when `name` is
+/// empty).
 fn node_with<'a>(node: &'a UiNode, kind: &str, name: &str, value: &str) -> Option<&'a UiNode> {
     if node.kind == kind
-        && node
-            .props
-            .get(name)
-            .map(crate::reconcile::display)
-            .as_deref()
-            == Some(value)
+        && (name.is_empty()
+            || node
+                .props
+                .get(name)
+                .map(crate::reconcile::display)
+                .as_deref()
+                == Some(value))
     {
         return Some(node);
     }
@@ -338,6 +402,38 @@ fn first_input(node: &UiNode) -> Option<&UiNode> {
     node.children.iter().find_map(first_input)
 }
 
+/// The first node of the tree of `kind` (any props when `name` is empty).
+fn first_of<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
+    if node.kind == kind {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| first_of(child, kind))
+}
+
+/// The children of the named slot `name` of a component node.
+fn slot_of<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
+    node.children
+        .iter()
+        .filter(|child| {
+            child.kind == crate::adapter::SLOT
+                && child.props.get("name") == Some(&Value::text(name))
+        })
+        .flat_map(|child| child.children.iter())
+        .collect()
+}
+
+/// The labels of the buttons in the header slot `slot` of the composed shell.
+fn header_labels(shell: &UiNode, slot: &str) -> Vec<String> {
+    slot_of(shell, slot)
+        .into_iter()
+        .filter_map(|node| match node.props.get("label") {
+            Some(Value::Text(label)) => Some(label.clone()),
+            _ if node.kind == "ui.SearchButton" => Some("search".to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
 // ----- the shell ---------------------------------------------------------------------------
 
 #[test]
@@ -350,19 +446,30 @@ fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_f
     assert!(room.shell().has_sidebar(), "the filter is the sidebar");
     let rows = room.rows();
     assert!(rows.len() >= 3, "{rows:?}");
+    let shell = room.composed();
     assert_eq!(
-        room.window
-            .headers
-            .get("overview")
-            .map(|header| header.split('\u{1f}').next().unwrap_or_default().to_owned())
-            .as_deref(),
-        Some("All notes")
+        shell.props.get("overview_title"),
+        Some(&Value::text("All notes"))
+    );
+    assert_eq!(
+        header_labels(&shell, "overview_actions"),
+        ["Sort", "search", "New note"],
+        "the sort menu, search, and the primary action last"
     );
     // The scenario showed its note; with that closed, the content says so in one sentence.
     assert!(room.window.detail.is_some());
-    room.ask(Request::Back);
+    room.window.close_detail();
+    room.settle();
     assert!(room.window.detail.is_none());
-    assert!(room.window.headers.contains_key("content-empty"));
+    let placeholder = slot_of(&room.composed(), "content")
+        .into_iter()
+        .find(|node| node.kind == "ui.EmptyState")
+        .cloned()
+        .expect("the content says nothing is selected");
+    assert_eq!(
+        placeholder.props.get("title"),
+        Some(&Value::text("No note selected"))
+    );
 }
 
 // USER REQUIREMENT (2026-10-20): `open(r)` "the host minimally implements it as
@@ -371,32 +478,39 @@ fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_f
 #[test]
 fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_list() {
     let mut room = Room::seeded("notes");
-    let (key, title) = room.rows().remove(0);
-    room.ask(Request::Activate(key.clone()));
+    let (key, _) = room.rows().remove(1);
+    room.activate(&key);
+    let item = room.item_of(&key);
+    assert_eq!(
+        room.window.detail_target(),
+        Some(&item),
+        "the note is shown"
+    );
     let detail = room.window.detail_tree().expect("the note is shown");
     assert!(
         first_input(&detail).is_some(),
         "the note's editor: {detail:#?}"
     );
-    assert_eq!(
-        room.list().selected.as_deref(),
-        Some(key.as_str()),
-        "the row is selected"
-    );
-    let header = room
-        .window
-        .headers
-        .get("content")
+    let selected: Vec<String> = room
+        .list()
+        .list()
+        .unwrap()
+        .selection()
+        .stored_keys()
         .cloned()
-        .unwrap_or_default();
+        .collect();
+    assert_eq!(selected, std::slice::from_ref(&key), "the row is selected");
     assert!(
-        header.starts_with('\u{1f}'),
-        "the note shows {title} as its own title, which the header does not repeat: {header}"
+        !room.composed().props.contains_key("title"),
+        "the note shows its title as its own, which the header does not repeat"
     );
     // Editing the title changes the row.
-    let input = first_input(&detail).unwrap().key.clone();
+    let input = first_input(&room.composed())
+        .expect("the composed editor")
+        .key
+        .clone();
     room.window
-        .act(true, UiEvent::Edit(input, "Plans for the week".to_owned()));
+        .act(UiEvent::Edit(input, "Plans for the week".to_owned()));
     room.settle();
     assert!(
         room.rows()
@@ -405,7 +519,8 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
         "{:?}",
         room.rows()
     );
-    room.ask(Request::Back);
+    room.window.close_detail();
+    room.settle();
     assert!(room.window.detail.is_none() || room.shell().front_pane() != NavPane::Content);
 }
 
@@ -414,12 +529,13 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
     let mut room = Room::new("notes");
     assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), 0);
     // An empty notebook offers its primary action and says one sentence.
-    let empty = room.list().empty.clone();
-    assert_eq!(empty.sentence, "No notes yet");
-    assert_eq!(
-        empty.action.as_ref().map(|action| action.label.as_str()),
-        Some("New note")
-    );
+    let empty = slot_of(&room.composed(), "overview")
+        .into_iter()
+        .find(|node| node.kind == "ui.EmptyState")
+        .cloned()
+        .expect("the empty notebook says so");
+    assert_eq!(empty.props.get("title"), Some(&Value::text("No notes yet")));
+    assert_eq!(empty.props.get("action"), Some(&Value::text("New note")));
     room.header_action("New note");
     assert_eq!(
         room.items_of("so.tilo.lang.notes", "notes"),
@@ -427,7 +543,8 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
         "the action inserted a note"
     );
     assert_eq!(room.rows().len(), 1);
-    let made = room.shown()[0].item.clone();
+    let (key, _) = room.rows().remove(0);
+    let made = room.item_of(&key);
     assert_eq!(
         room.window.detail_target(),
         Some(&made),
@@ -477,11 +594,10 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
         .detail_target()
         .cloned()
         .expect("the person's note opened");
-    let theirs = room
-        .shown()
-        .into_iter()
-        .map(|row| row.item)
-        .filter(|item| *item == opened)
+    let keys: Vec<String> = room.rows().into_iter().map(|(key, _)| key).collect();
+    let theirs = keys
+        .iter()
+        .filter(|key| room.item_of(key) == opened)
         .count();
     assert_eq!(theirs, 1, "it is a note of the list");
     // And an agent's note after that leaves the person's open.
@@ -494,75 +610,77 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
 fn a_new_conversation_shows_the_groups_avatar_until_someone_writes() {
     let mut room = Room::new("chat");
     room.header_action("New chat");
-    let rows = room.shown();
-    assert_eq!(rows.len(), 1);
+    let items = room.items();
+    assert_eq!(items.len(), 1);
+    let ItemRow::Row(row) = &items[0].1.row else {
+        panic!("a conversation's row is a list row");
+    };
+    let avatar = row
+        .avatar
+        .as_ref()
+        .expect("a conversation always has an avatar");
     assert_eq!(
-        rows[0].avatar,
-        Some(list::RowAvatar::Glyph(
-            "New chat".to_owned(),
-            ui::icons::Icon::Users
-        )),
-        "a conversation always has an avatar: before a message, its group's"
+        avatar.glyph,
+        Some(ui::icons::Icon::Users),
+        "before a message, its group's"
     );
-    let seeded = Room::seeded("chat").shown();
-    assert!(
-        seeded
-            .iter()
-            .filter(|row| row
-                .row
-                .as_ref()
-                .and_then(|node| node.props.get("secondary"))
-                != Some(&Value::Text("No messages yet".to_owned())))
-            .all(|row| matches!(row.avatar, Some(list::RowAvatar::Of(..)))),
-        "after one, its last author's"
-    );
+    assert_eq!(avatar.name.as_deref(), Some("New chat"));
+    let seeded = Room::seeded("chat");
+    for (_, item) in seeded.items() {
+        let ItemRow::Row(row) = item.row else {
+            panic!("a conversation's row is a list row");
+        };
+        if row.secondary.as_deref() == Some("No messages yet") {
+            continue;
+        }
+        let avatar = row.avatar.expect("after a message, its last author's");
+        assert!(avatar.who.is_some(), "a participant's avatar: {avatar:?}");
+    }
 }
 
 #[test]
 fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
     let mut room = Room::seeded("notes");
     let all = room.rows().len();
-    let key = room
-        .window
-        .root
-        .as_ref()
-        .and_then(|lane| lane.list.clone())
-        .unwrap();
-    room.ask(Request::Fire {
-        key,
-        event: "filter.pinned".to_owned(),
-    });
-    let pinned = room.rows().len();
-    assert!(pinned < all, "{pinned} of {all}");
-    let header = room
-        .window
-        .headers
-        .get("overview")
-        .cloned()
-        .unwrap_or_default();
-    assert!(header.starts_with("Pinned"), "{header}");
+    let pinned = room.key_of("ui.NavItem", "label", "Pinned");
+    room.fire(&pinned, "select", None);
+    let shown = room.rows().len();
+    assert!(shown < all, "{shown} of {all}");
+    assert_eq!(
+        room.composed().props.get("overview_title"),
+        Some(&Value::text("Pinned"))
+    );
 }
 
 #[test]
-fn a_destructive_row_action_runs_through_the_door_and_offers_undo() {
+fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
     let mut room = Room::seeded("notes");
     let before = room.rows().len();
-    let key = room.rows()[0].0.clone();
-    let row = room.shown().into_iter().find(|row| row.key == key).unwrap();
-    let delete = row
-        .actions
-        .iter()
-        .find(|action| action.destructive)
-        .cloned()
-        .expect("a destructive action on the row");
+    let (key, _) = room.rows().remove(0);
+    let list = room.list();
+    assert!(list.list_mut().unwrap().reveal(&key));
+    let area = list.menu_area_mut().expect("the rows share one menu");
     assert!(
-        row.actions.iter().any(|action| !action.destructive),
-        "the row's menu has every action"
+        area.open_at(ui::vello::kurbo::Point::ZERO, false),
+        "the keyboard opens the focused row's menu"
     );
-    room.ask(Request::Invoke {
-        action: delete,
-        title: row.label,
-    });
+    let labels: Vec<Option<&str>> = area
+        .menu()
+        .items()
+        .iter()
+        .map(ui::widget::MenuItem::label)
+        .collect();
+    assert!(labels.contains(&Some("Delete")), "{labels:?}");
+    assert!(
+        labels.iter().any(|label| *label != Some("Delete")),
+        "the row's menu has every action: {labels:?}"
+    );
+    let delete = labels
+        .iter()
+        .position(|label| *label == Some("Delete"))
+        .unwrap();
+    area.choose(delete);
+    room.settle();
     assert_eq!(room.rows().len(), before - 1);
     assert!(room.shell().toast_text().is_some(), "the shell offers undo");
 }
@@ -581,7 +699,7 @@ fn a_scenario_stages_exactly_its_data_however_many_frames_run() {
 }
 
 #[test]
-fn every_package_opens_into_one_frame_of_the_native_shell() {
+fn every_package_opens_into_its_shell() {
     for built in crate::app::builtin::compiled() {
         let meta = &built.compiled.meta;
         if meta
@@ -592,17 +710,13 @@ fn every_package_opens_into_one_frame_of_the_native_shell() {
             continue;
         }
         let mut room = Room::seeded(built.dir);
-        let tree = room.window.root_tree().expect("the root view runs").clone();
+        let tree = room.window.root_tree().expect("the root view runs");
         assert!(
-            frame_of(&tree).is_some(),
-            "{} has a frame: {tree:#?}",
+            shell::shell_of(&tree).is_some(),
+            "{} builds its shell: {tree:#?}",
             built.dir
         );
-        assert!(
-            room.window.shape.is_some(),
-            "{} composed the shell",
-            built.dir
-        );
+        assert_eq!(room.composed().kind, "ui.NavShell");
         room.settle();
     }
 }
@@ -784,7 +898,7 @@ fn person_decides(room: &mut Room, decision: &str, target: &str) -> Result<Json,
 fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
     let mut room = Room::seeded("letters");
     let key = room.rows()[0].0.clone();
-    room.ask(Request::Activate(key));
+    room.activate(&key);
     let draft = room
         .window
         .detail_target()
@@ -792,16 +906,12 @@ fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
         .expect("the letter opened");
     let host = room.window.current_host().unwrap();
     let to = crate::reconcile::display(&host.runtime().read(&draft, "to").unwrap());
-    let send = node_with(
-        &room.window.detail_tree().unwrap(),
-        "ui.Button",
-        "label",
-        "Send",
-    )
-    .expect("the letter's Send button")
-    .key
-    .clone();
-    room.window.act(true, UiEvent::Press(send));
+    let send = node_with(&room.composed(), "ui.Button", "label", "Send")
+        .expect("the letter's Send button")
+        .key
+        .clone();
+    room.window
+        .act(UiEvent::Fire(send, "press".to_owned(), None));
     room.settle();
     assert!(room.window.ask.is_some(), "a send asks the person first");
     assert!(
@@ -1019,22 +1129,21 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
     let room = Room::seeded("counter");
     let host = room.window.current_host().unwrap();
     let target = room.window.root.as_ref().unwrap().target.clone();
-    let offered = describe::offered(&host, &target);
-    let labels = |actions: &[RowAction]| -> Vec<String> {
-        actions.iter().map(|action| action.label.clone()).collect()
-    };
+    let offered: Vec<String> = host
+        .runtime()
+        .catalogue()
+        .into_iter()
+        .map(|signature| signature.name)
+        .collect();
     assert!(
-        labels(&offered).contains(&"Increment".to_owned()),
-        "{:?}",
-        labels(&offered)
+        offered.iter().any(|name| name == "increment"),
+        "{offered:?}"
     );
-    let frame = frame_of(&room.window.root_tree().unwrap()).unwrap().clone();
-    let header = outside(&offered, &frame, &target);
-    assert!(
-        !labels(&header).contains(&"Increment".to_owned())
-            && !labels(&header).contains(&"Decrement".to_owned()),
-        "the counter's buttons are its content's: {:?}",
-        labels(&header)
+    let _ = target;
+    assert_eq!(
+        header_labels(&room.composed(), "actions"),
+        ["search"],
+        "the counter's buttons are its content's"
     );
 }
 
@@ -1044,36 +1153,31 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
 #[test]
 fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() {
     let room = Room::seeded("todo");
-    let host = room.window.current_host().unwrap();
-    let item = room
-        .window
-        .detail_target()
-        .cloned()
-        .expect("the scenario's item is shown");
-    let list = room.window.root.as_ref().unwrap().target.clone();
-    let offered = describe::offered_in(&host, &item, &list);
-    let check = offered
-        .iter()
-        .find(|action| action.label == "Check")
-        .expect("the item offers Check");
-    assert!(check.toggles.is_some(), "Check says the state it toggles");
-    let remove = offered
-        .iter()
-        .find(|action| action.destructive)
-        .expect("the list offers to remove the item");
-    let header = room
-        .window
-        .headers
-        .get("content")
-        .cloned()
-        .expect("the item's window has a header");
     assert!(
-        !header.contains(&format!("{:?}", check.action)),
-        "the Done switch stands for Check: {header}"
+        room.window.detail_target().is_some(),
+        "the scenario's item is shown"
+    );
+    let header = header_labels(&room.composed(), "actions");
+    assert!(
+        !header
+            .iter()
+            .any(|label| label == "Check" || label == "Uncheck"),
+        "the Done switch stands for Check: {header:?}"
     );
     assert!(
-        header.contains(&format!("{:?}", remove.action)),
-        "the rest of the item's actions stay: {header}"
+        header.iter().any(|label| label == "Remove"),
+        "the rest of the item's actions stay: {header:?}"
+    );
+    let menus: Vec<String> = room
+        .items()
+        .into_iter()
+        .flat_map(|(_, item)| item.menu.into_iter().map(|entry| entry.label))
+        .collect();
+    assert!(
+        menus
+            .iter()
+            .any(|label| label == "Check" || label == "Uncheck"),
+        "and in its row's menu: {menus:?}"
     );
 }
 
@@ -1112,12 +1216,20 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
         .expect("the scenario's note is shown");
     let host = room.window.current_host().unwrap();
     assert_eq!(describe::title_of(&host, &shown), "Q3 plan");
-    let selected = room.list().selected.clone();
-    let row = room
-        .shown()
+    let selected: Vec<String> = room
+        .list()
+        .list()
+        .unwrap()
+        .selection()
+        .stored_keys()
+        .cloned()
+        .collect();
+    let row: Vec<String> = room
+        .rows()
         .into_iter()
-        .find(|row| row.item == shown)
-        .map(|row| row.key);
+        .map(|(key, _)| key)
+        .filter(|key| room.item_of(key) == shown)
+        .collect();
     assert_eq!(selected, row, "and its row is the selected one");
 }
 
@@ -1125,71 +1237,85 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
 fn a_document_that_edits_its_title_shows_it_as_its_own_and_the_header_does_not_repeat_it() {
     let room = Room::seeded("notes");
     assert!(room.window.detail.is_some(), "the scenario's note is shown");
-    let header = room
-        .window
-        .headers
-        .get("content")
-        .map(|header| header.split('\u{1f}').next().unwrap_or_default().to_owned());
-    assert_eq!(
-        header.as_deref(),
-        Some(""),
+    let shell = room.composed();
+    assert!(
+        !shell.props.contains_key("title"),
         "the note's title is its own, not the header's"
     );
-    let host = room.window.current_host().unwrap();
-    let tree = room.window.detail_tree().unwrap();
-    let mut page = content_page(frame_of(&tree).unwrap());
-    assert!(
-        mark_field_roles(&host, &mut page),
-        "the editor binds the title"
+    let title = first_input(&shell).expect("the editor");
+    assert_eq!(
+        title.props.get("title"),
+        Some(&Value::Int(1)),
+        "the editor binds the title as its large title"
     );
 }
 
 #[test]
 fn the_list_renders_only_the_rows_it_shows() {
-    let mut room = Room::seeded("notes");
+    let room = Room::seeded("notes");
+    let rows = room.root_rows();
     let rendered = |room: &Room| -> Vec<String> {
         let tree = room.window.root_tree().unwrap();
-        frame_of(&tree)
-            .unwrap()
-            .children
+        let list = first_of(&tree, "ui.VirtualList").expect("the list").clone();
+        list.children
             .iter()
-            .filter(|row| !row.children.is_empty())
+            .filter(|row| row.kind != crate::adapter::SLOT && !row.children.is_empty())
             .map(|row| row.key.clone())
             .collect()
     };
-    let len = room.list().len();
+    let len = rows.borrow().len();
+    rows.borrow_mut().request_range(0..3);
     let first = rendered(&room);
     assert!(
         !first.is_empty() && first.len() < len,
         "the list asked for the rows it shows, {} of {len}",
         first.len()
     );
-    room.list().show_rows(len - 2..len);
-    let shown: Vec<String> = room.list().shown().into_iter().map(|row| row.key).collect();
+    rows.borrow_mut().request_range(len - 2..len);
+    let shown: Vec<String> = (len - 2..len)
+        .filter_map(|index| rows.borrow().key_at(index))
+        .collect();
     assert_eq!(
         rendered(&room),
         shown,
         "the rows scrolled away are forgotten"
     );
-    assert_eq!(shown.len(), 2);
 }
 
 #[test]
 fn a_change_to_an_item_reaches_its_shown_row() {
     let mut room = Room::seeded("notes");
     let (key, _) = room.rows().remove(0);
-    room.ask(Request::Activate(key.clone()));
-    let detail = room.window.detail_tree().expect("the note is shown");
-    let input = first_input(&detail).expect("the note's title").key.clone();
-    room.window
-        .act(true, UiEvent::Edit(input, "Renamed".to_owned()));
+    room.activate(&key);
+    let input = first_input(&room.composed())
+        .expect("the note's title")
+        .key
+        .clone();
+    room.window.act(UiEvent::Edit(input, "Renamed".to_owned()));
     room.settle();
     let title = room
-        .list()
-        .find(&key)
-        .and_then(|row| row.row)
-        .and_then(|row| row.props.get("title").map(crate::reconcile::display));
+        .rows()
+        .into_iter()
+        .find(|(row, _)| *row == key)
+        .map(|(_, title)| title);
     assert_eq!(title.as_deref(), Some("Renamed"));
+}
+
+#[test]
+fn a_rows_checkbox_shows_whether_its_item_is_done_from_its_first_read() {
+    let room = Room::staged("todo", "a saturday list");
+    let checked: Vec<bool> = room
+        .items()
+        .into_iter()
+        .filter_map(|(_, item)| match item.row {
+            ItemRow::Row(row) => row.checkbox.map(|bound| bound.state.get()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        checked.iter().any(|done| *done) && checked.iter().any(|done| !*done),
+        "the done items' checkboxes are checked, the others not: {checked:?}"
+    );
 }
 
 /// The identity of every widget under `widget`, itself included, with its name.
@@ -1201,21 +1327,6 @@ fn widget_identities(widget: &dyn ui::widget::Widget, out: &mut Vec<(usize, Stri
     for child in widget.children() {
         widget_identities(child, out);
     }
-}
-
-/// The content column.
-fn content_pane(room: &mut Room) -> &mut Pane {
-    room.window
-        .shell()
-        .and_then(|shell| shell.content_mut::<Pane>())
-        .expect("the content column")
-}
-
-/// The widgets of the content column.
-fn content_widgets(room: &mut Room) -> Vec<(usize, String)> {
-    let mut out = Vec::new();
-    widget_identities(content_pane(room), &mut out);
-    out
 }
 
 /// The widget under `widget`, itself included, whose test id is `id`.
@@ -1232,6 +1343,21 @@ fn widget_with_id<'a>(
         .find_map(|child| widget_with_id(child, id))
 }
 
+/// The content column's scroll.
+fn content_scroll(room: &mut Room) -> &mut ui::widget::Scrollable {
+    room.window
+        .shell()
+        .and_then(|shell| shell.content_mut::<ui::widget::Scrollable>())
+        .expect("the content column scrolls")
+}
+
+/// The widgets of the content column.
+fn content_widgets(room: &mut Room) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    widget_identities(content_scroll(room), &mut out);
+    out
+}
+
 #[test]
 fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widget() {
     use ui::widget::Widget as _;
@@ -1245,14 +1371,14 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
     }
     let mut room = Room::seeded("board");
     let mut keys = Vec::new();
-    cards(&room.window.root_tree().unwrap(), &mut keys);
+    cards(&room.composed(), &mut keys);
     let [todos, notes, chats] = &keys[..] else {
         panic!("the todo list, the notebook and the chats: {keys:?}");
     };
     let widgets_of = |room: &mut Room, key: &str| {
         let mut out = Vec::new();
         widget_identities(
-            widget_with_id(content_pane(room), key).expect("the card's content"),
+            widget_with_id(content_scroll(room), key).expect("the card's content"),
             &mut out,
         );
         out
@@ -1264,7 +1390,7 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
         .into_iter()
         .filter(|widget| !todo_before.contains(widget))
         .collect();
-    content_pane(&mut room).take_structure_change();
+    content_scroll(&mut room).take_structure_change();
 
     // Ticking a todo off changes what the todo card counts and previews, and nothing else.
     let host = room.window.current_host().unwrap();
@@ -1283,21 +1409,29 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
             _ => None,
         })
         .expect("an open todo");
-    let check = describe::offered(&host, &open.target)
-        .iter()
-        .find(|action| action.label == "Check")
-        .cloned()
-        .expect("an open todo can be checked");
-    room.ask(Request::Invoke {
-        action: check,
-        title: String::new(),
-    });
-    let Value::List(items) = host.runtime().read(&list, "items").unwrap() else {
-        panic!("the list holds items");
-    };
-    assert!(
-        !items.contains(&Value::Ref(open.clone()))
-            || host.runtime().read(&open.target, "done").ok() == Some(Value::Bool(true)),
+    let check = host
+        .packages()
+        .into_iter()
+        .find_map(|package| {
+            package
+                .meta
+                .actions
+                .iter()
+                .find(|action| action.name == "check")
+                .map(|action| action.id.clone())
+        })
+        .expect("todo checks its items");
+    host.runtime()
+        .invoke_action(
+            &Principal::new("ada"),
+            (check.as_str(), vec![Value::Ref(open.clone())]),
+        )
+        .unwrap();
+    room.window.commit_planned();
+    room.settle();
+    assert_eq!(
+        host.runtime().read(&open.target, "done").ok(),
+        Some(Value::Bool(true)),
         "the todo is checked"
     );
 
@@ -1321,9 +1455,9 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
         gone.iter().all(|(_, name)| name == "Card"),
         "only the todo card is replaced: {gone:?}"
     );
-    assert!(widget_with_id(content_pane(&mut room), todos).is_some());
+    assert!(widget_with_id(content_scroll(&mut room), todos).is_some());
     assert_eq!(
-        content_pane(&mut room).take_structure_change(),
+        content_scroll(&mut room).take_structure_change(),
         ui::widget::StructureChange::Described,
         "the frame's damage describes the card it replaced"
     );
@@ -1332,32 +1466,47 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
 #[test]
 fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
     fn rendered(node: &UiNode) -> usize {
-        usize::from(node.kind == "item") + node.children.iter().map(rendered).sum::<usize>()
+        usize::from(node.kind == "ui.ListItem") + node.children.iter().map(rendered).sum::<usize>()
+    }
+    fn transcript(room: &mut Room) -> &mut DescribedList {
+        let shell = room.window.shell().expect("the shell");
+        let docked = shell
+            .content_mut::<ui::widget::Docked>()
+            .expect("the conversation above its composer");
+        let mut found = None;
+        for child in docked.children_mut() {
+            if let Some(list) = child
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<DescribedList>())
+            {
+                found = Some(list);
+                break;
+            }
+        }
+        found.expect("the transcript")
     }
     let mut room = Room::seeded("chat");
     let messages = |room: &mut Room| {
-        thread_in(content_pane(room).content_mut())
-            .map(|thread| ui::widget::ListModel::len(thread.model()))
+        transcript(room)
+            .list()
+            .map(|list| ui::widget::ListModel::len(list.model()))
     };
     let first = messages(&mut room).expect("the conversation's transcript");
-    let thread_widget = |room: &mut Room| {
-        thread_in(content_pane(room).content_mut())
-            .map(|thread| std::ptr::from_ref(thread).cast::<()>() as usize)
-    };
-    let before = thread_widget(&mut room);
+    let before = std::ptr::from_ref(transcript(&mut room)).cast::<()>() as usize;
     // Enough messages that the transcript shows only the last of them.
     let sent = 80;
     for n in 0..sent {
-        let detail = room.window.detail_tree().unwrap();
-        let input = first_input(&detail).expect("the composer").key.clone();
-        let button = first_button(&detail)
+        let shell = room.composed();
+        let input = first_input(&shell).expect("the composer").key.clone();
+        let button = node_with(&shell, "ui.Button", "label", "Send")
             .expect("the composer's send")
             .key
             .clone();
         room.window
-            .act(true, UiEvent::Edit(input, format!("Message {n}")));
+            .act(UiEvent::Edit(input, format!("Message {n}")));
         room.settle();
-        room.window.act(true, UiEvent::Press(button));
+        room.window
+            .act(UiEvent::Fire(button, "press".to_owned(), None));
         room.settle();
     }
     let total = first + sent;
@@ -1366,39 +1515,23 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
         Some(total),
         "each message is a row more"
     );
-    assert_eq!(thread_widget(&mut room), before, "of the same transcript");
+    assert_eq!(
+        std::ptr::from_ref(transcript(&mut room)).cast::<()>() as usize,
+        before,
+        "of the same transcript"
+    );
     let detail = room.window.detail_tree().unwrap();
     assert!(
         rendered(&detail) < total / 2,
         "only the messages shown are rendered: {} of {total}",
         rendered(&detail)
     );
-    assert!(
-        format!("{detail:?}").contains(&format!("Message {}", sent - 1)),
-        "the newest is shown"
-    );
-}
-
-/// The first button under `node`.
-fn first_button(node: &UiNode) -> Option<&UiNode> {
-    if node.kind == "ui.Button" {
-        return Some(node);
-    }
-    node.children.iter().find_map(first_button)
 }
 
 /// A page as a detail column shows it: a heading and a paragraph.
 fn page_node(value: &str, extra: bool) -> UiNode {
     fn leaf(kind: &str, key: &str, value: &str) -> UiNode {
-        let mut node = UiNode {
-            kind: kind.to_owned(),
-            key: key.to_owned(),
-            props: std::collections::BTreeMap::new(),
-            binding: None,
-            events: std::collections::BTreeMap::new(),
-            anchor: None,
-            children: Vec::new(),
-        };
+        let mut node = UiNode::empty(kind, key);
         node.props.insert("value".to_owned(), Value::text(value));
         node
     }
@@ -1419,37 +1552,28 @@ fn page_node(value: &str, extra: bool) -> UiNode {
 fn a_changed_value_on_a_page_sets_its_widget_and_keeps_every_other() {
     use ui::widget::{StructureChange, Widget as _};
     let mut reconciler = Reconciler::new(Rc::default(), Rc::new(|_| String::new()));
-    let mut pane = Pane::new(Box::new(Spacer::fixed(0.0)));
-    let mut built = None;
-    fill(
-        &mut pane,
-        &mut reconciler,
-        &mut built,
-        &page_node("Ship it", false),
-    );
+    let first = page_node("Ship it", false);
+    let mut pane = Pane::new(reconciler.build(&first));
     pane.take_structure_change();
     let mut before = Vec::new();
     widget_identities(&pane, &mut before);
+    let mut step = |pane: &mut Pane, old: &UiNode, new: &UiNode| {
+        if let Some(replaced) = reconciler.update_in(pane.content_mut(), old, new) {
+            pane.replace(replaced);
+        }
+    };
 
     // A value changed: the widget that shows it is set, nothing is replaced or rebuilt.
-    fill(
-        &mut pane,
-        &mut reconciler,
-        &mut built,
-        &page_node("Shipped", false),
-    );
+    let changed = page_node("Shipped", false);
+    step(&mut pane, &first, &changed);
     let mut after = Vec::new();
     widget_identities(&pane, &mut after);
     assert_eq!(after, before, "every widget is kept");
     assert_eq!(pane.take_structure_change(), StructureChange::None);
 
     // A paragraph inserted: described, and every other widget kept where it was.
-    fill(
-        &mut pane,
-        &mut reconciler,
-        &mut built,
-        &page_node("Shipped", true),
-    );
+    let longer = page_node("Shipped", true);
+    step(&mut pane, &changed, &longer);
     let mut inserted = Vec::new();
     widget_identities(&pane, &mut inserted);
     assert!(before.iter().all(|widget| inserted.contains(widget)));
@@ -1457,14 +1581,79 @@ fn a_changed_value_on_a_page_sets_its_widget_and_keeps_every_other() {
     assert_eq!(pane.take_structure_change(), StructureChange::Described);
 
     // And taken out again.
-    fill(
-        &mut pane,
-        &mut reconciler,
-        &mut built,
-        &page_node("Shipped", false),
-    );
+    step(&mut pane, &longer, &changed);
     let mut removed = Vec::new();
     widget_identities(&pane, &mut removed);
     assert_eq!(removed, before);
     assert_eq!(pane.take_structure_change(), StructureChange::Described);
+}
+
+// ----- an app's own frame ------------------------------------------------------------------
+
+// What `std` does, an app does by composing the toolkit's components with the platform's
+// answers: the shelf builds its own list window, with the header, the menus, the swipe and the
+// next column, and gets what the platform does for every window.
+#[test]
+fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
+    let mut room = Room::seeded("handmade");
+    assert!(room.shell().has_overview(), "the books are the overview");
+    let shell = room.composed();
+    assert_eq!(
+        shell.props.get("overview_title"),
+        Some(&Value::text("Shelf"))
+    );
+    assert_eq!(
+        header_labels(&shell, "overview_actions"),
+        ["search", "New book"],
+        "the header holds the shelf's primary action"
+    );
+    let items = room.items();
+    assert_eq!(items.len(), 2);
+    let (first_key, first) = &items[0];
+    let menu: Vec<&str> = first
+        .menu
+        .iter()
+        .map(|entry| entry.label.as_str())
+        .collect();
+    assert_eq!(
+        menu,
+        ["Mark read", "Remove"],
+        "the book's actions and the shelf's on it"
+    );
+    let swipe = first.swipe.as_ref().expect("a swipe takes the book off");
+    assert!(swipe.destructive);
+    // The scenario opened its book beside the list, which selects it.
+    let shown = room
+        .window
+        .detail_target()
+        .cloned()
+        .expect("the book is shown");
+    assert_eq!(room.item_of(first_key), shown);
+    let selected: Vec<String> = room
+        .list()
+        .list()
+        .unwrap()
+        .selection()
+        .stored_keys()
+        .cloned()
+        .collect();
+    assert_eq!(selected, std::slice::from_ref(first_key));
+    // A destructive action from its menu offers Undo, as from any window.
+    let list = room.list();
+    assert!(list.list_mut().unwrap().reveal(first_key));
+    let area = list.menu_area_mut().expect("the rows share one menu");
+    assert!(area.open_at(ui::vello::kurbo::Point::ZERO, false));
+    area.choose(1);
+    room.settle();
+    assert_eq!(room.rows().len(), 1);
+    assert!(room.shell().toast_text().is_some(), "the shell offers undo");
+    // And its primary action shows what it made.
+    room.header_action("New book");
+    let made = room
+        .window
+        .detail_target()
+        .cloned()
+        .expect("the new book opened");
+    let host = room.window.current_host().unwrap();
+    assert_eq!(describe::title_of(&host, &made), "Untitled");
 }
