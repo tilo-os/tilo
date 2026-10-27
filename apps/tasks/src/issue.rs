@@ -426,8 +426,9 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
 }
 
 /// What the issue links to, each a reference chip that opens it in the app
-/// that keeps it, and the way to write a note for it in Notes, which links
-/// the note here.
+/// that keeps it; the way to write a note for it in Notes, which links the
+/// note here; and the way to link a note already written, picked by its
+/// title in the system palette.
 fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let links = cx.value({
         let id = id.clone();
@@ -445,6 +446,7 @@ fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             &crate::TasksEffect::WriteNote { issue: id.clone() },
         )
         .with_icon(ui::icons::Icon::Plus);
+    let link_note = link_note_button(id);
     let chips = cx.switch(&links, |cx, links| {
         let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
         for link in links {
@@ -478,10 +480,25 @@ fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                                 Text::new("tasks-links").with_role(TextRole::Heading),
                             )),
                     ))
+                    .push(Box::new(link_note))
                     .push(Box::new(write_note)),
             ))
             .push(chips),
     )
+}
+
+/// The button that opens the system palette on the issue's "Link a note",
+/// where the person picks the note by its title.
+fn link_note_button(id: &Id) -> Button {
+    let issue = ui::tilo_resource::items::item_resource_id::<Tracker>("issues", id);
+    let request = ui::search::SearchRequest::within(ui::search::ScopeDecl::new(
+        issue.clone(),
+        crate::tr("tasks-link-note-scope"),
+    ))
+    .with_query(crate::tr("tasks-link-note"));
+    Button::new(&format!("tasks-link-note-{issue}"), "tasks-link-note")
+        .with_icon(ui::icons::Icon::Link)
+        .on_action(ui::search::open_search_binding(&request))
 }
 
 fn status_badge(status: Status) -> Badge {

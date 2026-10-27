@@ -12594,6 +12594,7 @@ pub fn run() {
             end_spatial_control(network, &mut spatial_control);
         }
         prev_locked = session.is_locked();
+        screen_dimmer.keep_session_truthful(&mut session);
         // The dimming overlay is part of the scene, so switching it needs a frame.
         if screen_dimmer.overlay_alpha() != prev_dim_overlay {
             prev_dim_overlay = screen_dimmer.overlay_alpha();
