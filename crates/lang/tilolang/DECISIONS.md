@@ -305,6 +305,6 @@ search.md sections 2.2 and 3.3.
   body; it is the expanding view's, kept under `<view id>:<template>.<name>` and listed in that
   view's metadata. `std.list`'s `window query: Text` holds the place chosen, as people type
   it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
-  (`all`, named from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
+  (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
   the place a window starts on, the state's default (Letters starts on `is:drafts`), each counted by `items.matching(p.query).len()`. The `filter:` and `count:`
   parameters are gone.

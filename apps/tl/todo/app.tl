@@ -84,7 +84,7 @@ action rename(list: TodoList, name: Text) {
 
 /// The list's window: its items, open and done ones apart as the item's filters say.
 view todo_list(todos: TodoList) {
-    std.list(todos, todos.items, empty: "Nothing to do")
+    std.list(todos, todos.items, everything: "All", empty: "Nothing to do")
 }
 
 /// One item in a list: a checkbox for whether it is done.

@@ -10,7 +10,8 @@
 /// the primary action. The places in the sidebar are the item type's filters that are on or
 /// off (`filters(T)`), after all of the items, each with how many it holds; the one chosen is
 /// the window's query, as people type it in search (`is:done`), so everyone looking sees the
-/// same list; a window starts on `place` (all of the items when empty). A `sort` view state is
+/// same list; a window starts on `place` (all of the items when empty). The place of all of the
+/// items is called `everything`, "All" and the item type's plural noun unless the app says. A `sort` view state is
 /// the header's sort menu. Items whose type has a window of
 /// their own open in the next column; the list follows which one is open.
 view list<R, T, S>(
@@ -18,12 +19,12 @@ view list<R, T, S>(
     items: List<T>,
     sort: Option<State<S>> = .none,
     place: Text = "",
+    everything: Text = phrase("tilolang-all", kind: meta(T).plural),
     empty: Text = phrase("tilolang-empty"),
     row: (T) -> View
 ) {
     window query: Text = place
     let kind = meta(T)
-    let everything = phrase("tilolang-all", kind: kind.plural)
     let offered = actions(of)
     let places = filters(T).filter(f -> f.toggle)
     let shown = items.matching(query)
@@ -31,9 +32,9 @@ view list<R, T, S>(
         .some(p) => p.label,
         .none => if places.is_empty() { meta(of).title } else { everything },
     }
-    // An empty list offers the primary action while nothing was made yet; one a filter emptied
-    // says only that.
-    let primary = if query == "" { offered.find(a -> a.primary) } else { .none }
+    // An empty list offers the primary action while nothing was made yet: on the place a
+    // window starts on, or on all of the items. One another filter emptied says only that.
+    let primary = if query == "" or query == place { offered.find(a -> a.primary) } else { .none }
     ui.NavShell(
         content_kind: if kind.opens { .document } else { .list },
         sidebar_title: if places.is_empty() { .none } else { .some(meta(of).title) },

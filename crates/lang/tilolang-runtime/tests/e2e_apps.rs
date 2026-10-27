@@ -1061,6 +1061,11 @@ mod cases {
             .map(|item| text_prop(item, "key"))
             .collect();
         assert_eq!(keys, ["all", "is:drafts", "is:sent"]);
+        assert_eq!(
+            text_prop(&node_with(tree, "ui.NavItem", "key", "all"), "label"),
+            "All letters",
+            "the app names the place of every letter"
+        );
     }
 
     // ----- board ------------------------------------------------------------------------------
