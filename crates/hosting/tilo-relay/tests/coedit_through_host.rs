@@ -78,6 +78,8 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
             | Inbound::Live { .. }
             | Inbound::Member { .. }
             | Inbound::RecordOpened { .. }
+            | Inbound::Committed { .. }
+            | Inbound::CommitRefused { .. }
             | Inbound::Voice(_) => {}
         }
     }

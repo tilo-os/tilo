@@ -188,6 +188,13 @@ async fn admit_commit(
     if let Some(reason) = commit_refusal(&ws, author_device_public_key, &delta).await {
         return refused(&reason);
     }
+    if peer.role == crate::auth::PeerRole::Device {
+        // The caret and typing this device sends next wait for this change,
+        // as for one it sent alone (`super::handle_delta`).
+        ws.lock()
+            .await
+            .note_delta(peer.device_public_key, tokio::time::Instant::now());
+    }
     let authored = delta.clone();
     let admitted = Box::pin(enqueue_state_inner(
         &ws,
