@@ -220,14 +220,21 @@ def new_note(ctx, res):
     res.metrics["new_note"] = text_of(reply)[:200]
     expect(title in text_of(t.get("found_note")),
            f"tilo_find does not find the note {title!r}: {str(t.get('found_note'))[:300]}")
-    # Read it back through the desktop's own control socket, not through the agent's reply.
-    seen = ""
-    try:
-        seen = ctx.vm.run("control", "read", "so.tilo.notes", "--json")
-    except VmError as exc:
-        res.metrics["read_unavailable"] = exc.reason()
-        seen = json.dumps(ctx.vm.actions("notes"))
-    expect(title in seen, f"the created note {title!r} is not in what Notes holds (read back: {seen[:300]!r})")
+    # Read it back through the desktop's own control socket, not through the agent's reply:
+    # the desktop's listing for the note's title, which carries Notes' published pages. The
+    # control socket has no generic read, and a listing for "notes" answers with every
+    # action that mentions the word, not with Notes' records.
+    def listed():
+        rows = [row for row in ctx.vm.actions(title) if row.get("application") == "so.tilo.notes"
+                or str(row.get("provider", "")).isdigit()]
+        return rows if any(title in json.dumps(row, ensure_ascii=False) for row in rows) else None
+
+    rows = wait_until(listed, 15, 1.0)
+    if rows is None:
+        seen = json.dumps(ctx.vm.actions(title), ensure_ascii=False)
+        raise CheckFailed(f"the created note {title!r} is not among what the desktop lists for it "
+                          f"(listing: {seen[:300]!r})")
+    res.metrics["listed_as"] = [row.get("id", "")[:120] for row in rows[:3]]
     ctx.shot("M03-notes-new-note")
 
 

@@ -936,6 +936,10 @@ impl App {
         // The model's pass took in what landed from elsewhere; the frame
         // builds, lays out and draws that state. Work landing meanwhile is
         // the next frame's, which its wake asks for.
+        #[allow(
+            unused_variables,
+            reason = "a build without the window's own runner lays out in hosted frames only, and this guard is what the hosted frame's passes read"
+        )]
         let laying_out = crate::motion::laying_out_frame();
         if self.layout.root_node.is_none() {
             self.init_layout();
