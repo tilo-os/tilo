@@ -181,6 +181,15 @@ struct Pictures {
     kept: HashMap<String, String>,
 }
 
+/// Whether `stem` is the name Notion gives a page it never titled: `Untitled`
+/// and the id it appends, which is a run of hex digits.
+fn is_untitled(stem: &str) -> bool {
+    let Some(rest) = stem.strip_prefix("Untitled ") else {
+        return false;
+    };
+    rest.len() >= 8 && rest.chars().all(|character| character.is_ascii_hexdigit())
+}
+
 /// The title of the page stored at `name`: its file name, and, for a page an
 /// export named "Untitled", the `# Heading` Notion writes as its first line.
 fn page_title(name: &str, text: &str) -> String {
@@ -188,7 +197,9 @@ fn page_title(name: &str, text: &str) -> String {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .map(str::trim)
-        .filter(|stem| !stem.is_empty() && *stem != "Untitled");
+        .filter(|stem| !stem.is_empty())
+        // Notion writes a page it never titled as `Untitled <hash>.md`.
+        .filter(|stem| !is_untitled(stem));
     let from_body = text
         .lines()
         .map(str::trim)
@@ -439,7 +450,7 @@ fn pages_from_api_json(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
 /// The title a listing gives its page: the page's `title` property, else the
 /// title of its first heading, else the neutral name an import uses.
 fn api_title(listing: &Value, blocks: &[Value]) -> String {
-    let from_property = listing.get("title").and_then(rich_text).or_else(|| {
+    let from_property = listing.get("title").and_then(title_text).or_else(|| {
         listing.get("properties").and_then(|properties| {
             properties
                 .as_object()?
@@ -510,10 +521,10 @@ fn write_block_body(out: &mut String, block: &Value, kind: Option<&str>, text: &
             out.push('\n');
         }
         Some("bulleted_list_item") => {
-            let _ = writeln!(out, "- {}", one_line(&text));
+            let _ = writeln!(out, "- {}", one_line(text));
         }
         Some("numbered_list_item") => {
-            let _ = writeln!(out, "1. {}", one_line(&text));
+            let _ = writeln!(out, "1. {}", one_line(text));
         }
         Some("to_do") => {
             let checked = block
@@ -525,11 +536,11 @@ fn write_block_body(out: &mut String, block: &Value, kind: Option<&str>, text: &
                 out,
                 "- [{}] {}",
                 if checked { 'x' } else { ' ' },
-                one_line(&text)
+                one_line(text)
             );
         }
         Some("quote") => {
-            let _ = writeln!(out, "> {}", one_line(&text));
+            let _ = writeln!(out, "> {}", one_line(text));
             out.push('\n');
         }
         Some("code") => {
@@ -549,7 +560,7 @@ fn write_block_body(out: &mut String, block: &Value, kind: Option<&str>, text: &
         Some("divider") => out.push_str("---\n\n"),
         Some("callout") => {
             // Notes has no callout block; a quote carries the same words.
-            let _ = writeln!(out, "> {}", one_line(&text));
+            let _ = writeln!(out, "> {}", one_line(text));
             out.push('\n');
         }
         Some("child_page") => {
@@ -600,6 +611,14 @@ fn block_kind(block: &Value) -> Option<&str> {
 
 /// The words of a rich-text array, marks and all: bold, italic, code, strike
 /// and links become the Markdown that spells them.
+/// A title, which the API writes either as a plain string or as rich text.
+fn title_text(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| rich_text(value))
+}
+
 fn rich_text(body: &Value) -> Option<String> {
     let entries = body.get("rich_text")?.as_array()?;
     Some(rich_text_of(entries))

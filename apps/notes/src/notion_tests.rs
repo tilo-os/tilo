@@ -34,34 +34,44 @@ fn png() -> Vec<u8> {
 fn an_export_archive_becomes_one_note_per_page_in_name_order() {
     let bytes = archive(&[
         (
-            "Roadmap abc.md",
+            "Roadmap abc123.md",
             b"# Roadmap\n\nShip the thing.\n\n- one\n- two\n" as &[u8],
         ),
         (
-            "Budget f4d.md",
+            "Budget f4d0e1.md",
             b"\xef\xbb\xbf# Budget\n\n| a | b |\n" as &[u8],
         ),
     ]);
     let pages = pages(&bytes).unwrap();
     let titles: Vec<&str> = pages.iter().map(|page| page.title.as_str()).collect();
-    assert_eq!(titles, ["Budget f4d", "Roadmap abc"]);
+    assert_eq!(titles, ["Budget f4d0e1", "Roadmap abc123"]);
     assert!(pages[1].markdown.contains("Ship the thing."));
     assert!(pages[1].images.is_empty());
 }
 
 #[test]
 fn a_page_named_untitled_takes_the_heading_it_starts_with() {
-    let bytes = archive(&[("Untitled abc.md", b"# Launch checklist\n\n- [ ] invite\n")]);
+    let bytes = archive(&[(
+        "Untitled 1a2b3c4d5e.md",
+        b"# Launch checklist\n\n- [ ] invite\n",
+    )]);
     let pages = pages(&bytes).unwrap();
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].title, "Launch checklist");
 }
 
 #[test]
+fn a_page_the_person_titled_untitled_keeps_that_title() {
+    let bytes = archive(&[("Untitled document.md", b"# Something\n")]);
+    let pages = pages(&bytes).unwrap();
+    assert_eq!(pages[0].title, "Untitled document");
+}
+
+#[test]
 fn a_picture_the_export_kept_is_given_to_the_notebook() {
     let picture = png();
     let page = b"# Notes\n\n![Sketch](Sketch.png)\n\n![Elsewhere](https://example.test/a.png)\n";
-    let bytes = archive(&[("Notes abc.md", page), ("Sketch.png", picture.as_slice())]);
+    let bytes = archive(&[("Notes 3fa2.md", page), ("Sketch.png", picture.as_slice())]);
     let pages = pages(&bytes).unwrap();
     assert_eq!(pages.len(), 1);
     let digest = blake3::hash(&picture).to_hex().to_string();
@@ -82,7 +92,7 @@ fn a_database_exported_beside_its_page_is_appended_as_a_table() {
     let csv = "Name,Owner\n\"First, item\",Alex\n\"Second\nline\",Sam\n";
     let bytes = archive(&[
         ("Projects.md", b"# Projects\n\nWhat we are on.\n"),
-        ("Projects abc.csv", csv.as_bytes()),
+        ("Projects 3fa2.csv", csv.as_bytes()),
     ]);
     let pages = pages(&bytes).unwrap();
     assert_eq!(pages.len(), 1);
