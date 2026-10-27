@@ -324,7 +324,8 @@ impl ShellNetwork {
                 // whose window is still here waits for that lifecycle, even
                 // when the revision it named has moved on since.
                 if let DesktopCommand::CloseTab { location } = &bound.command {
-                    if strips_hold_tab(&workspace.strips, location.tab) {
+                    let shown = strips_hold_tab(&workspace.strips, location.tab);
+                    if shown {
                         tree.request_layout_close(room, location.tab);
                         continue;
                     }

@@ -729,6 +729,11 @@ pub fn project_owned_contents_as(
             continue;
         }
         let owns_strip = mine(strip.id.raw());
+        if !owns_strip && let Some(order) = published_order(doc, &strip_all) {
+            // A peer's strip is a lower bound for ours and is never
+            // rewritten.
+            placed = Some(placed.map_or(order, |held: u64| held.max(order)));
+        }
         // A peer's strip is still walked: a window we opened into it
         // is ours to publish even though the row isn't.
         let has_owned = strip
@@ -737,11 +742,6 @@ pub fn project_owned_contents_as(
             .any(|g| !g.tabs.is_empty() && (mine(g.id) || g.tabs.iter().any(|t| mine(t.id))));
         if !owns_strip && !has_owned {
             continue;
-        }
-        if !owns_strip && let Some(order) = published_order(doc, &strip_all) {
-            // A peer's strip is a lower bound for ours and is never
-            // rewritten.
-            placed = Some(placed.map_or(order, |held: u64| held.max(order)));
         }
 
         let Ok(strip_entry) = winner_or_create(doc, &strip_all, &contents_id, skey.as_str()) else {
@@ -940,14 +940,14 @@ fn project_owned_groups_in(
             continue;
         }
         let owns_group = mine(group.id);
-        let has_owned_tabs = group.tabs.iter().any(|t| mine(t.id));
-        if !owns_group && !has_owned_tabs {
-            continue;
-        }
         let gkey = contents_key(group.id);
         let group_copies = child_candidates(doc, &groups_all, gkey.as_str());
         if !owns_group && let Some(order) = published_order(doc, &group_copies) {
             placed = Some(placed.map_or(order, |held: u64| held.max(order)));
+        }
+        let has_owned_tabs = group.tabs.iter().any(|t| mine(t.id));
+        if !owns_group && !has_owned_tabs {
+            continue;
         }
         let Ok(group_entry) = winner_or_create(doc, &group_copies, &groups_id, gkey.as_str())
         else {
@@ -1014,10 +1014,15 @@ fn project_owned_tabs_in(
     let mut live_tabs: HashSet<String> = HashSet::new();
     let mut placed: Option<u64> = None;
     for (ti, tab) in group.tabs.iter().enumerate() {
+        let tkey = contents_key(tab.id);
         if !mine(tab.id) {
+            if let Some(order) =
+                published_order(doc, &child_candidates(doc, &tabs_all, tkey.as_str()))
+            {
+                placed = Some(placed.map_or(order, |held: u64| held.max(order)));
+            }
             continue;
         }
-        let tkey = contents_key(tab.id);
         live_tabs.insert(tkey.clone());
         let tab_copies = child_candidates(doc, &tabs_all, tkey.as_str());
         let Ok(tab_entry) = winner_or_create(doc, &tab_copies, &tabs_id, tkey.as_str()) else {

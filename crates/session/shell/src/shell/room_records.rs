@@ -798,7 +798,7 @@ impl LocalRecordReader {
             .iter()
             .find(|record| record.id == *id)
             .map(|record| record.package_id.clone())?;
-        let document = read_validated_record_document(id, &location)?;
+        let mut document = read_validated_record_document(id, &location)?;
         Some((package_id, document.save()))
     }
 
@@ -1022,6 +1022,7 @@ pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Op
 
 #[cfg(test)]
 mod tests {
+    use automerge::ReadDoc as _;
     use automerge::transaction::{CommitOptions, Transactable};
 
     use super::*;
