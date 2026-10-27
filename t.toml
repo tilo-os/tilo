@@ -5628,21 +5628,6 @@ default = false
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 
 [[check]]
-name = "app-sizes-{arch}"
-run = "bash tools/apps/t-release.sh sizes {arch}"
-inputs = ["os/publication.env", "apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
-requires = ["{node}"]
-cost = "heavy"
-requirement = { cores = 16, memory = "32GiB" }
-timeout_secs = 5400
-on = ["stable", "dispatch", "idle"]
-default = false
-heavy = true
-
-[check.matrix]
-arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
-
-[[check]]
 name = "app-binaries-{arch}"
 run = "bash tools/apps/t-release.sh binaries {arch} /target/app-binaries/{arch}"
 inputs = ["os/publication.env", "apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
@@ -5752,6 +5737,23 @@ cost = "heavy"
 requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
 default = false
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+[[check]]
+name = "app-sizes-{arch}"
+run = "bash tools/apps/t-release.sh sizes {arch}"
+inputs = ["tools/apps/t-release.sh", "tools/apps/release-lib.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/python.py", "tools/ci/__init__.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml", "os/dev/assert-native-arch.sh", "dist/apps/package-apps.sh", "tools/apps/app_package_isa.py", "crates/packaging/tilo-app-package/max-app-bytes", "os/scripts/build-thin-apps.sh", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "os/scripts/verify-elf-hardening.sh", "tools/apps/thin_runtime_units.py", "tools/apps/release-smoke.sh", "tools/perf/tapp_size_ratchet.py", "tools/perf/record.py", "tools/font-catalog.py", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "tools/apps/dev_app_versions.py", "os/scripts/stamp-runtime.sh", "tools/apps/stage_sdk_services.py", "tools/apps/pack-runtime-package.sh", "tools/perf/tapp-size-budget/**", "tools/perf/runtime_size_ratchet.py", "tools/perf/runtime-size-budget/**", "os/publication.env", "apps/*/Cargo.toml", "examples/apps/*/tilo-app.toml", "examples/apps/*/Cargo.toml", "dist/apps/**", "tools/apps/**", "tools/perf/**", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock", "apps/**/Cargo.toml", "crates/**/Cargo.toml", "vendor/**/Cargo.toml", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/session/installer/src/account_handoff.rs", "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs", "crates/session/installer/src/layouts.rs", "crates/session/installer/src/media_profile.rs", "dist/session/tilo-session", "dist/session/tilo-session-runner", "dist/session/tilo.desktop", "keys/tpm2-pcr-signing.public.pem", "os/Containerfile", "os/etc/systemd/system/greetd.service.d/50-tilo-oom.conf", "os/tests/fixtures/internal-bundle-v2.json", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
+cargo_packages = ["activity", "agent", "api-tester", "backups", "browser", "calculator", "calendar", "camera", "canvas", "chat", "chip-design", "clocks", "code-editor", "contacts", "containers", "db-client", "diffmerge", "discord", "disk-usage", "disks", "ebook", "feeds", "file-explorer", "firewall", "git-client", "hex-editor", "imager", "logs", "mail", "maps", "messages", "model-providers", "monitor", "music", "notes", "osk", "passwords", "pdf-viewer", "photos", "poker", "print-centre", "publisher", "remote", "runtime-bundle", "runtime-dylib", "scratchpad", "settings", "sheets", "shortcuts", "slides", "snippets", "speed-test", "store", "tasks", "terminal", "themes", "thumbnails", "tilo-app-package-cli", "totp", "tube", "typst-editor", "video-editor", "video-player", "weather", "web-search", "windows-app", "word-processor", "tilo-*-engine"]
+cargo_dev_dependencies = false
+requires = ["{node}"]
+cost = "heavy"
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 5400
+on = ["stable", "dispatch", "idle"]
+default = false
+heavy = true
 
 [check.matrix]
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]

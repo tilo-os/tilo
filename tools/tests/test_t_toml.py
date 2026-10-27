@@ -175,6 +175,11 @@ class TTomlTests(unittest.TestCase):
             self.assertFalse(whole["default"])
             # On the board for main's newest head, bisected when it fails.
             self.assertEqual(whole["on"], ["stable", "dispatch", "idle"])
+            # Keyed by the packages the collection builds, not by every crate.
+            self.assertIn("runtime-dylib", whole["cargo_packages"])
+            self.assertTrue(packages <= set(whole["cargo_packages"]))
+            self.assertNotIn("crates/**", whole["inputs"])
+            self.assertNotIn("apps/**", whole["inputs"])
             # The push gate's is kept built there, so its size check of an app compiles only the
             # app; the other waits for room.
             self.assertEqual(shared["on"], ["main", "idle"] if arch == t_toml.PUSH_GATE_SIZE_ARCH else ["idle"])
