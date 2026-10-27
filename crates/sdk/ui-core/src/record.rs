@@ -1792,7 +1792,8 @@ impl RecordSet {
                         RecordOpenError::Initialization(error)
                     })
             })
-            .transpose()?;
+            .transpose()?
+            .flatten();
         let mut doc = if let Some(read) = &initial {
             read.with_mutation(|mutation| {
                 let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
@@ -2078,15 +2079,22 @@ impl RecordSet {
                     .ok_or(RecordOpenError::IdentityMismatch)?;
                 let read = bridge
                     .record(&self.package_id, &self.home, want)
-                    .map_err(RecordOpenError::Initialization)?;
+                    .map_err(RecordOpenError::Initialization)?
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
                 validate_creation_capture(doc, want, &self.home, &read)?;
             }
             return Ok(RecordOpenOutcome::AlreadyOpen);
         }
-        if let Some(bridge) = &self.native_initial {
-            let read = bridge
-                .record(&self.package_id, &self.home, want)
-                .map_err(RecordOpenError::Initialization)?;
+        // A record no committed read answers (the app's own channel serves
+        // it) opens below, as without a bridge.
+        if let Some(read) = self
+            .native_initial
+            .as_ref()
+            .map(|bridge| bridge.record(&self.package_id, &self.home, want))
+            .transpose()
+            .map_err(RecordOpenError::Initialization)?
+            .flatten()
+        {
             let store = if want.id.is_package_primary() {
                 app_state::DocStore::shared(backend, key)?
             } else {
@@ -3196,7 +3204,8 @@ impl RecordStore {
                     .ok_or(RecordOpenError::IdentityMismatch)?;
                 let read = bridge
                     .record(&set.package_id, &set.home, checkout)
-                    .map_err(RecordOpenError::Initialization)?;
+                    .map_err(RecordOpenError::Initialization)?
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
                 validate_creation_capture(doc, checkout, &set.home, &read)?;
                 return set.wire_route(&checkout.id);
             }
