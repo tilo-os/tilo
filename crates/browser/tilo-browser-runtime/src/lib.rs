@@ -134,6 +134,9 @@ mod page_authors;
 mod peer;
 #[cfg(target_arch = "wasm32")]
 mod person_chat;
+// The person's own records each window holds: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod person_records;
 #[cfg(target_arch = "wasm32")]
 mod replication;
 #[cfg(target_arch = "wasm32")]

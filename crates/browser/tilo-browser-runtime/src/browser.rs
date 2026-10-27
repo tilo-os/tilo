@@ -681,6 +681,7 @@ impl Mount {
         for store in self.stores.borrow().iter() {
             let _ = store.try_flush();
         }
+        crate::person_records::flush(&self.store);
         self.save_desktop();
     }
 
@@ -1014,6 +1015,7 @@ fn desktop_inputs(
     Ok(crate::desktop::Inputs {
         feedback: config.peer.and_then(crate::feedback_delivery::take_startup),
         owners: RecordOwners::with_store(Rc::clone(dyn_store)),
+        store: Rc::clone(dyn_store),
         views,
         device: config.device.clone(),
         salt: config
@@ -1133,13 +1135,13 @@ fn present_desktop(
 fn present_component(
     definition: &'static ui::application::ApplicationDefinition,
     config: &Config,
-    dyn_store: Rc<dyn durable_store::DurableStore>,
+    dyn_store: &Rc<dyn durable_store::DurableStore>,
     permissions: SharedPermissions,
 ) -> Result<Presentation, JsValue> {
     if definition.app_id == tilo_desktop::feedback::PACKAGE {
         return present_private_feedback(config);
     }
-    let owners = RecordOwners::with_store(Rc::clone(&dyn_store));
+    let owners = RecordOwners::with_store(Rc::clone(dyn_store));
     let record = owners
         .clone()
         .open(definition.app_id, &config.room)
@@ -1186,7 +1188,8 @@ fn present_component(
         None => definition.unsaved_target(&record).map_err(error)?,
     };
     let views = Rc::new(
-        InstanceViewStore::with_store(dyn_store, &config.device, &config.room).map_err(error)?,
+        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.room)
+            .map_err(error)?,
     );
     let restore = views
         .load(config.instance)
@@ -1209,6 +1212,7 @@ fn present_component(
     context.provide_models(config.models()?);
     context.provide_content(crate::page_content());
     context.provide_workspace_records(in_page(&owners, &stores, &config.room, config.author()));
+    crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
     crate::host_services::provide_provider_admin(&mut context, config.provider_admin()?)
         .map_err(error)?;
     let loaders = Rc::new(RefCell::new(Vec::new()));
@@ -1305,7 +1309,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         image_owners,
         mut desktop,
     } = match definition {
-        Some(definition) => present_component(definition, &config, dyn_store, permissions.clone())?,
+        Some(definition) => {
+            present_component(definition, &config, &dyn_store, permissions.clone())?
+        }
         None => present_desktop(id, &config, dyn_store, permissions.clone())?,
     };
     let window = Arc::new(

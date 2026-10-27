@@ -124,6 +124,9 @@ pub(crate) fn catalogue() -> Vec<Application> {
 pub(crate) struct Inputs {
     pub feedback: Option<tilo_desktop::feedback::transport::Startup>,
     pub owners: RecordOwners,
+    /// The store [`Self::owners`] keep records in: the profile's, where the
+    /// person's own records are kept too ([`crate::person_records`]).
+    pub store: Rc<dyn durable_store::DurableStore>,
     pub views: Rc<InstanceViewStore>,
     pub device: String,
     /// Seeds this desktop's share of the id space: the certified device
@@ -1113,6 +1116,7 @@ impl Tiles {
             &self.inputs.room,
             self.inputs.author.clone(),
         ));
+        crate::person_records::provide(&mut context, &self.inputs.store)?;
         // Only registered control panels receive the administration capability.
         if crate::host_services::provider_admin_app(definition.app_id) {
             crate::host_services::provide_provider_admin(
