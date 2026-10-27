@@ -36,7 +36,7 @@ BUILDER_IMAGE = '{{ check = "os-builder-{arch}", path = "/target/os/{arch}/build
 SKOPEO = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 # The tools every root action builds and verifies through.
 TOOLS = ["os/image/build-layer.sh", "os/image/layers.toml", "os/image/args.Containerfile",
-         "tools/ci/os/pieces.py", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh",
+         "tools/ci/os/pieces.py", "tools/ci/os/oci_layers.py", "tools/ci/publish/build-lib.sh",
          "os/base-snapshot.env", "os/dev/build-image.sh", "keys/cosign.pub"]
 # The kernel pin and what verifies it, which only an action whose Containerfile builds FROM
 # the pinned kernel reads: build-image.sh resolves and verifies the kernel for no other
@@ -149,7 +149,7 @@ def fixture_manifests():
 
 
 # The pinned Cosign of both architectures, downloaded once for every check that verifies or signs
-# with it (tools/ci/publish/lib.sh use_cosign), apart from os-assets so a signer waits for no more.
+# with it (tools/ci/publish/build-lib.sh use_cosign), apart from os-assets so a signer waits for no more.
 SIGNING_TOOLS = "/target/signing-tools"
 COSIGN_ASSETS = ["cosign-v2.5.2-linux-amd64", "cosign-v2.5.2-linux-arm64"]
 
@@ -282,7 +282,7 @@ def flavour_checks(plan, arch, req, tools, flavour, layer):
     out.append(check([
         ("name", f'"{name}-{tail}"'),
         ("run", f'"bash os/image/build-layer.sh compose {arch} /target/os/{arch}/{image_dir}"'),
-        ("inputs", arr(["os/image/build-layer.sh", "os/image/layers.toml", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh"])),
+        ("inputs", arr(["os/image/build-layer.sh", "os/image/layers.toml", "tools/ci/os/oci_layers.py", "tools/ci/publish/build-lib.sh"])),
         ("needs", arr([f"os-base-{arch}"] + below)),
         ("outputs", arr([f"/target/os/{arch}/{image_dir}/**"])),
         *([("env", env)] if env else []),
@@ -333,7 +333,7 @@ def block():
         out.append(check([
             ("name", f'"os-assembler-{arch}"'),
             ("run", f'"bash os/image/assembler.sh {arch} /target/os/{arch}/assembler"'),
-            ("inputs", arr(["os/image/assembler.Containerfile", "os/image/assembler.sh", "tools/ci/publish/lib.sh",
+            ("inputs", arr(["os/image/assembler.Containerfile", "os/image/assembler.sh", "tools/ci/publish/build-lib.sh",
                             "os/base-snapshot.env", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh"])),
             ("needs", arr([f"image-rpms-{arch}"])),
             ("outputs", arr([f"/target/os/{arch}/assembler/**"])),
@@ -343,7 +343,7 @@ def block():
             ("name", f'"os-base-{arch}"'),
             ("image", f'"{SKOPEO}"'),
             ("run", f'"bash os/image/build-layer.sh base {arch} /target/os/{arch}/base"'),
-            ("inputs", arr(["os/base-snapshot.env", "os/image/build-layer.sh", "tools/ci/publish/lib.sh"])),
+            ("inputs", arr(["os/base-snapshot.env", "os/image/build-layer.sh", "tools/ci/publish/build-lib.sh"])),
             ("outputs", arr([f"/target/os/{arch}/base/**"])),
             ("requires", arr(["arch=any"])),
             ("cost", '"minutes"'), ("requirement", requirement(1, "2GiB")), ("default", "false")]))
