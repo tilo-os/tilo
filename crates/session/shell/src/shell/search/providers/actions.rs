@@ -1219,7 +1219,10 @@ fn invitation_requires_lifecycle_dispatch(
 /// Poll a tracked peer-sync request until the overlay host publishes its
 /// terminal result. A presentation request answers `Null`; a network
 /// request answers the action's output.
-fn peer_sync_ticket(chrome: Chrome, request_id: u64) -> crate::shell::search::PendingInvocation {
+pub(crate) fn peer_sync_ticket(
+    chrome: Chrome,
+    request_id: u64,
+) -> crate::shell::search::PendingInvocation {
     Rc::new(move || {
         match chrome
             .borrow_mut()
