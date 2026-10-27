@@ -1686,6 +1686,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             ))),
             PeerSyncRequest::AcceptInvite(_)
             | PeerSyncRequest::LeaveSite(_)
+            | PeerSyncRequest::DeleteWorkspace(_)
             | PeerSyncRequest::RetryJoin(_)
             | PeerSyncRequest::InviteDevice
             | PeerSyncRequest::DevicesAsking

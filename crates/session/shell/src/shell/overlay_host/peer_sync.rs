@@ -284,9 +284,10 @@ impl ShellOverlayHost {
     /// from [`Self::pump_peer_sync`] once the worker has it.
     pub(super) fn dispatch_peer_sync(
         &mut self,
-        job: peer_sync_dispatch::Job,
+        mut job: peer_sync_dispatch::Job,
         follow: peer_sync_dispatch::FollowUp,
     ) {
+        self.say_what_a_shared_window_shows(&mut job);
         if let Some((follow, outcome)) = self.peer_sync.submit(job, follow) {
             self.apply_peer_sync(follow, outcome);
         }
@@ -727,7 +728,7 @@ impl ShellOverlayHost {
     /// Hand `request`, about one room's workspace (leaving it, joining it
     /// again), to the network worker; the surfaces that asked hear its
     /// outcome from the workspace itself.
-    fn run_room_request(&mut self, request: PeerSyncRequest, request_id: Option<u64>) {
+    pub(super) fn run_room_request(&mut self, request: PeerSyncRequest, request_id: Option<u64>) {
         self.dispatch_peer_sync(
             peer_sync_dispatch::Job {
                 request,
@@ -823,6 +824,9 @@ impl ShellOverlayHost {
                 }
                 PeerSyncAction::LeaveSite { room } => {
                     self.run_room_request(PeerSyncRequest::LeaveSite(room), request_id);
+                }
+                PeerSyncAction::DeleteWorkspace { room } => {
+                    self.delete_workspace(room, request_id);
                 }
                 PeerSyncAction::RetryJoin { room } => {
                     self.run_room_request(PeerSyncRequest::RetryJoin(room), request_id);

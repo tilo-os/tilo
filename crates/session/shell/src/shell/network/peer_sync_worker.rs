@@ -243,6 +243,9 @@ impl ShellNetwork {
             PeerSyncRequest::LeaveSite(room) => self
                 .leave_site(room)
                 .map(|()| PeerSyncResponse::Message(room.to_string())),
+            PeerSyncRequest::DeleteWorkspace(room) => self
+                .release_room(room)
+                .map(|()| PeerSyncResponse::Message(room.to_string())),
             PeerSyncRequest::RetryJoin(room) => self.retry_join(room),
             PeerSyncRequest::InviteDevice => {
                 self.invite_device()
@@ -301,8 +304,9 @@ impl ShellNetwork {
                 tab,
                 app_id,
                 share,
+                shows,
             } => self
-                .share_window(room, tab, &app_id, share)
+                .share_window(room, tab, &app_id, share, shows.as_deref())
                 .map(|()| PeerSyncResponse::Message(String::new())),
             PeerSyncRequest::ResendInvitation(id) => {
                 self.resend_invitation(&id).map(PeerSyncResponse::Message)

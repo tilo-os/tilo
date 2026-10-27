@@ -505,6 +505,7 @@ mod tests {
     use super::*;
 
     mod peer_window_tabs;
+    mod personal_app_shares;
     mod personal_window_shares;
     use crate::shell::state::{Tab, WindowGroup, WindowWidth};
 

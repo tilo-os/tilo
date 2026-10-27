@@ -177,6 +177,13 @@ pub(crate) fn report_governance_refusals(st: &mut crate::shell::chrome_state::Ch
         let title = crate::shell::i18n::t(match &refusal.change {
             crate::shell::state::RoomChange::Governance(request) => refused_change_label(request),
             crate::shell::state::RoomChange::Receipt(_) => "governance-change-history",
+            crate::shell::state::RoomChange::WindowUnshare { .. } => {
+                st.push_warning_notification(
+                    crate::shell::i18n::t("window-share-end-failed"),
+                    refusal.reason,
+                );
+                continue;
+            }
         });
         st.push_warning_notification(
             crate::shell::i18n::t_args("host-action-cannot-run", &[("title", title.into())]),
