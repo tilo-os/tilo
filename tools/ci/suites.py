@@ -425,6 +425,21 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
 # output instead.
 RUST_INCLUDE = re.compile(
     r'\binclude(?:_str|_bytes)?!\s*\(\s*"([^"\\]+)"\s*\)|#\[\s*path\s*=\s*"([^"\\]+)"\s*\]')
+# RUST_INCLUDE's two halves on their own, each starting with a literal the regex engine scans for
+# quickly: the joined pattern starts with an alternation behind \b and so tried every position of
+# every Rust file, most of `suites.py check`'s time. rust_includes() gives their matches in order.
+_INCLUDE = re.compile(r'include(?:_str|_bytes)?!\s*\(\s*"([^"\\]+)"\s*\)')
+_PATH_ATTRIBUTE = re.compile(r'#\[\s*path\s*=\s*"([^"\\]+)"\s*\]')
+_WORD = re.compile(r"\w")
+
+
+def rust_includes(text: str) -> list[tuple[int, str]]:
+    """Where `text` matches RUST_INCLUDE, and the path literal each match names, in order."""
+    found = [(m.start(), m.group(1)) for m in _INCLUDE.finditer(text)
+             if m.start() == 0 or not _WORD.match(text[m.start() - 1])]
+    if "#[" in text:
+        found += [(m.start(), m.group(1)) for m in _PATH_ATTRIBUTE.finditer(text)]
+    return sorted(found)
 MANIFEST_DIR = re.compile(r'env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)')
 CLIMB = re.compile(r'"/?\.\.(?:/|")|\.parent\(\)|\.ancestors\(\)')
 BUILD_OUTPUT = re.compile(r'"(?:\.\./|/)*target(?:/|")')
@@ -603,12 +618,11 @@ def cross_package_reads(root: Path, tracked: list[str],
         if "include" not in text and "path" not in text and "CARGO_MANIFEST_DIR" not in text:
             continue
         reads: list[CrossRead] = []
-        for match in RUST_INCLUDE.finditer(text):
-            literal = match.group(1) or match.group(2)
+        for start, literal in rust_includes(text):
             target = os.path.normpath(os.path.join(path.rpartition("/")[0], literal))
             inside = (target + "/").startswith(directory + "/") if directory else not target.startswith("..")
             if not inside:
-                reads.append(CrossRead(text.count("\n", 0, match.start()) + 1, target))
+                reads.append(CrossRead(text.count("\n", 0, start) + 1, target))
         for match in MANIFEST_DIR.finditer(text):
             statement = STATEMENT_END.split(text[match.end():match.end() + 800], maxsplit=1)[0]
             if CLIMB.search(statement) and not BUILD_OUTPUT.search(statement):
@@ -642,7 +656,7 @@ def audit_cargo(root: Path, tracked: list[str], manifest: Manifest) -> list[str]
         if entry.package not in names:
             problems.append(f"{MANIFEST}: cargo {entry.package}: no tracked Cargo.toml declares this package")
         for pattern in entry.inputs:
-            if not any(matches(path, pattern) for path in tracked):
+            if not files.matches_any(pattern):
                 problems.append(f"{MANIFEST}: cargo {entry.package}: input {pattern} matches no tracked file")
         for reader in entry.readers:
             directory = package_dir(reader, packages)
@@ -695,6 +709,25 @@ class Tree:
         """`path` if it is a file, else the files under it."""
         index = bisect.bisect_left(self.files, path)
         return [path] if index < len(self.files) and self.files[index] == path else self.under(path)
+
+    def matches_any(self, pattern: str) -> bool:
+        """Whether a tracked file matches `pattern` (see `matches`), without trying each file."""
+        if pattern.endswith("/"):
+            index = bisect.bisect_left(self.files, pattern)
+            return index < len(self.files) and self.files[index].startswith(pattern)
+        if any(char in pattern for char in "*?["):
+            prefix = re.split(r"[*?[]", pattern, maxsplit=1)[0]
+            return any(fnmatch.fnmatchcase(path, pattern) for path in self.under_prefix(prefix))
+        index = bisect.bisect_left(self.files, pattern)
+        return index < len(self.files) and self.files[index] == pattern
+
+    def under_prefix(self, prefix: str) -> list[str]:
+        """The files whose path starts with `prefix`."""
+        start = bisect.bisect_left(self.files, prefix)
+        end = start
+        while end < len(self.files) and self.files[end].startswith(prefix):
+            end += 1
+        return self.files[start:end]
 
     def entries(self, directory: str) -> list[str]:
         """The names directly in `directory` that hold files."""

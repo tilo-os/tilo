@@ -16,8 +16,20 @@
 # the repository goes to /dev/shm where there is one, at zlib's fastest level
 # (objects and their ids are the same at any level), and is removed after.
 #
-# Usage: t-git-index.sh COMMAND [ARG...]
+# A check that only lists the tracked paths (git ls-files) and reads the files
+# themselves, or greps the working tree (git grep without --cached), says
+# --paths: its index records every path as intent-to-add, without hashing a
+# byte, which takes a fraction of a second instead of the seconds to a minute
+# writing the objects took. Its index has no blob ids: `git ls-files --stage`,
+# `git cat-file` and `git grep --cached` need the full index.
+#
+# Usage: t-git-index.sh [--paths] COMMAND [ARG...]
 set -euo pipefail
+paths_only=
+if [ "${1:-}" = --paths ]; then
+    paths_only=1
+    shift
+fi
 if git rev-parse --git-dir >/dev/null 2>&1; then
     exec "$@"
 fi
@@ -30,7 +42,11 @@ trap 'rm -rf "$GIT_DIR"' EXIT
 export GIT_DIR GIT_WORK_TREE="$PWD"
 git init -q
 git config core.looseCompression 1
-git add -A
+if [ -n "$paths_only" ]; then
+    git add -A --intent-to-add
+else
+    git add -A
+fi
 status=0
 "$@" || status=$?
 exit "$status"
