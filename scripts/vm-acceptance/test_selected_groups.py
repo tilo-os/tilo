@@ -13,6 +13,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import contextlib  # noqa: E402
+import io  # noqa: E402
+
 import selected_groups  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,9 +63,10 @@ class Selects(unittest.TestCase):
     def test_a_selection_that_records_nothing_fails_in_words(self):
         # Comparing it would pass with no measurement at all; it says so instead.
         self.assertEqual(selected_groups.selected("provenance"), ["P01", "P02", "P03"])
-        self.assertEqual(selected_groups.main(["provenance"]), 2)
-        self.assertEqual(selected_groups.main(["A14,A99"]), 2)
-        self.assertEqual(selected_groups.main(["A14"]), 0)
+        for only, code in (("provenance", 2), ("A14,A99", 2), ("A14", 0)):
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                self.assertEqual(selected_groups.main([only]), code, only)
+            self.assertEqual(said.getvalue(), "app\n" if code == 0 else "", only)
 
 
 class Runner(unittest.TestCase):
