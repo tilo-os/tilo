@@ -57,6 +57,11 @@ struct HostedRooms {
     rooms: BTreeMap<String, HostedRoom>,
     /// Sites whose workspace the person left: never joined again unasked.
     left: BTreeSet<String>,
+    /// The workspaces the person is joining, by room, with the app they
+    /// arrive in once the join installs ([`super::site_join::Arriving`]):
+    /// kept so a join that finishes after a restart still arrives.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    arriving: BTreeMap<String, Option<String>>,
 }
 
 /// Where joining a site's workspace stands, while this session joins it.
@@ -84,8 +89,8 @@ pub struct SiteJoinState {
     pub progress: JoinProgress,
 }
 
-/// A site's workspace whose join just installed: the person arrives in it,
-/// in the app its site names.
+/// A workspace whose join just installed: the person arrives in it, in the
+/// app the one arrival rule chose when they joined it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arrival {
     pub room: RoomId,
@@ -161,11 +166,53 @@ impl State {
         self.joins.lock_recover().values().cloned().collect()
     }
 
-    /// `room`'s join installed: the person arrives in it.
+    /// The person is joining `room`: once its join installs they arrive in
+    /// it, in `app` when there is one.
+    pub(super) fn expect_arrival(&self, room: RoomId, app: Option<String>) -> Result<(), String> {
+        let mut rooms = self.rooms.lock_recover();
+        if rooms.arriving.get(&room.to_string()) == Some(&app) {
+            return Ok(());
+        }
+        rooms.arriving.insert(room.to_string(), app);
+        let persisted = self.persist(&rooms);
+        drop(rooms);
+        persisted
+    }
+
+    /// Whether a join of the person's into `room` waits to arrive.
+    pub(super) fn expects_arrival(&self, room: RoomId) -> bool {
+        self.rooms
+            .lock_recover()
+            .arriving
+            .contains_key(&room.to_string())
+    }
+
+    /// `room`'s join installed: the person who joined it arrives in it.
+    /// An install no join of theirs expects (a room one of their other
+    /// devices holds, listed for this one) takes nobody anywhere.
     pub(super) fn arrive(&self, room: RoomId) {
         self.end_join(room);
-        let app = self.hosted(room).and_then(|hosted| hosted.app);
+        let mut rooms = self.rooms.lock_recover();
+        let Some(app) = rooms.arriving.remove(&room.to_string()) else {
+            return;
+        };
+        if let Err(error) = self.persist(&rooms) {
+            tracing::warn!(%error, %room, "an arrival is still remembered as due");
+        }
+        drop(rooms);
         self.arrivals.lock_recover().push(Arrival { room, app });
+    }
+
+    /// The app the entry of a site this device holds a workspace of names,
+    /// when that workspace's host is the device `host` (hex): a site names
+    /// its workspace by the host it is on.
+    pub(super) fn site_app_at(&self, host: &str) -> Option<String> {
+        self.rooms
+            .lock_recover()
+            .rooms
+            .values()
+            .filter(|hosted| hosted.site.is_some() && hosted.host.as_deref() == Some(host))
+            .find_map(|hosted| hosted.app.clone())
     }
 
     /// The joins installed since this was last asked whose rooms are
@@ -197,6 +244,13 @@ impl State {
     /// Remember `site` as the community this computer follows.
     pub(super) fn follow_community(&self, site: &url::Url) {
         let _ = self.community.set(site.as_str().to_owned());
+    }
+
+    /// The community site this computer follows, once it does.
+    pub(super) fn community(&self) -> Option<url::Url> {
+        self.community
+            .get()
+            .and_then(|site| url::Url::parse(site).ok())
     }
 
     /// Whether `site` is the community this computer follows.
@@ -237,7 +291,8 @@ impl State {
     /// Stop reaching `room` through a site.
     pub(super) fn forget(&self, room: RoomId) -> Result<(), String> {
         let mut rooms = self.rooms.lock_recover();
-        if rooms.rooms.remove(&room.to_string()).is_none() {
+        let arriving = rooms.arriving.remove(&room.to_string()).is_some();
+        if rooms.rooms.remove(&room.to_string()).is_none() && !arriving {
             return Ok(());
         }
         let persisted = self.persist(&rooms);
@@ -654,6 +709,7 @@ mod tests {
     fn an_arrival_waits_for_its_rooms_desktop() {
         let state = State::default();
         let room = RoomId::parse("6f9619ff-8b86-d011-b42d-00cf4fc964ff").unwrap();
+        state.expect_arrival(room, None).unwrap();
         state.arrive(room);
         assert!(
             state.take_arrivals(|_| false).is_empty(),
@@ -665,6 +721,29 @@ mod tests {
             "then once"
         );
         assert!(state.take_arrivals(|_| true).is_empty());
+    }
+
+    /// Only a join the person made takes them anywhere: a room installed
+    /// because one of their other devices holds it does not pull them in.
+    #[test]
+    fn an_install_no_join_expects_arrives_nowhere() {
+        let state = State::default();
+        let room = RoomId::parse("6f9619ff-8b86-d011-b42d-00cf4fc964ff").unwrap();
+        state.arrive(room);
+        assert!(state.take_arrivals(|_| true).is_empty());
+        state
+            .expect_arrival(room, Some("so.tilo.chat".into()))
+            .unwrap();
+        state.arrive(room);
+        state.arrive(room);
+        assert_eq!(
+            state.take_arrivals(|_| true),
+            vec![Arrival {
+                room,
+                app: Some("so.tilo.chat".into())
+            }],
+            "the join arrives once, in the app it chose"
+        );
     }
 
     #[test]
@@ -745,6 +824,19 @@ mod tests {
                 .as_deref(),
             Some("so.tilo.chat"),
             "the app the site's workspace opens in is kept"
+        );
+        state
+            .expect_arrival(room, Some("so.tilo.chat".into()))
+            .unwrap();
+        let reopened = State::open(dir.path(), RoomReadiness::default());
+        reopened.arrive(room);
+        assert_eq!(
+            reopened.take_arrivals(|_| true),
+            vec![Arrival {
+                room,
+                app: Some("so.tilo.chat".into())
+            }],
+            "a join that installs after a restart still arrives"
         );
         state.set_left(&site, true).unwrap();
         assert!(State::open(dir.path(), RoomReadiness::default()).left(&site));
