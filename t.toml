@@ -8401,16 +8401,16 @@ on = ["main"]
 
 # Terminal in a nested session (dist/dev/nested-terminal-check.py): the session starts the ush
 # supervisor as its user unit does, with the env-runtime in its system store, and Terminal opens
-# and shows the output of a command it runs in its shell.
+# in the Lounge of a local site and shows the output of a command it runs in its shell.
 [[check]]
 name = "nested-terminal"
 run = "bash tools/test-env.sh python3 -I dist/dev/nested-terminal-check.py --out /target/nested-terminal"
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
 needs = ["nested-session"]
-inputs = ["dist/dev/nested-terminal-check.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "dist/dev/nested-session-build.sh", "dist/dev/session-bus.sh", "os/scripts/install-env-runtime.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/stamp-runtime.sh", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/systemd/user/tilo-ush.socket", "os/usr/share/tilo/system-interfaces.toml", "apps/terminal/tilo-app.toml", "apps/terminal/surface.toml", "tools/apps/**", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh"]
+inputs = ["dist/dev/nested-terminal-check.py", "dist/dev/site-door-acceptance.py", "crates/hosting/tilo-room-service/dev/run.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "dist/dev/nested-session-build.sh", "dist/dev/session-bus.sh", "os/scripts/install-env-runtime.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/stamp-runtime.sh", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/systemd/user/tilo-ush.socket", "os/usr/share/tilo/system-interfaces.toml", "apps/terminal/tilo-app.toml", "apps/terminal/surface.toml", "tools/apps/**", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh"]
 outputs = ["/target/nested-terminal/**"]
 requires = ["arch=x86_64"]
-requirement = { cores = 4, memory = "8GiB" }
+requirement = { cores = 8, memory = "16GiB" }
 git = true
 # Terminal's shell runs in a guest of its own (bwrap, user namespaces), which the job sandbox
 # does not give; a micro-VM does.
