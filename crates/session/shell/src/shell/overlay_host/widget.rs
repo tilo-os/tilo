@@ -337,6 +337,7 @@ impl Widget for ShellOverlayHost {
         let chips_dirty = self.sync_desktop_control_chips()
             | self.sync_dev_build_chips()
             | self.sync_window_share_controls();
+        self.follow_shared_windows();
         // Refreshing here (not inside the harvest) means the palette never
         // shows "Nothing to show" before the user's first keystroke.
         let opened_for_new_tab = self.harvest_pending_new_tab();

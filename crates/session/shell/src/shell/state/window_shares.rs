@@ -17,9 +17,19 @@
 //!   ([`WorkspaceTree::room_tab_record`]). Nothing of it is streamed; the
 //!   sharer's cursor and selection show in it as any collaborator's do.
 //!
+//! A Tilo app's window opens at the item the sharer's window is at, and
+//! follows it while the share lasts: the sharer's device says the item it
+//! moves to by sharing it again under the same share id, and this device
+//! opens its window there through the app's own `open`, until the person
+//! here moves the window elsewhere themselves. From then on it stays where
+//! they put it ([`WorkspaceTree::shared_window_opening`]).
+//!
 //! When the share ends the tab goes, with the rest of the windows of others
 //! this device dropped from the room; but a Tilo app's window the person
 //! here used (gave it input) stays, as their own window from then on.
+//! Which windows were used, and which stopped following, is kept with the
+//! device's layout ([`SharedWindowUse`]), so a restart during a share
+//! changes neither.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -36,12 +46,45 @@ use super::{
 pub struct WindowShares {
     /// By room, by tab: the room's record as its admitted document says.
     by_room: HashMap<RoomId, BTreeMap<TabId, WindowShare>>,
-    /// Tabs of Tilo app windows others shared that the person here used:
-    /// they stay when their share ends.
-    used: BTreeSet<TabId>,
     /// The app windows (surfaces) of shared windows whose share ended
     /// unused, for the compositor to close.
     closing: Vec<u64>,
+    /// Where each Tilo app window others shared that still follows its
+    /// sharer was last asked to open, by tab.
+    following: HashMap<TabId, Following>,
+}
+
+/// Where a shared Tilo app window that follows its sharer was last asked to
+/// open, and whether it got there.
+#[derive(Clone, Debug, Default)]
+struct Following {
+    /// The item it was last asked to open at.
+    asked: Option<String>,
+    /// It has shown that item since.
+    arrived: bool,
+}
+
+/// What the person here did with the Tilo app windows others shared, by
+/// tab: kept with the device's layout, so a restart during a share keeps
+/// it. Device-local, never in a room's document.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SharedWindowUse {
+    /// The windows they used (gave input): each stays, as theirs, when its
+    /// share ends.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    used: BTreeSet<TabId>,
+    /// The windows they moved elsewhere themselves: each stays where they
+    /// put it rather than following its sharer.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    navigated: BTreeSet<TabId>,
+}
+
+impl SharedWindowUse {
+    /// Whether nothing is kept: the layout's file leaves it out.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.used.is_empty() && self.navigated.is_empty()
+    }
 }
 
 impl WorkspaceTree {
@@ -177,21 +220,116 @@ impl WorkspaceTree {
         !self.window_shares.closing.is_empty()
             || used.iter().any(|surface| {
                 self.shared_tab_of_surface(*surface)
-                    .is_some_and(|tab| !self.window_shares.used.contains(&tab))
+                    .is_some_and(|tab| !self.shared_window_use.used.contains(&tab))
             })
     }
 
     /// The person gave input to the app windows `used` here: each that is a
     /// Tilo app window another member shared is theirs to keep once the
-    /// share ends. Answers the app windows of shared windows whose share
-    /// ended while nobody here used them, for the compositor to close.
+    /// share ends, a restart in between included. Answers the app windows of
+    /// shared windows whose share ended while nobody here used them, for the
+    /// compositor to close.
     pub fn note_used_and_take_ended(&mut self, used: &[u64]) -> Vec<u64> {
+        let mut noted = false;
         for surface in used {
             if let Some(tab) = self.shared_tab_of_surface(*surface) {
-                self.window_shares.used.insert(tab);
+                noted |= self.shared_window_use.used.insert(tab);
             }
         }
+        if noted {
+            self.queue_save();
+        }
         std::mem::take(&mut self.window_shares.closing)
+    }
+
+    /// The item the Tilo app window `tab` another member shared is at, as
+    /// its share says now: what this device's window of it follows.
+    fn shared_item(&self, tab: TabId) -> Option<&str> {
+        if peer_salt_of(tab) == self.local_salt() {
+            return None;
+        }
+        self.window_shares
+            .by_room
+            .values()
+            .find_map(|shares| shares.get(&tab))?
+            .shows
+            .as_ref()?
+            .item
+            .as_deref()
+    }
+
+    /// Where to open this device's window of `tab`, a Tilo app window
+    /// another member shared, now that it is at `at` (the item its bar
+    /// anchors, `None` before it says): the item the sharer's window is at,
+    /// when this window still follows it and was not asked to open there
+    /// yet. Ask the app's `open` at it, then say so
+    /// ([`Self::shared_window_opened`]); until then it is answered again.
+    ///
+    /// A window that showed the item it was asked to open, and then shows
+    /// another without being asked, was moved by the person here: it stops
+    /// following, for as long as the share lasts.
+    pub fn shared_window_opening(&mut self, tab: TabId, at: Option<&str>) -> Option<String> {
+        let item = self.shared_item(tab)?.to_owned();
+        if self.shared_window_use.navigated.contains(&tab) {
+            return None;
+        }
+        let follow = self.window_shares.following.entry(tab).or_default();
+        if let (Some(asked), Some(at)) = (follow.asked.as_deref(), at) {
+            if asked == at {
+                follow.arrived = true;
+            } else if follow.arrived {
+                self.window_shares.following.remove(&tab);
+                self.shared_window_use.navigated.insert(tab);
+                self.queue_save();
+                return None;
+            }
+        }
+        if at == Some(item.as_str()) {
+            *follow = Following {
+                asked: Some(item),
+                arrived: true,
+            };
+            return None;
+        }
+        (follow.asked.as_deref() != Some(item.as_str())).then_some(item)
+    }
+
+    /// This device's window of `tab`, a Tilo app window another member
+    /// shared, was asked to open at `item`
+    /// ([`Self::shared_window_opening`]).
+    pub fn shared_window_opened(&mut self, tab: TabId, item: &str) {
+        self.window_shares.following.insert(
+            tab,
+            Following {
+                asked: Some(item.to_owned()),
+                arrived: false,
+            },
+        );
+    }
+
+    /// Whether this device's window of `tab`, a Tilo app window another
+    /// member shared, follows the item its sharer's window is at.
+    #[must_use]
+    pub fn follows_shared_window(&self, tab: TabId) -> bool {
+        self.shared_item(tab).is_some() && !self.shared_window_use.navigated.contains(&tab)
+    }
+
+    /// Forget what was kept about shared windows whose share in `room`
+    /// ended (`shares` are the ones that last): where they followed to and
+    /// whether they stopped following. Whether they were used stays until
+    /// the window is kept ([`Self::keep_used_shared_windows`]).
+    fn forget_ended_follows(&mut self, room: RoomId, shares: &[WindowShare]) {
+        let desktop = &self.desktop;
+        let ended = |tab: &TabId| {
+            !shares.iter().any(|share| share.tab == *tab)
+                && room_showing(desktop, *tab).is_none_or(|at| at == room)
+        };
+        self.window_shares.following.retain(|tab, _| !ended(tab));
+        let before = self.shared_window_use.navigated.len();
+        self.shared_window_use.navigated.retain(|tab| !ended(tab));
+        if self.shared_window_use.navigated.len() != before {
+            self.queue_save();
+        }
     }
 
     /// Keep the workspace addressing `room`, a room whose layout is
@@ -211,6 +349,7 @@ impl WorkspaceTree {
         now_ms: u64,
     ) -> bool {
         let shares: Vec<WindowShare> = self.shared_windows(room, now_ms).cloned().collect();
+        self.forget_ended_follows(room, &shares);
         let kept = self.keep_used_shared_windows(room, local_salt, &shares);
         let theirs = |tab: &Tab| {
             let salt = peer_salt_of(tab.id);
@@ -278,17 +417,24 @@ impl WorkspaceTree {
         local_salt: u16,
         shares: &[WindowShare],
     ) -> bool {
-        let used: Vec<TabId> = self
-            .window_shares
+        // The used windows whose share ended: those of this room's
+        // workspace, to keep, and those no workspace shows any more, to
+        // forget. A used window of another room waits for its own room.
+        let room_of = |tab: TabId| room_showing(&self.desktop, tab);
+        let ended: Vec<(TabId, Option<RoomId>)> = self
+            .shared_window_use
             .used
             .iter()
             .copied()
             .filter(|tab| !shares.iter().any(|share| share.tab == *tab))
+            .map(|tab| (tab, room_of(tab)))
+            .filter(|(_, at)| at.is_none_or(|at| at == room))
             .collect();
+        let forgot = !ended.is_empty();
         let mut kept = false;
-        for old in used {
-            self.window_shares.used.remove(&old);
-            if peer_salt_of(old) == local_salt {
+        for (old, at) in ended {
+            self.shared_window_use.used.remove(&old);
+            if at.is_none() || peer_salt_of(old) == local_salt {
                 continue;
             }
             let new = self.mint_id();
@@ -337,11 +483,23 @@ impl WorkspaceTree {
             }
             kept = true;
         }
-        if kept {
+        if kept || forgot {
             self.queue_save();
         }
         kept
     }
+}
+
+/// The room of the workspace in `desktop` that shows the tab `tab`.
+fn room_showing(desktop: &DesktopTree, tab: TabId) -> Option<RoomId> {
+    desktop.workspaces.iter().find_map(|workspace| {
+        workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
+            .then(|| workspace.room())
+    })
 }
 
 /// Whether `tile` is how this device shows `share`: an outside window's

@@ -23,6 +23,7 @@ pub use tree_handle::{
     WorkspaceTreeWriteGuard, next_policy_revision,
 };
 pub use window_hosting::WindowHosting;
+pub use window_shares::SharedWindowUse;
 pub(crate) use window_shares::host_handle;
 
 pub use collab_types::caps::{
@@ -808,6 +809,11 @@ pub struct WorkspaceTree {
     /// admitted document whenever that changes ([`Self::shared_windows`]).
     #[serde(skip, default)]
     pub window_shares: window_shares::WindowShares,
+    /// What the person here did with the Tilo app windows others shared
+    /// (used them, moved them elsewhere), kept across a restart.
+    /// Device-local.
+    #[serde(default, skip_serializing_if = "SharedWindowUse::is_empty")]
+    pub shared_window_use: SharedWindowUse,
     /// Rooms of workspaces made here ([`Self::create_hosted_workspace`])
     /// whose room no host holds yet: each waits for the network to create it
     /// on the host it is placed on and to enroll this device's native owner
@@ -951,6 +957,7 @@ impl Default for WorkspaceTree {
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             window_shares: window_shares::WindowShares::default(),
+            shared_window_use: SharedWindowUse::default(),
             pending_placements: BTreeSet::new(),
             room_outbox: Vec::new(),
             governance_refusals: Vec::new(),
