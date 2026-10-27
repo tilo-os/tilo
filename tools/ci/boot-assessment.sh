@@ -36,11 +36,11 @@ python3 os/dev/probe-kvm.py "$arch" || {
 
 rm -rf "$work" "$out"
 mkdir -p "$work" "$out"
-target=$(git rev-parse HEAD)
-[[ -s $dev/digest && -s $dev/revision && -d $dev/oci ]] \
+# The commit this run is for: the dev image carries only its digest, the same image for every
+# commit whose image is the same.
+commit=$(git rev-parse HEAD)
+[[ -s $dev/digest && -d $dev/oci ]] \
   || { echo "no dev image in $dev: the check needs os-dev-image-$arch" >&2; exit 1; }
-commit=$(cat "$dev/revision")
-[[ $commit == "$target" ]] || { echo "the dev image is of $commit, this tree is $target" >&2; exit 1; }
 
 modprobe fuse 2>/dev/null || true
 modprobe loop 2>/dev/null || true

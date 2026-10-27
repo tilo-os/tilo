@@ -1333,7 +1333,6 @@ run = "bash tools/ci/publish/os-image.sh dev-compose {arch} /target/os/{arch}/im
 inputs = ["tools/ci/os/oci_layers.py"]
 needs = ["os-image-{arch}", "os-dev-layer-{arch}"]
 outputs = ["/target/publish/os-dev/{arch}/**"]
-git = true
 requires = ["arch=any"]
 cost = "minutes"
 requirement = { cores = 1, memory = "2GiB" }
@@ -1373,7 +1372,6 @@ setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt t
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-dev-disk.sh", "os/dev/**"]
 needs = ["os-dev-image-{arch}"]
 outputs = ["/target/publish/os-dev-disk/{arch}/**"]
-git = true
 requires = ["{node}", "disk-100g"]
 isolation = "vm"
 cost = "heavy"

@@ -13,7 +13,7 @@
 #   os-image.sh dev-compose ARCH IN FRAGMENT OUT
 #                                  the OS image in IN and the fragment `dev` left in FRAGMENT as
 #                                  one OCI layout in OUT/oci, its blobs links to theirs, with
-#                                  OUT/digest and OUT/revision (no VM)
+#                                  OUT/digest (no VM)
 #   os-image.sh board BOARD IN OUT the board's sealed dev image (os/Containerfile.board: firmware,
 #                                  device tree, initramfs, a UKI) FROM the aarch64 dev image `dev`
 #                                  left in IN, as an OCI layout in OUT/oci, with OUT/digest, OUT/revision
@@ -242,15 +242,14 @@ case ${1:-} in
     ;;
   dev-compose)
     # The dev image as one OCI layout: the OS image's layers and the dev fragment `dev` left,
-    # their blobs hard links to theirs, with the commit this run is for.
+    # their blobs hard links to theirs. It names no commit, so it is the same composition for
+    # every commit whose layers are the same; what publishes it names the commit of its run.
     arch=${2:?usage: os-image.sh dev-compose ARCH IN FRAGMENT OUT}
     in=${3:?}
     fragment=${4:?}
     out=${5:?}
-    revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
     rm -rf "$out"
     python3 -I tools/ci/os/oci_layers.py compose "$out" "$in/oci" "$fragment"
-    printf '%s\n' "$revision" > "$out/revision"
     ;;
   board)
     board=${2:?usage: os-image.sh board BOARD IN OUT}

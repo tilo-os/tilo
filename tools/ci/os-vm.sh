@@ -3,7 +3,7 @@
 # os-vm-x86_64` boots it as a job of the session, and `t vm console|ssh|display` attach to it
 # for as long as its lifetime lasts (`t vm extend` adds to it, `t vm stop` ends it).
 #
-#   os-vm.sh ARCH DISK   DISK: os-dev-disk-ARCH's disk directory (disk.qcow2, revision)
+#   os-vm.sh ARCH DISK   DISK: os-dev-disk-ARCH's disk directory (disk.qcow2, image-digest)
 #
 # The disk is this tree's dev image as os-dev-disk-ARCH installed it, never booted itself: the VM
 # runs on a throwaway overlay of it, so nothing it does outlives the job. QEMU runs it through
@@ -25,7 +25,7 @@ case $arch in
   *) die "unknown architecture $arch" ;;
 esac
 [[ -c /dev/kvm ]] || die 'no /dev/kvm: the check needs requires = ["/dev/kvm"]'
-[[ -s $disk_dir/disk.qcow2 && -s $disk_dir/revision ]] \
+[[ -s $disk_dir/disk.qcow2 && -s $disk_dir/image-digest ]] \
   || die "no installed dev disk in $disk_dir: the check needs os-dev-disk-$arch"
 [[ -n ${T_ATTACH_URL:-} && -n ${T_ATTACH_TOKEN:-} ]] \
   || die 'no T_ATTACH_URL/T_ATTACH_TOKEN: this t server gives jobs no attach token, so `t vm` cannot reach the VM'
@@ -42,7 +42,7 @@ curl -fsS --retry 3 -H "authorization: Bearer $T_ATTACH_TOKEN" -o "$agent" \
   "${T_ATTACH_URL%/}/v1/attach-agent/agent.py" \
   || die "the t server at $T_ATTACH_URL served no attach agent"
 
-revision=$(cat "$disk_dir/revision")
+image_digest=$(cat "$disk_dir/image-digest")
 export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
 export TILO_RUN=/var/tmp/tilo-os-vm-$arch TILO_SSH_PORT=2222
 export TILO_DISK=$TILO_RUN/disk.qcow2
@@ -88,7 +88,7 @@ EOF
 
 lifetime=${T_INPUT_LIFETIME:-3600}
 [[ $lifetime =~ ^[0-9]+$ ]] || die "lifetime must be seconds, not $lifetime"
-exec python3 -I "$agent" --label "tilo dev image ${revision:0:12} ($arch)" \
+exec python3 -I "$agent" --label "tilo dev image $(cut -c8-19 <<<"$image_digest") ($arch)" \
   --lifetime "$lifetime" --max 13500 \
   --console "unix:$TILO_SERIAL_SOCKET" --ssh "tcp:127.0.0.1:$TILO_SSH_PORT" \
   --display "unix:$TILO_VNC_SOCKET" \

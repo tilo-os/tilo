@@ -27,7 +27,6 @@ use_cosign
 rm -rf "$out"
 mkdir -p "$out/disk"
 
-revision=$(git rev-parse --verify HEAD) || die 'the disk names its commit: git = true'
 id=$(podman pull -q "oci:$dev/oci")
 [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$dev/digest")" ]] || die "$dev/oci is not the image $dev/digest names"
 podman tag "$id" localhost/tilo-vm:ci
@@ -38,6 +37,7 @@ TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_OUTPUT=$scratch/dev-disk 
   bash os/dev/build-image.sh > "$out/install.log" 2>&1 \
   || { tail -n 80 "$out/install.log"; die 'the dev image does not install onto a disk'; }
 mv "$scratch/dev-disk/qcow2/disk.qcow2" "$out/disk/disk.qcow2"
-printf '%s\n' "$revision" > "$out/disk/revision"
+# The disk names the image it was installed from, not a commit: it is the same disk for every
+# commit whose dev image is the same, which t keeps by what it is made of.
 cp "$dev/digest" "$out/disk/image-digest"
-printf 'installed %s of %s\n' "$(cat "$dev/digest")" "$revision"
+printf 'installed %s\n' "$(cat "$dev/digest")"

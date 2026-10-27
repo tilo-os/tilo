@@ -24,7 +24,6 @@ out=${4:?}
 repository=registry.tilo.so/tilo/tilo-vm-ref
 [[ $(channel) == branch ]] || die "a branch's own build publishes from a branch, not $T_REF"
 require_commit
-[[ $(cat "$image/revision") == "$T_COMMIT" ]] || die "$image holds the image of $(cat "$image/revision"), the run is for $T_COMMIT"
 # OUT holds the image by reference beside its signature, as oci-sign.sh and oci-publish.sh read it.
 mkdir -p "$out"
 link() {
@@ -32,7 +31,8 @@ link() {
   for name in image.oci.tar oci; do
     [[ -e $image/$name ]] && ln -sfn "$(realpath "$image/$name")" "$out/$name"
   done
-  cp "$image/digest" "$image/revision" "$out/"
+  cp "$image/digest" "$out/"
+  printf '%s\n' "$T_COMMIT" > "$out/revision"
 }
 case $action in
   sign)

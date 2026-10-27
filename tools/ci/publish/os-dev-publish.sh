@@ -33,11 +33,9 @@ case $mode in
 esac
 [[ $(channel) == dev ]] || die "dev images publish from main only; this run is for $T_REF"
 require_commit
-[[ $(cat "$dev/revision") == "$T_COMMIT" ]] || die "$dev holds the dev image of $(cat "$dev/revision"), the run is for $T_COMMIT"
 [[ -s $dev/signature ]] || die "$dev holds no signature: the check needs sign-dev-os-$arch"
 if [[ $mode == disk ]]; then
   [[ -n ${TILO_PACKAGES_TOKEN:-} ]] || die 'TILO_PACKAGES_TOKEN is required: the check needs secrets = ["TILO_PACKAGES_TOKEN"]'
-  [[ $(cat "$disk/revision") == "$T_COMMIT" ]] || die "$disk holds the disk of $(cat "$disk/revision"), the run is for $T_COMMIT"
   [[ $(cat "$disk/image-digest") == "$(cat "$dev/digest")" ]] || die "$disk/disk.qcow2 was not installed from $dev"
   [[ -s $disk/disk.qcow2 ]] || die "no installed disk in $disk"
 fi
