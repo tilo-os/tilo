@@ -272,12 +272,13 @@ impl SheetsApp {
     }
 
     /// The File menu's rows, in order.
-    pub(super) fn file_menu_items() -> [(&'static str, MenuItem); 7] {
+    pub(super) fn file_menu_items() -> [(&'static str, MenuItem); 8] {
         [
             ("New sheet", MenuItem::NewSheet),
             ("Import CSV", MenuItem::ImportCsv),
             ("Import Excel workbook", MenuItem::ImportXlsx),
             ("Import OpenDocument spreadsheet", MenuItem::ImportOds),
+            ("Import Notion export", MenuItem::ImportNotion),
             ("Export CSV", MenuItem::ExportCsv),
             ("Export Excel workbook", MenuItem::ExportXlsx),
             ("Export OpenDocument spreadsheet", MenuItem::ExportOds),
@@ -357,6 +358,7 @@ impl SheetsApp {
             E::ImportCsv { path } => Ok(self.import(Interchange::Csv, path, cx)),
             E::ImportXlsx { path } => Ok(self.import(Interchange::Xlsx, path, cx)),
             E::ImportOds { path } => Ok(self.import(Interchange::Ods, path, cx)),
+            E::ImportNotion { path } => Ok(self.import(Interchange::Notion, path, cx)),
             E::ExportCsv { path } => self.export(Interchange::Csv, path, cx),
             E::ExportXlsx { path } => self.export(Interchange::Xlsx, path, cx),
             E::ExportOds { path } => self.export(Interchange::Ods, path, cx),

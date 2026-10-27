@@ -4,6 +4,7 @@
 //! presented from the resource and changed only through its actions.
 
 use std::collections::HashMap;
+use std::f64::consts::TAU;
 use std::rc::Rc;
 #[cfg(test)]
 use ui::widget::Edits;
@@ -541,7 +542,9 @@ impl CalculatorApp {
                 self.model_dirty = true;
             }
             Mode::Graph3d => {
-                self.model.view3d.yaw += d.x * 0.01;
+                // Kept within one turn however far it orbits.
+                let yaw = self.model.view3d.yaw + d.x * 0.01;
+                self.model.view3d.yaw = yaw - TAU * (yaw / TAU).round();
                 self.model.view3d.pitch = (self.model.view3d.pitch + d.y * 0.01).clamp(-1.5, 1.5);
                 // An orbit re-projects regardless, so settle any zoom ease.
                 self.g3.settle_zoom(self.model.view3d.zoom);
@@ -551,23 +554,58 @@ impl CalculatorApp {
         }
     }
 
-    fn on_wheel(&mut self, step: f64) {
-        // Scrolling over a math editor scrolls its (clipped) content — the axis
-        // that actually overflows moves; the other is clamped to a no-op.
+    /// Scroll the math editor under the pointer by `(dx, dy)`: the axis that
+    /// overflows moves, the other stays. False with no editor there.
+    fn scroll_field_under_pointer(&mut self, dx: f64, dy: f64) -> bool {
         if let Some(kind) = self.model.mode.graph()
             && let Some(i) = self.panel(kind).field_at(self.mouse)
         {
             if let Some(f) = self.graph_field(kind, i) {
-                f.scroll_by(-step * 24.0, -step * 24.0);
+                f.scroll_by(dx, dy);
             }
-            return;
+            return true;
         }
-
         if self.model.mode == Mode::Calc && self.calc.expression_rect().contains(self.mouse) {
-            self.calc.field.scroll_by(-step * 24.0, -step * 24.0);
+            self.calc.field.scroll_by(dx, dy);
+            return true;
+        }
+        false
+    }
+
+    fn on_scroll(&mut self, delta: &MouseScrollDelta, scale_factor: f64, ctrl: bool) {
+        match delta {
+            MouseScrollDelta::LineDelta(_, y) => self.on_wheel(f64::from(*y)),
+            // A touchpad's pinch arrives as a Ctrl-scroll on some platforms.
+            MouseScrollDelta::PixelDelta(pos) if ctrl => self.on_wheel(pos.y / 40.0),
+            MouseScrollDelta::PixelDelta(pos) => {
+                self.on_pixel_scroll(Vec2::new(pos.x, pos.y) / scale_factor);
+            }
+        }
+    }
+
+    /// A mouse wheel's detents scroll an editor and zoom a graph.
+    fn on_wheel(&mut self, step: f64) {
+        if !self.scroll_field_under_pointer(-step * 24.0, -step * 24.0) {
+            self.zoom_at_pointer((1.0 + step * 0.12).clamp(0.4, 2.5));
+        }
+    }
+
+    /// Two fingers on a touchpad or screen moved `d` logical pixels: an
+    /// editor scrolls, and a graph's content follows them as under a drag.
+    /// Zoom is the pinch's.
+    fn on_pixel_scroll(&mut self, d: Vec2) {
+        if self.scroll_field_under_pointer(-d.x, -d.y) {
             return;
         }
-        let factor = (1.0 + step * 0.12).clamp(0.4, 2.5);
+        if let Some(kind) = self.model.mode.graph()
+            && self.canvas_contains(kind, self.mouse)
+        {
+            self.on_drag(d);
+        }
+    }
+
+    /// Scale the graph under the pointer by `factor`, about the pointer.
+    fn zoom_at_pointer(&mut self, factor: f64) {
         match self.model.mode {
             Mode::Graph2d if self.g2.canvas_contains(self.mouse) => {
                 self.navigated = true;
@@ -1165,6 +1203,19 @@ impl Widget for CalculatorApp {
         }
     }
 
+    /// A finger on a plot pans the plane or orbits the surface, as a mouse
+    /// drag does; two fingers pinch it.
+    fn touch_claim(&self, point: Point) -> ui::interaction::TouchClaim {
+        match self.model.mode.graph() {
+            Some(kind)
+                if self.canvas_contains(kind, point) && !self.panel(kind).side().covers(point) =>
+            {
+                ui::interaction::TouchClaim::Drag
+            }
+            _ => ui::interaction::TouchClaim::Pointer,
+        }
+    }
+
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
         // The calculator's keypad types the expression; graph formulas are
         // typed on the keyboard.
@@ -1333,11 +1384,12 @@ impl Widget for CalculatorApp {
                 *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let step = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
-                };
-                self.on_wheel(step);
+                let ctrl = ctx.modifiers.state().control_key();
+                self.on_scroll(delta, ctx.scale_factor, ctrl);
+                *ctx.handled = true;
+            }
+            WindowEvent::PinchGesture { delta, .. } => {
+                self.zoom_at_pointer((1.0 + delta).clamp(0.4, 2.5));
                 *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {

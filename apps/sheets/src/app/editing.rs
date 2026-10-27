@@ -150,6 +150,9 @@ impl SheetsApp {
             MenuItem::ImportXlsx => {
                 self.invoke_effect(&actions::SheetsEffect::ImportXlsx { path: None });
             }
+            MenuItem::ImportNotion => {
+                self.invoke_effect(&actions::SheetsEffect::ImportNotion { path: None });
+            }
             MenuItem::ExportXlsx => {
                 self.invoke_effect(&actions::SheetsEffect::ExportXlsx { path: None });
             }
