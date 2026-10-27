@@ -14510,7 +14510,7 @@ pub fn run() {
                             tracing::debug!(%id, "live capture mirror closed");
                         }
                         outcome => {
-                            crate::compositor::capture::tell_outcome(&mut frame_builder, outcome)
+                            crate::compositor::capture::tell_outcome(&mut frame_builder, outcome);
                         }
                     }
                 }

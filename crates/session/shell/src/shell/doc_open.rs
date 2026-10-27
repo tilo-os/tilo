@@ -2397,10 +2397,12 @@ mod tests {
         );
 
         let files_scopes = || -> Vec<Scope> {
-            let state = chrome.borrow();
-            let tree = state.tree();
-            let workspace = tree.desktop.active_workspace().expect("a workspace");
-            workspace
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .expect("a workspace")
                 .sandbox
                 .iter()
                 .filter(|c| c.subject == Subject::app(SYSTEM_FILE_MANAGER))
