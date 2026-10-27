@@ -3,7 +3,7 @@
 [[resources]]
 kind = "shortcuts.workbench"
 label = "Shortcuts"
-version = 2
+version = 3
 fields = [
   { path = "drafts", type = "Collection<Draft>", stored = "collection" },
   { path = "drafts.*.name", type = "String", label = true },

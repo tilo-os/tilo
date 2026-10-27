@@ -36,7 +36,7 @@ use ui::capability_door::Door;
     available = Firewall::available,
     children = Firewall::zone_places,
     search = Firewall::search,
-    version = 2,
+    version = 3,
     migrate = crate::model::upgrade,
 )]
 impl Firewall {
@@ -513,6 +513,48 @@ mod tests {
         assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
     }
 
+    /// A configuration of version 2 stored each rule's match as its variant
+    /// and fields flat beside the variant's name. Opened now, every rule
+    /// matches what it matched, stored by its variant.
+    #[test]
+    fn rules_kept_with_flat_matches_migrate_to_fields_stored_by_variant() {
+        use ui::automerge::ScalarValue;
+        use ui::tilo_resource::{Model as _, Replica, Slot, evolution, read_key};
+        let mut replica = Replica::<Firewall>::new();
+        replica
+            .apply(Firewall::import_of(&sample_config()))
+            .unwrap();
+        let expected = replica.state().unwrap();
+        let doc = replica.doc_mut();
+        let root = ui::automerge::ROOT;
+        let mut flattened = 0;
+        for (_, zone) in evolution::map_values(doc, &root, "zones").unwrap() {
+            for rule in evolution::collection_items(doc, &zone, "rules").unwrap() {
+                let matcher: crate::model::Matcher = read_key(doc, &rule, "matcher").unwrap();
+                let flat = matcher.to_json();
+                Slot::Key(&rule, "matcher").remove(doc).unwrap();
+                let map = Slot::Key(&rule, "matcher")
+                    .object(doc, ui::automerge::ObjType::Map)
+                    .unwrap();
+                evolution::fixture(doc, &map, &flat).unwrap();
+                flattened += 1;
+            }
+        }
+        assert!(flattened > 0, "the sample has rules to migrate");
+        Slot::Key(&root, evolution::VERSION_KEY)
+            .put_scalar(doc, ScalarValue::Uint(2))
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(
+            evolution::read_checked::<Firewall>(&old).is_err(),
+            "unmigrated"
+        );
+        assert!(evolution::migrate::<Firewall>(&mut old).unwrap());
+        assert_eq!(evolution::stored_version(&old), 3);
+        assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
+    }
+
     /// The configuration still to apply is the stored one until this device
     /// applied exactly it; an empty or invalid one is never applied.
     #[test]
@@ -757,6 +799,64 @@ mod tests {
                 .iter()
                 .any(|r| r.id == ids[0])
         );
+    }
+
+    /// Undo takes back a changed match, giving back the match the rule had
+    /// with the fields it had — while the source someone else changed
+    /// meanwhile stays.
+    #[test]
+    fn undoing_a_changed_match_gives_back_the_one_the_rule_had() {
+        use ui::prelude::history_source::{AuthorDirectory, revert_step};
+        let config = sample_config();
+        let z = config.default_zone;
+        let ids: Vec<_> = config.zone(z).unwrap().rules.iter().map(|r| r.id).collect();
+        let rules = Firewall::paths().zones.key(z.name()).rules;
+        let rule = |id| rules.item(&Firewall::rule(id));
+        let before = config
+            .zone(z)
+            .unwrap()
+            .rules
+            .iter()
+            .find(|rule| rule.id == ids[0])
+            .unwrap()
+            .matcher
+            .clone();
+
+        let mut ours = imported(&config);
+        let mut theirs = ours.fork();
+        let heads_before = ours.heads();
+        edit(
+            &mut ours,
+            &rule(ids[0]).matcher.set(crate::model::Matcher::Port {
+                port: "9000".into(),
+                proto: crate::model::Proto::Tcp,
+            }),
+        )
+        .unwrap();
+        // Our own last step, as the app's Ctrl+Z takes it back.
+        let taken = ours
+            .heads()
+            .into_iter()
+            .find(|head| !heads_before.contains(head))
+            .expect("the match was one change");
+        edit(&mut theirs, &rule(ids[0]).source.replace("192.168.1.0/24")).unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+
+        revert_step(ours.doc_mut(), &taken, None, &AuthorDirectory::default())
+            .expect("the step is in the document");
+        ours.doc_mut().commit();
+
+        let state = ours.state().unwrap();
+        let merged = state.config();
+        let got = merged
+            .zone(z)
+            .unwrap()
+            .rules
+            .iter()
+            .find(|rule| rule.id == ids[0])
+            .unwrap();
+        assert_eq!(got.matcher, before, "the match it had is back");
+        assert_eq!(got.source, "192.168.1.0/24", "the other change stays");
     }
 
     /// The stored configuration is held to what firewalld accepts, however

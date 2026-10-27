@@ -573,3 +573,73 @@ fn new_drafts_with_one_name_are_numbered() {
         ["New shortcut", "New shortcut 2", "New shortcut 3", "Tidy"]
     );
 }
+
+/// A workbench of version 2: each step's head stored with the fields of its
+/// variant flat beside its variant's name, the way every data enum was.
+#[test]
+fn a_workbench_of_version_two_opens_with_its_heads_stored_by_variant() {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+    use ui::tilo_resource::{Model as _, Resource as _, Slot, evolution};
+
+    let mut replica = Replica::<Workbench>::new();
+    replica
+        .apply(Workbench::OPEN_SHORTCUT.with(json!({
+            "id": "s1", "name": "Receipts",
+            "steps": [
+                {"id": "list", "step": "invoke",
+                 "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+                 "resource": {"fixed": "notes.folder:inbox"}},
+                {"id": "any", "step": "if",
+                 "cond": {"truthy": {"var": "x"}},
+                 "then": [{"id": "make", "step": "invoke",
+                           "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                           "resource": {"fixed": "notes.folder:inbox"}}]}
+            ],
+            "output": {"step_output": {"step": "list"}},
+            "grant": [],
+            "triggers": [{"trigger": "keyboard", "chord": "Super+Shift+R"}]
+        })))
+        .unwrap();
+    let expected = program(&replica);
+
+    let doc = replica.doc_mut();
+    let mut flattened = 0;
+    for draft in evolution::collection_items(doc, &ROOT, "drafts").unwrap() {
+        for step in evolution::collection_items(doc, &draft, "steps").unwrap() {
+            let Ok(Some((Value::Object(ObjType::Map), _))) = doc.get(&step, "head") else {
+                continue;
+            };
+            let head: Option<Head> = ui::tilo_resource::read_key(doc, &step, "head").unwrap();
+            let Some(head) = head else {
+                continue;
+            };
+            let flat = head.to_json();
+            Slot::Key(&step, "head").remove(doc).unwrap();
+            let map = Slot::Key(&step, "head").object(doc, ObjType::Map).unwrap();
+            evolution::fixture(doc, &map, &flat).unwrap();
+            flattened += 1;
+        }
+    }
+    assert!(
+        flattened >= 2,
+        "every step's head is stored flat: {flattened}"
+    );
+
+    Slot::Key(&ROOT, evolution::VERSION_KEY)
+        .put_scalar(doc, ScalarValue::Uint(2))
+        .unwrap();
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(
+        evolution::read_checked::<Workbench>(&old).is_err(),
+        "unmigrated"
+    );
+    assert!(evolution::migrate::<Workbench>(&mut old).unwrap());
+    assert_eq!(evolution::stored_version(&old), Workbench::VERSION);
+    let workbench = evolution::read_checked::<Workbench>(&old).unwrap();
+    assert_eq!(
+        workbench.drafts.values().next().unwrap().program(),
+        expected,
+        "each step does what it did"
+    );
+}

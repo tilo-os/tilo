@@ -3,7 +3,7 @@
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
-version = 6
+version = 7
 fields = [
   { path = "categories", type = "Collection<Category>", readonly = true, stored = "collection" },
   { path = "categories.*.name", type = "String", label = true, readonly = true },
@@ -268,7 +268,7 @@ params = [
 [[resources]]
 kind = "chat.messages"
 label = "Messages"
-version = 2
+version = 3
 fields = [
   { path = "messages", type = "Collection<Message>", readonly = true, stored = "collection" },
   { path = "messages.*.channel", type = "Id", readonly = true },

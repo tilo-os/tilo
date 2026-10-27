@@ -174,7 +174,7 @@ pub struct NewMessage {
     params = chat_part,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 2,
+    version = 3,
     migrate = crate::record::upgrade_part,
 )]
 impl ChatPart {

@@ -272,7 +272,7 @@ fn a_marks_style_is_saved_as_the_json_object_it_was() {
 /// The shape a version-1 document was written in: a mark's style, a mark's
 /// and a layer's adjustments and the ground as one JSON string each, and
 /// every string a text object.
-fn version_one() -> serde_json::Value {
+fn version_one() -> (serde_json::Value, Shape, Shape) {
     let style = canvas::model::Style {
         fill: Some("#204020".into()),
         stroke_width: 1.0,
@@ -289,7 +289,24 @@ fn version_one() -> serde_json::Value {
         height: 120.0,
         radius: 0.0,
     };
-    json!({
+    // A text names a `width` as a box does — its wrap width, absent when it
+    // does not wrap — and is one value with it, so the two never read each
+    // other's.
+    let label = Shape::Text {
+        x: 20.0,
+        y: 440.0,
+        text: "A label".into(),
+        size: 12.0,
+        font: None,
+        weight: None,
+        italic: false,
+        align: None,
+        line_height: None,
+        width: Some(320.0),
+        tracking: None,
+        path: None,
+    };
+    let before = json!({
         "title": { "$text": "Study" },
         "width": 1200.0,
         "height": 900.0,
@@ -329,9 +346,21 @@ fn version_one() -> serde_json::Value {
                 "clip": { "$text": "" },
                 "area": { "$text": "" },
             },
+            "label": {
+                "id": { "$text": "label" },
+                "layer": { "$text": "layer-1" },
+                "order": { "$text": "b" },
+                "name": { "$text": "" },
+                "shape": serde_json::to_string(&label).unwrap(),
+                "style": serde_json::to_string(&style).unwrap(),
+                "group": { "$text": "" },
+                "clip": { "$text": "" },
+                "area": { "$text": "" },
+            },
         },
         "media": {},
-    })
+    });
+    (before, shape, label)
 }
 
 /// A document written when a mark's style, the adjustments and the ground
@@ -341,7 +370,7 @@ fn version_one() -> serde_json::Value {
 fn a_document_from_before_a_style_was_fields_is_migrated_on_open() {
     let mut replica = Replica::<Artwork>::new();
     let doc = replica.doc_mut();
-    let before = version_one();
+    let (before, rect, label) = version_one();
     ui::tilo_resource::evolution::fixture(doc, &ROOT, &before).expect("the old document writes");
     Slot::Key(&ROOT, ui::tilo_resource::evolution::VERSION_KEY)
         .put_scalar(doc, ui::automerge::ScalarValue::Uint(1))
@@ -377,6 +406,18 @@ fn a_document_from_before_a_style_was_fields_is_migrated_on_open() {
             ..Adjust::default()
         }),
         "a layer's adjustments are what it had"
+    );
+    // A box and a text both name a `width`: each reads its own, so an
+    // artwork drawn before the style was fields keeps both as they were.
+    assert_eq!(
+        art.mark("tree").expect("the box is back").shape,
+        rect,
+        "the box's width is its own"
+    );
+    assert_eq!(
+        art.mark("label").expect("the text is back").shape,
+        label,
+        "the text's wrap width is its own"
     );
     assert_eq!(art.settled(), art, "nothing else moved");
 
