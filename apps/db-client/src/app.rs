@@ -315,6 +315,29 @@ impl DbClientApp {
         }
     }
 
+    /// Write the result to a CSV file, asked from the window's bar: export is
+    /// the record's own effect, so the bar asks the same door the palette and
+    /// an agent do (`APP-db-client-03`).
+    fn export_result_from_bar(&self) {
+        let target = self.link.read(|model| {
+            model
+                .active
+                .map(|connection| (connection, model.query_generation, model.query.is_some()))
+        });
+        let Some((connection, generation, has_result)) = target else {
+            return;
+        };
+        if !has_result {
+            return;
+        }
+        if let Some(actions) = &self.actions {
+            actions.effect(&DbEffect::ExportCsv {
+                connection,
+                generation,
+            });
+        }
+    }
+
     /// Put `text` on the clipboard and say so — or say it did not take. A
     /// copy can fail after it returns, so it is watched and the failure it
     /// reports later replaces the confirmation.
@@ -1041,6 +1064,29 @@ pub(crate) const CANCEL_QUERY: &str = "db.query.cancel";
 pub(crate) const COPY_ROW: &str = "db.result.copy-row";
 /// The window bar's action that copies the whole result.
 pub(crate) const COPY_RESULT: &str = "db.result.copy-result";
+/// The window bar's action that writes the result to a CSV file the person
+/// picks: it exists as an effect, so the bar offers it (`APP-db-client-03`).
+pub(crate) const EXPORT_CSV: &str = "db.result.export-csv";
+
+/// What the bar offers once there is a result to take away or out: copy a
+/// row, copy the result, or write it as CSV.
+fn result_actions() -> Vec<ToolbarAction> {
+    vec![
+        ToolbarAction::new(COPY_ROW, Icon::Copy.name(), crate::i18n::t("db-copy-row")).in_menu(),
+        ToolbarAction::new(
+            COPY_RESULT,
+            Icon::ClipboardPaste.name(),
+            crate::i18n::t("db-copy-result"),
+        )
+        .in_menu(),
+        ToolbarAction::new(
+            EXPORT_CSV,
+            Icon::Download.name(),
+            crate::i18n::t("db-export-csv"),
+        )
+        .in_menu(),
+    ]
+}
 
 impl DbClientApp {
     /// Run what the person did in the window's bar, then declare its slots:
@@ -1068,6 +1114,10 @@ impl DbClientApp {
             {
                 self.apply(Intent::Cancel);
                 self.publish();
+            } else if let ToolbarEvent::Action { id } = &event
+                && id == EXPORT_CSV
+            {
+                self.export_result_from_bar();
             } else if let ToolbarEvent::Action { id } = &event
                 && (id == COPY_ROW || id == COPY_RESULT)
             {
@@ -1112,18 +1162,7 @@ impl DbClientApp {
                 );
             }
             if has_result {
-                actions.push(
-                    ToolbarAction::new(COPY_ROW, Icon::Copy.name(), crate::i18n::t("db-copy-row"))
-                        .in_menu(),
-                );
-                actions.push(
-                    ToolbarAction::new(
-                        COPY_RESULT,
-                        Icon::ClipboardPaste.name(),
-                        crate::i18n::t("db-copy-result"),
-                    )
-                    .in_menu(),
-                );
+                actions.extend(result_actions());
             }
             ui::widget::NavShell::push_window_actions(&mut toolbar, actions);
         }
