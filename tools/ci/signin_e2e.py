@@ -19,7 +19,9 @@ root shell on a virtio-serial port the check hot-plugs after each boot. Nothing 
 target is changed.
 
 Variants:
-  one-secret             the installer's own path: one secret for disk and account
+  one-secret             the installer's own path: one secret for disk and account; the recovery
+                         key is taken the way a person takes it, with the wizard's Copy button,
+                         and must open a keyslot of its own after install (item 8)
   separate-disk-secret   the installer's separate disk secret: migration adds the keyslot with the
                          volume key the initrd links, then the boot sign-in takes the password
 
@@ -305,6 +307,7 @@ class Run:
         self.wrong = SECRETS.add("tilosignin7horse4batterz")
         self.disk = SECRETS.add("tilodisk9meadow2lantern5") if variant == "separate-disk-secret" else None
         self.recovery: str | None = None
+        self.recovery_read_error: str | None = None
         self.baseline: dict = {}
         self.items: dict[str, dict] = {}
         self.avcs: dict[str, list[str]] = {}
@@ -332,7 +335,8 @@ class Run:
         to a private file the test shell reads. The one-secret variant drives the wizard over
         the console, because only the wizard installs with one secret: an unattended recipe
         always carries a separate disk secret and refuses one equal to the account password.
-        That variant has no recovery key; item 6 runs in the other."""
+        That variant takes its recovery key from the wizard's Copy button (item 8); item 6, the
+        key at the boot prompt, runs in the other."""
         c = self.cycle
         c.vm("init-cycle")
         # The medium is unsigned: its installer admits the target only with the VM proof port.
@@ -348,6 +352,8 @@ class Run:
         try:
             if self.disk:
                 self.run_unattended(sh)
+            else:
+                self.read_copied_recovery_key(sh)
             self.prepare_target(sh)
         finally:
             try:
@@ -422,8 +428,37 @@ class Run:
         if final["install"]["state"] != "done":
             raise Failed("the install failed: " + " | ".join(final["install"].get("log_tail", [])[-5:]))
         self.facts["install_seconds"] = round(time.monotonic() - started)
-        # The key is not read here: the separate-secret variant proves the recovery path.
+        # The person's way to take the key: the Copy button puts it on the live session's
+        # clipboard, which the test shell reads once it is up (read_copied_recovery_key).
+        try:
+            c.invoke("installer", "copy@installer.recovery")
+            self.facts["recovery_key_copied"] = True
+        except Exception as error:  # noqa: BLE001 - item 8 reports it; the install itself is done
+            self.facts["recovery_key_copied"] = SECRETS.redact(str(error))[:300]
         c.invoke("installer", "confirm-saved@installer.recovery", {"saved": True})
+
+    def read_copied_recovery_key(self, sh: Shell) -> None:
+        """Item 8's input: the recovery key the wizard's Copy button put on the live session's
+        clipboard (the installer clears it after five minutes, well after this runs). cage
+        offers no clipboard-manager protocol, so wl-paste joins the session as the installer's
+        own user and takes the selection the way any client there would."""
+        copied = self.facts.get("recovery_key_copied")
+        if copied is not True:
+            self.recovery_read_error = f"the Copy button did not copy the recovery key: {copied}"
+            return
+        code, text = sh.run(
+            "s=$(find /run/user -maxdepth 2 -type s -name 'wayland-[0-9]' 2>/dev/null | head -1); "
+            "test -n \"$s\" || { echo 'no Wayland socket under /run/user'; exit 3; }; "
+            "runuser -u \"$(stat -c %U \"$s\")\" -- env XDG_RUNTIME_DIR=\"${s%/*}\" "
+            "WAYLAND_DISPLAY=\"${s##*/}\" timeout 30 wl-paste --no-newline --type text/plain",
+            60, quiet=True)
+        found = RECOVERY_SHAPE.fullmatch(text.strip())
+        if code or not found:
+            self.recovery_read_error = (f"the clipboard did not hold a recovery key after Copy (exit {code}: "
+                                        f"{SECRETS.redact(text.strip())[-300:]!r})")
+            return
+        self.recovery = SECRETS.add(found.group(0))
+        say("read the recovery key the wizard's Copy button put on the clipboard")
 
     def run_unattended(self, sh: Shell) -> None:
         c = self.cycle
@@ -548,11 +583,34 @@ class Run:
         unlock = self.disk or self.account
         opened = self.slot_opened_by(sh, dev, unlock)
         self.baseline["disk_secret_slot"] = opened
-        if self.recovery:
-            self.baseline["recovery_slot"] = self.slot_opened_by(sh, dev, self.recovery)
+        recovery = self.baseline["recovery_slot"] = (
+            self.slot_opened_by(sh, dev, self.recovery) if self.recovery else None)
         say(f"after install: keyslots {sorted(self.baseline['keyslots'])}, the disk secret opens "
-            f"{opened}, the recovery key opens {self.baseline.get('recovery_slot')}")
+            f"{opened}, the recovery key " + (f"opens {recovery}" if self.recovery else "was not read"))
+        if self.variant == "one-secret":
+            self.check_recovery_slot(opened, recovery)
         self.inject_test_shell(sh, dev, unlock)
+
+    def check_recovery_slot(self, disk_slot: int | None, recovery_slot: int | None) -> None:
+        """Item 8: the key the installer handed over opens the one slot its systemd-recovery
+        token names, which is not the startup secret's."""
+        recovery_tokens = sorted({int(k) for t in self.baseline["tokens"].values()
+                                  if t.get("type") == "systemd-recovery" for k in t.get("keyslots", [])})
+        evidence = {"recovery_slot": recovery_slot, "disk_secret_slot": disk_slot,
+                    "systemd_recovery_token_slots": recovery_tokens,
+                    "keyslots": sorted(self.baseline["keyslots"])}
+        if not self.recovery:
+            self.item("8", "failed", self.recovery_read_error or "the recovery key was not read", **evidence)
+        elif recovery_slot is None:
+            self.item("8", "failed", "the recovery key the installer showed opens no keyslot", **evidence)
+        elif recovery_slot == disk_slot or recovery_tokens != [recovery_slot]:
+            self.item("8", "failed", f"the recovery key opens keyslot {recovery_slot}, not the one slot "
+                      f"its systemd-recovery token names ({recovery_tokens}) apart from the startup "
+                      f"secret's ({disk_slot})", **evidence)
+        else:
+            self.item("8", "passed", f"the recovery key from the wizard's Copy button opens keyslot "
+                      f"{recovery_slot}, the one its systemd-recovery token names; the account "
+                      f"password opens {disk_slot}", **evidence)
 
     def keyslot_view(self, sh: Shell, dev: str) -> dict:
         """The LUKS2 header's keyslots and tokens, and a hash of each keyslot's key material."""
@@ -1009,7 +1067,7 @@ cryptsetup close e2e-target
         }
         evidence["checks"] = checks
         if self.recovery is None:
-            evidence["note"] = "this variant installs without reading the recovery key; its slot was compared by header and key material only"
+            evidence["note"] = "the recovery key was not read (item 8); its slot was compared by header and key material only"
         failed = [name for name, ok in checks.items() if not ok]
         if failed:
             self.item("2", "failed", "; ".join(failed), **evidence)
@@ -1347,7 +1405,7 @@ cryptsetup close e2e-target
 
     def execute(self) -> None:
         if self.variant == "one-secret":
-            steps = [("install", self.install, ("1", "2", "3", "4", "5")),
+            steps = [("install", self.install, ("1", "2", "3", "4", "5", "8")),
                      ("first boot", self.first_boot, ("1",)),
                      ("migration", self.migrate, ("2", "3", "4", "5")),
                      ("boot sign-in", self.boot_sign_in, ("3",)),
@@ -1399,6 +1457,7 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "5": "Lock screen, sudo and polkit accept the secret through pam_tilo and reject a wrong one",
         "6": "Recovery key opens the volume from \"Can't sign in\"",
         "7": "Separate disk passphrase: migration through the linked volume key, then boot sign-in",
+        "8": "One secret: the recovery key from the wizard's Copy button opens its own keyslot after install",
     }
     for key in names:
         items.setdefault(key, {"status": "not-run", "summary": "an earlier step failed", "evidence": {}})
