@@ -4553,6 +4553,20 @@ impl FrameBuilder {
         self.theme = self.theme.clone().with_reduce_transparency(on);
     }
 
+    /// What the active window's input method is being told to show: the
+    /// content purpose and hints of the field that has focus inside it, read
+    /// off the window the way the keyboard app reads them off the wire.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn active_ime_content_for_shots(&self) -> Option<ui::ime::InputContent> {
+        let host = self.host.active_app_host()?;
+        fn focused_content(widget: &dyn Widget) -> Option<ui::ime::InputContent> {
+            widget
+                .ime_content()
+                .or_else(|| widget.children().into_iter().find_map(focused_content))
+        }
+        focused_content(host)
+    }
+
     pub fn set_remote_display_name_for_shots(&mut self, user: &str, name: &str) {
         self.presence
             .set_display_name(ui::permissions::UserId(user.to_string()), name.to_string());
