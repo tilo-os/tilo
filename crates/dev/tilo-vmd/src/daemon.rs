@@ -56,6 +56,9 @@ pub struct Daemon {
     client_protocol: Option<u32>,
     pub(crate) root: PathBuf,
     expected_domain: String,
+    /// The wall clock the keep-awake lease is read against: the process's,
+    /// unless a test hands the daemon a clock of its own to hold still.
+    clock: fn() -> u64,
     /// Problems found re-creating vkms seats when this process started.
     seat_issues: Option<Vec<Issue>>,
 }
@@ -464,7 +467,16 @@ impl Daemon {
             client_protocol: None,
             root: root.to_owned(),
             expected_domain: DEFAULT_DOMAIN.into(),
+            clock: tilo_clock::unix_now,
         }
+    }
+
+    /// Read the keep-awake lease against `clock` instead of the process's
+    /// wall clock, so a test can hold it still.
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: fn() -> u64) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// The `SELinux` domain a greetd session runs in on this image.
@@ -708,7 +720,7 @@ impl Daemon {
         if !matches!(request, Request::Awake(_))
             && awake::renewal(
                 awake::read(&self.lease_path()),
-                tilo_clock::unix_now(),
+                (self.clock)(),
                 awake::Change::Request,
             )
             .1
@@ -954,7 +966,7 @@ impl Daemon {
     /// a machine that cannot be held awake can still be driven.
     fn renew_awake(&mut self, change: awake::Change) -> AwakeLease {
         let path = self.lease_path();
-        let now = tilo_clock::unix_now();
+        let now = (self.clock)();
         let (lease, write) = awake::renewal(awake::read(&path), now, change);
         let mut problem = if write
             && let Err(error) = serde_json::to_vec(&lease)
@@ -981,7 +993,7 @@ impl Daemon {
 
     /// The keep-awake lease as it stands.
     fn awake_lease(&mut self) -> AwakeLease {
-        let now = tilo_clock::unix_now();
+        let now = (self.clock)();
         let lease = awake::read(&self.lease_path()).filter(|lease| lease.active(now));
         let held = self.apply.unit_state(awake::AWAKE_UNIT) == "active";
         AwakeLease {

@@ -102,9 +102,26 @@ struct CapBinding {
     /// (which skips expiry entirely — right for the wire validator, wrong
     /// here, since it would make every expired capability immortal).
     fixed_now: Option<u64>,
+    /// The same instant as `fixed_now`, in a cell a test's
+    /// [`AclHandle::checking_at`] moves: it must lapse a grant while an
+    /// admission lease holds the policy read, which replacing the ACL would
+    /// wait behind.
+    #[cfg(test)]
+    moving_now: Option<FixedNow>,
 }
 
 impl CapBinding {
+    /// The instant this binding evaluates expiry at: a test's moving cell
+    /// if it has one, else the fixed instant it was bound with, else the
+    /// system clock.
+    fn now(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(moving) = &self.moving_now {
+            return moving.at();
+        }
+        self.fixed_now.unwrap_or_else(crate::clock::unix_now_secs)
+    }
+
     /// Evaluate `access` on `path` through the capability model.
     fn permits(&self, path: &str, access: Access) -> bool {
         self.permits_as(&self.actor, path, access)
@@ -124,7 +141,7 @@ impl CapBinding {
             &ResourceRef::FsPath(path.to_string()),
             required,
             &self.caps,
-            Some(self.fixed_now.unwrap_or_else(crate::clock::unix_now_secs)),
+            Some(self.now()),
         ) == CapDecision::Allow
     }
 
@@ -197,6 +214,20 @@ fn peer_actor(peer: &IdentityKey) -> Actor {
 /// entries** ([`AclEntry`]) are a flat list with union semantics — any
 /// matching entry grants access, absence *is* denial (no explicit-deny
 /// entry). An empty ACL grants nothing to anyone.
+/// The instant capability checks evaluate expiry at, in a cell the handle
+/// holding the ACL shares with its bindings: a test moves the time in place
+/// rather than replacing the policy.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct FixedNow(Arc<std::sync::atomic::AtomicU64>);
+
+#[cfg(test)]
+impl FixedNow {
+    fn at(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct WorkspaceAcl {
     entries: Vec<AclEntry>,
@@ -235,6 +266,20 @@ impl WorkspaceAcl {
         acl
     }
 
+    /// Evaluate every capability check at the instant `at` holds, seconds
+    /// since epoch, instead of the system clock: for a test that moves a
+    /// grant past its expiry between two checks, and for no live mount. The
+    /// cell is shared with [`AclHandle::checking_at`], which moves it.
+    #[cfg(test)]
+    #[must_use]
+    pub fn checking_at(mut self, at: Arc<std::sync::atomic::AtomicU64>) -> Self {
+        let fixed = FixedNow(at);
+        for binding in &mut self.bindings {
+            binding.moving_now = Some(fixed.clone());
+        }
+        self
+    }
+
     /// Bind another identity's capabilities into an existing ACL. Each
     /// binding answers only for its own identity, so binding several is
     /// safe — though [`crate::QuickFS`] serves a single identity per mount,
@@ -261,6 +306,8 @@ impl WorkspaceAcl {
             actor,
             caps: namespace_capabilities(caps),
             fixed_now: now,
+            #[cfg(test)]
+            moving_now: None,
         });
         self
     }
@@ -459,6 +506,10 @@ impl WorkspaceAcl {
 #[derive(Clone, Debug)]
 pub struct AclHandle {
     acl: Arc<RwLock<WorkspaceAcl>>,
+    /// The instant this handle's capability checks read when a test pinned
+    /// one, shared with the bindings it was built from.
+    #[cfg(test)]
+    check_at: Option<FixedNow>,
     revision: Arc<std::sync::atomic::AtomicU64>,
     revision_watch: tokio::sync::watch::Sender<u64>,
 }
@@ -473,9 +524,22 @@ impl AclHandle {
     pub fn new(acl: WorkspaceAcl) -> Self {
         let (revision_watch, _) = tokio::sync::watch::channel(0_u64);
         Self {
+            #[cfg(test)]
+            check_at: acl.bindings.iter().find_map(|b| b.moving_now.clone()),
             acl: Arc::new(RwLock::new(acl)),
             revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             revision_watch,
+        }
+    }
+
+    /// Evaluate every capability check at `at`, seconds since epoch, from
+    /// now on. It moves the same cell [`WorkspaceAcl::checking_at`] shares
+    /// with the bindings, so it answers while an admission lease holds the
+    /// policy read.
+    #[cfg(test)]
+    pub fn checking_at(&self, at: u64) {
+        if let Some(fixed) = &self.check_at {
+            fixed.0.store(at, std::sync::atomic::Ordering::Relaxed);
         }
     }
 

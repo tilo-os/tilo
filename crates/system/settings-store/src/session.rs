@@ -1762,26 +1762,29 @@ mod tests {
 
     #[test]
     fn a_settled_copy_needs_no_look_until_another_process_writes_it() {
-        // "Within the clock tick" is judged against the wall clock; it stands
-        // still here, before the copy is written.
-        tilo_clock::freeze_wall(tilo_clock::wall());
-        let dir = crate::test_dir();
-        let session = open(dir.path());
-        assert!(
-            session.copy_may_have_changed(),
-            "a copy written within the file system's clock tick needs its contents read"
-        );
-        settle_copy(&session);
-        assert!(!session.copy_may_have_changed());
-        crate::update_section_at(
-            &session.paths.copy,
-            "appearance",
-            object(json!({"theme": "Light"})),
-        )
-        .unwrap();
-        assert!(session.copy_may_have_changed());
-        session.refresh();
-        assert_eq!(session.load()["appearance"]["theme"], json!("Light"));
+        // "Within the clock tick" is judged against the wall clock, so it is
+        // pinned here on this thread alone: the other tests of the process keep
+        // their own clock.
+        let at = tilo_clock::wall();
+        tilo_clock::testing::with_wall(at, || {
+            let dir = crate::test_dir();
+            let session = open(dir.path());
+            assert!(
+                session.copy_may_have_changed(),
+                "a copy written within the file system's clock tick needs its contents read"
+            );
+            settle_copy(&session);
+            assert!(!session.copy_may_have_changed());
+            crate::update_section_at(
+                &session.paths.copy,
+                "appearance",
+                object(json!({"theme": "Light"})),
+            )
+            .unwrap();
+            assert!(session.copy_may_have_changed());
+            session.refresh();
+            assert_eq!(session.load()["appearance"]["theme"], json!("Light"));
+        });
     }
 
     /// Reads of an unchanged copy leave the view's refresh worker asleep:
