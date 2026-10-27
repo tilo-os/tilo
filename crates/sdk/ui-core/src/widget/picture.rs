@@ -98,6 +98,9 @@ pub enum Picture {
     /// The sample screen warmed to a colour temperature in kelvin, as
     /// night light tints the display.
     Warmth(u32),
+    /// A notification banner: an app's icon and a title, with the
+    /// message's lines under it or only the title.
+    Banner { message: bool },
 }
 
 impl Picture {
@@ -118,6 +121,7 @@ impl Picture {
                 filter.paint(scene, transform, area);
             }
             Self::Touchpad(gesture) => paint_touchpad(scene, transform, area, *gesture, theme),
+            Self::Banner { message } => paint_banner(scene, transform, area, *message, theme),
             Self::Density(density) => paint_density(scene, transform, area, *density, theme),
             Self::Warmth(kelvin) => {
                 paint_screen_sample(scene, transform, area, theme);
@@ -455,8 +459,38 @@ fn paint_touchpad(
     }
 }
 
-/// A page beside a touchpad: the fingers push up, and the page's lines move
-/// up with them (natural) or down against them (traditional).
+/// A bold arrow in the accent from `from` to `to` (vertical), its head at
+/// `to`: the motion a picture is about.
+fn paint_motion(
+    scene: &mut Scene,
+    transform: Affine,
+    from: Point,
+    to: Point,
+    width: f64,
+    theme: &Theme,
+) {
+    let up = to.y < from.y;
+    let head = width * 2.2;
+    let back = if up { head } else { -head };
+    let mut shaft = BezPath::new();
+    shaft.move_to(from);
+    shaft.line_to((to.x, to.y + back * 0.6));
+    let color = theme.tokens.colors.intent.accent;
+    scene.stroke(&Stroke::new(width), transform, color, None, &shaft);
+    let mut tip = BezPath::new();
+    tip.move_to(to);
+    tip.line_to((to.x - head, to.y + back));
+    tip.line_to((to.x + head, to.y + back));
+    tip.close_path();
+    scene.fill(Fill::NonZero, transform, color, None, &tip);
+}
+
+/// Which way content follows a scroll. Left, a window whose content has
+/// moved: a faint outline where a block was, the block where it went, and
+/// a bold arrow between them. Right, the fingers on a touchpad (or a
+/// mouse's wheel) pushing up, with the same arrow. Natural: both arrows
+/// point up, the content goes with the fingers. Traditional: the content's
+/// arrow points down, against them.
 fn paint_scroll_direction(
     scene: &mut Scene,
     transform: Affine,
@@ -464,111 +498,141 @@ fn paint_scroll_direction(
     (natural, wheel): (bool, bool),
     theme: &Theme,
 ) {
-    // The page and the pad side by side: as tall as the tile allows, and
-    // never wider than it.
-    let height = (area.height() * 0.66).min(area.width() * 0.38);
-    let page_rect = Rect::from_center_size(
+    let colors = &theme.tokens.colors;
+    let height = (area.height() * 0.82).min(area.width() * 0.4);
+    let unit = height / 10.0;
+    let stroke = (unit * 0.45).max(1.5);
+    let ground = colors.surfaces.content;
+    // The window, its content clipped to it.
+    let window = Rect::from_center_size(
         Point::new(area.x0 + area.width() * 0.3, area.center().y),
-        (height * 0.75, height),
+        (height * 0.85, height),
     );
-    let ground = theme.tokens.colors.surfaces.content;
-    let radius = (height * 0.08).max(1.0);
-    scene.fill(
+    let radius = unit * 0.8;
+    let outline = RoundedRect::from_rect(window, radius);
+    scene.fill(Fill::NonZero, transform, ground, None, &outline);
+    scene.push_layer(
         Fill::NonZero,
+        BlendMode::default(),
+        1.0,
         transform,
-        ground,
-        None,
-        &RoundedRect::from_rect(page_rect, radius),
+        &outline,
     );
+    let shift = unit * 3.0 * if natural { -1.0 } else { 1.0 };
+    let block = Rect::new(
+        window.x0 + unit,
+        window.center().y - unit * 1.3,
+        window.x1 - unit * 3.2,
+        window.center().y + unit * 1.3,
+    );
+    // Where the block was, faint.
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        crate::surface::edge_on(ground),
+        theme.text_dim,
         None,
-        &crate::surface::edge_outline(page_rect, radius),
+        &RoundedRect::from_rect(block, unit * 0.4),
     );
-    let unit = height / 8.0;
-    for line in 0..4_u8 {
-        let y = page_rect.y0 + unit * (1.0 + f64::from(line) * 1.4);
+    // The content where it went: the block and the lines around it.
+    let moved = block + vello::kurbo::Vec2::new(0.0, shift);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.intent.selection_tint,
+        None,
+        &RoundedRect::from_rect(moved, unit * 0.4),
+    );
+    for line in [-2.3_f64, -1.6, 1.6, 2.3] {
+        let y = window.center().y + line * unit * 1.2 + shift;
         scene.fill(
             Fill::NonZero,
             transform,
             theme.text_dim,
             None,
-            &RoundedRect::new(
-                page_rect.x0 + unit * 0.7,
-                y,
-                page_rect.x1 - unit * if line % 2 == 0 { 0.7 } else { 1.8 },
-                y + unit * 0.5,
-                unit * 0.25,
-            ),
+            &RoundedRect::new(window.x0 + unit, y, block.x1, y + unit * 0.5, unit * 0.25),
         );
     }
-    paint_arrow(
+    scene.pop_layer();
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        crate::surface::edge_on(ground),
+        None,
+        &crate::surface::edge_outline(window, radius),
+    );
+    let lane = window.x1 - unit * 1.6;
+    paint_motion(
         scene,
         transform,
-        Point::new(page_rect.x1 + unit * 1.6, page_rect.center().y),
-        height * 0.5,
-        natural,
+        Point::new(lane, block.center().y),
+        Point::new(lane, block.center().y + shift * 1.3),
+        stroke,
         theme,
     );
+    // The hand: fingers on a pad, or a wheel, pushed up.
     let centre = Point::new(area.x0 + area.width() * 0.72, area.center().y);
+    let lift = unit * 2.6;
     if wheel {
-        // A mouse seen from above, its wheel rolled up.
-        let body = Rect::from_center_size(centre, (height * 0.5, height * 0.8));
-        let radius = body.width() / 2.0;
+        let body = Rect::from_center_size(centre, (height * 0.45, height * 0.8));
+        let body_radius = body.width() / 2.0;
         scene.fill(
             Fill::NonZero,
             transform,
             ground,
             None,
-            &RoundedRect::from_rect(body, radius),
+            &RoundedRect::from_rect(body, body_radius),
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             crate::surface::edge_on(ground),
             None,
-            &crate::surface::edge_outline(body, radius),
+            &crate::surface::edge_outline(body, body_radius),
         );
-        let wheel = Rect::from_center_size(
-            Point::new(body.center().x, body.y0 + body.height() * 0.28),
-            (body.width() * 0.16, body.height() * 0.22),
+        let wheel_rect = Rect::from_center_size(
+            Point::new(body.center().x, body.y0 + body.height() * 0.3),
+            (body.width() * 0.2, body.height() * 0.24),
         );
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.intent.accent,
+            theme.text_primary,
             None,
-            &RoundedRect::from_rect(wheel, wheel.width() / 2.0),
+            &RoundedRect::from_rect(wheel_rect, wheel_rect.width() / 2.0),
         );
-        paint_arrow(
+        let x = body.x1 + unit * 1.2;
+        paint_motion(
             scene,
             transform,
-            Point::new(body.x1 + unit * 0.9, wheel.center().y),
-            unit * 1.6,
-            true,
+            Point::new(x, wheel_rect.center().y + lift / 2.0),
+            Point::new(x, wheel_rect.center().y - lift / 2.0),
+            stroke,
             theme,
         );
         return;
     }
-    let pad = paint_pad(scene, transform, centre, height * 0.62, theme);
-    let finger = pad.height() * 0.12;
-    for dx in [-1.4, 1.4] {
-        paint_finger(
-            scene,
+    let pad = paint_pad(scene, transform, centre, height * 0.66, theme);
+    let finger = unit * 0.75;
+    let top = pad.center().y - unit * 1.6;
+    for dx in [-1.5, 1.5] {
+        let x = pad.center().x - unit * 1.2 + dx * finger;
+        // Where the fingers came from, faint, and where they are.
+        scene.fill(
+            Fill::NonZero,
             transform,
-            Point::new(pad.center().x + dx * finger, pad.center().y + finger),
-            finger,
-            theme,
+            colors.intent.selection_tint,
+            None,
+            &RoundedRect::new(x - finger, top, x + finger, top + lift, finger),
         );
+        paint_finger(scene, transform, Point::new(x, top + finger), finger, theme);
     }
-    paint_arrow(
+    let x = pad.x1 - unit * 1.4;
+    paint_motion(
         scene,
         transform,
-        Point::new(pad.center().x, pad.y0 - unit * 0.2),
-        unit * 1.6,
-        true,
+        Point::new(x, pad.center().y + lift * 0.6),
+        Point::new(x, pad.center().y - lift * 0.6),
+        stroke,
         theme,
     );
 }
@@ -670,6 +734,59 @@ fn paint_warmth(scene: &mut Scene, transform: Affine, area: Rect, kelvin: u32) {
     scene.pop_layer();
 }
 
+/// A notification banner on the floating level: the app's icon, a title,
+/// and the message's two lines when it shows them.
+fn paint_banner(scene: &mut Scene, transform: Affine, area: Rect, message: bool, theme: &Theme) {
+    let colors = &theme.tokens.colors;
+    let height = (area.height() * 0.6).min(area.width() * 0.32);
+    let banner = Rect::from_center_size(area.center(), (height * 2.6, height));
+    let radius = height * 0.2;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.overlay,
+        None,
+        &RoundedRect::from_rect(banner, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        crate::surface::edge_on(colors.surfaces.overlay),
+        None,
+        &crate::surface::edge_outline(banner, radius),
+    );
+    let unit = height / 6.0;
+    let icon = Rect::new(
+        banner.x0 + unit,
+        banner.y0 + unit,
+        banner.x0 + unit * 2.6,
+        banner.y0 + unit * 2.6,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.intent.accent,
+        None,
+        &RoundedRect::from_rect(icon, unit * 0.4),
+    );
+    let left = icon.x1 + unit;
+    let room = banner.x1 - unit - left;
+    let bar = |scene: &mut Scene, y: f64, width: f64, color: Color| {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            color,
+            None,
+            &RoundedRect::new(left, y, left + width, y + unit * 0.6, unit * 0.3),
+        );
+    };
+    bar(scene, icon.y0 + unit * 0.2, room * 0.45, theme.text_primary);
+    if message {
+        bar(scene, icon.y0 + unit * 1.6, room, theme.text_dim);
+        bar(scene, icon.y0 + unit * 2.8, room * 0.7, theme.text_dim);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,6 +819,11 @@ mod tests {
             assert!(painted(&Picture::Touchpad(gesture)) > 0, "{gesture:?}");
         }
         assert!(painted(&Picture::Density(1.0)) > 0);
+        assert!(
+            painted(&Picture::Banner { message: true })
+                > painted(&Picture::Banner { message: false }),
+            "a banner with its message draws its lines"
+        );
         assert!(
             painted(&Picture::Warmth(2_800)) > painted(&Picture::ColourFilter(ColourFilter::None))
         );

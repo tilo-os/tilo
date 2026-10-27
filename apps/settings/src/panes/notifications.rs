@@ -555,15 +555,7 @@ impl NotificationsPane {
     fn build_banners_card(&self) -> SettingsSection {
         let mut content = vec![banners(&self.cx, &self.prefs)];
         if self.prefs().show_banners {
-            content.push(
-                self.cx
-                    .row(t("notif-previews"))
-                    .described(t("notif-previews-desc"))
-                    .id("notifications.previews")
-                    .nested()
-                    .of(&self.prefs, NotificationPrefs::paths().show_previews)
-                    .toggle(),
-            );
+            content.push(previews(&self.cx, &self.prefs));
         }
         section(&t("notif-banners-title"), rows(content))
     }
@@ -730,7 +722,17 @@ pub(crate) fn previews(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item
         .described(t("notif-previews-desc"))
         .id("notifications.previews")
         .of(prefs, NotificationPrefs::paths().show_previews)
-        .toggle()
+        .pictures(
+            [true, false],
+            |shown: &bool| {
+                t(if *shown {
+                    "notif-previews-shown"
+                } else {
+                    "notif-previews-hidden"
+                })
+            },
+            |shown: &bool| ui::widget::Picture::Banner { message: *shown },
+        )
 }
 
 pub(crate) fn lock_screen(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
