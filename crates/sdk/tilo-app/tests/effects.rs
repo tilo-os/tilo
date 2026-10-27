@@ -361,7 +361,7 @@ impl ResourceApp for MailApp {
 }
 
 fn effect<'a>(surface: &'a serde_json::Value, id: &str) -> Option<&'a serde_json::Value> {
-    surface
+    surface["actions"]
         .as_array()?
         .iter()
         .find(|row| row["resource"] == "test.mailbox" && row["action"] == id)

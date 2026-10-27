@@ -184,7 +184,7 @@ fn every_settings_section_is_edited_by_path() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
     app.settle();
     let surface = app.agent_surface();
-    let published: std::collections::BTreeSet<String> = surface
+    let published: std::collections::BTreeSet<String> = surface["actions"]
         .as_array()
         .unwrap()
         .iter()

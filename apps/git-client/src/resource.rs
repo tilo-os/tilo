@@ -392,7 +392,7 @@ mod tests {
         let mut changes = TestApp::<GitClientShell>::capture(Some("changes")).unwrap();
         assert_eq!(changes.harness().inspection().viewport, [1280, 800]);
         let surface = changes.agent_surface();
-        let rows: Vec<_> = surface
+        let rows: Vec<_> = surface["actions"]
             .as_array()
             .unwrap()
             .iter()
@@ -639,7 +639,7 @@ mod tests {
         app.settle();
         let surface = app.agent_surface();
         let offered = |resource: &str, action: &str| {
-            surface
+            surface["actions"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -740,7 +740,7 @@ mod tests {
         app.settle();
         let surface = app.agent_surface();
         assert!(
-            surface
+            surface["actions"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -843,7 +843,7 @@ mod tests {
         app.settle();
         let offered_layout = |app: &mut TestApp<GitClientShell>| {
             let palette = app.agent_surface();
-            palette
+            palette["actions"]
                 .as_array()
                 .unwrap()
                 .iter()

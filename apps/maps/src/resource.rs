@@ -248,7 +248,7 @@ mod tests {
 
     /// The ids of the actions published on `resource` in the running app.
     fn actions_on(app: &mut TestApp<MapsShell>, resource: &str) -> Vec<String> {
-        app.agent_surface()
+        app.agent_surface()["actions"]
             .as_array()
             .unwrap()
             .iter()
@@ -258,7 +258,7 @@ mod tests {
     }
 
     fn label_of(app: &mut TestApp<MapsShell>, resource: &str, action: &str) -> String {
-        app.agent_surface()
+        app.agent_surface()["actions"]
             .as_array()
             .unwrap()
             .iter()

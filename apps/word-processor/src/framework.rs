@@ -280,7 +280,7 @@ mod tests {
     fn the_document_publishes_file_effects_and_views() {
         let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
         let surface = app.agent_surface();
-        let ids: Vec<&str> = surface
+        let ids: Vec<&str> = surface["actions"]
             .as_array()
             .unwrap()
             .iter()

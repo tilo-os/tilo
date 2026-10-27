@@ -205,9 +205,7 @@ fn the_selection_publishes_its_bound_edits() {
     ));
     let mut bench = Bench::open(&deck_of(vec![slide]), super::bench::WINDOW);
     let published = |bench: &mut Bench| -> Vec<String> {
-        bench
-            .app
-            .agent_surface()
+        bench.app.agent_surface()["actions"]
             .as_array()
             .unwrap()
             .iter()

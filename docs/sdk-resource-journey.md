@@ -36,9 +36,12 @@ scripts and accessibility use:
 It reads the production permission-filtered component catalogue and propagates
 observation errors rather than treating them as an empty surface. Descriptors include
 parameter schemas, authority requirements, confirmation, execution and result
-contracts. `agent_surface()` retains its compact snapshot format. Discovery
-carries no authority: the host checks current permissions and arguments at each
-invocation. `call_confirmed` and `call_confirmed_on` represent an explicit
+contracts. `agent_surface()` retains its compact snapshot format: one schema
+document, whose `actions` are the rows and whose `$defs` are the shapes their
+parameter schemas repeat, named by a local `$ref` (`tilo_actions::params`) and
+resolved by `scoped` where a reader holds one parameter's schema alone.
+Discovery carries no authority: the host checks current permissions and
+arguments at each invocation. `call_confirmed` and `call_confirmed_on` represent an explicit
 confirmation in a test; they use the existing host dispatch, not a second
 executor or a persistent permission grant.
 

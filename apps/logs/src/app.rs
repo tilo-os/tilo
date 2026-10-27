@@ -1480,7 +1480,7 @@ mod tests {
         );
     }
     fn effect(surface: &serde_json::Value, id: &str) -> Option<serde_json::Value> {
-        surface
+        surface["actions"]
             .as_array()?
             .iter()
             .find(|action| action["action"] == id)

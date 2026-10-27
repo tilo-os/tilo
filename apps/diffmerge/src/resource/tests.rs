@@ -384,7 +384,7 @@ fn an_agent_merges_one_call_each() {
     .unwrap();
     app.settle();
     let surface = app.agent_surface();
-    let change = surface
+    let change = surface["actions"]
         .as_array()
         .unwrap()
         .iter()

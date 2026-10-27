@@ -316,7 +316,7 @@ mod tests {
     fn the_editors_effects_are_published_on_the_deck() {
         let mut app = TestApp::<SlidesShell>::new().unwrap();
         let surface = app.agent_surface();
-        let rows = surface.as_array().unwrap();
+        let rows = surface["actions"].as_array().unwrap();
         let on = |resource: &str, action: &str| {
             rows.iter()
                 .any(|row| row["resource"] == resource && row["action"] == action)
@@ -359,7 +359,7 @@ mod tests {
     fn the_deck_publishes_its_verbs_and_slides() {
         let mut app = TestApp::<SlidesShell>::new().unwrap();
         let surface = app.agent_surface();
-        let rows = surface.as_array().unwrap();
+        let rows = surface["actions"].as_array().unwrap();
         let on_deck = |action: &str| {
             rows.iter()
                 .any(|row| row["resource"] == "slides.deck" && row["action"] == action)
