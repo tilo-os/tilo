@@ -84,8 +84,23 @@ retains it while the owner is offline, the owner applies each request once
 when it next holds the room, and it records which it applied in its own
 namespace so a restart neither drops nor repeats one. A window someone moved
 therefore stays where they put it instead of snapping back when its owner
-returns. Following someone (focus, scroll position) is presence, not room
-state.
+returns. Closing another device's window is such a request too, and it runs
+through that owner's one close lifecycle (`window_actions::close_tab`): a
+confined client is asked to save and exit first, the request stays retained
+while its window is still shown, and it is claimed once that close is
+admitted — never applied as a silent edit of the owner's layout.
+
+**A position is a gap, not an index.** Each entry's `order` is the position
+its owner published it at, and an owner leaves a
+`LAYOUT_ORDER_STEP`-sized gap between two of its own entries so another
+device's entry has room to land between them: a strip moved between two of
+a colleague's writes the midpoint of that gap and lands exactly there.
+Writing an index instead made the two tie and let their ids decide, so a
+move between someone else's strips silently did not happen. Every device
+writes only its own entries' positions; the neighbours are read, never
+rewritten, and a position stays one bounded number.
+
+Following someone (focus, scroll position) is presence, not room state.
 
 **Sharing scope is room policy.** The room's governance says whether it
 shares its members' layout (`tilo_desktop_model::projection::RoomLayout`).
@@ -213,13 +228,20 @@ What is still doubled:
    `redeem_invited_identity`, `peer_room_allows`, `network/replica.rs`, the
    `PeerInviteToken` format in `network/invite.rs` and the hello store in
    `network/identity.rs` remain for a session with no native owner at all
-   (tests, an offscreen renderer), for a governed room during the one-time
-   creation pass above, and for a *joined* room written by an older state
-   file, which has no native record to reopen and cannot be governed from
-   here. None of them writes a room this session governs natively once the
-   pass is done, and no new invitation is minted in the old format.
+   (tests, an offscreen renderer) and for a *joined* room written by an
+   older state file, which has no native record to reopen and cannot be
+   governed from here. None of them writes a room this session governs —
+   that room is native from the moment the owner is open, whether or not its
+   record exists yet — and no new invitation is minted in the old format.
    Removing the rest is the remaining work of migration step 1; this page
-   does not claim it is done. A joined old-shape room is not read as an
+   does not claim it is done. It is also not one deletion: `room_docs` is
+   the admitted-document cache the native publication and Activity read, so
+   the old engine's governance (`sync_room_doc`, `apply_room_changes`,
+   `try_sync_room_doc`, `room_authority`, `name_peer`, `certify_peer_identity`,
+   `redeem_invited_identity`, `peer_room_allows`, `room_gate`'s legacy table
+   and `network/replica.rs`) has to go as one change with the last reader
+   that needs it, behind a refusal for the joined old-shape room and a state
+   that says rejoin. A joined old-shape room is not read as an
    empty room by the native owner: it keeps its workspace and its last
    projection on the older engine, and re-joining its host fetches it
    again. There is no automatic migration for it.
@@ -298,8 +320,9 @@ engine still writes it; the native owner takes it over at once afterwards.
    moves another device's window asks instead of writing it; the relay judges
    the ask on that window's `moderation` node before it admits it, and the
    owner (the host's operator strips included) applies it once and records
-   that it did. Closing another device's tab still runs through that owner's
-   ordinary close lifecycle, not a second mutation here.
+   that it did. A close is queued for that owner's ordinary close lifecycle
+   (`close_tab`) rather than applied here, and is claimed only once the tab
+   is really gone.
 6. **The device desktop holds only what is the device's.** `desktop_doc`
    keeps the workspace list and presentation; Activity and Replay read
    the room documents' history for everything else.
@@ -310,7 +333,8 @@ step 1); 4, 5 and 6 are independent of them. When 3 has landed,
 renaming them is then mechanical and optional.
 
 Status of steps 1–3 in this tree: the owner creates and governs every room
-the shell owns and imports an existing store's layout and record index;
+the shell owns and imports an existing store's layout, record index and the
+records it holds;
 direct peers carry admitted `StatePeer` traffic over gossip, dial the
 governor the room names now after a succession or restart, and a direct
 invitation is the canonical workspace-join exchange, listed and cancelled
