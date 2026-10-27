@@ -250,6 +250,37 @@ pub struct Run {
     pub confirmation: Option<Confirmation>,
 }
 
+impl Run {
+    /// The step the run reads as now: the phase a person's pause holds it in
+    /// where one does, so a paused run never reads as if it were working.
+    #[must_use]
+    pub fn shown_phase(&self) -> RunPhase {
+        self.paused.and_then(PausedRun::phase).unwrap_or(self.phase)
+    }
+
+    /// Whether the run waits for its person's answer to an action that asks
+    /// first: the one state a run cannot leave on its own.
+    #[must_use]
+    pub fn asks_its_person(&self) -> bool {
+        self.paused.is_none()
+            && self.shown_phase() == RunPhase::Waiting
+            && self
+                .confirmation
+                .as_ref()
+                .is_some_and(|confirmation| confirmation.state == ConfirmationState::Waiting)
+    }
+
+    /// The Fluent id naming the run as the person reads it: the step it is
+    /// in, or that a person paused it.
+    #[must_use]
+    pub fn state_key(&self) -> &'static str {
+        if self.paused.is_some() {
+            return "tasks-run-paused";
+        }
+        self.phase.label_key()
+    }
+}
+
 /// Where a paused run stopped, as the person paused it.
 ///
 /// Every field is written on its own, last writer wins: a pause is a person's
