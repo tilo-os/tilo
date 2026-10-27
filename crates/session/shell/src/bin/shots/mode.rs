@@ -563,6 +563,68 @@ mod tests {
 
     use super::super::scenario::lookup;
 
+    /// The keyboard scenarios put a picture of the keyboard on the screen: the
+    /// panel the compositor docks it in is not the same before and after it
+    /// rises. A shot that could only show the field would leave this equal,
+    /// which is what the terminal keyboard shipped through.
+    #[test]
+    fn the_keyboard_shows_up_in_the_panel_the_compositor_docks_it_in() {
+        for name in [
+            "keyboard-terminal",
+            "keyboard-text-field",
+            "keyboard-chat-composer",
+        ] {
+            let scenario = lookup(name).expect("a keyboard scenario");
+            let viewport = (1600, 900);
+            let dir =
+                std::env::temp_dir().join(format!("shots-keyboard-{name}-{}", std::process::id()));
+            let mut driver = ShellDriver::new(viewport);
+            offscreen::run_scenario(&mut driver, &scenario, &dir, None)
+                .expect("the scenario renders");
+
+            let before = read_png(&dir.join("01-before.png"));
+            let after = read_png(&dir.join("02-keyboard-up.png"));
+            assert_eq!(
+                (before.width(), before.height()),
+                (after.width(), after.height()),
+                "{name}: both shots are the same size"
+            );
+            let panel = shell::shell::shots_keyboard::keyboard_panel(vello::kurbo::Rect::new(
+                0.0,
+                0.0,
+                f64::from(viewport.0),
+                f64::from(viewport.1),
+            ));
+            // Count the panel's pixels the two shots disagree on. Rising the
+            // keyboard repaints a large part of it — some keys share a colour
+            // with what they cover — while a shot that draws no keyboard
+            // changes none of it.
+            let mut differing = 0usize;
+            for y in panel.y0 as u32..panel.y1 as u32 {
+                for x in panel.x0 as u32..panel.x1 as u32 {
+                    if before.get_pixel(x, y) != after.get_pixel(x, y) {
+                        differing += 1;
+                    }
+                }
+            }
+            let total = usize::try_from(panel.width() as u32 * (panel.height() as u32))
+                .unwrap_or(usize::MAX);
+            assert!(
+                differing * 5 > total,
+                "{name}: the keyboard panel should change when the keyboard rises; \
+                 only {differing} of {total} pixels did, so the shot is missing it"
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Read a PNG these tests wrote as RGBA8.
+    fn read_png(path: &std::path::Path) -> image::RgbaImage {
+        image::open(path)
+            .expect("the shot is a readable picture")
+            .to_rgba8()
+    }
+
     /// A film recorded at 60 Hz plays at the pace it ran at any video rate:
     /// a second of film is a second of video.
     #[test]

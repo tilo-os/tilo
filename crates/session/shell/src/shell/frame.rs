@@ -816,6 +816,9 @@ pub struct FrameBuilder {
     /// Compositor-authorised OSK, deliberately outside the workspace/tile
     /// tree. Its widget only mirrors pixels; protocol trust lives in State.
     osk_overlay: Option<ForeignSurfaceWidget>,
+    /// The keyboard an offscreen capture draws, as no client surface exists
+    /// to mirror; laid out where [`Self::layout_osk_overlay`] docks it.
+    shots_keyboard: Option<osk::widget::OskWidget>,
     /// Authenticated app-owned call/navigation toplevels. Like the OSK these
     /// are client buffers outside the workspace tree, but each carries
     /// its own desktop placement and native input target.
@@ -1220,6 +1223,7 @@ impl FrameBuilder {
             },
             peer_presence: None,
             osk_overlay: None,
+            shots_keyboard: None,
             floating_overlays: Vec::new(),
             fullscreen_overlay: None,
             system_modal_scrim: false,
@@ -2134,7 +2138,7 @@ impl FrameBuilder {
     /// working on. The release gate taps its keys from the same placement
     /// (`keyboard_rect` in `tools/atspi_external_client.py`).
     fn layout_osk_overlay(&mut self) {
-        if self.osk_overlay.is_none() {
+        if self.osk_overlay.is_none() && self.shots_keyboard.is_none() {
             return;
         }
         let outputs = self.effective_outputs();
@@ -2146,17 +2150,12 @@ impl FrameBuilder {
             .or_else(|| outputs.first());
         let Some(output) = output else { return };
 
-        let margin = 20.0_f64.min(output.width / 20.0);
-        let width = (output.width - margin * 2.0).clamp(1.0, 960.0);
-        let height = (output.height * 0.40)
-            .clamp(220.0, 380.0)
-            .min((output.height - margin * 2.0).max(1.0));
-        let x0 = output.x + (output.width - width) / 2.0;
-        // From the output's own top: a display beside a taller one, or
-        // below another, does not start at the desktop's top edge.
-        let y0 = output.y + (output.height - height - margin).max(0.0);
+        let panel = crate::shell::shots_keyboard::keyboard_panel(output.rect());
         if let Some(keyboard) = self.osk_overlay.as_mut() {
-            keyboard.place_floating(Rect::new(x0, y0, x0 + width, y0 + height));
+            keyboard.place_floating(panel);
+        }
+        if let Some(keyboard) = self.shots_keyboard.as_mut() {
+            crate::shell::shots_keyboard::lay_out(keyboard, panel, &self.theme);
         }
     }
 
@@ -2552,6 +2551,17 @@ impl FrameBuilder {
                 );
             }
         }
+        // A capture has no client to mirror: it draws the widget itself.
+        if let Some(keyboard) = self.shots_keyboard.as_mut() {
+            let presence = self.presence.clone();
+            keyboard.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+                &presence,
+            );
+        }
         if self.osk_active
             && let Some(keyboard) = self.osk_overlay.as_mut()
             && keyboard.is_mapped()
@@ -2758,6 +2768,17 @@ impl FrameBuilder {
                 .collect()
         });
         overlay_part(above, "shell.osk", desktop, |scene| {
+            if let Some(keyboard) = self.shots_keyboard.as_mut() {
+                let presence = self.presence.clone();
+                keyboard.draw(
+                    scene,
+                    Affine::IDENTITY,
+                    &mut self.text_renderer,
+                    &self.theme,
+                    &presence,
+                );
+                return Some(vec![keyboard.get_rect()]);
+            }
             let keyboard = self.osk_overlay.as_mut().filter(|_| self.osk_active)?;
             if !keyboard.is_mapped() {
                 return None;
@@ -4555,16 +4576,41 @@ impl FrameBuilder {
 
     /// What the active window's input method is being told to show: the
     /// content purpose and hints of the field that has focus inside it, read
-    /// off the window the way the keyboard app reads them off the wire.
+    /// off the window the way the keyboard app reads them off the wire. A
+    /// focused field wins; with none, the first field the window holds is the
+    /// one a finger would reach first.
     #[cfg(feature = "hosted-test-control")]
     pub fn active_ime_content_for_shots(&self) -> Option<ui::ime::InputContent> {
         let host = self.host.active_app_host()?;
-        fn focused_content(widget: &dyn Widget) -> Option<ui::ime::InputContent> {
-            widget
-                .ime_content()
-                .or_else(|| widget.children().into_iter().find_map(focused_content))
+        fn walk(
+            widget: &dyn Widget,
+            first: &mut Option<ui::ime::InputContent>,
+            focused: &mut Option<ui::ime::InputContent>,
+        ) {
+            if let Some(content) = widget.ime_content() {
+                if widget.is_focused() && focused.is_none() {
+                    *focused = Some(content);
+                }
+                if first.is_none() {
+                    *first = Some(content);
+                }
+            }
+            for child in widget.children() {
+                walk(child, first, focused);
+            }
         }
-        focused_content(host)
+        let (mut first, mut focused) = (None, None);
+        walk(host, &mut first, &mut focused);
+        focused.or(first)
+    }
+
+    /// Stand a capture in for a keyboard client: `content` is what the
+    /// focused field asks an input method for, so the shot gets that
+    /// purpose's layout. `None` puts the keyboard away.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn set_shots_keyboard(&mut self, content: Option<ui::ime::InputContent>) {
+        self.shots_keyboard = content.map(crate::shell::shots_keyboard::keyboard_for);
+        self.layout_osk_overlay();
     }
 
     pub fn set_remote_display_name_for_shots(&mut self, user: &str, name: &str) {
