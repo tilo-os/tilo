@@ -3914,33 +3914,14 @@ impl FrameBuilder {
     }
 
     fn apply_color_filter(&self, scene: &mut Scene, bounds: Rect) {
-        let mut overlay = |mix: Mix, color: Color| {
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::new(mix, Compose::SrcOver),
-                1.0,
-                Affine::IDENTITY,
-                &bounds,
-            );
-            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &bounds);
-            scene.pop_layer();
+        // The toolkit's filter, the same one Settings previews it with.
+        let filter = match self.visual_accessibility.color_filter {
+            ColorFilter::None => ui::widget::ColourFilter::None,
+            ColorFilter::Grayscale => ui::widget::ColourFilter::Grayscale,
+            ColorFilter::Inverted => ui::widget::ColourFilter::Inverted,
+            ColorFilter::GrayscaleInverted => ui::widget::ColourFilter::GrayscaleInverted,
         };
-        if matches!(
-            self.visual_accessibility.color_filter,
-            ColorFilter::Grayscale | ColorFilter::GrayscaleInverted
-        ) {
-            // W3C `color` blend with an achromatic source preserves the
-            // backdrop luminosity while replacing hue/saturation: true
-            // grayscale, not a translucent grey veil.
-            overlay(Mix::Color, Color::WHITE);
-        }
-        if matches!(
-            self.visual_accessibility.color_filter,
-            ColorFilter::Inverted | ColorFilter::GrayscaleInverted
-        ) {
-            // Difference against white is the exact per-channel inverse.
-            overlay(Mix::Difference, Color::WHITE);
-        }
+        filter.paint(scene, Affine::IDENTITY, bounds);
     }
 
     fn apply_visual_accessibility(&self, scene: &mut Scene) {
