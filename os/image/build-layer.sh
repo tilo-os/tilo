@@ -53,8 +53,27 @@ phase_started=$SECONDS phase_name=start
 phase() {
   printf 'TILO_LAYER_TIMING phase=%s seconds=%s\n' "$phase_name" "$((SECONDS - phase_started))"
   phase_name=$1 phase_started=$SECONDS
+  guest_memory
 }
-trap 'phase end' EXIT
+# In the micro-VM step (guest_devices sets it): the guest's memory after each part, and on a
+# failure what its kernel said. t measures a VM step by the guest memory it touched, which the
+# page cache fills; this tells the build's own use (AnonPages, Shmem) from the cache's, and an
+# allocation failure in the guest (virtio-fs, fuse) from one the host returned.
+in_guest=0
+guest_memory() {
+  [[ $in_guest == 1 ]] || return 0
+  printf 'TILO_LAYER_MEMORY %s\n' "$(grep -E '^(MemTotal|MemFree|MemAvailable|Cached|Dirty|Shmem|Slab|SUnreclaim|AnonPages):' /proc/meminfo | tr -s ' ' | tr '\n' ';')"
+}
+on_exit() {
+  local status=$?
+  phase end
+  if [[ $in_guest == 1 && $status != 0 ]]; then
+    printf 'TILO_LAYER_GUEST kernel=%s min_free_kbytes=%s\n' "$(uname -r)" "$(cat /proc/sys/vm/min_free_kbytes)"
+    df -h -t tmpfs -t ext4 -t overlay -t virtiofs 2>&1 | sed 's/^/TILO_LAYER_GUEST df: /'
+    dmesg 2>&1 | grep -i -E 'virtio|fuse|alloc|oom|memory' | tail -60 | sed 's/^/TILO_LAYER_GUEST dmesg: /'
+  fi
+}
+trap on_exit EXIT
 
 layers_in_order() {
   python3 -I -c 'import tomllib,sys; print(" ".join(l["name"] for l in tomllib.load(open(sys.argv[1],"rb"))["layer"]))' \
@@ -89,6 +108,7 @@ fragment_dir() {
 
 # The guest's devices for podman: fuse for its storage, loop for the disk steps.
 guest_devices() {
+  in_guest=1
   modprobe fuse 2>/dev/null || true
   modprobe loop 2>/dev/null || true
   if [[ ! -c /dev/fuse ]]; then
