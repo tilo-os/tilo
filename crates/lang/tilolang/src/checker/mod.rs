@@ -4,6 +4,7 @@
 
 mod boundary;
 mod call;
+mod component;
 mod enums;
 mod expr;
 mod native;

@@ -510,6 +510,8 @@ fn names_in_ui(stmts: &[UiStmt], out: &mut BTreeSet<String>) {
                 names_in(label, out);
                 names_in(value, out);
             }
+            UiKind::Slot { body, .. } => names_in_ui(body, out),
+            UiKind::On { action, .. } => names_in(action, out),
             UiKind::State(d) => {
                 if let Some(default) = &d.default {
                     names_in(default, out);

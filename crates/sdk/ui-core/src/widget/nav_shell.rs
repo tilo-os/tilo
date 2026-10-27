@@ -4968,3 +4968,6 @@ impl NavShell {
 
 #[cfg(test)]
 mod tests;
+
+mod component;
+pub use component::NavShellProps;

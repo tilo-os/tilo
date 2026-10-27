@@ -173,18 +173,23 @@ impl Checker<'_> {
             )) => {
                 lets.iter().all(|s| matches!(s.kind, UiKind::Let { .. }))
                     && match &c.call.kind {
-                        ExprKind::Call { callee, args } => {
-                            matches!(&callee.kind, ExprKind::Ident(n) if n == "row")
-                                && self.titled(args)
-                                && c.block.is_none()
-                        }
+                        ExprKind::Call { callee, args } => match &callee.kind {
+                            ExprKind::Ident(n) => {
+                                n == "row" && self.titled(args) && c.block.is_none()
+                            }
+                            // The toolkit's row itself: what `row(...)` builds.
+                            ExprKind::Field { base, name } => {
+                                name.name == "ListRow" && self.names_toolkit(base)
+                            }
+                            _ => false,
+                        },
                         _ => false,
                     }
             }
             _ => false,
         };
         if !ok {
-            self.err("E093", span, format!("`{view}` is the row view of {ty}, so its body is one list row, after any `let`s: `row(x.title, secondary: ...)`"));
+            self.err("E093", span, format!("`{view}` is the row view of {ty}, so its body is one list row, after any `let`s: `row(x.title, secondary: ...)` or `ui.ListRow(title: x.title, ...)`"));
         }
     }
 
@@ -483,16 +488,24 @@ impl Checker<'_> {
             self.err("E097", span, "a list row `row(title, ...)` stands directly in a list's item block, `list(xs) { x -> row(x.title) }`, or is a row view's body; for a layout row write `row { ... }`");
         }
         let key = self.node_key(c);
-        let n = self.new_node("list_row", key);
+        let row_key = self.fresh(Ty::Text);
+        self.emit(Stmt::Set(row_key, key));
+        let n = self.new_node(
+            &crate::toolkit::kind("ListRow"),
+            Ex::local(row_key, Ty::Text),
+        );
         let node = Ex::local(n, Ty::View);
         let mut titled = false;
+        let mut title = None;
+        let mut avatar = None;
+        let mut icon = None;
         for a in args {
             let value = &a.value;
             match a.name.as_ref().map(|i| i.name.as_str()) {
                 None if self.is_flag(None, value) => self.flag_arg(n, value),
                 None if !titled => {
                     titled = true;
-                    self.row_subject(&node, value);
+                    title = self.row_subject(&node, value);
                 }
                 None => {
                     self.err("E022", value.span, format!("a list row takes one positional argument, its title; name the others: {ROW_ARGS_TEXT}"));
@@ -514,10 +527,20 @@ impl Checker<'_> {
                         );
                     }
                 }
-                Some(name @ ("mark" | "icon")) => self.icon_value(n, name, value),
-                Some("avatar") => self.avatar_arg(&node, value),
+                Some(name @ ("mark" | "icon")) => {
+                    if name == "icon" {
+                        icon = Some(value);
+                    }
+                    self.icon_value(n, name, value);
+                }
+                Some("avatar") => avatar = Some(value),
                 Some("checkbox") => {
-                    let _ = self.bind_typed(&node, value, &[Ty::Bool]);
+                    if self.bind_typed(&node, value, &[Ty::Bool]).is_some() {
+                        self.emit(host(
+                            Imp::UiPropH,
+                            vec![node.clone(), Ex::str("bind"), Ex::str("checkbox")],
+                        ));
+                    }
                 }
                 Some(name) if prims::NODE_ARGS.contains(&name) => {
                     self.apply_arg(n, "row", name, value);
@@ -536,53 +559,139 @@ impl Checker<'_> {
                 }
             }
         }
+        if let Some(value) = avatar {
+            self.avatar_arg(n, row_key, title, icon, value);
+        }
         n
     }
 
-    /// A row's `avatar:`: a Principal, or an Option of one. At `.none` (the last message's author
-    /// of a conversation that has none yet) the prop is `.none`: a row that names an `icon:`
-    /// shows the item itself as its avatar, that glyph on a neutral square (a group); one that
-    /// names none keeps the room an avatar takes, in line with the rows of its list that show
-    /// one, and takes none in a list where no row does.
-    fn avatar_arg(&mut self, node: &Ex, value: &ast::Expr) {
+    /// A row's `avatar:`: a Principal, or an Option of one, as the row's `avatar` slot holding a
+    /// `ui.Avatar`. At `.none` (the last message's author of a conversation that has none yet) a
+    /// row that names an `icon:` shows the item itself as its avatar, that glyph on a neutral
+    /// square (a group); one that names none keeps the room an avatar takes (`avatar_space`),
+    /// in line with the rows of its list that show one; its list drops the room when no row
+    /// shows one.
+    fn avatar_arg(
+        &mut self,
+        n: LocalId,
+        row_key: LocalId,
+        title: Option<LocalId>,
+        icon: Option<&ast::Expr>,
+        value: &ast::Expr,
+    ) {
         let v = self.expr(value, Some(&Ty::Principal));
-        let Ty::Option(inner) = v.ty.clone() else {
-            let v = self.coerce(v, &Ty::Principal, value.span);
-            self.prop(node.clone(), "avatar", v, value.span);
-            return;
+        let optional = match &v.ty {
+            Ty::Option(inner) if matches!(**inner, Ty::Principal) => true,
+            Ty::Error => return,
+            _ => false,
         };
-        if !matches!(*inner, Ty::Principal) {
-            let _ = self.coerce(v, &Ty::Principal, value.span);
+        let v = if optional {
+            v
+        } else {
+            self.coerce(v, &Ty::Principal, value.span)
+        };
+        if v.ty.is_error() {
             return;
         }
-        let ty = Ty::Option(inner);
+        let ty = v.ty.clone();
         let tmp = self.fresh(ty.clone());
         self.emit(Stmt::Set(tmp, v));
-        let opt = Ex::local(tmp, ty);
-        let test = Ex::host(Imp::IsSome, vec![opt.clone()], Ty::Bool);
-        let who = Ex::host(Imp::UnwrapH, vec![opt.clone()], Ty::Principal);
-        let set = |value| {
-            Stmt::Eval(Ex::host(
-                Imp::UiPropH,
-                vec![node.clone(), Ex::str("avatar"), value],
-                Ty::Unit,
-            ))
+        let row = Ex::local(n, Ty::View);
+        let slot_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar"));
+        let slot = self.new_node("slot", slot_key);
+        let slot_ex = Ex::local(slot, Ty::View);
+        self.emit(host(
+            Imp::UiPropH,
+            vec![slot_ex.clone(), Ex::str("name"), Ex::str("avatar")],
+        ));
+        let avatar_kind = crate::toolkit::kind("Avatar");
+        // The participant's avatar.
+        self.push_sink();
+        let who_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar/who"));
+        let who = self.new_node(&avatar_kind, who_key);
+        let principal = if optional {
+            Ex::host(
+                Imp::UnwrapH,
+                vec![Ex::local(tmp, ty.clone())],
+                Ty::Principal,
+            )
+        } else {
+            Ex::local(tmp, ty.clone())
         };
-        let (some, none) = (set(who), set(opt));
-        self.emit(Stmt::If(test, vec![some], vec![none]));
+        self.emit(host(
+            Imp::UiPropH,
+            vec![Ex::local(who, Ty::View), Ex::str("who"), principal],
+        ));
+        self.emit(host(
+            Imp::UiChild,
+            vec![slot_ex.clone(), Ex::local(who, Ty::View)],
+        ));
+        self.emit(host(Imp::UiChild, vec![row.clone(), slot_ex.clone()]));
+        let some = self.pop_sink();
+        if !optional {
+            for s in some {
+                self.emit(s);
+            }
+            return;
+        }
+        // No participant this time.
+        self.push_sink();
+        match icon {
+            Some(icon) => {
+                let glyph_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar/glyph"));
+                let glyph = self.new_node(&avatar_kind, glyph_key);
+                if let Some(title) = title {
+                    self.emit(host(
+                        Imp::UiPropH,
+                        vec![
+                            Ex::local(glyph, Ty::View),
+                            Ex::str("name"),
+                            Ex::local(title, Ty::Text),
+                        ],
+                    ));
+                }
+                self.icon_value(glyph, "glyph", icon);
+                self.emit(host(
+                    Imp::UiChild,
+                    vec![slot_ex.clone(), Ex::local(glyph, Ty::View)],
+                ));
+                self.emit(host(Imp::UiChild, vec![row, slot_ex]));
+            }
+            None => {
+                self.emit(host(
+                    Imp::UiPropI,
+                    vec![row, Ex::str("avatar_space"), Ex::int(1)],
+                ));
+            }
+        }
+        let none = self.pop_sink();
+        let test = Ex::host(Imp::IsSome, vec![Ex::local(tmp, ty)], Ty::Bool);
+        self.emit(Stmt::If(test, some, none));
     }
 
     /// A row's text: Text, a Date or a Time, or an Option of one (`.none` is the empty text).
     /// A Date or a Time is marked for the host to format (see `prop`).
     /// A list row's positional: its title, or the resource it shows (a `resource` prop the
     /// host renders as that resource's row).
-    fn row_subject(&mut self, node: &Ex, value: &ast::Expr) {
+    fn row_subject(&mut self, node: &Ex, value: &ast::Expr) -> Option<LocalId> {
         let v = self.expr(value, Some(&Ty::Text));
         if matches!(v.ty, Ty::Record(_)) {
-            self.prop(node.clone(), "resource", v, value.span);
-        } else {
-            self.text_prop(node, "title", v, value.span);
+            self.prop(node.clone(), "item", v, value.span);
+            return None;
         }
+        if v.ty != Ty::Text {
+            self.text_prop(node, "title", v, value.span);
+            return None;
+        }
+        let title = self.fresh(Ty::Text);
+        self.emit(Stmt::Set(title, v));
+        self.prop(
+            node.clone(),
+            "title",
+            Ex::local(title, Ty::Text),
+            value.span,
+        );
+        Some(title)
     }
 
     fn text_arg(&mut self, node: &Ex, name: &str, value: &ast::Expr) {
@@ -593,8 +702,11 @@ impl Checker<'_> {
     fn text_prop(&mut self, node: &Ex, name: &str, v: Ex, span: Span) {
         let v = match &v.ty {
             Ty::Text | Ty::Date | Ty::Time | Ty::Error => v,
-            Ty::Option(inner) if **inner == Ty::Text => self.text_or_empty(v),
-            Ty::Option(inner) if matches!(**inner, Ty::Date | Ty::Time) => v,
+            Ty::Option(inner) if matches!(**inner, Ty::Text | Ty::Date | Ty::Time) => {
+                let held = (**inner).clone();
+                self.set_when_some(node, name, v, &held, span);
+                return;
+            }
             other => {
                 let t = self.show(other);
                 let what = if name == "title" {
@@ -615,7 +727,7 @@ impl Checker<'_> {
 
     /// `mark: .pin` or `mark: if cond { .pin }`: the prop holds the icon's kebab-case name, set
     /// only on the branches that name one.
-    fn icon_value(&mut self, n: LocalId, prop: &str, e: &ast::Expr) {
+    pub(super) fn icon_value(&mut self, n: LocalId, prop: &str, e: &ast::Expr) {
         match &e.kind {
             ExprKind::Variant { name, args: None } => {
                 if let Some(icon) = self.icon_named(name) {
@@ -749,7 +861,7 @@ impl Checker<'_> {
     fn action_button(&mut self, callee: &Callable, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let span = c.call.span;
         let key = self.node_key(c);
-        let n = self.new_node("button", key);
+        let n = self.new_node(&crate::toolkit::kind("Button"), key);
         let node = Ex::local(n, Ty::View);
         let mut applied = false;
         for a in args {
@@ -887,7 +999,7 @@ impl Checker<'_> {
             return;
         }
         let key = self.stmt_key(node);
-        let n = self.new_node("fact", key);
+        let n = self.new_node(&crate::toolkit::kind("Property"), key);
         let l = self.expr_as(label, &Ty::Text);
         self.prop(Ex::local(n, Ty::View), "label", l, label.span);
         let v = self.expr(value, None);

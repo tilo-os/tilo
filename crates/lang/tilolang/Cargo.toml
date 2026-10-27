@@ -25,6 +25,8 @@ path = "src/main.rs"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The toolkit's component descriptions, read as the package `ui`.
+tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 wasm-encoder = "0.252"
 workspace-hack = { version = "0.1" }
 

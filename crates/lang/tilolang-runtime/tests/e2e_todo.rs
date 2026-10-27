@@ -62,7 +62,7 @@ mod cases {
 
     /// The list's title line: its text with the title role.
     fn heading(tree: &UiNode) -> String {
-        let title = of_kind(tree, "text")
+        let title = of_kind(tree, "ui.Text")
             .into_iter()
             .find(|t| t.props.get("role") == Some(&Value::text("title")))
             .expect("a title");
@@ -153,7 +153,7 @@ mod cases {
         let mut view = t.view();
         let remove = {
             let row = rows(view.tree())[1];
-            of_kind(row, "button")[0].key.clone()
+            of_kind(row, "ui.Button")[0].key.clone()
         };
         assert!(matches!(
             view.press(&remove).unwrap(),
@@ -175,7 +175,7 @@ mod cases {
     fn editing_the_bound_name_splices_the_text() {
         let t = Todo::new();
         let mut view = t.view();
-        let input = of_kind(view.tree(), "input")[0].key.clone();
+        let input = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
         for text in ["Errands", "Errands today", "Chores today"] {
             assert_eq!(
                 view.edit(&input, &Value::text(text)).unwrap(),

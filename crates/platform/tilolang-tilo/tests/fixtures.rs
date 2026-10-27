@@ -154,7 +154,7 @@ pub fn count(record: &DynRecord, meta: &Meta) -> i64 {
 /// The key of the button that adds: the counter's `Increment`, else the first button of a view.
 pub fn button_key(view: &ViewInstance) -> String {
     fn plus(node: &tilolang_runtime::UiNode) -> Option<String> {
-        if node.kind == "button"
+        if node.kind == "ui.Button"
             && node.props.get("label") == Some(&tilolang_runtime::Value::text("Increment"))
         {
             return Some(node.key.clone());
@@ -162,7 +162,7 @@ pub fn button_key(view: &ViewInstance) -> String {
         node.children.iter().find_map(plus)
     }
     fn find(node: &tilolang_runtime::UiNode) -> Option<String> {
-        if node.kind == "button" {
+        if node.kind == "ui.Button" {
             return Some(node.key.clone());
         }
         node.children.iter().find_map(find)

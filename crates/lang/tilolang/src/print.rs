@@ -597,6 +597,19 @@ impl Printer {
                 let v = self.ex(value);
                 self.line(&format!("{l}: {v}"));
             }
+            UiKind::Slot { name, body, .. } => {
+                self.line(&format!("{}: {{", name.name));
+                self.level += 1;
+                for st in body {
+                    self.ui_stmt(st);
+                }
+                self.level -= 1;
+                self.line("}");
+            }
+            UiKind::On { event, action } => {
+                let a = self.ex(action);
+                self.line(&format!("on {}: {a}", event.name));
+            }
             UiKind::Call(c) => self.ui_call(c),
         }
     }

@@ -330,7 +330,9 @@ fn collect_anchors(view: &str, stmts: &[crate::ast::UiStmt], out: &mut Vec<Strin
                     collect_anchors(view, b, out);
                 }
             }
-            UiKind::For { body, .. } => collect_anchors(view, body, out),
+            UiKind::For { body, .. } | UiKind::Slot { body, .. } => {
+                collect_anchors(view, body, out);
+            }
             UiKind::If { then, els, .. } => {
                 collect_anchors(view, then, out);
                 if let Some(e) = els {
@@ -342,7 +344,7 @@ fn collect_anchors(view: &str, stmts: &[crate::ast::UiStmt], out: &mut Vec<Strin
                     collect_anchors(view, &arm.body, out);
                 }
             }
-            UiKind::Let { .. } | UiKind::State(_) | UiKind::Fact { .. } => {}
+            UiKind::Let { .. } | UiKind::State(_) | UiKind::Fact { .. } | UiKind::On { .. } => {}
         }
     }
 }

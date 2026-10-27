@@ -108,7 +108,7 @@ view detail(n: Note) {
     }
 
     fn titles(tree: &UiNode) -> Vec<String> {
-        of_kind(tree, "list_row")
+        of_kind(tree, "ui.ListRow")
             .into_iter()
             .map(|r| text_prop(r, "title"))
             .collect()
@@ -152,7 +152,7 @@ view detail(n: Note) {
                 "a row is keyed by its resource: {row_key}"
             );
             assert_eq!(item.children.len(), 1);
-            assert_eq!(item.children[0].kind, "list_row");
+            assert_eq!(item.children[0].kind, "ui.ListRow");
             items.push(item.clone());
         }
         assert_eq!(titles(view.tree()), ["Q3 plan", "Groceries", "Ideas"]);
@@ -204,12 +204,12 @@ view detail(n: Note) {
         view.set_lazy_rows(false).unwrap();
         let l = list(view.tree());
         assert_eq!(l.children.len(), 3);
-        let rows = of_kind(&l.children[0], "list_row");
+        let rows = of_kind(&l.children[0], "ui.ListRow");
         assert_eq!(rows.len(), 1, "{}", dump(l));
         assert_eq!(text_prop(rows[0], "title"), "Q3 plan");
         assert_eq!(text_prop(rows[0], "mark"), "pin");
         assert!(
-            !of_kind(&l.children[1], "list_row")[0]
+            !of_kind(&l.children[1], "ui.ListRow")[0]
                 .props
                 .contains_key("mark")
         );
@@ -240,7 +240,7 @@ view detail(n: Note) {
             text_prop(of_kind(view.tree(), "choice")[0], "selected"),
             "all"
         );
-        let facts = of_kind(view.tree(), "fact");
+        let facts = of_kind(view.tree(), "ui.Property");
         let pairs: Vec<(String, Value)> = facts
             .iter()
             .map(|f| (text_prop(f, "label"), f.props["value"].clone()))
