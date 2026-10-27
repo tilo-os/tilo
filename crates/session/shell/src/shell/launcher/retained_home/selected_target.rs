@@ -69,7 +69,7 @@ impl SelectedContinuation {
                 &certificate,
                 &self.request.app_id,
             )
-            .map_err(io::Error::other)?
+            .map_err(|error| io::Error::other(error.to_string()))?
                 != super::super::NativeAppOpenAccess::Author
             {
                 return Err(refused());
@@ -373,7 +373,7 @@ impl PreparedTarget {
                 &certificate,
                 &self.package.id,
             )
-            .map_err(io::Error::other)?
+            .map_err(|error| io::Error::other(error.to_string()))?
                 != super::super::NativeAppOpenAccess::Author
         {
             return Err(refused());
@@ -392,7 +392,7 @@ impl PreparedTarget {
             &certificate,
             &self.package.id,
         )
-        .map_err(io::Error::other)?
+        .map_err(|error| io::Error::other(error.to_string()))?
             == super::super::NativeAppOpenAccess::Delegate
         {
             return Err(refused());

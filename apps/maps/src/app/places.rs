@@ -1,6 +1,9 @@
 //! Finding places: the geocoder's answers and the local matches around them, how results rank, the POI markers a viewport fetches, and the one a person selects.
 
-use super::*;
+use super::{
+    Instant, MapsApp, NEARBY_MAX, NetMsg, POI_DEBOUNCE, POI_MIN_ZOOM, Panel, Place, Point,
+    Workspace, bounds_contains, canvas, geo, net, spawn_net,
+};
 
 impl MapsApp {
     /// Accept `places` into the shared map, and show them here.

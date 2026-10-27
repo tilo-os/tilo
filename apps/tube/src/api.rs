@@ -104,9 +104,13 @@ impl Updates {
         Ok(())
     }
 
-    /// Post `update` unless the queue is full, and wake the window.
-    pub fn try_send(&self, update: Update) -> Result<(), std::sync::mpsc::TrySendError<Update>> {
-        self.tx.try_send(update)?;
+    /// Post `update` unless the queue is full, and wake the window. The
+    /// refusal is boxed: it carries the whole update back.
+    pub fn try_send(
+        &self,
+        update: Update,
+    ) -> Result<(), Box<std::sync::mpsc::TrySendError<Update>>> {
+        self.tx.try_send(update).map_err(Box::new)?;
         self.wake.wake();
         Ok(())
     }
@@ -1172,7 +1176,7 @@ async fn fetch_captions(
 }
 
 /// The caption tracks an Invidious video answer lists: `/api/v1/captions/{id}`
-/// names each one's label, language and the URL that serves its WebVTT.
+/// names each one's label, language and the URL that serves its `WebVTT`.
 fn caption_tracks_of(answer: &serde_json::Value) -> Vec<crate::captions::CaptionTrack> {
     answer
         .get("captions")
@@ -1207,7 +1211,7 @@ fn caption_tracks_of(answer: &serde_json::Value) -> Vec<crate::captions::Caption
         .collect()
 }
 
-/// A caption track's WebVTT text. The URL arrives relative to the instance
+/// A caption track's `WebVTT` text. The URL arrives relative to the instance
 /// that listed it (Invidious), so it is resolved against the instance that
 /// answers for it, exactly as the listing did.
 async fn fetch_timed_text(

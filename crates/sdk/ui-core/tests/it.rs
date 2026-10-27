@@ -73,6 +73,8 @@ mod fractional_scale_render;
 mod ghost_cursor_render_test;
 #[path = "group_row_visual_journey.rs"]
 mod group_row_visual_journey;
+#[path = "headless_app_test.rs"]
+mod headless_app_test;
 #[path = "host_entry_points.rs"]
 mod host_entry_points;
 #[path = "immersive_widget_geometry.rs"]

@@ -12,12 +12,12 @@ pub(super) fn review_model() -> Option<(ui::models::Models, String)> {
     let config = ProviderConfig::load();
     let (profile_id, model_id, name) = selection(&config)?;
     let gateway = gateway()?;
-    match ui::models::Models::from_descriptor(
+    match tilo_model_client::runtime_client::from_descriptor_selection(
         std::os::fd::AsFd::as_fd(&gateway),
         profile_id,
         model_id,
     ) {
-        Ok(models) => Some((models, name)),
+        Ok(backend) => Some((ui::models::Models::new(backend), name)),
         Err(error) => {
             tracing::debug!(%error, "reports are reviewed without a model");
             None

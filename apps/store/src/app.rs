@@ -429,8 +429,6 @@ fn publisher_of(item: &StoreItem) -> (String, String) {
 
 type LaunchCompletion = Result<(String, Option<serde_json::Value>), String>;
 
-/// Root widget.
-
 /// An operation as a job: what the whole system sees, and the flag the
 /// person's Stop sets. The package manager cannot be interrupted from here,
 /// so what stops is the Store's part — and the job's outcome says exactly
@@ -1273,9 +1271,8 @@ impl StoreApp {
         };
         if stopped.load(Ordering::Acquire) {
             job.stopped();
-            self.status_line =
-                "Stopped following this operation. The package manager may still be finishing it."
-                    .to_owned();
+            "Stopped following this operation. The package manager may still be finishing it."
+                .clone_into(&mut self.status_line);
             ui::attention::publish(ui::attention::Notice::did(
                 store_owner(),
                 self.status_line.clone(),
@@ -1296,7 +1293,7 @@ impl StoreApp {
                         ui::i18n!("store-operation-failed"),
                         ui::attention::Action::new(
                             SHOW_OPERATION,
-                            &ui::i18n!("store-error-refresh"),
+                            ui::i18n!("store-error-refresh"),
                         ),
                     )
                     .because(error),
@@ -2627,7 +2624,7 @@ impl StoreApp {
         }
         if *finish == Finish::Package {
             self.active_operation = None;
-            if let Some(app) = operating.clone() {
+            if let Some(app) = operating {
                 match &outcome {
                     Ok(finished) => self.finish_operation_job(&app, Ok(finished.status.clone())),
                     Err(error) => self.finish_operation_job(&app, Err(error.clone())),

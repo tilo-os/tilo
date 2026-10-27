@@ -3,7 +3,12 @@
 //! and when its frame is stale, and the floating clock overlay with the pause,
 //! add and close controls a person drags it by.
 
-use super::*;
+use super::{
+    Affine, BAR_CONTROL_PX, ButtonRole, CENTER_INSET_PX, CacheFingerprint, ChromeIntent,
+    ClockActivity, ClockSnapshot, Duration, Fill, Instant, Line, NARROW_MENU_BAR_PX, Point, Rect,
+    RoundedRect, Scene, Stroke, TextRenderer, TextRole, TextStyle, TextWeight, Theme, TopBarChrome,
+    TopBarPresence, Widget, WindowEvent, at, paint_bar_selector, t,
+};
 
 impl TopBarChrome {
     /// The centre selector is visually anchored at the viewport centre, but

@@ -15,7 +15,7 @@ use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::{
     AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
-    AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND,
+    AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION, AGENT_TRANSFORM_KIND,
 };
 
 /// One saved shortcut.
@@ -124,16 +124,60 @@ pub enum StepKind {
     /// Ask the person running the shortcut for one value. The answer is this
     /// step's output. Unattended runs cannot ask and fail here.
     Ask { param: ActionParam },
-    /// Transform a value with the agent. Lowered to an invocation of the
-    /// agent's transform action for `transform`.
+    /// Answer `prompt` with the agent in one model call, as a value of
+    /// `output`. Lowered to an invocation of the agent's `freeform`
+    /// transform, whose result is held to the declared shape.
     Ai {
-        transform: AiTransform,
-        input: Binding,
+        prompt: String,
+        /// The JSON Schema the answer must satisfy; absent for text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
+        /// What the agent reads: text, a content address, or the description
+        /// of a resource it may open itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<Binding>,
+    },
+    /// Start a task with the agent — a model-driven run of the actions the
+    /// person is offered — and wait for its typed summary.
+    Task {
+        /// What the task is to do, in the person's words.
+        instruction: String,
+        /// What the person can run it with: each one narrows the task's
+        /// authority below the run's, and never widens it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allow: Vec<Rule>,
+        /// The JSON Schema the summary must satisfy; absent for text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
 }
 
 fn default_item() -> String {
     "item".into()
+}
+
+impl StepKind {
+    /// The agent transform an AI or task step lowers to; `None` for a step
+    /// that does not ask the agent anything.
+    #[must_use]
+    pub fn ai_transform(&self) -> Option<AiTransform> {
+        Some(match self {
+            Self::Ai { prompt, output, .. } => AiTransform::Freeform {
+                prompt: prompt.clone(),
+                output: output.clone(),
+            },
+            Self::Task {
+                instruction,
+                allow,
+                output,
+            } => AiTransform::Task {
+                instruction: instruction.clone(),
+                allow: allow.clone(),
+                output: output.clone(),
+            },
+            _ => return None,
+        })
+    }
 }
 
 /// Which resource an invocation acts on.
@@ -231,9 +275,21 @@ pub enum AiTransform {
     Classify {
         choices: Vec<String>,
     },
-    /// Returns text answering `prompt`, itself a [`Binding::Template`].
+    /// Answers `prompt`, as text or as a value of `output`.
     Freeform {
         prompt: String,
+        /// The JSON Schema the answer must satisfy; absent for text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
+    },
+    /// Runs a whole task ([`StepKind::Task`]) and returns its summary.
+    Task {
+        instruction: String,
+        /// The task's authority, as the grant node of each action it may take.
+        allow: Vec<Rule>,
+        /// The JSON Schema the summary must satisfy; absent for text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
 }
 
@@ -252,28 +308,51 @@ impl AiTransform {
             Self::Extract { .. } => AGENT_EXTRACT_ACTION,
             Self::Classify { .. } => AGENT_CLASSIFY_ACTION,
             Self::Freeform { .. } => AGENT_FREEFORM_ACTION,
+            Self::Task { .. } => AGENT_TASK_ACTION,
         }
     }
 
-    /// The arguments of the lowered invocation.
+    /// The JSON Schema the answer must satisfy, or `None` for text.
     #[must_use]
-    pub fn arguments(&self, input: &Binding) -> BTreeMap<String, Binding> {
-        let mut args = BTreeMap::new();
-        args.insert("input".to_string(), input.clone());
+    pub const fn output(&self) -> Option<&serde_json::Value> {
         match self {
-            Self::Summarise => {}
-            Self::Extract { schema } => {
-                args.insert("schema".into(), Binding::Literal(schema.clone()));
-            }
+            Self::Extract { schema } => Some(schema),
+            Self::Task { output, .. } | Self::Freeform { output, .. } => output.as_ref(),
+            Self::Summarise | Self::Classify { .. } => None,
+        }
+    }
+
+    /// The arguments of the lowered invocation. `input` is what the step
+    /// reads, when it reads anything.
+    #[must_use]
+    pub fn arguments(&self, input: Option<&Binding>) -> BTreeMap<String, Binding> {
+        // The declared shape is what the agent validates the answer against,
+        // so it travels as the step declared it.
+        let mut args = BTreeMap::new();
+        if let Some(output) = self.output() {
+            args.insert("schema".into(), Binding::Literal(output.clone()));
+        }
+        let text = |value: &str| Binding::Literal(serde_json::json!(value));
+        match self {
+            Self::Summarise | Self::Extract { .. } => {}
             Self::Classify { choices } => {
                 args.insert(
                     "choices".into(),
                     Binding::Literal(serde_json::json!(choices)),
                 );
             }
-            Self::Freeform { prompt } => {
-                args.insert("prompt".into(), Binding::Template(prompt.clone()));
+            Self::Freeform { prompt, .. } => {
+                args.insert("prompt".into(), text(prompt));
             }
+            Self::Task {
+                instruction, allow, ..
+            } => {
+                args.insert("instruction".into(), text(instruction));
+                args.insert("allow".into(), Binding::Literal(serde_json::json!(allow)));
+            }
+        }
+        if let Some(input) = input {
+            args.insert("input".into(), input.clone());
         }
         args
     }

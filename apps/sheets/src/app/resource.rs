@@ -1,6 +1,11 @@
 //! The workbook's own life: what the app is built from, the resource it attaches to and adopts, what it submits as the person edits, and the locale and currency a document is shown in.
 
-use super::*;
+use super::{
+    Addr, Atom, Cell, CellFormat, ChromeMetrics, ColorSwatchPicker, CommandPalette, CommandSlot,
+    ContextMenu, Currency, DocSettings, Edits, EffectiveLocale, Grid, Id, Invoke, Locale, PathBuf,
+    Pending, PendingReveal, Point, Popover, PopoverSide, Rc, Rect, SettingsPanel, SheetsApp, Theme,
+    Workbook, opaque_participant_id,
+};
 
 impl SheetsApp {
     pub fn new() -> Self {

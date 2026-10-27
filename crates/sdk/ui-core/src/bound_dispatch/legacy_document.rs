@@ -311,7 +311,7 @@ fn operation_allowed(
 ) -> bool {
     authority.check(&crate::permissions::PermissionScope::app(
         app,
-        spec.contract.kind,
+        spec.contract.need().kind,
     ))
 }
 fn filter_legacy_resource(

@@ -446,12 +446,12 @@ impl RequestSnapshot {
     pub fn to_request(&self) -> Request {
         let mut request = Request::new("New request");
         request.method = self.method;
-        request.url = self.url.clone();
-        request.params = self.params.clone();
-        request.headers = self.headers.clone();
+        request.url.clone_from(&self.url);
+        request.params.clone_from(&self.params);
+        request.headers.clone_from(&self.headers);
         request.body_mode = self.body_mode;
-        request.body_text = self.body.clone();
-        request.form = self.form.clone();
+        request.body_text.clone_from(&self.body);
+        request.form.clone_from(&self.form);
         request.auth = if self.credential.is_empty() {
             Auth::None
         } else {

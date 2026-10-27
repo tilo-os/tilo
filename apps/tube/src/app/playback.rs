@@ -201,7 +201,7 @@ impl TubeApp {
                         .map(|track| track.language.clone()),
                 };
                 if self.change_preferences(|settings| {
-                    settings.caption_language = language.clone();
+                    settings.caption_language.clone_from(&language);
                 }) {
                     self.model.captions.clear();
                     self.model.captions_notice = None;

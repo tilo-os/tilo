@@ -444,6 +444,20 @@ impl Default for TermModes {
     }
 }
 
+/// The rows of the open context menu that carry a meaning of their own, by
+/// index. A row the menu left out (too short a pane) has none.
+#[derive(Default)]
+struct MenuRows {
+    paste: Option<usize>,
+    find: Option<usize>,
+    copy_on_select: Option<usize>,
+    /// The bell row, when the menu is tall enough to hold it.
+    bell: Option<usize>,
+    osc52: Option<usize>,
+    /// What each effect row asks for.
+    effects: HashMap<usize, crate::resource::TerminalEffect>,
+}
+
 /// A terminal emulator packaged as a reusable `ui` widget.
 ///
 /// It owns a PTY running a shell (or an arbitrary command), a vte parser, and
@@ -649,14 +663,8 @@ pub struct TerminalWidget {
     /// The menu's `Arc<dyn Fn>` callbacks can't reach the PTY, so we dispatch on
     /// the chosen row's label ourselves (mirrors `TextInput`).
     context_menu: ContextMenu,
-    find_menu_index: Option<usize>,
-    copy_on_select_menu_index: Option<usize>,
-    osc52_menu_index: Option<usize>,
-    /// The context menu's bell row, when the menu is tall enough to hold it.
-    bell_menu_index: Option<usize>,
-    menu_paste_index: Option<usize>,
-    /// What each effect row of the open menu asks for.
-    menu_effects: HashMap<usize, crate::resource::TerminalEffect>,
+    /// Which row of the open context menu does what.
+    menu_rows: MenuRows,
     /// Cursor position cached on every `CursorMoved` so the press arm
     /// can hit-test without receiving a fresh position. Logical coords
     /// (post scale-factor divide), matching `text_input`'s convention.
@@ -908,12 +916,7 @@ impl TerminalWidget {
             bell_at: None,
             preferences: crate::preferences::Preferences::none(),
             context_menu: ContextMenu::new(),
-            find_menu_index: None,
-            copy_on_select_menu_index: None,
-            osc52_menu_index: None,
-            bell_menu_index: None,
-            menu_paste_index: None,
-            menu_effects: HashMap::new(),
+            menu_rows: MenuRows::default(),
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             grid_rect: Rect::ZERO,
@@ -1779,7 +1782,7 @@ impl TerminalWidget {
     }
     #[cfg(test)]
     pub fn context_menu_find_rect(&self) -> Option<Rect> {
-        self.context_menu.item_rect(self.find_menu_index?)
+        self.context_menu.item_rect(self.menu_rows.find?)
     }
     /// Force a viewport scrollback offset for tests that exercise
     /// `selected_text` over a `grid` larger than the visible viewport.
@@ -4952,8 +4955,7 @@ impl TerminalWidget {
         let has_selection = self.selected_text().is_some_and(|t| !t.is_empty());
         let mut menu = ContextMenu::new();
         menu.set_platform_conventions(self.conventions);
-        self.menu_effects.clear();
-        self.menu_paste_index = None;
+        self.menu_rows = MenuRows::default();
         let live = !self.is_disconnected();
         if has_selection {
             self.push_menu_effect(
@@ -4963,7 +4965,7 @@ impl TerminalWidget {
                 true,
             );
         }
-        self.menu_paste_index = Some(menu.items().len());
+        self.menu_rows.paste = Some(menu.items().len());
         menu.push(MenuItem::action("Paste", || {}).with_enabled(live));
         menu.push(MenuItem::separator());
         if !self.grid_is_blank() {
@@ -4980,7 +4982,7 @@ impl TerminalWidget {
             crate::resource::TerminalEffect::Clear,
             live,
         );
-        self.find_menu_index = Some(menu.items().len());
+        self.menu_rows.find = Some(menu.items().len());
         menu.push(MenuItem::action(
             crate::i18n::t("terminal-find-scrollback"),
             || {},
@@ -4990,19 +4992,16 @@ impl TerminalWidget {
         // can fit the copy/paste/selection/process essentials, not another
         // row plus separator; its keyboard shortcut and desktop-sized menu
         // still expose the toggle.
-        self.copy_on_select_menu_index = None;
-        self.osc52_menu_index = None;
-        self.bell_menu_index = None;
         if self.rect.height() >= 180.0 {
             menu.push(MenuItem::separator());
-            self.copy_on_select_menu_index = Some(menu.items().len());
+            self.menu_rows.copy_on_select = Some(menu.items().len());
             menu.push(MenuItem::action("Copy on select", || {}).with_checked(self.select_to_copy));
-            self.bell_menu_index = Some(menu.items().len());
+            self.menu_rows.bell = Some(menu.items().len());
             menu.push(
                 MenuItem::action(self.bell.label(), || {})
                     .with_checked(self.bell == crate::preferences::Bell::Visual),
             );
-            self.osc52_menu_index = Some(menu.items().len());
+            self.menu_rows.osc52 = Some(menu.items().len());
             menu.push(
                 MenuItem::action("Let programs set the clipboard", || {})
                     .with_checked(self.allow_osc52_clipboard),
@@ -5031,7 +5030,7 @@ impl TerminalWidget {
         effect: crate::resource::TerminalEffect,
         enabled: bool,
     ) {
-        self.menu_effects.insert(menu.items().len(), effect);
+        self.menu_rows.effects.insert(menu.items().len(), effect);
         menu.push(MenuItem::action(label, || {}).with_enabled(enabled));
     }
 
@@ -5045,28 +5044,28 @@ impl TerminalWidget {
     }
 
     fn activate_context_menu_item(&mut self, index: usize) {
-        if self.bell_menu_index == Some(index) {
+        if self.menu_rows.bell == Some(index) {
             self.set_bell(self.bell.toggled());
             return;
         }
-        if self.menu_paste_index == Some(index) {
+        if self.menu_rows.paste == Some(index) {
             if let Some(text) = clipboard_paste() {
                 self.submit_effect(crate::resource::TerminalEffect::Paste { text });
             }
             return;
         }
-        if let Some(effect) = self.menu_effects.get(&index).cloned() {
+        if let Some(effect) = self.menu_rows.effects.get(&index).cloned() {
             self.submit_effect(effect);
             return;
         }
-        if self.find_menu_index == Some(index) {
+        if self.menu_rows.find == Some(index) {
             self.find_request = true;
             return;
         }
-        if self.copy_on_select_menu_index == Some(index) {
+        if self.menu_rows.copy_on_select == Some(index) {
             self.set_select_to_copy(!self.select_to_copy);
         }
-        if self.osc52_menu_index == Some(index) {
+        if self.menu_rows.osc52 == Some(index) {
             self.set_allow_osc52_clipboard(!self.allow_osc52_clipboard);
         }
     }

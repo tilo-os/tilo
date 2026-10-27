@@ -171,6 +171,12 @@ fn clean_exit_removes_runtime_endpoints_and_allows_canonical_rebind() {
         Command::new(tilo_test_env::package_binary!("shell"))
             .args(["--mode", "native", "--backend", "headless"])
             .env("TILO_RUN_SECONDS", "2")
+            // Not this process's `HOME`: another test may own it for its own
+            // run and delete the tree it points at (see `private_home`).
+            .env(
+                "HOME",
+                crate::support::desktop::private_home(runtime.path()),
+            )
             .env("XDG_RUNTIME_DIR", runtime.path())
             .env("XDG_CONFIG_HOME", runtime.path().join("config"))
             .env("XDG_DATA_HOME", runtime.path().join("data"))
