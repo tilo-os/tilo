@@ -125,7 +125,8 @@ pub enum Head {
         /// What the task is to do, in the person's words.
         instruction: String,
         /// What it may use, as the grant node of each action. It narrows the
-        /// shortcut's own grant and never widens it.
+        /// shortcut's own grant and never widens it. Held as the values the
+        /// policy layer reads, the shape the agent's task action takes them in.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         allow: Vec<serde_json::Value>,
         /// The shape the summary must have, as a JSON Schema; text when absent.
@@ -213,7 +214,7 @@ impl Head {
                     instruction: instruction.clone(),
                     allow: allow
                         .iter()
-                        .map(|rule| serde_json::to_value(rule).unwrap_or_default())
+                        .filter_map(|rule| serde_json::to_value(rule).ok())
                         .collect(),
                     output: output.clone(),
                 },
