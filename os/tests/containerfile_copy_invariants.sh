@@ -325,7 +325,9 @@ containerfile="$repo/os/Containerfile"
 # The one sign-in service, tilo-auth, and the polkit-1 and sudo services that
 # take their authentication from it ride the existing PAM COPY: three payload
 # rows.
-expected_contract=5d9337bfb5e23939a978dc5a869e8aee15180de4cd91aec0ce71da71896c00a7
+# The 93tilo-boot-face dracut module, which points Plymouth's two fonts at the
+# login screen's face, rides the dracut-modules COPY: one payload row.
+expected_contract=08789e6e3a54681d8dbc3dc316ccf2652e0c2fac52a0359c74a05602ece8ff78
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -378,10 +380,12 @@ instructions="$(containerfile_instructions "$containerfile" | awk -v stages=" $(
 # adds one more (154).
 # NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
 # The offline predefined Flathub descriptor adds one reviewed COPY (156).
+# The boot-face dracut module, beside the Plymouth theme so a theme edit stays
+# in that small layer, adds one COPY (157).
 # The image is built as layer actions (os/image/layers.toml): the count is every
 # stage of their pieces, the seal's included, 151 of them.
-[ "$instructions" -le 156 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 156)" >&2
+[ "$instructions" -le 157 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 157)" >&2
   exit 1
 }
 
