@@ -975,7 +975,7 @@ fn discover_views(
                         descriptor.contract.field.as_deref(),
                         &descriptor.address.action,
                     ),
-                    kind: descriptor.contract.kind,
+                    kind: descriptor.contract.need().kind,
                 })
         })
         .collect()

@@ -946,7 +946,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 &descriptor.address,
             ),
         };
-        let granted = grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind);
+        let granted = grant_answer(&self.shortcut.grant, &node, descriptor.contract.need().kind);
         let (app_id, action) = (app_id.to_string(), action.to_string());
         match (granted.answer, self.mode) {
             (Answer::Deny, _) => Err(StepFailure::OutsideGrant { app_id, action }),

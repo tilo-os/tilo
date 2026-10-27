@@ -477,7 +477,7 @@ impl Checker<'_> {
             ),
             None => step_node(None, app_id, &descriptor.resource_kind, &descriptor.address),
         };
-        if grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind).answer
+        if grant_answer(&self.shortcut.grant, &node, descriptor.contract.need().kind).answer
             == Answer::Deny
         {
             self.fail(

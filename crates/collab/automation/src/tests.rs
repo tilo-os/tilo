@@ -568,6 +568,86 @@ fn a_step_outside_the_grant_is_refused_even_when_the_caller_could_run_it() {
     assert!(host.started().is_empty(), "nothing reached the host");
 }
 
+// A shortcut's grant is checked against what each step needs, never against
+// what it does: a grant that allows only reading runs an undoable change of
+// the person's own record, which the room's grants do not reach, and still
+// refuses the same change of a shared note.
+#[test]
+fn a_shortcut_grant_answers_what_a_step_needs_not_its_kind() {
+    let mut host = FakeHost::new();
+    let own = "notes.settings:ada";
+    let mut contract = ActionContract::default();
+    contract.tags.push(tilo_actions::OWN_RECORD_SCOPE.into());
+    assert_eq!(contract.kind, tilo_actions::contract::ActionKind::Undoable);
+    assert_eq!(
+        contract.need().kind,
+        tilo_actions::contract::ActionKind::Read
+    );
+    host.rows.push(row(
+        NOTES,
+        own,
+        "notes.settings",
+        "archive",
+        Vec::new(),
+        contract,
+    ));
+    let reads_notes = vec![Rule::new(
+        TreePath::root().any(Level::Room).app(NOTES),
+        KindSet::READ,
+        Answer::Allow,
+    )];
+    let step = |resource: &str| {
+        let mut shortcut = shortcut(
+            "tidy",
+            vec![invoke(
+                "archive",
+                NOTES,
+                Selector::Fixed(resource.into()),
+                "archive",
+                &[],
+            )],
+        );
+        shortcut.grant.clone_from(&reads_notes);
+        shortcut
+    };
+
+    let own_step = step(own);
+    assert_eq!(check(&own_step, &host.catalog(), &NoShortcuts), Ok(()));
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &own_step,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert!(failure(&report).is_none(), "{report:?}");
+    assert_eq!(host.started().len(), 1);
+
+    let shared_step = step(NOTE);
+    let errors = check(&shared_step, &host.catalog(), &NoShortcuts).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, CheckErrorKind::OutsideGrant { .. })),
+        "{errors:?}"
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &shared_step,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert!(
+        matches!(
+            failure(&report),
+            Some((_, StepFailure::OutsideGrant { .. }))
+        ),
+        "{report:?}"
+    );
+    assert_eq!(host.started().len(), 1, "the shared change never ran");
+}
+
 #[test]
 fn confirmation_is_refused_unattended_and_asked_for_interactively() {
     let host = FakeHost::new();
