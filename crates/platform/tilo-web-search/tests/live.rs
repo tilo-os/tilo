@@ -3,7 +3,7 @@
 //! runs when asked: `cargo test -p tilo-web-search --test live -- --ignored`.
 
 use tilo_web_search::{
-    Engine, EngineStatus, FetchLimits, SearchLimits, SearchState, client, fetch, search,
+    Engine, EngineStatus, FetchLimits, SafeMode, SearchLimits, SearchState, client, fetch, search,
 };
 
 #[test]
@@ -20,6 +20,7 @@ fn the_default_engines_answer_and_a_result_can_be_read() {
             &SearchState::default(),
             "rust programming language",
             &Engine::ALL,
+            SafeMode::Off,
             &SearchLimits::default(),
         ))
         .unwrap();
