@@ -1,5 +1,5 @@
 //! The panes people rarely open' part of Settings: the areas, panes, effect
-//! families, live areas and settings sections they bring ([`crate::area::Part`]).
+//! families, live areas and settings rows they bring ([`crate::area::Part`]).
 
 use crate::categories::Category;
 use crate::effects::AreaVocabulary as _;
@@ -236,15 +236,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
     ),
 ];
 
-/// The sections of the person's settings the panes own.
-pub(crate) const SECTIONS: &[(u16, crate::area::SectionEntry)] = &[
-    (
-        20,
-        crate::area::section_entry!(agent_models::AgentProviders),
-    ),
-    (30, crate::area::section_entry!(time_date::ClockPrefs)),
-];
-
 /// Every pane, by the categories it shows.
 pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
@@ -336,6 +327,5 @@ pub const PART: crate::area::Part = crate::area::Part {
     panes: PANES,
     families: FAMILIES,
     live_areas: LIVE_AREAS,
-    sections: SECTIONS,
     settings: SETTINGS,
 };

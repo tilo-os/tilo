@@ -203,9 +203,6 @@ impl ResourceApp for SettingsShell {
             tilo_actions::remote::settings_records::PROVIDER,
             settings_sections::declare,
         );
-        for section in &crate::area::registry().sections {
-            (section.record)(records);
-        }
     }
 
     fn fixture(fixture: &mut Fixture<Settings>) {

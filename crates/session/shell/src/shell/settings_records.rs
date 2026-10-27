@@ -989,4 +989,50 @@ mod tests {
         assert_eq!(settings_store::power::LOCK_MINUTES.get(), before);
         drop(settings);
     }
+
+    /// The desktop's own sections are the session's too: with no window of
+    /// Settings, the palette or an agent turns on the Vim keys and reads the
+    /// default apps, the clock and the keyboard's layouts.
+    #[test]
+    #[serial_test::serial]
+    fn with_settings_closed_the_desktop_sections_are_changed_through_the_session() {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let palette = settings_store::InvokingAction::action("shortcuts.vim");
+        super::change(
+            &super::address("settings.desktop-controls", "field-edit"),
+            &super::set_field("vim_mode", &serde_json::json!(true)),
+            false,
+            &palette,
+        )
+        .unwrap();
+        assert_eq!(
+            settings_store::load_section("desktop_controls").get("vim_mode"),
+            Some(&serde_json::json!(true))
+        );
+        let published = super::with_records(|records| {
+            records
+                .resources()
+                .iter()
+                .map(|resource| resource.kind.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+        for kind in [
+            "settings.default-apps",
+            "settings.clock",
+            "settings.display-arrangement",
+            "settings.automatic-display",
+            "settings.agent-providers",
+            "settings.osk-sources",
+        ] {
+            assert!(
+                published.iter().any(|published| published == kind),
+                "the session publishes {kind}: {published:?}"
+            );
+        }
+        drop(settings);
+    }
 }

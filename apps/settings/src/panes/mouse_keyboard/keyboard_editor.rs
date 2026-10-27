@@ -1114,33 +1114,10 @@ fn layer_key(level: usize) -> &'static str {
     }
 }
 
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model)]
-#[serde(default)]
-pub struct OskSourceSettings {
-    #[model(readonly)]
-    layout: String,
-    #[model(readonly)]
-    layouts: Vec<String>,
-}
-
-impl Default for OskSourceSettings {
-    fn default() -> Self {
-        Self {
-            layout: "qwerty".into(),
-            layouts: Vec::new(),
-        }
-    }
-}
-
-impl ui::storage::SettingsSchema for OskSourceSettings {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
-}
-
-#[ui::tilo_resource::resource(kind = "settings.osk-sources", label = "On-screen keyboard layouts")]
-impl OskSourceSettings {}
+pub use crate::prefs::OskSourceSettings;
 
 fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
-    let stored = ui::storage::Settings::<OskSourceSettings>::for_app("so.tilo.osk")
+    let stored = ui::storage::Settings::<OskSourceSettings>::for_app(crate::prefs::KEYBOARD_APP_ID)
         .in_document(document.clone())
         .get();
     let configured = if stored.layouts.is_empty() {
@@ -1173,7 +1150,7 @@ fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
 }
 
 fn store_osk(document: &ui::storage::SettingsDocument, profile: &KeyboardProfile) -> EffectAnswer {
-    ui::storage::Settings::<OskSourceSettings>::for_app("so.tilo.osk")
+    ui::storage::Settings::<OskSourceSettings>::for_app(crate::prefs::KEYBOARD_APP_ID)
         .in_document(document.clone())
         .set(&OskSourceSettings {
             layout: profile.active.clone(),
