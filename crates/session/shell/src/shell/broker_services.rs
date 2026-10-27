@@ -698,21 +698,9 @@ fn stage_launch_content(
         <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
     )
     .map_err(|error| format!("protect launch staging: {error}"))?;
-    let extension = match tilo_content::sniff(&bytes).mime.as_str() {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/webp" => "webp",
-        _ if bytes.get(4..8).is_some_and(|header| header == b"ftyp") => "mp4",
-        _ if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) => "webm",
-        _ if bytes.starts_with(b"RIFF")
-            && bytes.get(8..12).is_some_and(|header| header == b"AVI ") =>
-        {
-            "avi"
-        }
-        // A document travels under whatever name its sender gave it: its
-        // bytes say what it is, and so what the opened app takes it as.
-        _ => tilo_content::document_format(&bytes).map_or("bin", |format| format.extension),
-    };
+    // Content travels without the name its sender gave it: its bytes say
+    // what it is, and so what the opened app takes it as.
+    let (extension, _) = tilo_content::opened_as(&bytes);
     let path = dir.join(format!("{content_hash}.{extension}"));
     match std::fs::OpenOptions::new()
         .write(true)
