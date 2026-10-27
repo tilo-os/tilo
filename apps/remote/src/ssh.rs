@@ -1257,31 +1257,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
     fn a_file_crosses_a_real_session_both_ways_and_a_missing_one_says_why() {
         let (port, files) = served_files([("remote.txt", b"from the remote machine".to_vec())]);
 
-        let (known_hosts, known_hosts_directory) = test_known_hosts();
-        let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
-        let identity = HostKeyIdentity {
-            algorithm: host_key.public_key().algorithm().as_str().to_string(),
-            fingerprint: host_key
-                .public_key()
-                .fingerprint(HashAlg::Sha256)
-                .to_string(),
-        };
-        trust_host_key(&known_hosts, "127.0.0.1", port, &identity).unwrap();
-        let ssh = SshSession::connect(SshConfig {
-            host: "127.0.0.1".into(),
-            port,
-            user: "tester".into(),
-            auth: SshAuth::Password("secret".into()),
-            cols: 80,
-            rows: 24,
-            known_hosts,
-        })
-        .unwrap();
-        let deadline = ui::time::now() + hang_bound();
-        while ui::time::now() < deadline && ssh.status() != SessionStatus::Connected {
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        assert_eq!(ssh.status(), SessionStatus::Connected);
+        let (ssh, known_hosts_directory) = trusted_session_on(port);
 
         let directory = tempfile::tempdir().unwrap();
         let local = directory.path().join("local.bin");
@@ -1404,5 +1380,36 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
                 (port, files)
             })
             .unwrap()
+    }
+
+    /// A connected session to the loopback server on `port`, whose host key
+    /// this device already trusts. The returned directory holds that trust.
+    fn trusted_session_on(port: u16) -> (SshSession, tempfile::TempDir) {
+        let (known_hosts, known_hosts_directory) = test_known_hosts();
+        let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
+        let identity = HostKeyIdentity {
+            algorithm: host_key.public_key().algorithm().as_str().to_string(),
+            fingerprint: host_key
+                .public_key()
+                .fingerprint(HashAlg::Sha256)
+                .to_string(),
+        };
+        trust_host_key(&known_hosts, "127.0.0.1", port, &identity).unwrap();
+        let ssh = SshSession::connect(SshConfig {
+            host: "127.0.0.1".into(),
+            port,
+            user: "tester".into(),
+            auth: SshAuth::Password("secret".into()),
+            cols: 80,
+            rows: 24,
+            known_hosts,
+        })
+        .unwrap();
+        let deadline = ui::time::now() + hang_bound();
+        while ui::time::now() < deadline && ssh.status() != SessionStatus::Connected {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(ssh.status(), SessionStatus::Connected);
+        (ssh, known_hosts_directory)
     }
 }
