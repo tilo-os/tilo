@@ -1038,7 +1038,7 @@ impl InvocationJournal {
         let started = self.snapshot.records.get(at).cloned();
         let write = self.record_update(key, update, uncertain)?;
         let started = started.ok_or("unknown invocation journal identity")?;
-        self.settle(at, started, write)
+        self.settle(at, &started, write)
     }
 
     /// A terminal outcome is durable once the returned write resolves.
@@ -1116,7 +1116,7 @@ impl InvocationJournal {
         record.guarded = Some(guarded::State::selected(selection));
         self.snapshot.version = self.snapshot.version.max(3);
         let write = self.commit(at, Injected::default())?;
-        self.settle(at, started, write)
+        self.settle(at, &started, write)
     }
 
     #[cfg(test)]
@@ -1145,7 +1145,7 @@ impl InvocationJournal {
         record.update = guarded::unavailable(key.invocation);
         record.uncertain = false;
         let write = self.commit(at, Injected::default())?;
-        self.settle(at, started, write)
+        self.settle(at, &started, write)
     }
 
     /// [`Self::record_cancellation`], waiting for the write here.
@@ -1157,7 +1157,7 @@ impl InvocationJournal {
         let started = self.snapshot.records.get(at).cloned();
         let write = self.record_cancellation(key)?;
         let started = started.ok_or("unknown invocation journal identity")?;
-        self.settle(at, started, write)
+        self.settle(at, &started, write)
     }
 
     /// The cancellation request is durable once the returned write resolves.

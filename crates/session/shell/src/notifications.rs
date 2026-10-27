@@ -38,9 +38,9 @@ mod scheduled;
 
 #[cfg(target_os = "linux")]
 pub use dbus::{NotificationService, ServerHandle, serve_notifications, spawn_signal_emitter};
+use flatpak::valid_notification_app_id;
 #[cfg(target_os = "linux")]
 pub(crate) use flatpak::verified_flatpak_app_id;
-use flatpak::*;
 pub use hints::IncomingImageData;
 
 pub const BUS_NAME: &str = "org.freedesktop.Notifications";

@@ -12832,19 +12832,32 @@ pub fn run() {
         // session being locked, because a password in a composed script cannot
         // be typed at all otherwise. `field_owner` is that decision, written
         // and tested on its own.
-        let session_locked = session.is_locked();
-        let owner = crate::compositor::shell_text_input::field_owner(
-            session_locked,
-            state.client_input.keyboard_focus().is_some(),
-            session_locked.then(|| lock.ime_field()).flatten(),
-            frame_builder.host().shell_prompt_up(),
-            receipts_only,
-            speech_field_needed,
+        use crate::compositor::shell_text_input::{
+            FieldSituation, KeyboardHolder, SessionState, field_owner,
+        };
+        let session_state = if session.is_locked() {
+            SessionState::Locked {
+                lock_field: lock.ime_field(),
+            }
+        } else {
+            SessionState::Unlocked
+        };
+        let owner = field_owner(
+            FieldSituation {
+                session: session_state,
+                keyboard: if state.client_input.keyboard_focus().is_some() {
+                    KeyboardHolder::Client
+                } else {
+                    KeyboardHolder::Shell
+                },
+                shell_prompt_up: frame_builder.host().shell_prompt_up(),
+                palette_visible: frame_builder.host().palette_visible(),
+                fields_withheld: receipts_only && !speech_field_needed,
+            },
             frame_builder.focused_ime_field(test_control_ctx.focus),
             test_control_ctx.focus.map(u64::from),
-            frame_builder.host().palette_visible(),
         );
-        let shell_field = owner.as_ref().map(|(field, _)| field.clone());
+        let shell_field = owner.as_ref().map(|(field, _)| *field);
         let owner_id = owner.map(|(_, id)| id);
         if shell_field.is_some() && shell_text_input.is_none() {
             match crate::compositor::shell_text_input::ShellTextInput::connect(&mut state) {
@@ -12855,7 +12868,7 @@ pub fn run() {
             }
         }
         if let Some(proxy) = shell_text_input.as_mut() {
-            let identity = owner_id.clone();
+            let identity = owner_id;
             let typed = proxy.sync_for_field(&mut state, shell_field, identity);
             let keys = state.take_shell_field_keys();
             // Text carries the keyboard's modifiers; a virtual keyboard's key
