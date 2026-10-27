@@ -2544,3 +2544,43 @@ fn the_shell_continues_and_reports_input_as_its_content() {
         Some(serde_json::json!({ "caret_line": 3 }))
     );
 }
+
+/// A shown title that says something else (an item's title as it is typed) is the same part,
+/// measured and painted again: the window keeps its tree. A count is drawn in that part too.
+/// A title that comes or goes changes the header row.
+#[test]
+fn a_shown_title_that_changes_keeps_the_tree_and_one_that_goes_rebuilds_it() {
+    use crate::widget::StructureChange;
+    let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
+    settle(&mut h, 1400, 800);
+    let _ = h.root_mut::<NavShell>().take_structure_change();
+
+    h.root_mut::<NavShell>()
+        .set_content_title("Design review, second round");
+    assert_eq!(
+        h.root_mut::<NavShell>().take_structure_change(),
+        StructureChange::None,
+        "a title typed into keeps the header row"
+    );
+    h.relayout_at((1400, 800)).expect("the title lays out");
+    let title = &h.root::<NavShell>().headers[Column::Content.index()].title;
+    assert_eq!(title.title.as_deref(), Some("Design review, second round"));
+    assert!(
+        !crate::widget::Widget::is_layout_dirty(title),
+        "it is measured again with what it says now"
+    );
+
+    h.root_mut::<NavShell>().set_content_count(Some(3));
+    assert_eq!(
+        h.root_mut::<NavShell>().take_structure_change(),
+        StructureChange::None,
+        "a count is drawn in the title's part"
+    );
+
+    h.root_mut::<NavShell>().set_content_title("");
+    assert_eq!(
+        h.root_mut::<NavShell>().take_structure_change(),
+        StructureChange::Rebuild,
+        "a title that goes changes the header row"
+    );
+}
