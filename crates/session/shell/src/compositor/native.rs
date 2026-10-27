@@ -20381,6 +20381,7 @@ mod tests {
                         resource_kind: "calculator.graph".into(),
                         resource_label: "A presentation label without routing metadata".into(),
                         action_label: "Hide".into(),
+                        keywords: Vec::new(),
                         description: Some("Do not infer identity from this text".into()),
                         locus: tilo_actions::ExecutionLocus::default(),
                         kind: tilo_actions::OperationKind::View,

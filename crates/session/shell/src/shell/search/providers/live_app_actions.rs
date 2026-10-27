@@ -3579,12 +3579,17 @@ fn index_actions(
             .enumerate()
             .filter(|(_, (_, action))| include_programmatic || action.contract.reaches_people())
             .map(|(at, (surface, action))| {
-                Document::new(at as u64)
-                    .field(action.action_label.as_str(), FieldWeight::TITLE)
-                    .field(action.resource_label.as_str(), FieldWeight::SUBTITLE)
-                    .field(action.action.as_str(), FieldWeight::IDENTITY)
-                    .field(action.resource.as_str(), FieldWeight::IDENTITY)
-                    .field(surface.app_id.as_str(), FieldWeight::METADATA)
+                // The words the app declares for the action find it as the
+                // shell's own actions are found by theirs.
+                action.keywords.iter().fold(
+                    Document::new(at as u64)
+                        .field(action.action_label.as_str(), FieldWeight::TITLE)
+                        .field(action.resource_label.as_str(), FieldWeight::SUBTITLE)
+                        .field(action.action.as_str(), FieldWeight::IDENTITY)
+                        .field(action.resource.as_str(), FieldWeight::IDENTITY)
+                        .field(surface.app_id.as_str(), FieldWeight::METADATA),
+                    |document, word| document.field(word.as_str(), FieldWeight::KEYWORD),
+                )
             }),
     );
     if let Err(error) = index.commit() {
@@ -3999,6 +4004,7 @@ mod tests {
             resource_kind: "fixture".into(),
             resource_label: "Fixture".into(),
             action_label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::View,
@@ -4240,6 +4246,7 @@ mod tests {
             resource_kind: "fixture".into(),
             resource_label: "Fixture".into(),
             action_label: label.into(),
+            keywords: Vec::new(),
             description: None,
             operation_kind: tilo_actions::OperationKind::View,
             params: Vec::new(),
@@ -4417,6 +4424,45 @@ mod tests {
             let listed = if include_programmatic { 300 } else { 300 - 43 };
             assert_eq!(offset, listed, "every listed entry is browsed once");
         }
+    }
+
+    /// An app's action is found by the other words it publishes for
+    /// itself, as by its label: "mkdir" finds New folder, and a word no
+    /// action declares finds none.
+    #[test]
+    fn a_published_action_is_found_by_the_words_it_declares() {
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", "room"),
+            actions: Vec::new(),
+            live: true,
+        };
+        let mut folder = local_action("New folder", "new-folder");
+        folder.keywords = vec!["mkdir".into(), "make directory".into()];
+        let entries = vec![
+            (surface.clone(), local_action("Rename", "rename")),
+            (surface, folder),
+        ];
+        let index = index_actions(&entries, false);
+        let page = tilo_search::Page {
+            offset: 0,
+            limit: 8,
+        };
+        for query in ["mkdir", "make directory", "new folder"] {
+            let keys: Vec<u64> = index
+                .search(query, page)
+                .hits
+                .iter()
+                .map(|hit| hit.key)
+                .collect();
+            assert_eq!(
+                keys.first(),
+                Some(&1),
+                "{query} finds New folder first: {keys:?}"
+            );
+        }
+        assert!(index.search("rmdir", page).hits.is_empty());
     }
 
     #[test]

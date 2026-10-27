@@ -107,6 +107,7 @@ pub enum DisplayEffect {
     SetPrimaryDisplay { display: String },
     /// A display's scale. Staged until applied.
     #[effect(returns, row, idempotent)]
+    #[effect(keywords = "scaling, zoom, text size, dpi")]
     SetOutputScale { display: String, scale: String },
     /// Place a display beside another: `Right of …`, `Left of …`, `Above …`,
     /// `Below …`. Staged until applied.
@@ -149,9 +150,11 @@ pub enum DisplayEffect {
     MirrorDisplay { display: String, mirror: String },
     /// A display's resolution and refresh rate. Staged until applied.
     #[effect(returns, row, idempotent)]
+    #[effect(keywords = "resolution, refresh rate, hz, screen size")]
     SetDisplayMode { display: String, mode: String },
     /// A display's rotation. Staged until applied.
     #[effect(returns, row, idempotent)]
+    #[effect(keywords = "rotate screen, portrait, landscape, orientation")]
     RotateDisplay { display: String, rotation: String },
     /// High dynamic range on a display that offers it. Staged until applied.
     #[effect(returns, row, idempotent)]

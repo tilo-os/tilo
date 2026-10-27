@@ -599,7 +599,7 @@ impl BrowsingHistory {
     }
 
     /// Forget one page.
-    #[action]
+    #[action(keywords = "remove from history, delete page from history")]
     pub fn forget(&mut self, #[param("The page's address")] url: String) {
         self.visits.remove(&url);
         for (key, row) in &self.imported {
@@ -610,7 +610,7 @@ impl BrowsingHistory {
     }
 
     /// Forget every page.
-    #[action]
+    #[action(keywords = "clear browsing data, delete history, forget history, privacy")]
     pub fn clear_history(&mut self) {
         self.visits.clear();
         for key in self.imported.keys() {

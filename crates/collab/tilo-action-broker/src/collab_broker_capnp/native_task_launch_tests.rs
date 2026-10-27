@@ -395,6 +395,7 @@ fn retain_writer(f: &Fixture) -> String {
             resource_kind: descriptor.resource_kind,
             resource_label: descriptor.resource_label,
             action_label: descriptor.action_label,
+            keywords: Vec::new(),
             description: descriptor.description,
             operation_kind: descriptor.kind,
             params: descriptor.params,

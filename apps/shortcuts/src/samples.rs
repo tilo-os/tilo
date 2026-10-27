@@ -63,6 +63,7 @@ fn row(
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action_label.into(),
+            keywords: Vec::new(),
             description: None,
             locus: ExecutionLocus::default(),
             kind: OperationKind::Document,

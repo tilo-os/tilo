@@ -99,6 +99,7 @@ fn make_thumbnails() -> ActionDescriptor {
         resource_kind: "photos.library".into(),
         resource_label: "Library".into(),
         action_label: "Make thumbnails".into(),
+        keywords: Vec::new(),
         description: Some("Thumbnails of the selected photographs.".into()),
         locus: ExecutionLocus::ClientLocal,
         kind: OperationKind::Effect,

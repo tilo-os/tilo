@@ -358,6 +358,7 @@ fn row(
             resource_kind: kind.into(),
             resource_label: label.into(),
             action_label: action.replace('-', " "),
+            keywords: Vec::new(),
             description: None,
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: tilo_actions::OperationKind::Document,

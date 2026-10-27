@@ -82,3 +82,6 @@ pub fn launch_record(path: &std::path::Path) -> Option<ui::record::RecordId> {
     let arguments = [path.display().to_string()];
     CodeEditorShell::launch_record(&LaunchInput::new(&arguments, None))
 }
+
+#[cfg(test)]
+mod action_keywords_tests;
