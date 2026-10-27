@@ -9,6 +9,7 @@
 pub mod accessibility;
 pub mod continuity;
 pub mod prefs;
+pub mod shortcuts;
 
 /// The app whose settings they are, whose controls change them and under
 /// which a change is admitted.
@@ -51,6 +52,7 @@ sections!(
     prefs::DisplayPrefs,
     tilo_locale::Locale,
     continuity::ContinuityPrivacy,
+    shortcuts::ShortcutPrefs,
 );
 
 #[cfg(test)]
