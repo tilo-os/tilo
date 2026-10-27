@@ -373,13 +373,11 @@ impl ShellNetwork {
             return None;
         }
         let runtime = self.runtime_handle().ok()?;
-        let mut sites: Vec<url::Url> = by.cloned().into_iter().collect();
-        sites.extend(
-            self.hosted_sites
-                .community()
-                .filter(|community| Some(community) != by),
-        );
-        sites.into_iter().find_map(|entry| {
+        let community = self
+            .hosted_sites
+            .community()
+            .filter(|community| Some(community) != by);
+        by.cloned().into_iter().chain(community).find_map(|entry| {
             let site = runtime.block_on(hosted_sites::resolve_site(&entry)).ok()?;
             let app = site.app?;
             let http = HostHttp::new(&site.origin).ok()?;
