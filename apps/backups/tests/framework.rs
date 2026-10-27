@@ -88,7 +88,7 @@ fn backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy() {
     assert!(
         progress.iter().any(|update| matches!(
             update,
-            ui::tilo_actions::InvocationUpdate::Progress { phase, .. } if phase == "copying"
+            ui::tilo_actions::InvocationUpdate::Progress { phase, .. } if phase == "Copying"
         )),
         "{progress:?}"
     );
@@ -215,4 +215,38 @@ fn two_devices_changing_different_classes_keep_both() {
     let merged = left.state().unwrap().policy;
     assert_eq!((merged.daily, merged.hourly), (3, 48));
     assert_eq!(left.state().unwrap(), right.state().unwrap());
+}
+
+/// A backup is a job in the registry, with a body the person can read: what it
+/// was doing, and how it ended.
+#[test]
+fn a_backup_is_a_job_in_the_registry_with_its_outcome() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("documents");
+    let destination = temp.path().join("drive");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&destination).unwrap();
+    std::fs::write(source.join("letter.txt"), b"dear backup").unwrap();
+
+    let mut app = TestApp::<BackupsShell>::new().unwrap();
+    app.settings::<BackupLocation>()
+        .set(&BackupLocation {
+            source: Some(source),
+            destination: Some(destination),
+        })
+        .unwrap();
+    app.settle();
+    app.effect(&BackupsEffect::BackupNow).unwrap();
+    app.settle();
+
+    let job = ui::jobs::rows()
+        .into_iter()
+        .find(|job| job.title() == "Backing up")
+        .expect("the backup is a job in the registry");
+    assert!(
+        matches!(job.outcome(), Some(ui::jobs::Outcome::Done(_))),
+        "{:?}",
+        job.outcome()
+    );
+    assert!(job.end_line().contains("Backed up"), "{}", job.end_line());
 }
