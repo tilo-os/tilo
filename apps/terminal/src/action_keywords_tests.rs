@@ -14,7 +14,11 @@ fn people_find_terminal_actions_by_the_words_they_use() {
             .iter()
             .map(declaration_spec),
     );
-    actions.extend(<crate::resource::TerminalEffect>::specs());
+    actions.extend(
+        <crate::resource::TerminalEffect>::declarations()
+            .iter()
+            .map(|effect| effect.spec(<crate::resource::TerminalEffect>::OPERATION)),
+    );
     let mut missed = Vec::new();
     for (query, id) in [
         ("ctrl c", "interrupt"),

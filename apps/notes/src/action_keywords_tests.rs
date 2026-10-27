@@ -14,7 +14,11 @@ fn people_find_notes_actions_by_the_words_they_use() {
             .iter()
             .map(declaration_spec),
     );
-    actions.extend(<crate::effect::NotesEffect>::specs());
+    actions.extend(
+        <crate::effect::NotesEffect>::declarations()
+            .iter()
+            .map(|effect| effect.spec(<crate::effect::NotesEffect>::OPERATION)),
+    );
     let mut missed = Vec::new();
     for (query, id) in [
         ("new page", "new-note"),

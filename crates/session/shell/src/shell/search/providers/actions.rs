@@ -35,8 +35,7 @@ pub(crate) use quick_settings::QS_MUTE_ID;
 use quick_settings::{
     DISPLAY_BRIGHTNESS_STEP, LEVEL_STEPS, QS_DISPLAY_BRIGHTNESS_PREFIX, QS_MUTE_KEYWORDS,
     QS_TOGGLES, QUICK_SETTINGS_ACTIONS, apply_quick_settings_effect, display_brightness_connector,
-    focused_brightness, level_badge, level_percent, quick_settings_params, radio_is_on, stepped,
-    validated_percent,
+    level_badge, quick_settings_params, radio_is_on, stepped, validated_percent,
 };
 pub(crate) use quick_settings::{
     QS_AIRPLANE_ID, QS_BLUETOOTH_ID, QS_BRIGHTNESS_ID, QS_POWER_ID, QS_VOLUME_ID, QS_VPN_ID,

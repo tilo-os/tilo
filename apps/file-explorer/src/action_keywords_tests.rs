@@ -14,7 +14,11 @@ fn people_find_files_actions_by_the_words_they_use() {
             .iter()
             .map(declaration_spec),
     );
-    actions.extend(<crate::effects::FilesEffect>::specs());
+    actions.extend(
+        <crate::effects::FilesEffect>::declarations()
+            .iter()
+            .map(|effect| effect.spec(<crate::effects::FilesEffect>::OPERATION)),
+    );
     let mut missed = Vec::new();
     for (query, id) in [
         ("mkdir", "new-folder"),
