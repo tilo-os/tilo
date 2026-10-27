@@ -68,3 +68,40 @@ fn a_scroll_that_carries_on_mounts_rows_ahead_and_a_jump_only_what_it_shows() {
     let _ = lay_out(&mut list, 300.0);
     assert_eq!(list.mounted_range, 94..112);
 }
+
+#[test]
+fn a_changed_row_is_mounted_again_in_place_and_alone() {
+    let built = Rc::new(Cell::new(0_u32));
+    let counted = Rc::clone(&built);
+    let model = VecListModel::new((0..10_u64).collect(), |key| *key).unwrap();
+    let mut list = VirtualList::new(model, 20.0, move |_, _, key| {
+        counted.set(counted.get() + 1);
+        Box::new(ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(200.0);
+    let _ = lay_out(&mut list, 300.0);
+    let _ = crate::widget::Widget::take_structure_change(&mut list);
+    let before = built.get();
+
+    list.invalidate_rows([3]);
+    // The host syncs before it asks what changed.
+    let doc = automerge::AutoCommit::new();
+    crate::widget::Widget::sync(&mut list, &doc, &automerge::ROOT);
+    assert_eq!(
+        crate::widget::Widget::take_structure_change(&mut list),
+        crate::widget::StructureChange::Children,
+        "a row whose content changed is mounted again in place: the window keeps its tree"
+    );
+    let _ = lay_out(&mut list, 300.0);
+    assert_eq!(
+        built.get() - before,
+        1,
+        "only the changed row is built again"
+    );
+    assert!(list.mounted.iter().any(|row| row.key == 3));
+}

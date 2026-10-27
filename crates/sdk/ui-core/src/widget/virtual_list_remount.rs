@@ -71,6 +71,20 @@ impl<M: ListModel> VirtualList<M> {
         start..end.max(start)
     }
 
+    /// What the mounted rows near the box repaint, inside it: the rows away
+    /// from the box are clipped away.
+    pub(super) fn collect_row_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        let first = regions.len();
+        for row in self.mounted.get(self.placed_near()).unwrap_or_default() {
+            row.widget.collect_damage(regions);
+        }
+        if let Some(changed) = regions.get_mut(first..) {
+            for rect in changed {
+                *rect = rect.intersect(self.rect);
+            }
+        }
+    }
+
     /// The mounted rows standing where the list stands now, near its box.
     pub(super) fn placed_near(&self) -> Range<usize> {
         let near = self.mounted_near();
