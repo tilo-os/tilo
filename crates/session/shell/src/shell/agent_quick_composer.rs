@@ -73,10 +73,10 @@ pub(crate) struct ComposerRequest {
     pub about: Option<super::selection_agent::SelectionSeed>,
     /// The model the person picked for the run; the agent's own without.
     pub model: Option<runtime_collab::TaskRunModel>,
-    /// What the person decided the request is, when they decided it
-    /// themselves ([`AgentQuickComposer::decide_as_task`]): work to run,
-    /// or a question answered in place. `None` unless they overrode the
-    /// agent's own decision, which the adapter then still asks for.
+    /// What the person decided the request is, when they decided it in the
+    /// composer's mode picker rather than leaving it to the agent: work to
+    /// run, or something answered in place. `None` while the agent decides,
+    /// and always on a follow-up, which the run already shapes.
     pub as_task: Option<bool>,
 }
 
@@ -163,8 +163,6 @@ struct Submission {
     revision: u64,
     task: Option<ComposerTask>,
     stop: bool,
-    /// How the person decided this request was shaped, when they decided.
-    as_task: Option<bool>,
     applied: bool,
     busy: bool,
 }
@@ -814,7 +812,6 @@ impl AgentQuickComposer {
                 revision: self.draft.revision(),
                 task: task.clone(),
                 stop,
-                as_task,
                 applied: false,
                 busy: true,
             },
@@ -1481,6 +1478,60 @@ mod tests {
             heads,
             "private editor input never writes collaborative content"
         );
+    }
+
+    #[test]
+    fn the_person_can_rule_that_an_instruction_is_work_or_an_answer() {
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        let tide = owner("tide");
+        open(&mut composer, tide.clone());
+        edit(
+            &mut composer,
+            &mut doc,
+            "Rename every file to its invoice number",
+        );
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        // Nothing is picked until the person picks it: the agent decides.
+        let decided = submit(&mut composer, &mut doc);
+        assert_eq!(decided.as_task, None);
+        assert!(
+            decided.conversation.is_empty(),
+            "the agent's own decision says nothing extra"
+        );
+        composer.observe_receipt(ComposerReceipt {
+            owner: tide.clone(),
+            submission: decided.submission,
+            outcome: ComposerOutcome::Answered("Which folder?".into()),
+        });
+
+        edit(&mut composer, &mut doc, "Sum up this section");
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert!(
+            action(
+                &mut composer,
+                MODE_PICKER,
+                &ui::a11y::Action::SetValue(t("agent-quick-mode-task")),
+                &mut doc
+            ),
+            "the mode picker offers running it as a task"
+        );
+        let ruled = submit(&mut composer, &mut doc);
+        assert_eq!(ruled.as_task, Some(true));
+        assert_eq!(
+            ruled.conversation.last(),
+            Some(&ComposerTurn {
+                agent: false,
+                text: t("agent-quick-mode-task-line"),
+            }),
+            "a follow-up tells the agent what the person ruled"
+        );
+
+        // The ruling was for that request: the next one asks the agent again.
+        edit(&mut composer, &mut doc, "And how long is the section?");
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        let next = submit(&mut composer, &mut doc);
+        assert_eq!(next.as_task, None);
     }
 
     #[test]
