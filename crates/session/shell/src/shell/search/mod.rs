@@ -1649,7 +1649,9 @@ impl SearchRegistry {
                 } else {
                     0.0
                 };
-                if interactive && !direct && directly_matched(provider, &r, needle, intent + chosen)
+                if interactive
+                    && !direct
+                    && directly_matched(provider, &r, needle, top, intent + chosen)
                 {
                     direct = true;
                 }
@@ -1964,19 +1966,29 @@ fn loose_share() -> f32 {
 }
 
 /// Whether `row` matches `needle` directly, as a thing the person named:
-/// the whole query fits its title or another of its names (a keyword, a
-/// name in another language: [`SearchProvider::match_reason`]), however
-/// loosely (a typo, initials); every word of it shows in its title or
-/// subtitle; or the query names it some other way the merge already
-/// credits (`boost`: a service it searches, an open window it names, the
-/// row chosen for this text before). A row found only by what is inside it,
+/// an app, an action or a window, which are found only by their names
+/// (however loosely: a typo, initials, a word they are known by); a row its
+/// provider ranks in the upper half of its scale, which is how a provider
+/// says the query named it rather than something inside it; a row whose
+/// title or another of its names ([`SearchProvider::match_reason`]) the
+/// whole query fits, or whose title and subtitle show every word of it; or
+/// a row the query names some other way the merge already credits
+/// (`boost`: a service it searches, an open window it names, the row
+/// chosen for this text before). Content found only by what is inside it,
 /// or by a stray word of a longer sentence, is not.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "provider scores are small integers"
+)]
 fn directly_matched(
     provider: &dyn SearchProvider,
     row: &SearchResult,
     needle: &str,
+    top: i32,
     boost: f32,
 ) -> bool {
+    /// The share of its provider's scale from which a row was named.
+    const NAMED_SHARE: f32 = 0.5;
     use ui::search::FieldWeight;
     let named = |name: &str| system::lexical_strength(needle, &row.kind, name, None) > 0.0;
     let shown = |word: &str| {
@@ -1986,6 +1998,14 @@ fn directly_matched(
             })
     };
     boost > 0.0
+        || matches!(
+            row.kind,
+            ResourceKind::Application
+                | ResourceKind::Action
+                | ResourceKind::Tab
+                | ResourceKind::WindowGroup
+        )
+        || row.score as f32 / top.max(1) as f32 >= NAMED_SHARE
         || named(&row.title)
         || needle.split_whitespace().all(shown)
         || provider
