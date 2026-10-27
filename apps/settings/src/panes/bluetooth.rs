@@ -513,6 +513,11 @@ impl BluetoothArea {
         self.read.is_finished()
     }
 
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
+    }
+
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
     /// its first frame ([`crate::panes::LIVE_AREAS`]).
@@ -765,6 +770,13 @@ impl BluetoothModel {
             self.changes_seen = changes;
             self.read_again();
         }
+    }
+
+    /// Whether discovery reads the adapter on a timer: only while `BlueZ`
+    /// is not followed, since a followed `BlueZ` reports each device that
+    /// appears or goes.
+    fn discovery_timed(&self) -> bool {
+        self.scanning && self.reported_changes().is_none()
     }
 
     /// `BlueZ`'s change count, while it is followed.
@@ -1125,7 +1137,7 @@ impl PaneModel for BluetoothModel {
     fn poll(&mut self) -> bool {
         self.follow_adapter();
         self.read_reported_changes();
-        if self.scanning && ui::time::now() >= self.last_read + DISCOVERY_READ_INTERVAL {
+        if self.discovery_timed() && ui::time::now() >= self.last_read + DISCOVERY_READ_INTERVAL {
             self.last_read = ui::time::now();
             self.read_again();
         }
@@ -1137,7 +1149,7 @@ impl PaneModel for BluetoothModel {
     }
 
     fn next_wake(&self) -> Option<ui::time::Instant> {
-        self.scanning
+        self.discovery_timed()
             .then(|| self.last_read + DISCOVERY_READ_INTERVAL)
     }
 
@@ -1871,5 +1883,29 @@ mod tests {
         model.poll();
         assert!(model.reread.is_finished(), "a closed page reads nothing");
         assert_eq!(adapter_reads(), 3);
+    }
+
+    /// Discovery reads the adapter on a timer only while `BlueZ` is not
+    /// followed: a followed `BlueZ` reports each device that appears.
+    #[test]
+    fn discovery_wakes_the_window_only_while_bluez_is_not_followed() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let control = Arc::new(Followed::default());
+        let read = read_adapter_of(control.as_ref());
+        let mut model = BluetoothModel::with_read(cx, Arc::clone(&control) as _, read);
+        model.scanning = true;
+        assert!(
+            PaneModel::next_wake(&model).is_some(),
+            "discovery with nothing followed reads on a timer"
+        );
+        let following = PaneModel::follow(&mut model).expect("a shown pane follows BlueZ");
+        assert_eq!(
+            PaneModel::next_wake(&model),
+            None,
+            "a followed BlueZ wakes the window, not a timer"
+        );
+        drop(following);
+        assert!(PaneModel::next_wake(&model).is_some());
     }
 }

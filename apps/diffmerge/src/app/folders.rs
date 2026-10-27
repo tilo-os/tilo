@@ -19,14 +19,13 @@ impl DiffMergeApp {
     /// Compare two folders: with both paths, read them now; with none, ask
     /// for the left one and then the right one through the host's chooser.
     pub(super) fn answer_compare_folders(
-        &mut self,
         cx: &mut EffectCx<Session, Self>,
         left: Option<String>,
         right: Option<String>,
     ) -> EffectAnswer {
         match (left, right) {
-            (Some(left), Some(right)) => Ok(self.read_folders(cx, left, right)),
-            (None, None) => Ok(self.choose_folder(cx, None)),
+            (Some(left), Some(right)) => Ok(Self::read_folders(cx, left, right)),
+            (None, None) => Ok(Self::choose_folder(cx, None)),
             _ => Err("left and right folder paths must be supplied together".into()),
         }
     }
@@ -34,7 +33,6 @@ impl DiffMergeApp {
     /// Ask for one of the two folders, the left one unless `left` holds it
     /// already, and then for the other.
     fn choose_folder(
-        &mut self,
         cx: &mut EffectCx<Session, Self>,
         left: Option<std::path::PathBuf>,
     ) -> Effected {
@@ -52,23 +50,18 @@ impl DiffMergeApp {
                 return Err("choosing a folder was cancelled".into());
             };
             match left {
-                None => Ok(app.choose_folder(cx, Some(path))),
+                None => Ok(Self::choose_folder(cx, Some(path))),
                 Some(left) => {
                     let left = left.to_string_lossy().into_owned();
                     let right = path.to_string_lossy().into_owned();
-                    Ok(app.read_folders(cx, left, right))
+                    Ok(Self::read_folders(cx, left, right))
                 }
             }
         })
     }
 
     /// Read both trees off the UI thread and show the listing.
-    fn read_folders(
-        &mut self,
-        cx: &mut EffectCx<Session, Self>,
-        left: String,
-        right: String,
-    ) -> Effected {
+    fn read_folders(cx: &mut EffectCx<Session, Self>, left: String, right: String) -> Effected {
         cx.thread(
             move |_progress| crate::folder::compare(Path::new(&left), Path::new(&right)),
             |app: &mut Self, result, _| app.finish_folders(result),

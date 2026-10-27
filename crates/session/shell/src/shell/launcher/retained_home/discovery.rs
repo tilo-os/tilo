@@ -137,7 +137,8 @@ fn offered_access(
     deadline: Instant,
 ) -> Result<Option<SelectedAccess>, String> {
     let current_access =
-        super::super::native_app_open_access(owner, room, context.certificate(), app_id)?;
+        super::super::native_app_open_access(owner, room, context.certificate(), app_id)
+            .map_err(|error| error.to_string())?;
     let query = |access| wire::QuerySelectedSupport {
         schema: 1,
         request_id: request.request_id.clone(),
@@ -158,7 +159,8 @@ fn offered_access(
     context.authorize()?;
     super::verified_gui_package(package).map_err(|e| e.to_string())?;
     let rechecked =
-        super::super::native_app_open_access(owner, room, context.certificate(), app_id)?;
+        super::super::native_app_open_access(owner, room, context.certificate(), app_id)
+            .map_err(|error| error.to_string())?;
     Ok(supported_access(current_access, rechecked, read_only, edit))
 }
 

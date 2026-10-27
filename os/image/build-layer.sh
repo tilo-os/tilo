@@ -41,7 +41,7 @@
 # code.tilo.so/tilo/tilo:<board>-<commit>) and the generation of its series
 # (os/dev/board-generation.sh).
 set -euo pipefail
-. "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/lib.sh"
+. "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/build-lib.sh"
 cd "$repo_root"
 
 # The RFC 8032 test-vector key: public and non-production, accepted only for development and
@@ -101,10 +101,12 @@ guest_devices() {
 }
 
 # The frozen RPM snapshot, as os-image.sh resolves it: the published one for this package
-# set, else this run's image-rpms-ARCH, unsigned. Loaded only for an action that installs
-# from it (rpms_read=1); one that doesn't, such as the binaries' and the derived state's, is
-# given only its name and the clock it sets (RPMS_CREATED), read from the archive, rather than
-# gigabytes of packages to unpack into its storage.
+# set, else this run's image-rpms-ARCH, unsigned, dated by its newest package signature
+# (RPMS_CREATED, image-rpms-ARCH's epoch) rather than by when it was resolved, so a snapshot
+# resolved again to the same packages builds the same layers. Loaded only for an action that
+# installs from it (rpms_read=1); one that doesn't, such as the binaries' and the derived
+# state's, is given only its name and that clock rather than gigabytes of packages to unpack
+# into its storage.
 rpms_read=1
 rpms_snapshot() {
   local built=/target/publish/rpms/$arch status=0 id
@@ -115,34 +117,18 @@ rpms_snapshot() {
     1)
       [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
       [[ $(archive_digest "$built/image.oci.tar") == "$(cat "$built/digest")" ]] || die "$built/image.oci.tar is not the build"
+      RPMS_CREATED=$(cat "$built/epoch")
+      [[ $RPMS_CREATED =~ ^[1-9][0-9]*$ ]] || die "image-rpms-$arch left no clock in $built/epoch"
       RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag)-$arch
       if [[ $rpms_read == 1 ]]; then
         id=$(podman pull -q "oci-archive:$built/image.oci.tar")
         podman tag "$id" "$RPMS_REF"
-      else
-        RPMS_CREATED=$(archive_created "$built/image.oci.tar")
       fi
       export TILO_RPMS_TRUST=unsigned
       printf 'no published RPM snapshot for this package set: installing from image-rpms-%s, unsigned\n' "$arch" ;;
     *) die 'could not ask the registry for the published RPM snapshot' ;;
   esac
   export RPMS_REF
-}
-
-# The creation time of the single image in the OCI archive $1, as seconds (what
-# os/dev/image-epoch.sh reads of a loaded image: its configuration's `created`).
-archive_created() {
-  python3 -I - "$1" <<'PY'
-import datetime, json, sys, tarfile
-with tarfile.open(sys.argv[1]) as t:
-    names = {m.name.removeprefix("./"): m for m in t}
-    blob = lambda d: json.load(t.extractfile(names["blobs/sha256/" + d.split(":", 1)[1]]))
-    doc = json.load(t.extractfile(names["index.json"]))
-    while "config" not in doc:
-        doc = blob(doc["manifests"][0]["digest"])
-    created = blob(doc["config"]["digest"])["created"]
-print(int(datetime.datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()))
-PY
 }
 
 # Whether layer NAME's piece, given the stages it is given as images, installs from the RPM
@@ -256,12 +242,33 @@ PY
   export SOURCE_DATE_EPOCH=$epoch
 }
 
+# Date every file NAME's Containerfile reads from the tree (given GIVEN) by the build's clock.
+# A COPY keeps a file's time where it is older than the clock, and the times t's checkout gives
+# a file differ from one checkout to the next, so a copied file would make its layer differ
+# between builds of the same tree.
+pin_source_times() {
+  local globs
+  mapfile -t globs < <(python3 -I tools/ci/os/pieces.py inputs "$1" --given "$2")
+  python3 -I - "$SOURCE_DATE_EPOCH" "${globs[@]}" <<'PY'
+import glob, os, sys
+clock = int(sys.argv[1])
+for pattern in sys.argv[2:]:
+    for path in glob.glob(pattern, recursive=True):
+        os.utime(path, (clock, clock), follow_symlinks=False)
+        parent = os.path.dirname(path)
+        while parent:
+            os.utime(parent, (clock, clock))
+            parent = os.path.dirname(parent)
+PY
+}
+
 # Build TARGET of NAME's Containerfile through build-image.sh, given GIVEN (stage names) as
 # images; tagged $image.
 build_target() {
   local name=$1 target=$2 given=$3 file
   file=$scratch/$name.Containerfile
   python3 -I tools/ci/os/pieces.py containerfile "$name" --given "$given" > "$file"
+  pin_source_times "$name" "$given"
   TILO_IMAGE=$image TILO_LAYER_TARGET=$target TILO_CONTAINERFILE=$file \
     TILO_LAYER_ARGS="${layer_args[*]}" bash os/dev/build-image.sh
 }

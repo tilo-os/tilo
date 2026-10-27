@@ -53,6 +53,13 @@ identity, `{"sys_vendor": ..., "product_name": ...}`, as `/sys/class/dmi/id`
 reports it. It is only for a board with `"devicetree": null` and is refused
 beside a device tree, which already names the model; see the handheld
 section.
+The optional `hardening_defaults` (version 2) lists the hardening actions a
+board accepts by default, as `{"action": ..., "driver": ...}` pairs. It is
+only for a board whose kernel cannot deliver the feature an action removes,
+which is why the driver that would have to be built in is named beside it:
+a board relaxing hardening without the feature behind it would be a hole
+opened for nothing. The accepted actions and the options each may name are in
+`HARDENING_ACTIONS` (`os/dev/hardware_profile.py`); see the handset section.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -531,3 +538,54 @@ keyboard, and that the on-screen keyboard appears when a text field takes
 focus. A board whose DMI strings differ from those in its profile silently
 gets none of its model-bound settings, so read `/sys/class/dmi/id/product_name`
 on the machine and correct the definition rather than widening it.
+
+## Handsets
+
+A handset is the other kind of reduced personal computer: it has a device tree
+rather than firmware-described devices, it is panel-first (there is no external
+monitor), and it is a personal computer rather than a host, so it suspends.
+`pinephone-pro` describes the PinePhone Pro (Rockchip RK3399S); its kernel must
+supply `dtb/rockchip/rk3399-pinephone-pro.dtb`.
+
+The profile is data only. The shared aarch64 kernel already builds in the MMC
+host, the display controller (`rockchipdrm`, `dw-mipi-dsi`, `analogix-dp`), the
+panel backlight and the I2C-HID keyboard path this board needs; the profile's
+`boot_modules` names the drivers dracut has to reach before the encrypted root
+is open, and the parts of the audio card and camera the kernel has not built in
+are what `hardening_defaults` is for.
+
+Both a camera and a microphone are inside this board's one audio/camera card,
+and both are kernel options (`CONFIG_MEDIA_SUPPORT`, `CONFIG_SND`) that the
+shared image builds in for other boards. So instead of every release step
+carrying a list of handset names, the definition says which hardening actions
+`tilo harden` may accept by default here and which option each of those relaxes:
+
+```json
+"hardening_defaults": [
+  {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"},
+  {"action": "microphone", "driver": "CONFIG_SND"}
+]
+```
+
+`hardware_profile.py` refuses an action it does not know, a driver that is not
+a kernel option, a driver its action does not cover (so a board cannot relax the
+camera hardening because of a sound card), and the same action twice. The
+declaration is data, not a branch: nothing in the image builder names a board
+here.
+
+### What a handset image cannot prove
+
+Everything above is checked at build time, and a correct profile is not a boot.
+Installing on the phone itself needs a boot chain the image does not own:
+PinePhone Pro wakes its mask ROM with a U-Boot built for that board and written
+to the SD card (or the eMMC) in front of the ESP — the Orange Pi's
+`idbloader`/`u-boot.itb` path above is the same idea for a different SoC and is
+not reusable here. Until such a second-stage loader is built and sealed by the
+same release step, the profile is declarative: it describes the board, it does
+not make this image flashable onto one.
+
+What a device run has to establish, once a loader exists: the panel upright from
+the firmware handle-off, the greeter accepting the touchscreen, the on-screen
+keyboard appearing for a text field, suspend and resume from the power button,
+and the modem and audio paths (which need `pd-mapper`, `rmtfs`,
+`ModemManager` and `callaudiod`, none of which the image installs today).

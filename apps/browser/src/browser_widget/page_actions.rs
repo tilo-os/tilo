@@ -40,7 +40,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         let (doc, root) = synced(&mut widget);
         (engine, widget, doc, root)
     }
-    fn page_action(widget: &BrowserWidget, doc: &AutoCommit, id: &str) -> ActionSpec {
+    fn page_action(widget: &BrowserWidget, id: &str) -> ActionSpec {
         widget
             .published()
             .children
@@ -60,7 +60,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         id: &str,
         args: &serde_json::Value,
     ) -> Result<ui::tilo_actions::InvocationId, String> {
-        let action = page_action(widget, doc, id);
+        let action = page_action(widget, id);
         let encoded = action
             .build_json(args.as_object().ok_or("arguments are an object")?)
             .map_err(|error| error.to_string())?;
@@ -75,8 +75,8 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         }
     }
     fn page_action_contract(id: &str) -> ui::tilo_actions::ActionContract {
-        let (_, widget, doc, _) = page_on("https://shop.test/");
-        page_action(&widget, &doc, id).contract
+        let (_, widget, _, _) = page_on("https://shop.test/");
+        page_action(&widget, id).contract
     }
     fn page_requests(engine: &TestEngine) -> Vec<PageRequest> {
         engine
@@ -91,7 +91,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
 
     // Phase `page_actions_publish_programmatic_write_contracts`.
     {
-        let (_, widget, doc, _) = page_on("https://shop.test/");
+        let (_, widget, _, _) = page_on("https://shop.test/");
         for id in [
             "read-page",
             "click-page",
@@ -108,7 +108,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             "read-page-network",
             "capture-page",
         ] {
-            let action = page_action(&widget, &doc, id);
+            let action = page_action(&widget, id);
             assert!(action.contract.validate_declaration().is_empty(), "{id}");
             assert!(action.contract.availability.is_available(), "{id}");
             assert!(!action.contract.reaches_people(), "{id}");
@@ -130,9 +130,9 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
                 ui::tilo_actions::ExecutionMode::Background { cancellable: false }
             );
         }
-        let (_, blank, doc, _) = page_on("about:blank");
+        let (_, blank, _, _) = page_on("about:blank");
         assert!(
-            !page_action(&blank, &doc, "read-page")
+            !page_action(&blank, "read-page")
                 .contract
                 .availability
                 .is_available()
@@ -187,7 +187,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         );
         assert!(widget.reader_view);
         assert_eq!(
-            page_action(&widget, &doc, "reader-view").label,
+            page_action(&widget, "reader-view").label,
             "Close reader view"
         );
         toggle(&mut widget, &mut doc);
@@ -204,9 +204,9 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             })
             .unwrap();
         assert!(!widget.reader_view, "the next page opens as itself");
-        let (_, blank, doc, _) = page_on("about:blank");
+        let (_, blank, _, _) = page_on("about:blank");
         assert!(
-            !page_action(&blank, &doc, "reader-view")
+            !page_action(&blank, "reader-view")
                 .contract
                 .availability
                 .is_available()
@@ -371,7 +371,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
     // Phase `agent_reads_and_consented_writes_reach_the_engine_typed`.
     {
         let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
-        let secret = page_action(&widget, &doc, "fill-page-secret");
+        let secret = page_action(&widget, "fill-page-secret");
         assert!(
             secret.params().iter().any(
                 |param| param.name == "text" && param.ty == ui::tilo_actions::ParamType::Secret
@@ -495,7 +495,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
     // carries it.
     {
         let (engine, mut widget, mut doc, root) = page_on("https://letters.test/scan");
-        let content = tilo_content::ContentStore::memory();
+        let content = ui::content::ContentStore::memory();
         widget.attach_content(content.clone());
         engine.set_page_capture(SCANNED_LETTER_PNG);
 
@@ -529,10 +529,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         assert_eq!(output.resources.len(), 1);
         let hash = ui::tilo_actions::content_hash(&output.resources[0])
             .expect("a picture is content the answer names");
-        assert_eq!(
-            content.read(&hash).as_deref(),
-            Some(&SCANNED_LETTER_PNG[..])
-        );
+        assert_eq!(content.read(hash).as_deref(), Some(SCANNED_LETTER_PNG));
         let value = output.value.expect("the answer says what it pictured");
         assert_eq!(value["provenance"], "web-content");
         assert_eq!(value["url"], "https://letters.test/scan");

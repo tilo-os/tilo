@@ -5,6 +5,7 @@
 
 pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
+mod opened_records;
 
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
@@ -20,7 +21,7 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
 mod nearby_transfer_tests;
 pub(crate) mod room_governance;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -326,6 +327,16 @@ pub enum NetCmd {
     /// the message is decided again when it comes back.
     NativeReplay {
         ws: WorkspaceId,
+    },
+    /// Ask `ws`'s hosts for the on-demand record on `channel`
+    /// (`neighbour_wire::record_sync`: an on-demand record, or a part of a
+    /// chain behind its head), which they replay a joining device only once
+    /// it asks: a local app reads it. Its history arrives as the room's
+    /// other documents do, and its changes keep arriving; a host session
+    /// that starts later is asked too.
+    OpenRecord {
+        ws: WorkspaceId,
+        channel: [u8; 32],
     },
     /// Publish one canonical live frame (presence, previews) on `ws`'s
     /// workspace hosts' live planes, where browsers and agents meet this
@@ -1195,6 +1206,9 @@ struct ActorState {
     peers: HashMap<EndpointId, EndpointAddr>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    /// The on-demand records this device asked its rooms' hosts for
+    /// ([`NetCmd::OpenRecord`]), by room.
+    opened_records: HashMap<WorkspaceId, BTreeSet<[u8; 32]>>,
     action_broker: Option<(
         crate::shell::peer_actions::PeerActionQueue,
         uuid::Uuid,
@@ -1593,6 +1607,7 @@ impl ActorState {
             }
             Some(NetCmd::LeaveWorkspace { ws }) => {
                 self.native_routes.remove(ws);
+                self.opened_records.remove(&ws);
                 let subscriber = self.subscribers.get(&ws).cloned();
                 let leaving = self
                     .peers_seen
@@ -1677,6 +1692,17 @@ impl ActorState {
                     && let Err(error) = session.resubscribe()
                 {
                     tracing::debug!(ws, %error, "joined room replay not asked: not connected");
+                }
+            }
+            Some(NetCmd::OpenRecord { ws, channel }) => {
+                if self.opened_records.entry(ws).or_default().insert(channel) {
+                    for ((session_ws, _), runtime) in &self.host_sessions {
+                        if *session_ws == ws
+                            && let Err(error) = runtime.session.open_record(channel)
+                        {
+                            tracing::debug!(ws, %error, "the room's host was not asked for a record");
+                        }
+                    }
                 }
             }
             Some(NetCmd::PublishLive { ws, frame }) => {
@@ -3233,6 +3259,7 @@ impl ActorState {
                 if let Err(error) = session.live_join() {
                     tracing::warn!(ws, %error, "could not join the workspace host's live plane");
                 }
+                self.reopen_records(ws, &session);
                 let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
                 let pump = spawn_host_pump(
                     ws,
@@ -4163,6 +4190,7 @@ async fn run(
         peers: HashMap::new(),
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
+        opened_records: HashMap::new(),
         action_broker: None,
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
@@ -5078,6 +5106,7 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests {
+    mod open_record_tests;
     use super::*;
 
     #[tokio::test]

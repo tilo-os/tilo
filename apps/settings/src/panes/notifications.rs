@@ -267,6 +267,7 @@ impl NotificationsArea {
         sample: bool,
         per_app: &BTreeMap<String, AppNotificationRule>,
     ) -> Vec<InstalledNotificationApp> {
+        crate::device_read::off_ui_thread();
         if sample {
             sample_apps()
         } else {
@@ -288,6 +289,11 @@ impl NotificationsArea {
     /// Whether the read [`Self::start_read`] started has ended.
     pub(crate) fn read_finished(&self) -> bool {
         self.read.is_finished()
+    }
+
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,

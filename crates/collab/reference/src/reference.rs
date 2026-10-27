@@ -151,17 +151,37 @@ impl ResourceRef {
         app: &str,
         record: Option<&str>,
     ) -> tilo_actions::remote::RemoteActionTarget {
-        let open = tilo_actions::remote::APPLICATION_OPEN_ACTION;
+        self.action_target(
+            room,
+            app,
+            record,
+            tilo_actions::remote::APPLICATION_OPEN_ACTION,
+        )
+    }
+
+    /// The published `action` of this reference's resource in `app`, in
+    /// workspace `room`, on `record` (`None`: the app's own record of the
+    /// workspace): the target an app calls another app's action on, which
+    /// the host delivers to the app showing the record, launching it first
+    /// when none does.
+    #[must_use]
+    pub fn action_target(
+        &self,
+        room: &str,
+        app: &str,
+        record: Option<&str>,
+        action: &str,
+    ) -> tilo_actions::remote::RemoteActionTarget {
         match record {
             Some(record) => tilo_actions::remote::application_record_target(
                 room,
                 app,
                 record,
                 self.id.clone(),
-                open,
+                action,
             ),
             None => {
-                tilo_actions::remote::application_action_target(room, app, self.id.clone(), open)
+                tilo_actions::remote::application_action_target(room, app, self.id.clone(), action)
             }
         }
     }

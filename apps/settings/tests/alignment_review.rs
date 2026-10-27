@@ -255,10 +255,6 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
 fn region_form_and_large_text_breakpoint_stay_fluid() {
     // Case `region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow`.
     {

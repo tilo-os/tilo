@@ -1,0 +1,3 @@
+[ratchets.closure_control]
+"apps/browser/src/browser_widget.rs" = 1
+"apps/browser/src/settings.rs" = 3

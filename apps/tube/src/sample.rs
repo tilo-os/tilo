@@ -71,13 +71,6 @@ fn channel(id: &str, name: &str, handle: &str, subs: u64, verified: bool, desc: 
     }
 }
 
-/// Build the full offline catalogue.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one block of fixture literals per bundled channel/video/comment; splitting it \
-              would only relocate the sample data, not shrink what a reader must trace for \
-              one entry"
-)]
 /// The caption tracks the bundled sample videos offer, so a capture or a test
 /// can show the caption control with something to choose. A live video's
 /// tracks come from the source (`api::fetch_captions`).
@@ -146,8 +139,9 @@ pub fn caption_cues(id: &str, language: &str) -> Option<Vec<crate::captions::Cap
     )
 }
 
-pub fn model() -> TubeModel {
-    let chans = vec![
+/// The sample channels, in the order the sample videos are attributed to them.
+fn channels() -> [Channel; 6] {
+    [
         channel(
             "ch_blender",
             "Blender Foundation",
@@ -196,414 +190,485 @@ pub fn model() -> TubeModel {
             false,
             "24/7 beats to relax / study / debug FUSE drivers to.",
         ),
-    ];
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "indexes a fixed, hand-authored literal list a few lines above by a \
-                  literal position at each call site; an out-of-range index here is a \
-                  sample-data authoring bug that should fail loudly during development, \
-                  not a runtime risk from untrusted input"
-    )]
-    let c = |i: usize| &chans[i];
+    ]
+}
 
-    let videos = vec![
-        Video {
-            views: 842_000,
-            published: "3 days ago".into(),
-            duration: 1620,
-            category: "Programming".into(),
-            description: "A deep dive into porting a C compositor to Rust with smithay. We cover the wins (memory safety, fearless concurrency), the pain (lifetimes in the event loop) and real frame-time numbers.\n\nChapters:\n0:00 Intro\n2:30 Why Rust\n9:10 The render loop\n18:40 Benchmarks\n24:00 Sponsor\n26:10 Outro".into(),
-            likes: 48_000,
-            sponsor: vec![
-                seg(Category::Intro, 0.0, 18.0, 412),
-                seg(Category::Sponsor, 1440.0, 1570.0, 1893),
-                seg(Category::Interaction, 540.0, 552.0, 233),
-                seg(Category::Outro, 1565.0, 1620.0, 188),
-            ],
-            comments: vec![
-                Comment {
-                    pinned: true,
-                    hearted: true,
-                    replies: 41,
-                    ..comment(
-                        "Low Level Learning",
-                        "LL",
-                        "Pinned: benchmark methodology + the full flamegraphs are linked in the description. Ask away!",
-                        2_300,
-                        "3 days ago",
-                    )
-                },
-                comment(
-                    "ferris_fan",
-                    "FF",
-                    "The borrow checker is the real compositor.",
-                    5_400,
+/// The bundled sample video `vid_rust_async`.
+fn rust_async(channel: &Channel) -> Video {
+    Video {
+        views: 842_000,
+        published: "3 days ago".into(),
+        duration: 1620,
+        category: "Programming".into(),
+        description: "A deep dive into porting a C compositor to Rust with smithay. We cover the wins (memory safety, fearless concurrency), the pain (lifetimes in the event loop) and real frame-time numbers.\n\nChapters:\n0:00 Intro\n2:30 Why Rust\n9:10 The render loop\n18:40 Benchmarks\n24:00 Sponsor\n26:10 Outro".into(),
+        likes: 48_000,
+        sponsor: vec![
+            seg(Category::Intro, 0.0, 18.0, 412),
+            seg(Category::Sponsor, 1440.0, 1570.0, 1893),
+            seg(Category::Interaction, 540.0, 552.0, 233),
+            seg(Category::Outro, 1565.0, 1620.0, 188),
+        ],
+        comments: vec![
+            Comment {
+                pinned: true,
+                hearted: true,
+                replies: 41,
+                ..comment(
+                    "Low Level Learning",
+                    "LL",
+                    "Pinned: benchmark methodology + the full flamegraphs are linked in the description. Ask away!",
+                    2_300,
                     "3 days ago",
-                ),
-                Comment {
-                    replies: 7,
-                    ..comment(
-                        "anna.dev",
-                        "AD",
-                        "Finally a channel that shows the FAILED attempts too. Subscribed.",
-                        1_120,
-                        "2 days ago",
-                    )
-                },
-                comment(
-                    "oxidize_me",
-                    "OM",
-                    "24:00 sponsor segment is already on SponsorBlock, this client skipped it automatically. Beautiful.",
-                    880,
-                    "1 day ago",
-                ),
-            ],
-            ..video(
-                "vid_rust_async",
-                "I rewrote my window compositor in Rust and it changed EVERYTHING!!!",
-                Some("Rewriting a Wayland compositor in Rust: results and benchmarks"),
-                c(1),
-            )
-        },
-        Video {
-            views: 6_400_000,
-            published: "1 week ago".into(),
-            duration: 700,
-            category: "Science".into(),
-            description: "Dark matter outweighs everything we can see, five to one. What if the answer was hiding in tiny black holes formed in the first instant of the universe? An animated tour of the primordial black hole hypothesis.".into(),
-            likes: 312_000,
-            sponsor: vec![
-                seg(Category::Sponsor, 410.0, 498.0, 4021),
-                seg(Category::SelfPromo, 560.0, 600.0, 1204),
-                seg(Category::Outro, 585.0, 612.0, 902),
-            ],
-            comments: vec![
-                Comment {
-                    pinned: true,
-                    hearted: true,
-                    replies: 120,
-                    ..comment(
-                        "Kurzgesagt",
-                        "KG",
-                        "Sources & further reading are in the description. This one took 1,400 hours to animate.",
-                        41_000,
-                        "1 week ago",
-                    )
-                },
-                comment(
-                    "astro_amy",
-                    "AA",
-                    "optimistic nihilism is exactly the energy I need on a Monday",
-                    12_300,
-                    "6 days ago",
-                ),
-                comment(
-                    "void_walker",
-                    "VW",
-                    "the duck at 4:32 again. always the duck.",
-                    8_900,
-                    "5 days ago",
-                ),
-            ],
-            ..video(
-                "vid_black_holes",
-                "What If Black Holes ARE The Dark Matter? (You Won't BELIEVE #3)",
-                Some("Could primordial black holes account for dark matter?"),
-                c(2),
-            )
-        },
-        Video {
-            views: 3_100_000,
-            published: "2 months ago".into(),
-            duration: 1500,
-            category: "Tutorial".into(),
-            description: "The legendary beginner Blender tutorial, updated for 4.2. By the end you'll have modelled, textured and rendered a donut — and learned the whole pipeline doing it.".into(),
-            likes: 96_000,
-            sponsor: vec![
-                seg(Category::Intro, 0.0, 25.0, 600),
-                seg(Category::Interaction, 120.0, 134.0, 350),
-            ],
-            comments: vec![
-                comment(
-                    "new_to_3d",
-                    "NT",
-                    "Came for the donut, stayed for the existential dread of UV unwrapping.",
-                    4_100,
-                    "1 month ago",
-                ),
-                comment(
-                    "blendr",
-                    "BL",
-                    "the coffee cup is the real final boss",
-                    2_050,
-                    "3 weeks ago",
-                ),
-            ],
-            ..video(
-                "vid_donut",
-                "The Donut Tutorial That Started It All (Blender 4.2)",
-                None,
-                c(0),
-            )
-        },
-        Video {
-            views: 1_240_000,
-            published: "5 days ago".into(),
-            duration: 900,
-            category: "Privacy".into(),
-            description: "Not all end-to-end encryption is equal. We compare Signal, Matrix, iMessage and the rest on metadata exposure, threat model and who can subpoena what. With a clear recommendation table at the end.".into(),
-            likes: 72_000,
-            sponsor: vec![
-                seg(Category::Sponsor, 95.0, 180.0, 2210),
-                seg(Category::SelfPromo, 760.0, 810.0, 640),
-                seg(Category::Filler, 300.0, 360.0, 120),
-            ],
-            comments: vec![
-                Comment {
-                    pinned: true,
-                    replies: 33,
-                    ..comment(
-                        "Privacy Guides",
-                        "PG",
-                        "We are a non-profit. No segment of this video is paid — the 'sponsor' tag is our own recommendations, flagged honestly.",
-                        9_800,
-                        "5 days ago",
-                    )
-                },
-                comment(
-                    "threat_model",
-                    "TM",
-                    "metadata is the message. great breakdown.",
-                    3_300,
-                    "4 days ago",
-                ),
-            ],
-            ..video(
-                "vid_privacy",
-                "STOP Using These Apps RIGHT NOW (they're SPYING on you!!)",
-                Some("Which messaging apps actually protect your metadata — a 2026 comparison"),
-                c(3),
-            )
-        },
-        Video {
-            views: 2_800_000,
-            published: "3 weeks ago".into(),
-            duration: 1100,
-            category: "Music".into(),
-            description: "The vocoder, the talkbox, and the EHX in between. A history of how two French robots made the most human-sounding machines in pop.".into(),
-            likes: 145_000,
-            sponsor: vec![
-                seg(Category::Sponsor, 720.0, 815.0, 1502),
-                seg(Category::MusicOfftopic, 0.0, 42.0, 880),
-                seg(Category::Outro, 980.0, 1024.0, 410),
-            ],
-            comments: vec![
-                comment(
-                    "groove_is",
-                    "GI",
-                    "harder. better. faster. *vocoder intensifies*",
-                    6_700,
-                    "2 weeks ago",
-                ),
-                comment(
-                    "eternal_synth",
-                    "ES",
-                    "the MusicOfftopic tag skipping straight to the song is god-tier",
-                    3_100,
-                    "1 week ago",
-                ),
-            ],
-            ..video(
-                "vid_synth",
-                "How Daft Punk Engineered The Perfect Robot Voice",
-                None,
-                c(4),
-            )
-        },
-        Video {
-            views: 12_400,
-            live: true,
-            duration: 7200,
-            category: "Music".into(),
-            description: "A 24/7 livestream of mellow beats. No sponsor, no intro, no outro — just the girl, her desk, and the rain.".into(),
-            likes: 980_000,
-            comments: vec![
-                comment(
-                    "midnight_dev",
-                    "MD",
-                    "anyone else here at 3am shipping a feature nobody asked for",
-                    22_000,
-                    "now",
-                ),
-                comment(
-                    "studious",
-                    "ST",
-                    "the cat moved. THE CAT MOVED.",
-                    14_500,
-                    "2 hours ago",
-                ),
-            ],
-            ..video(
-                "vid_lofi",
-                "lofi hip hop radio - beats to relax/study to",
-                None,
-                c(5),
-            )
-        },
-        Video {
-            views: 534_000,
-            published: "4 days ago".into(),
-            duration: 480,
-            category: "Programming".into(),
-            description: "Warps, lanes, occupancy and why a branch can cost you 32x. A from-scratch mental model of how a modern GPU schedules work.".into(),
-            likes: 29_000,
-            sponsor: vec![
-                seg(Category::Intro, 0.0, 14.0, 210),
-                seg(Category::Sponsor, 300.0, 372.0, 940),
-            ],
-            comments: vec![comment(
-                "simd_enjoyer",
-                "SE",
-                "occupancy is the new cache miss",
-                1_900,
+                )
+            },
+            comment(
+                "ferris_fan",
+                "FF",
+                "The borrow checker is the real compositor.",
+                5_400,
                 "3 days ago",
-            )],
-            ..video(
-                "vid_gpu",
-                "Why Your GPU Is Actually A Tiny Supercomputer",
-                Some("An introduction to GPU architecture and SIMT execution"),
-                c(1),
-            )
-        },
-        Video {
-            views: 9_100_000,
-            published: "1 month ago".into(),
-            duration: 700,
-            category: "Science".into(),
-            description: "New observations are quietly rewriting the textbook. From the Kuiper belt to a possible ninth planet, here's what changed.".into(),
-            likes: 420_000,
-            sponsor: vec![
-                seg(Category::Sponsor, 480.0, 560.0, 3300),
-                seg(Category::Preview, 0.0, 30.0, 700),
-            ],
-            comments: vec![comment(
-                "planet9",
-                "P9",
-                "it's always 'a possible ninth planet' and never an invitation to dinner",
-                18_000,
-                "3 weeks ago",
-            )],
-            ..video(
-                "vid_solar",
-                "We Were Wrong About The Solar System",
-                None,
-                c(2),
-            )
-        },
-        Video {
-            views: 188_000,
-            published: "6 days ago".into(),
-            duration: 720,
-            category: "Programming".into(),
-            description: "Projection vs hydration, content addressing with blake3, and why your open() doesn't mean the bytes are local. A tour of a real P2P FUSE design.".into(),
-            likes: 14_000,
-            sponsor: vec![
-                seg(Category::Sponsor, 600.0, 690.0, 510),
-                seg(Category::Interaction, 200.0, 210.0, 88),
-            ],
-            comments: vec![comment(
-                "mountpoint",
-                "MP",
-                "10s metadata TTL is a bold choice and I respect it",
-                920,
-                "5 days ago",
-            )],
-            ..video(
-                "vid_fuse",
-                "Building a P2P Filesystem in 100 Lines (sort of)",
-                Some("Writing a FUSE driver with content-addressed P2P storage"),
-                c(1),
-            )
-        },
-        Video {
-            views: 5_200_000,
-            published: "2 weeks ago".into(),
-            duration: 360,
-            category: "Science".into(),
-            description: "Magenta isn't on the rainbow. Your brain invents it. A short, beautiful detour into how colour perception actually works.".into(),
-            likes: 260_000,
-            sponsor: vec![seg(Category::Sponsor, 240.0, 300.0, 1600)],
-            comments: vec![comment(
-                "rgb_to_xyz",
-                "RX",
-                "magenta is a vibe your visual cortex made up and honestly same",
-                7_700,
-                "1 week ago",
-            )],
-            ..video(
-                "vid_color",
-                "The Color That Doesn't Exist",
-                None,
-                c(2),
-            )
-        },
-        Video {
-            views: 1_100_000,
-            published: "1 week ago".into(),
-            duration: 800,
-            category: "Music".into(),
-            description: "Why a stadium gig sounds like mud — and the delay towers, line arrays and psychoacoustics that fix it.".into(),
-            likes: 58_000,
-            sponsor: vec![
-                seg(Category::Sponsor, 540.0, 620.0, 720),
-                seg(Category::Outro, 700.0, 740.0, 230),
-            ],
-            comments: vec![comment(
-                "front_of_house",
-                "FH",
-                "delay towers are the unsung heroes of every festival",
-                2_400,
-                "5 days ago",
-            )],
-            ..video(
-                "vid_amp",
-                "The Hidden Genius of Stadium Sound Design",
-                None,
-                c(4),
-            )
-        },
-        Video {
-            views: 670_000,
-            published: "2 days ago".into(),
-            duration: 960,
-            category: "Tech".into(),
-            description: "From i3 to the new spatial 2D-cluster compositors. Ergonomics, keybinds, multi-monitor and which one actually survives a workday.".into(),
-            likes: 33_000,
-            sponsor: vec![
-                seg(Category::Intro, 0.0, 20.0, 300),
-                seg(Category::Sponsor, 410.0, 500.0, 1100),
-                seg(Category::SelfPromo, 880.0, 920.0, 260),
-            ],
-            comments: vec![comment(
-                "tile_or_die",
-                "TD",
-                "2D clusters on an infinite canvas is the first new idea in WMs in a decade",
-                4_900,
+            ),
+            Comment {
+                replies: 7,
+                ..comment(
+                    "anna.dev",
+                    "AD",
+                    "Finally a channel that shows the FAILED attempts too. Subscribed.",
+                    1_120,
+                    "2 days ago",
+                )
+            },
+            comment(
+                "oxidize_me",
+                "OM",
+                "24:00 sponsor segment is already on SponsorBlock, this client skipped it automatically. Beautiful.",
+                880,
                 "1 day ago",
-            )],
-            ..video(
-                "vid_compose",
-                "I Tried Every Tiling Window Manager So You Don't Have To",
-                Some("A practical comparison of tiling window managers in 2026"),
-                c(3),
-            )
-        },
-    ];
+            ),
+        ],
+        ..video(
+            "vid_rust_async",
+            "I rewrote my window compositor in Rust and it changed EVERYTHING!!!",
+            Some("Rewriting a Wayland compositor in Rust: results and benchmarks"),
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_black_holes`.
+fn black_holes(channel: &Channel) -> Video {
+    Video {
+        views: 6_400_000,
+        published: "1 week ago".into(),
+        duration: 700,
+        category: "Science".into(),
+        description: "Dark matter outweighs everything we can see, five to one. What if the answer was hiding in tiny black holes formed in the first instant of the universe? An animated tour of the primordial black hole hypothesis.".into(),
+        likes: 312_000,
+        sponsor: vec![
+            seg(Category::Sponsor, 410.0, 498.0, 4021),
+            seg(Category::SelfPromo, 560.0, 600.0, 1204),
+            seg(Category::Outro, 585.0, 612.0, 902),
+        ],
+        comments: vec![
+            Comment {
+                pinned: true,
+                hearted: true,
+                replies: 120,
+                ..comment(
+                    "Kurzgesagt",
+                    "KG",
+                    "Sources & further reading are in the description. This one took 1,400 hours to animate.",
+                    41_000,
+                    "1 week ago",
+                )
+            },
+            comment(
+                "astro_amy",
+                "AA",
+                "optimistic nihilism is exactly the energy I need on a Monday",
+                12_300,
+                "6 days ago",
+            ),
+            comment(
+                "void_walker",
+                "VW",
+                "the duck at 4:32 again. always the duck.",
+                8_900,
+                "5 days ago",
+            ),
+        ],
+        ..video(
+            "vid_black_holes",
+            "What If Black Holes ARE The Dark Matter? (You Won't BELIEVE #3)",
+            Some("Could primordial black holes account for dark matter?"),
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_donut`.
+fn donut(channel: &Channel) -> Video {
+    Video {
+        views: 3_100_000,
+        published: "2 months ago".into(),
+        duration: 1500,
+        category: "Tutorial".into(),
+        description: "The legendary beginner Blender tutorial, updated for 4.2. By the end you'll have modelled, textured and rendered a donut — and learned the whole pipeline doing it.".into(),
+        likes: 96_000,
+        sponsor: vec![
+            seg(Category::Intro, 0.0, 25.0, 600),
+            seg(Category::Interaction, 120.0, 134.0, 350),
+        ],
+        comments: vec![
+            comment(
+                "new_to_3d",
+                "NT",
+                "Came for the donut, stayed for the existential dread of UV unwrapping.",
+                4_100,
+                "1 month ago",
+            ),
+            comment(
+                "blendr",
+                "BL",
+                "the coffee cup is the real final boss",
+                2_050,
+                "3 weeks ago",
+            ),
+        ],
+        ..video(
+            "vid_donut",
+            "The Donut Tutorial That Started It All (Blender 4.2)",
+            None,
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_privacy`.
+fn privacy(channel: &Channel) -> Video {
+    Video {
+        views: 1_240_000,
+        published: "5 days ago".into(),
+        duration: 900,
+        category: "Privacy".into(),
+        description: "Not all end-to-end encryption is equal. We compare Signal, Matrix, iMessage and the rest on metadata exposure, threat model and who can subpoena what. With a clear recommendation table at the end.".into(),
+        likes: 72_000,
+        sponsor: vec![
+            seg(Category::Sponsor, 95.0, 180.0, 2210),
+            seg(Category::SelfPromo, 760.0, 810.0, 640),
+            seg(Category::Filler, 300.0, 360.0, 120),
+        ],
+        comments: vec![
+            Comment {
+                pinned: true,
+                replies: 33,
+                ..comment(
+                    "Privacy Guides",
+                    "PG",
+                    "We are a non-profit. No segment of this video is paid — the 'sponsor' tag is our own recommendations, flagged honestly.",
+                    9_800,
+                    "5 days ago",
+                )
+            },
+            comment(
+                "threat_model",
+                "TM",
+                "metadata is the message. great breakdown.",
+                3_300,
+                "4 days ago",
+            ),
+        ],
+        ..video(
+            "vid_privacy",
+            "STOP Using These Apps RIGHT NOW (they're SPYING on you!!)",
+            Some("Which messaging apps actually protect your metadata — a 2026 comparison"),
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_synth`.
+fn synth(channel: &Channel) -> Video {
+    Video {
+        views: 2_800_000,
+        published: "3 weeks ago".into(),
+        duration: 1100,
+        category: "Music".into(),
+        description: "The vocoder, the talkbox, and the EHX in between. A history of how two French robots made the most human-sounding machines in pop.".into(),
+        likes: 145_000,
+        sponsor: vec![
+            seg(Category::Sponsor, 720.0, 815.0, 1502),
+            seg(Category::MusicOfftopic, 0.0, 42.0, 880),
+            seg(Category::Outro, 980.0, 1024.0, 410),
+        ],
+        comments: vec![
+            comment(
+                "groove_is",
+                "GI",
+                "harder. better. faster. *vocoder intensifies*",
+                6_700,
+                "2 weeks ago",
+            ),
+            comment(
+                "eternal_synth",
+                "ES",
+                "the MusicOfftopic tag skipping straight to the song is god-tier",
+                3_100,
+                "1 week ago",
+            ),
+        ],
+        ..video(
+            "vid_synth",
+            "How Daft Punk Engineered The Perfect Robot Voice",
+            None,
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_lofi`.
+fn lofi(channel: &Channel) -> Video {
+    Video {
+        views: 12_400,
+        live: true,
+        duration: 7200,
+        category: "Music".into(),
+        description: "A 24/7 livestream of mellow beats. No sponsor, no intro, no outro — just the girl, her desk, and the rain.".into(),
+        likes: 980_000,
+        comments: vec![
+            comment(
+                "midnight_dev",
+                "MD",
+                "anyone else here at 3am shipping a feature nobody asked for",
+                22_000,
+                "now",
+            ),
+            comment(
+                "studious",
+                "ST",
+                "the cat moved. THE CAT MOVED.",
+                14_500,
+                "2 hours ago",
+            ),
+        ],
+        ..video(
+            "vid_lofi",
+            "lofi hip hop radio - beats to relax/study to",
+            None,
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_gpu`.
+fn gpu(channel: &Channel) -> Video {
+    Video {
+        views: 534_000,
+        published: "4 days ago".into(),
+        duration: 480,
+        category: "Programming".into(),
+        description: "Warps, lanes, occupancy and why a branch can cost you 32x. A from-scratch mental model of how a modern GPU schedules work.".into(),
+        likes: 29_000,
+        sponsor: vec![
+            seg(Category::Intro, 0.0, 14.0, 210),
+            seg(Category::Sponsor, 300.0, 372.0, 940),
+        ],
+        comments: vec![comment(
+            "simd_enjoyer",
+            "SE",
+            "occupancy is the new cache miss",
+            1_900,
+            "3 days ago",
+        )],
+        ..video(
+            "vid_gpu",
+            "Why Your GPU Is Actually A Tiny Supercomputer",
+            Some("An introduction to GPU architecture and SIMT execution"),
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_solar`.
+fn solar(channel: &Channel) -> Video {
+    Video {
+        views: 9_100_000,
+        published: "1 month ago".into(),
+        duration: 700,
+        category: "Science".into(),
+        description: "New observations are quietly rewriting the textbook. From the Kuiper belt to a possible ninth planet, here's what changed.".into(),
+        likes: 420_000,
+        sponsor: vec![
+            seg(Category::Sponsor, 480.0, 560.0, 3300),
+            seg(Category::Preview, 0.0, 30.0, 700),
+        ],
+        comments: vec![comment(
+            "planet9",
+            "P9",
+            "it's always 'a possible ninth planet' and never an invitation to dinner",
+            18_000,
+            "3 weeks ago",
+        )],
+        ..video(
+            "vid_solar",
+            "We Were Wrong About The Solar System",
+            None,
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_fuse`.
+fn fuse(channel: &Channel) -> Video {
+    Video {
+        views: 188_000,
+        published: "6 days ago".into(),
+        duration: 720,
+        category: "Programming".into(),
+        description: "Projection vs hydration, content addressing with blake3, and why your open() doesn't mean the bytes are local. A tour of a real P2P FUSE design.".into(),
+        likes: 14_000,
+        sponsor: vec![
+            seg(Category::Sponsor, 600.0, 690.0, 510),
+            seg(Category::Interaction, 200.0, 210.0, 88),
+        ],
+        comments: vec![comment(
+            "mountpoint",
+            "MP",
+            "10s metadata TTL is a bold choice and I respect it",
+            920,
+            "5 days ago",
+        )],
+        ..video(
+            "vid_fuse",
+            "Building a P2P Filesystem in 100 Lines (sort of)",
+            Some("Writing a FUSE driver with content-addressed P2P storage"),
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_color`.
+fn color(channel: &Channel) -> Video {
+    Video {
+        views: 5_200_000,
+        published: "2 weeks ago".into(),
+        duration: 360,
+        category: "Science".into(),
+        description: "Magenta isn't on the rainbow. Your brain invents it. A short, beautiful detour into how colour perception actually works.".into(),
+        likes: 260_000,
+        sponsor: vec![seg(Category::Sponsor, 240.0, 300.0, 1600)],
+        comments: vec![comment(
+            "rgb_to_xyz",
+            "RX",
+            "magenta is a vibe your visual cortex made up and honestly same",
+            7_700,
+            "1 week ago",
+        )],
+        ..video(
+            "vid_color",
+            "The Color That Doesn't Exist",
+            None,
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_amp`.
+fn amp(channel: &Channel) -> Video {
+    Video {
+        views: 1_100_000,
+        published: "1 week ago".into(),
+        duration: 800,
+        category: "Music".into(),
+        description: "Why a stadium gig sounds like mud — and the delay towers, line arrays and psychoacoustics that fix it.".into(),
+        likes: 58_000,
+        sponsor: vec![
+            seg(Category::Sponsor, 540.0, 620.0, 720),
+            seg(Category::Outro, 700.0, 740.0, 230),
+        ],
+        comments: vec![comment(
+            "front_of_house",
+            "FH",
+            "delay towers are the unsung heroes of every festival",
+            2_400,
+            "5 days ago",
+        )],
+        ..video(
+            "vid_amp",
+            "The Hidden Genius of Stadium Sound Design",
+            None,
+            channel,
+        )
+    }
+}
+
+/// The bundled sample video `vid_compose`.
+fn compose(channel: &Channel) -> Video {
+    Video {
+        views: 670_000,
+        published: "2 days ago".into(),
+        duration: 960,
+        category: "Tech".into(),
+        description: "From i3 to the new spatial 2D-cluster compositors. Ergonomics, keybinds, multi-monitor and which one actually survives a workday.".into(),
+        likes: 33_000,
+        sponsor: vec![
+            seg(Category::Intro, 0.0, 20.0, 300),
+            seg(Category::Sponsor, 410.0, 500.0, 1100),
+            seg(Category::SelfPromo, 880.0, 920.0, 260),
+        ],
+        comments: vec![comment(
+            "tile_or_die",
+            "TD",
+            "2D clusters on an infinite canvas is the first new idea in WMs in a decade",
+            4_900,
+            "1 day ago",
+        )],
+        ..video(
+            "vid_compose",
+            "I Tried Every Tiling Window Manager So You Don't Have To",
+            Some("A practical comparison of tiling window managers in 2026"),
+            channel,
+        )
+    }
+}
+
+/// The sample videos, in the order the home feed lists them.
+fn videos(
+    [
+        blender,
+        lowlevel,
+        kurz,
+        privacy_guides,
+        polyphonic,
+        lofi_garden,
+    ]: &[Channel; 6],
+) -> Vec<Video> {
+    vec![
+        rust_async(lowlevel),
+        black_holes(kurz),
+        donut(blender),
+        privacy(privacy_guides),
+        synth(polyphonic),
+        lofi(lofi_garden),
+        gpu(lowlevel),
+        solar(kurz),
+        fuse(lowlevel),
+        color(kurz),
+        amp(polyphonic),
+        compose(privacy_guides),
+    ]
+}
+
+/// Build the full offline catalogue.
+#[must_use]
+pub fn model() -> TubeModel {
+    let chans = channels();
+    let videos = videos(&chans);
 
     let settings = Settings::default();
     TubeModel {
         videos,
-        channels: chans,
+        channels: Vec::from(chans),
         playlists: vec![crate::model::Playlist {
             id: "pl_systems".into(),
             title: "Systems programming from the metal up".into(),

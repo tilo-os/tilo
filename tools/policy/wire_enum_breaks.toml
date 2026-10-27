@@ -12,3 +12,63 @@
 file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
 enum = "WorkspaceMembershipCommand"
 reason = "puts the retired task grant commands back at their places: rooms and relays hold these commands, and the digests of their administration requests, in the encoding from before their removal"
+
+[[break]]
+file = "crates/sdk/tilo-resource/src/path.rs"
+enum = "EditOpWire"
+reason = "reads one edit operation's JSON tag (`rename_all = kebab-case`, so a variant is named, not numbered) and is never written: edit ops travel and are stored through `EditOp`, whose own encoding does not go through this type"
+
+[[break]]
+file = "crates/doc/tilo-document/src/action.rs"
+enum = "RichTextAction"
+reason = "a document action is written and read as JSON by name (`Action::encoded`, `serde_json::to_vec`), never by position, so a new variant in the middle adds a name and moves nothing that bytes point at"
+
+[[break]]
+file = "crates/sdk/ui-core/src/a11y.rs"
+enum = "Role"
+reason = "write-only: an accessibility node's role goes out to AT-SPI and the screen reader as a JSON name, and nothing deserializes it back, so its place in the enum carries no bytes"
+
+[[break]]
+file = "apps/file-explorer/src/file_ops.rs"
+enum = "FileOp"
+reason = "the journal and the Files document keep it as JSON text in the record (`json_model!`), where a variant is named; the queue is replayed within one version, not read back from a positional frame"
+
+[[break]]
+file = "crates/agent/provider-config/src/local.rs"
+enum = "ModelArtifactFormat"
+reason = "signed catalog data read as JSON (`rename_all = snake_case`), so a format is named; the catalog is versioned and re-signed rather than read positionally"
+
+[[break]]
+file = "crates/session/desktop-surface/src/navigation.rs"
+enum = "ActivityView"
+reason = "an in-process destination for the activity pane, encoded as a JSON name (`rename_all = kebab-case`); no document or journal keeps it, so a stored value never has to read back"
+
+[[break]]
+file = "crates/session/desktop-surface/src/activity/pane.rs"
+enum = "ActivityView"
+reason = "the pane's own view select, encoded as a JSON name (`rename_all = kebab-case`); nothing outside the binary keeps it, so a retired view cannot be read back from stored bytes"
+
+[[break]]
+file = "crates/agent/agent-participant/src/worker/proto.rs"
+enum = "Request"
+reason = "postcard frames between a supervisor and the app worker it starts from its own executable; the variant inserts came with PROTOCOL_VERSION bumps, and a stale worker is refused on its greeting before any request is decoded"
+
+[[break]]
+file = "crates/agent/agent-participant/src/worker/proto.rs"
+enum = "Reply"
+reason = "postcard frames between a supervisor and the app worker it starts from its own executable; the variant inserts came with PROTOCOL_VERSION bumps, and a stale worker is refused on its greeting before any reply is decoded"
+
+[[break]]
+file = "crates/session/shell/src/compositor/liveness.rs"
+enum = "Answer"
+reason = "one line of JSON per answer between the compositor and its liveness prober (`serde_json::from_str`, `rename_all = snake_case`), both in the same binary, so a variant is named and its place carries no bytes"
+
+[[break]]
+file = "crates/system/settings-store/src/hardware.rs"
+enum = "ShortcutAction"
+reason = "read and written through a JSON name (`read_through_json_value!`, `rename_all = snake_case`) in the settings the store keeps, so a shortcut added mid-enum takes a name and moves nothing"
+
+[[break]]
+file = "apps/osk/src/actions.rs"
+enum = "SetPreference"
+reason = "the keyboard hands a preference change to its own host in process, and the change is applied at once; no byte of it is kept or sent to another version"
