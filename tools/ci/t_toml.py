@@ -73,7 +73,7 @@ SUITE_IMAGE = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca
 # when dispatched, and on main's newest head when t has room (`idle`), which records its key for
 # every commit and bisects a failure to the commit that broke it (docs/t.md, "Heavy checks on
 # main"). `t test <check>` runs one for a working tree.
-HEAVY = {"on": ["stable", "dispatch", "idle"], "default": False}
+HEAVY = {"on": ["stable", "dispatch", "idle"], "default": False, "heavy": True}
 # What some groups need beyond a plain check, and why. A group that writes into
 # its sources gets a private copy-on-write view of them. A `prepare` command
 # runs before the group's suites. No group takes `git = true`: t keeps such a
@@ -268,6 +268,7 @@ def suite_checks(manifest: suites.Manifest) -> str:
             f"inputs = {array(inputs)}",
             *([f"on = {array(fields['on'])}"] if "on" in fields else []),
             *(["default = false"] if fields.get("default") is False else []),
+            *(["heavy = true"] if fields.get("heavy") else []),
         ]) + "\n")
     return "\n".join(blocks)
 
@@ -322,6 +323,7 @@ def goldens(image: str) -> str:
         'cost = "heavy"',
         'on = ["stable", "dispatch"]',
         "default = false",
+        "heavy = true",
     ]) + "\n"
 
 
@@ -927,6 +929,13 @@ IDLE_TESTS = ["canvas", "music", "pdf-viewer", "tilo-ui"]
 IDLE_LINTS = ["music", "tilo-messaging-protocol"]
 
 
+def property_tested(packages: dict[str, dict]) -> list[str]:
+    """The packages with property tests (a proptest dependency): the `test-deep` family runs
+    them with more cases on release candidates."""
+    return sorted(name for name, package in packages.items()
+                  if any(dependency["name"] == "proptest" for dependency in package["dependencies"]))
+
+
 # The architectures a package whose code differs between them (package_sets.per_arch) is tested
 # and linted on, each by a family of its own (`test-<arch>`, `clippy-<arch>`): a result on one
 # says nothing about the other, which `arch=any` would let it stand for.
@@ -948,12 +957,17 @@ def test_families(packages: dict[str, dict]) -> dict[str, str]:
         if both:
             raise ValueError(f"{', '.join(both)}: idle {kind} of a package whose code differs between "
                              "architectures would stand for both; give the idle family per-arch variants")
+    deep = sorted(set(property_tested(packages)) - {"workspace-unify", *untested(packages), *micro_vm_tested()})
+    if per_arch & set(deep):
+        raise ValueError(f"{', '.join(sorted(per_arch & set(deep)))}: deep tests of a package whose code differs "
+                         "between architectures would stand for both; give test-deep per-arch variants")
     tested = sorted(per_arch - {*untested(packages), *micro_vm_tested()})
     linted = sorted(per_arch - {"workspace-unify"})
     nested = sorted(set(nested_sandboxes()) & set(tested))
     excluded = {*per_arch, *IDLE_TESTS, *untested(packages), *micro_vm_tested()}
     blocks = {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
               "test-idle-packages": f"packages = {array(IDLE_TESTS)}\n",
+              "test-deep-packages": f"packages = {array(deep)}\n",
               "clippy-exclude": f"exclude = {array(['workspace-unify', *IDLE_LINTS, *sorted(per_arch)])}\n",
               "clippy-idle-packages": f"packages = {array(IDLE_LINTS)}\n",
               "check-exclude": f"exclude = {array(['workspace-unify', *sorted(per_arch)])}\n"}
@@ -995,7 +1009,7 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
     metadata = workspace_graph.cargo_metadata(ROOT)
     manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "test-idle-package-inputs": inputs,
+    return {"test-package-inputs": inputs, "test-idle-package-inputs": inputs, "test-deep-package-inputs": inputs,
             "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs,
             **{f"{family}-{arch}-package-inputs": inputs for family in ("test", "clippy") for arch in ARCHES},
             "suites": suite_checks(manifest),
