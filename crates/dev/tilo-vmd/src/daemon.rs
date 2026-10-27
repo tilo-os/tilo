@@ -39,6 +39,79 @@ const GC_MIN_AGE: Duration = Duration::from_secs(3600);
 
 /// How long a started session may take to bind its control socket.
 const CONTROL_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a person's onboarding may take, identity creation included.
+const ONBOARDING_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long `fs` may take to start once the device key is certified.
+const FS_START_TIMEOUT: Duration = Duration::from_secs(60);
+const FS_UNIT: &str = "fs.service";
+
+/// Which identity `slot create` gives the slot's user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityRequest {
+    None,
+    /// A throwaway in a private root (`--identity`).
+    Throwaway,
+    /// This VM's person, through onboarding (`--identity device`).
+    Device,
+}
+
+impl IdentityRequest {
+    fn of(create: &tilo_vm_protocol::SlotCreate) -> Result<Self, DaemonError> {
+        match (create.identity, create.device_identity) {
+            (true, true) => Err(DaemonError::InvalidParams(
+                "a slot's user gets one identity: a throwaway or the VM's person".into(),
+            )),
+            (true, false) => Ok(Self::Throwaway),
+            (false, true) => Ok(Self::Device),
+            (false, false) => Ok(Self::None),
+        }
+    }
+}
+
+/// Onboarding's controls in the order a person goes through them: begin,
+/// accept that the identity is theirs to protect, create it, skip the
+/// backup (acknowledged), skip the optional codecs and the tour, enter.
+/// A checkbox is pressed once; a press toggles it.
+const ONBOARDING_PRESSES: [(&str, bool); 9] = [
+    ("onboarding.begin.button", false),
+    ("onboarding.understood.box", true),
+    ("onboarding.create.button", false),
+    ("onboarding.backup.skip-acknowledged.box", true),
+    ("onboarding.backup.continue.button", false),
+    ("onboarding.codecs.skip.button", false),
+    ("onboarding.tour.skip.button", false),
+    ("onboarding.tour.next.button", false),
+    ("onboarding.finish.button", false),
+];
+
+/// The next control to press among those `shown`, given those `pressed`.
+fn next_onboarding_press(shown: &[String], pressed: &[String]) -> Option<&'static str> {
+    ONBOARDING_PRESSES
+        .iter()
+        .filter(|(name, _)| shown.iter().any(|target| target == name))
+        .find(|(name, once)| !*once || !pressed.iter().any(|done| done == name))
+        .map(|(name, _)| *name)
+}
+
+/// The `onboarding.*` names in a `list_targets` answer.
+fn onboarding_target_names(reply: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
+        return Vec::new();
+    };
+    let targets = value
+        .get("answer")
+        .unwrap_or(&value)
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    targets
+        .iter()
+        .filter_map(|target| target.get("name")?.as_str())
+        .filter(|name| name.starts_with("onboarding."))
+        .map(str::to_owned)
+        .collect()
+}
 
 /// In-VM build dirs `gc` keeps by default, most recently used first.
 pub const DEFAULT_KEEP_TARGETS: u32 = 2;
@@ -741,7 +814,8 @@ impl Daemon {
             Request::Status(p) => to_value(&self.status(p.slot)?),
             Request::SlotCreate(p) => {
                 let _locks = self.slot_locks(&p.name)?;
-                to_value(&self.create(&p.name, p.kind, p.owner, &p.outputs, p.identity)?)
+                let identity = IdentityRequest::of(&p)?;
+                to_value(&self.create(&p.name, p.kind, p.owner, &p.outputs, identity)?)
             }
             Request::SlotList(_) => {
                 let records = self.listed_slots()?;
@@ -1310,9 +1384,22 @@ impl Daemon {
         kind: SlotKind,
         owner: Owner,
         outputs: &[OutputSpec],
-        identity: bool,
+        identity: IdentityRequest,
     ) -> Result<SlotCreateResult, DaemonError> {
+        if identity == IdentityRequest::Device {
+            self.admit_device_identity(name)?;
+        }
         let (mut record, created) = self.slots.create(name, kind, owner, outputs)?;
+        if identity == IdentityRequest::Device && !record.device_identity {
+            if !created {
+                return Err(DaemonError::DeviceIdentity {
+                    slot: name.to_owned(),
+                    detail: "the slot already exists with an identity root of its own; remove it and create it again".into(),
+                });
+            }
+            record.device_identity = true;
+            self.slots.save(&record)?;
+        }
         let session = record
             .session()
             .ok_or_else(|| DaemonError::NoSession(name.to_owned()))?;
@@ -1335,12 +1422,18 @@ impl Daemon {
         } else {
             Vec::new()
         };
-        let identity = if identity {
-            let (identity, steps) = self.provision_test_identity(&record)?;
-            actions.extend(steps);
-            Some(identity)
-        } else {
-            None
+        let identity = match identity {
+            IdentityRequest::Throwaway => {
+                let (identity, steps) = self.provision_test_identity(&record)?;
+                actions.extend(steps);
+                Some(identity)
+            }
+            IdentityRequest::Device => {
+                let (identity, steps) = self.complete_onboarding(&record)?;
+                actions.extend(steps);
+                Some(identity)
+            }
+            IdentityRequest::None => None,
         };
         // Every create applies the layout again, so a create that failed
         // here is repaired by running it once more.
@@ -1365,6 +1458,146 @@ impl Daemon {
             actions,
             identity,
         })
+    }
+
+    /// Only one slot can be this VM's person, and only while the machine's
+    /// identity tree holds nobody else's identity: never replace or adopt one.
+    fn admit_device_identity(&mut self, name: &str) -> Result<(), DaemonError> {
+        let refuse = |detail: String| DaemonError::DeviceIdentity {
+            slot: name.to_owned(),
+            detail,
+        };
+        let records = self.slots.list()?;
+        if let Some(other) = records
+            .iter()
+            .find(|record| record.device_identity && record.name != name)
+        {
+            return Err(refuse(format!(
+                "slot '{}' is this VM's person already",
+                other.name
+            )));
+        }
+        let ours = records
+            .iter()
+            .any(|record| record.device_identity && record.name == name);
+        if !ours && self.apply.machine_identity().person {
+            return Err(refuse(
+                "this VM already holds an identity (/var/lib/tilo/user-identity), which a slot never replaces or adopts".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Make the slot's user this VM's person the way a device's first login
+    /// does: its session shows onboarding (it has no identity and no private
+    /// root), and onboarding's own controls create the identity, which
+    /// certifies the machine's device key; that certificate starts `fs`.
+    /// The controls are pressed by name through the control socket, the way
+    /// a person's clicks reach them; nothing here mints or writes identity
+    /// files.
+    fn complete_onboarding(
+        &mut self,
+        record: &SlotRecord,
+    ) -> Result<(TestIdentity, Vec<Action>), DaemonError> {
+        let name = record.name.as_str();
+        let fail = |detail: String| DaemonError::DeviceIdentity {
+            slot: name.to_owned(),
+            detail,
+        };
+        let session = record
+            .session()
+            .ok_or_else(|| fail("the slot has no user".into()))?;
+        let user = session.user.clone();
+        self.apply.wait_session_ready(&session).map_err(fail)?;
+        let created = !self.apply.machine_identity().certified;
+        let mut actions = Vec::new();
+        if created {
+            let mut pressed = Vec::new();
+            let started = Instant::now();
+            loop {
+                let targets = self.onboarding_targets(&session)?;
+                if targets.is_empty() && self.apply.machine_identity().certified {
+                    break;
+                }
+                if started.elapsed() >= ONBOARDING_TIMEOUT {
+                    return Err(fail(format!(
+                        "onboarding did not finish within {}s; it still shows {targets:?} after pressing {pressed:?}",
+                        ONBOARDING_TIMEOUT.as_secs()
+                    )));
+                }
+                if let Some(target) = next_onboarding_press(&targets, &pressed) {
+                    let request = serde_json::json!({ "op": "click_named", "name": target });
+                    let reply = self
+                        .apply
+                        .control(&session, &["raw".to_owned(), request.to_string()])?;
+                    if reply.exit_code != 0 {
+                        return Err(fail(format!("pressing {target}: {}", reply.stderr.trim())));
+                    }
+                    pressed.push(target.to_owned());
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            actions.push(Action::CompleteOnboarding { created: true });
+            // As after a throwaway: a layout made before the identity
+            // belongs to the Unix user and hides every app launch.
+            self.apply.stop_unit(&session.unit)?;
+            actions.push(Action::StopUnit {
+                unit: session.unit.clone(),
+            });
+            self.apply.reset_desktop_state(&user)?;
+            actions.push(Action::ResetDesktopState);
+            let uid = apply::session_uid(self.apply.as_mut(), &session)?;
+            actions.extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
+            self.apply.wait_session_ready(&session).map_err(fail)?;
+            self.verify_parity([session])?;
+        } else {
+            actions.push(Action::CompleteOnboarding { created: false });
+        }
+        // fs-identity.path starts fs once the certificate exists.
+        let started = Instant::now();
+        loop {
+            let state = self.apply.unit_state(FS_UNIT);
+            if state == "active" {
+                break;
+            }
+            if started.elapsed() >= FS_START_TIMEOUT {
+                return Err(fail(format!(
+                    "the machine's device key is certified, but {FS_UNIT} is {state} after {}s",
+                    FS_START_TIMEOUT.as_secs()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        Ok((
+            TestIdentity {
+                created,
+                display_name: String::new(),
+                throwaway: false,
+            },
+            actions,
+        ))
+    }
+
+    /// The onboarding controls the session shows, by name; empty once
+    /// onboarding is gone. Waits for a control socket a starting session
+    /// has not bound yet.
+    fn onboarding_targets(&mut self, session: &apply::Session) -> Result<Vec<String>, DaemonError> {
+        let args = ["raw".to_owned(), r#"{"op":"list_targets"}"#.to_owned()];
+        let asked = Instant::now();
+        let reply = loop {
+            let reply = self.apply.control(session, &args)?;
+            if reply.exit_code != 2 || asked.elapsed() >= CONTROL_SOCKET_TIMEOUT {
+                break reply;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        };
+        if reply.exit_code != 0 {
+            return Err(DaemonError::DeviceIdentity {
+                slot: session.slot.clone(),
+                detail: format!("listing the session's controls: {}", reply.stderr.trim()),
+            });
+        }
+        Ok(onboarding_target_names(reply.stdout.trim()))
     }
 
     /// Have the slot's running session give its user a throwaway test

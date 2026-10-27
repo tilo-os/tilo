@@ -598,6 +598,14 @@ impl Apply for SystemdApply {
         crate::apply::slot_identity_environment(Path::new(&home))
     }
 
+    fn machine_identity(&mut self) -> crate::apply::MachineIdentity {
+        let paths = tilo_user_identity::IdentityPaths::default_system();
+        crate::apply::MachineIdentity {
+            person: paths.user_pubkey.is_file(),
+            certified: paths.device_cert.is_file(),
+        }
+    }
+
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
         if uid_of(user).is_none() {
             return Ok(());

@@ -120,6 +120,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         assert!(created.created);
@@ -133,6 +134,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         assert!(!again.created, "create is idempotent");
@@ -241,6 +243,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         let owner = Owner {
@@ -501,6 +504,7 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
                     owner: Owner::default(),
                     outputs: vec![],
                     identity: false,
+                    device_identity: false,
                 })
                 .unwrap();
         }
@@ -724,6 +728,7 @@ fn the_device_slot_is_the_machines_own_session() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })),
             rpc_error(client.call(SlotRm {
                 name: "device".into(),
@@ -752,6 +757,7 @@ fn the_device_slot_is_the_machines_own_session() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         assert!(created.actions.contains(&Action::StartUnit {
@@ -932,6 +938,7 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
+                device_identity: false,
             })
             .unwrap();
         let shell = import(client, "shell", &tarball("usr/bin/shell", b"old shell"));
