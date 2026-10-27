@@ -5,14 +5,14 @@
 use std::time::{Duration, Instant};
 
 use super::paint;
-use super::paint::BridgePhaseTiming;
 use super::runtime::ScanoutCommand;
 use super::scanout;
 use super::{
-    DirectOutcome, DirectRender, DrmPresenter, FlipVblank, FlipWait, OutputId, OwedFlip,
-    PaintScanoutSample, ScanoutFrame, demote_direct, direct_failures, direct_reason, direct_status,
-    fastest_direct_refresh, flip_wait, paint_scanouts, physical_flip_proof, publish_client_planes,
-    quiesce_presentations, refresh_of, report_signal_status, route_flip_completions,
+    DIRECT_RETIREMENT_TIMEOUT, DrmPresenter, FlipVblank, FlipWait, OwedFlip, PaintScanoutSample,
+    ScanoutFrame, apply_scanout_command, demote_direct, direct_failures, direct_reason,
+    direct_status, fastest_direct_refresh, flip_wait, paint_scanouts, physical_flip_proof,
+    publish_client_planes, quiesce_presentations, refresh_of, report_signal_status,
+    route_flip_completions, service_links,
 };
 use tilo_lock::MutexRecover as _;
 
