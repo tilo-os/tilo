@@ -430,8 +430,19 @@ impl ChatApp {
         &mut self,
         doc: Option<&mut ui::widget::Edits<'_>>,
     ) -> Result<(), String> {
-        if !self.call_allows(crate::call::CallAction::Join) {
-            return Err("Call action is not permitted".into());
+        if self.refused_call.is_none()
+            && let Some(reason) = self.call_refusal()
+        {
+            // Said on the call's card, on the room's voice channel if it has
+            // one: no channel is made for a call that cannot start.
+            let channel = self
+                .ws_channels()
+                .into_iter()
+                .find(|channel| channel.kind == ChannelKind::Voice)
+                .map(|channel| channel.id.clone())
+                .unwrap_or_default();
+            self.call_refused(&channel, reason);
+            return Ok(());
         }
         if self.call.active {
             self.call.expanded = true;
