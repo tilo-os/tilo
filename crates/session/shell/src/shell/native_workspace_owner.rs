@@ -290,6 +290,15 @@ pub(crate) fn create_governed_workspace(
             records = documents.len(),
             "importing the records this workspace already held"
         );
+    } else if records.is_none() && !held.is_empty() {
+        // A session with no record stores (a test, an offscreen renderer)
+        // has no documents to bring: the index still travels, and an app
+        // publishes a record's document the next time it opens it.
+        tracing::debug!(
+            %room,
+            records = held.len(),
+            "no record stores attached; the workspace's records travel as their index"
+        );
     }
     let seed = tilo_peer_state::workspace_seed_with_records(
         &room.to_string(),
