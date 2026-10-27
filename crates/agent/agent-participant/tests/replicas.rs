@@ -64,6 +64,14 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     held.apply(&DocumentMutation::Snapshot(kept.save()))
         .expect("the room's older document merges into the brought-up replica");
     assert_eq!(held.read(stored_version), Some(current));
+    // The migration is sent with the replica's changes, so the room's copy
+    // is brought up too.
+    let Some(DocumentMutation::Incremental(migration)) = held.take_mutation() else {
+        panic!("the migration is sent");
+    };
+    let mut room = kept.clone();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut room, &migration).unwrap();
+    assert_eq!(stored_version(&room), current);
 }
 
 #[test]

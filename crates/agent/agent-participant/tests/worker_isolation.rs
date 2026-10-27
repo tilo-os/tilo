@@ -30,6 +30,53 @@ use tilo_content::ContentStore;
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 #[test]
+fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
+    use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
+    let catalogue = catalogue();
+    let app = "so.tilo.chat";
+    let mut page =
+        Replica::open(&catalogue, app, ROOM, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+        panic!("a new record is published whole");
+    };
+    let mut kept = automerge::AutoCommit::load(&snapshot).unwrap();
+    let current = stored_version(&kept);
+    automerge::transaction::Transactable::put(
+        &mut kept,
+        automerge::ROOT,
+        VERSION_KEY,
+        automerge::ScalarValue::Uint(u64::from(current - 1)),
+    )
+    .unwrap();
+
+    // As a host holds a bot's record: in a worker, its changes admitted to
+    // the host's mirror of the room's document.
+    let held = ConfinedReplica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "host",
+        &ReplicaActor::Owner,
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![kept.save()],
+        },
+    )
+    .expect("an older record opens in its worker");
+    held.apply(&DocumentMutation::Snapshot(kept.save()))
+        .expect("the room's older document merges");
+    let Some(DocumentMutation::Incremental(migration)) = held
+        .take_mutation()
+        .expect("the worker's migration is admitted to the host's mirror")
+    else {
+        panic!("the migration is sent");
+    };
+    let mut room = kept.clone();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut room, &migration).unwrap();
+    assert_eq!(stored_version(&room), current);
+}
+
+#[test]
 fn the_app_worker_cannot_read_the_hosts_state_directory() {
     let state = tempfile::tempdir().unwrap();
     let agents = state.path().join("agents.json");

@@ -143,7 +143,10 @@ impl ConfinedReplica {
                 revivals: 0,
                 mirror,
                 fresh,
-                dirty: fresh,
+                // An existing record's worker may have brought it up to
+                // the app's storage on open: asked once, so the migration
+                // reaches the mirror and the room.
+                dirty: true,
                 beside: BTreeMap::new(),
                 beside_dirty: false,
                 held: BTreeSet::new(),
