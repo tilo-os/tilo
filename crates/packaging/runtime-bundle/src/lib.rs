@@ -185,7 +185,7 @@ pub enum BundleError {
     #[error("included directory holds something other than files and directories: {path}")]
     IncludeSpecialFile { path: PathBuf },
     #[error(
-        "included binary must be a bounded regular native executable with a fixed basename: {path}"
+        "included binary must be a regular, non-empty native executable with a fixed basename: {path}"
     )]
     IncludeInvalidBinary { path: PathBuf },
     #[error("different included binaries claim the same basename: {name}")]
@@ -1432,7 +1432,10 @@ fn copy_binaries(
             return Err(invalid());
         }
         let metadata = fs::symlink_metadata(source).map_err(|_| invalid())?;
-        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 64 * 1024 * 1024 {
+        // Hashed and signed like every other file of the bundle, and as unbounded as its
+        // libraries: a runtime binary that links its toolkit statically (a development build of
+        // the tilolang runtime) is over a hundred megabytes.
+        if !metadata.is_file() || metadata.len() == 0 {
             return Err(invalid());
         }
         if !binary_is_executable(&metadata) {
