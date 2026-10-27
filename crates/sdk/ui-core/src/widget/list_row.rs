@@ -3962,3 +3962,6 @@ mod control_row_tests {
         assert_eq!(node.name.as_deref(), Some("Ink"));
     }
 }
+
+mod component;
+pub use component::ListRowProps;

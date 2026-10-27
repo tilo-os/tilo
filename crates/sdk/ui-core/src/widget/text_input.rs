@@ -7221,3 +7221,6 @@ mod preparation_tests;
 #[cfg(test)]
 #[path = "text_input_touch_tests.rs"]
 mod touch_tests;
+
+mod component;
+pub use component::TextInputProps;

@@ -180,6 +180,26 @@ impl Checker<'_> {
                 UiKind::Fact { node, label, value } => {
                     self.fact(*node, label, value, parent, s.span);
                 }
+                UiKind::Slot { name, .. } => {
+                    self.err(
+                        "E063",
+                        name.span,
+                        format!(
+                            "a slot `{}: {{ }}` stands in the block of a `ui.*` component",
+                            name.name
+                        ),
+                    );
+                }
+                UiKind::On { event, .. } => {
+                    self.err(
+                        "E063",
+                        event.span,
+                        format!(
+                            "an event `on {}: ...` stands in the block of a `ui.*` component",
+                            event.name
+                        ),
+                    );
+                }
                 UiKind::State(d) => {
                     self.err(
                         "E066",
@@ -348,6 +368,12 @@ impl Checker<'_> {
                     return self.dead_node();
                 }
             }
+            ExprKind::Field { base, name } if self.names_toolkit(base) => {
+                match self.described(base, &name.name) {
+                    Some(d) => self.component(d, c, args),
+                    None => return self.unknown_component(&name.name, args, span),
+                }
+            }
             ExprKind::Field { base, name } if self.names_import(base) => {
                 let path = dotted(base).unwrap_or_default().join(".");
                 let found = env
@@ -411,11 +437,26 @@ impl Checker<'_> {
     pub(super) fn primitive(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         self.placement(p.name, c.call.span);
         let key = self.node_key(c);
-        let n = self.new_node(p.name, key);
+        let kind = crate::toolkit::prim_component(p.name)
+            .map_or_else(|| p.name.to_string(), crate::toolkit::kind);
+        let n = self.new_node(&kind, key);
         let mut pos = 0usize;
         for a in args {
             if a.name.is_none() && self.is_flag(Some(p), &a.value) {
                 self.flag_arg(n, &a.value);
+                continue;
+            }
+            // An input edits its text through the binding the toolkit's `TextInput` calls
+            // `value`.
+            if p.name == "input" && a.name.as_ref().is_some_and(|name| name.name == "bind") {
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiPropH,
+                    vec![Ex::local(n, Ty::View), Ex::str("bind"), Ex::str("value")],
+                    Ty::Unit,
+                )));
+            }
+            if p.name == "text" && a.name.as_ref().is_some_and(|name| name.name == "role") {
+                self.text_role(n, &a.value);
                 continue;
             }
             self.prim_arg(p, n, pos, a);

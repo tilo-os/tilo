@@ -182,10 +182,10 @@ view rows(l: Tasks) {
         let mut view = rt
             .open_view(&me(), &app.view("task"), vec![Value::resource(&t)])
             .unwrap();
-        let text = of_kind(view.tree(), "text")[0].clone();
+        let text = of_kind(view.tree(), "ui.Text")[0].clone();
         assert_eq!(text_prop(&text, "value"), "2026-10-24");
         assert_eq!(text_prop(&text, "value:as"), "date");
-        let facts = of_kind(view.tree(), "fact");
+        let facts = of_kind(view.tree(), "ui.Property");
         assert_eq!(text_prop(facts[0], "value"), "", "none is the empty text");
         assert_eq!(text_prop(facts[0], "value:as"), "date");
         assert_eq!(text_prop(facts[1], "value:as"), "time");
@@ -212,7 +212,7 @@ view rows(l: Tasks) {
         )
         .unwrap();
         view.poll_patches().unwrap();
-        let facts = of_kind(view.tree(), "fact");
+        let facts = of_kind(view.tree(), "ui.Property");
         assert_eq!(text_prop(facts[0], "value"), "2026-11-02");
     }
 
@@ -273,7 +273,7 @@ action add(l: Tasks, title: Text) {
             opened.tree().clone()
         };
         let row = open("tasks_row");
-        assert_eq!(row.kind, "list_row", "{}", dump(&row));
+        assert_eq!(row.kind, "ui.ListRow", "{}", dump(&row));
         assert_eq!(text_prop(&row, "title"), "Nothing yet");
         assert_eq!(text_prop(&row, "secondary"), "");
         for title in ["Plan", "Build", "Ship"] {
@@ -290,14 +290,13 @@ action add(l: Tasks, title: Text) {
         assert_eq!(text_prop(&row, "title"), "Ship", "last() is the newest");
         assert_eq!(text_prop(&row, "secondary"), "Plan", "first() the oldest");
         let list = open("tasks");
-        let rows = of_kind(&list, "list_row");
+        let rows = of_kind(&list, "ui.ListRow");
         assert_eq!(rows.len(), 3, "{}", dump(&list));
         let Value::List(items) = rt.read(&l, "items").unwrap() else {
             panic!("a collection reads as a list");
         };
         for (row, item) in rows.iter().zip(&items) {
-            let (Some(Value::Ref(shown)), Value::Ref(item)) = (row.props.get("resource"), item)
-            else {
+            let (Some(Value::Ref(shown)), Value::Ref(item)) = (row.props.get("item"), item) else {
                 panic!("a resource row holds its resource: {}", dump(row));
             };
             assert_eq!(shown.target, item.target);
@@ -305,11 +304,11 @@ action add(l: Tasks, title: Text) {
                 !row.props.contains_key("title"),
                 "a resource row has no title"
             );
-            assert_eq!(text_prop(row, "meta"), "");
-            assert_eq!(text_prop(row, "meta:as"), "time");
+            // A time not yet set (`.none`) leaves the row without its meta.
+            assert!(!row.props.contains_key("meta"), "{}", dump(row));
         }
         let summary = open("summary");
-        let card = of_kind(&summary, "card")[0];
+        let card = of_kind(&summary, "ui.Card")[0];
         assert_eq!(card.props["count"], Value::Int(3), "{}", dump(&summary));
         assert!(matches!(&card.props["item"], Value::Ref(r) if *r.target == l));
     }

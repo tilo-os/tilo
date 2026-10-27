@@ -205,7 +205,7 @@ view count(bag: Bag) {
     }
 
     fn texts(tree: &UiNode) -> Vec<String> {
-        of_kind(tree, "text")
+        of_kind(tree, "ui.Text")
             .iter()
             .map(|t| text_prop(t, "value"))
             .collect()
@@ -213,7 +213,7 @@ view count(bag: Bag) {
 
     /// The titles of the list rows under `tree`.
     fn titles(tree: &UiNode) -> Vec<String> {
-        of_kind(tree, "list_row")
+        of_kind(tree, "ui.ListRow")
             .iter()
             .map(|t| text_prop(t, "title"))
             .collect()
@@ -283,7 +283,7 @@ view count(bag: Bag) {
         );
         assert_eq!(patches.len(), 1, "{patches:?}");
         assert_eq!(
-            text_prop(of_kind(view.tree(), "section")[0], "title"),
+            text_prop(of_kind(view.tree(), "ui.Section")[0], "title"),
             "Groceries"
         );
     }

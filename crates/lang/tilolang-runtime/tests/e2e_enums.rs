@@ -75,7 +75,7 @@ view drawing(c: Canvas) {
     }
 
     fn texts(v: &tilolang_runtime::ViewInstance) -> Vec<String> {
-        of_kind(v.tree(), "text")
+        of_kind(v.tree(), "ui.Text")
             .into_iter()
             .map(|t| text_prop(t, "value"))
             .collect()
@@ -156,7 +156,7 @@ view drawing(c: Canvas) {
         let (mut va, mut vb) = (open(&ada), open(&bo));
         let before = rt.history(&canvas.doc).unwrap().len();
         let inputs = |v: &tilolang_runtime::ViewInstance| -> Vec<String> {
-            of_kind(v.tree(), "input")
+            of_kind(v.tree(), "ui.TextInput")
                 .into_iter()
                 .map(|i| i.key.clone())
                 .collect()

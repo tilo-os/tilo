@@ -84,14 +84,14 @@ view notebook(nb: Notebook) {
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
 view note_row(n: Note) {
-    row(n.title, secondary: n.body, mark: if n.pinned { .pin })
+    ui.ListRow(title: n.title, secondary: n.body, mark: if n.pinned { .pin })
 }
 
 /// A note's window.
 view note_editor(n: Note) {
     document {
-        input(bind: n.title, placeholder: "Title")
-        input(bind: n.body, placeholder: "Write something", lines: 8)
+        ui.TextInput(value: n.title, placeholder: "Title")
+        ui.TextInput(value: n.body, placeholder: "Write something", lines: 8)
     }
 }
 

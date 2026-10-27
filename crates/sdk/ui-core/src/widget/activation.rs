@@ -168,6 +168,20 @@ impl Activation {
         self.native = Some(native);
     }
 
+    /// Route every activation through `event`, a component's data: an action through the
+    /// door, or a view intent published as this surface's own view action, `label` naming it.
+    pub(crate) fn set_event(&mut self, event: crate::component::Event, label: &str) {
+        match event {
+            crate::component::Event::None => {}
+            crate::component::Event::Action(binding) => self.set_action(binding),
+            crate::component::Event::View(intent) => self.set_native(
+                tilo_actions::OperationKind::View,
+                label,
+                Box::new(intent.sender()),
+            ),
+        }
+    }
+
     /// The resource a closure-bound surface publishes, if any.
     pub(crate) fn native_resources(&self) -> Vec<tilo_actions::Resource> {
         self.native

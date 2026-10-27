@@ -73,8 +73,11 @@ fn node(kind: &str, key: String, props: &[(&str, Value)], children: Vec<UiNode>)
     }
 }
 
+/// The kind of a text: the toolkit's `Text` component.
+const TEXT: &str = "ui.Text";
+
 fn text_node(key: String, value: &str) -> UiNode {
-    node("text", key, &[("value", Value::text(value))], Vec::new())
+    node(TEXT, key, &[("value", Value::text(value))], Vec::new())
 }
 
 fn error_node(key: &str, lines: &[String]) -> UiNode {
@@ -108,18 +111,18 @@ fn data_node(key: &str, v: &Json) -> UiNode {
             let label = m.get("label").and_then(Json::as_str).unwrap_or_default();
             let ty = m.get("type").and_then(Json::as_str).unwrap_or_default();
             let mut kids = vec![node(
-                "heading",
+                TEXT,
                 format!("{key}/label"),
-                &[("value", Value::text(label))],
+                &[
+                    ("value", Value::text(label)),
+                    ("role", Value::text("heading")),
+                ],
                 Vec::new(),
             )];
             kids.push(node(
-                "text",
+                TEXT,
                 format!("{key}/type"),
-                &[
-                    ("value", Value::text(ty)),
-                    ("style", Value::text("caption")),
-                ],
+                &[("value", Value::text(ty)), ("role", Value::text("caption"))],
                 Vec::new(),
             ));
             if let Some(Json::Object(fields)) = m.get("fields") {
@@ -131,11 +134,11 @@ fn data_node(key: &str, v: &Json) -> UiNode {
                         &[],
                         vec![
                             node(
-                                "text",
+                                TEXT,
                                 format!("{fk}/name"),
                                 &[
                                     ("value", Value::text(name)),
-                                    ("style", Value::text("caption")),
+                                    ("role", Value::text("caption")),
                                 ],
                                 Vec::new(),
                             ),

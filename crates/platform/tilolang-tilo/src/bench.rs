@@ -1610,7 +1610,7 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
 
 /// Pressing the main window's first button, one press a frame.
 fn press(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
-    let button = first_of(room.list.tree(), "button").ok_or("the main window has no button")?;
+    let button = first_of(room.list.tree(), "ui.Button").ok_or("the main window has no button")?;
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         let before = Work::of(room, &[]);

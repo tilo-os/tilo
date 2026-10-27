@@ -332,7 +332,7 @@ fn node_with<'a>(node: &'a UiNode, kind: &str, name: &str, value: &str) -> Optio
 }
 
 fn first_input(node: &UiNode) -> Option<&UiNode> {
-    if node.kind == "input" {
+    if node.kind == "ui.TextInput" {
         return Some(node);
     }
     node.children.iter().find_map(first_input)
@@ -794,7 +794,7 @@ fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
     let to = crate::reconcile::display(&host.runtime().read(&draft, "to").unwrap());
     let send = node_with(
         &room.window.detail_tree().unwrap(),
-        "button",
+        "ui.Button",
         "label",
         "Send",
     )
@@ -1080,7 +1080,7 @@ fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() 
 #[test]
 fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
     fn walk<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
-        if node.kind == "card" {
+        if node.kind == "ui.Card" {
             out.push(node);
         }
         for child in &node.children {
@@ -1236,7 +1236,7 @@ fn widget_with_id<'a>(
 fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widget() {
     use ui::widget::Widget as _;
     fn cards(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "card" {
+        if node.kind == "ui.Card" {
             out.push(node.key.clone());
         }
         for child in &node.children {
@@ -1381,7 +1381,7 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
 
 /// The first button under `node`.
 fn first_button(node: &UiNode) -> Option<&UiNode> {
-    if node.kind == "button" {
+    if node.kind == "ui.Button" {
         return Some(node);
     }
     node.children.iter().find_map(first_button)
@@ -1403,11 +1403,11 @@ fn page_node(value: &str, extra: bool) -> UiNode {
         node
     }
     let mut children = vec![
-        leaf("heading", "title", "Q3 plan"),
-        leaf("text", "said", value),
+        leaf("ui.Text", "title", "Q3 plan"),
+        leaf("ui.Text", "said", value),
     ];
     if extra {
-        children.push(leaf("text", "more", "and more"));
+        children.push(leaf("ui.Text", "more", "and more"));
     }
     UiNode {
         children,
