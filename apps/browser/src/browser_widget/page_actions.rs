@@ -495,7 +495,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
     // carries it.
     {
         let (engine, mut widget, mut doc, root) = page_on("https://letters.test/scan");
-        let content = tilo_content::ContentStore::memory();
+        let content = ui::content::ContentStore::memory();
         widget.attach_content(content.clone());
         engine.set_page_capture(SCANNED_LETTER_PNG);
 
