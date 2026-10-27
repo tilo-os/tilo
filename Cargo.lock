@@ -2509,6 +2509,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-fs",
  "tokio",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -24856,6 +24857,7 @@ dependencies = [
  "cms",
  "cobs",
  "code-editor",
+ "codebase-qualification",
  "codespan-reporting",
  "codex",
  "collab-fixtures",
