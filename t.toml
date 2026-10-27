@@ -1134,7 +1134,7 @@ name = "sandbox-jobs-real-kernel-build"
 requires = ["arch=x86_64"]
 run = """
 test=$(cargo test --locked -p tilo-sandbox --test job --no-run --message-format json \
-  | python3 -c 'import json, sys; print(next(m["executable"] for m in map(json.loads, sys.stdin) if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == "job"))')
+  | python3 -c 'import json, sys; print([m["executable"] for m in map(json.loads, sys.stdin) if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == "job"][0])')
 mkdir -p "$CARGO_TARGET_DIR/vm"
 cp "$test" "$CARGO_TARGET_DIR/vm/tilo-sandbox-job"
 """
