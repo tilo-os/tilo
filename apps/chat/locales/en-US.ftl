@@ -40,7 +40,7 @@ chat-emoji-group = Emoji group
 chat-emoji-choose = Choose { $name }
 
 # Governed voice status, shared by native and browser hosts.
-chat-call-issue-unavailable = Voice isn't available in this room yet
+chat-call-issue-unavailable = Call audio can't start on this device
 chat-call-issue-denied = You can't join calls in this room
 chat-call-issue-permission-denied = Microphone blocked. Allow it in settings, then unmute.
 chat-call-issue-source-lost = Microphone disconnected
