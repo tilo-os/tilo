@@ -1166,6 +1166,65 @@ fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
     });
 }
 
+/// A terminal that is not the app of a window (the code editor's panel)
+/// keeps its ended session; Restart shell opens a new one on the target the
+/// ended one ran on, in place.
+#[test]
+fn an_embedded_terminal_restarts_its_ended_shell_on_the_same_target() {
+    let opens: Opened = Rc::default();
+    let log = opens.clone();
+    let mut widget = TerminalWidget::spawn_headless().unwrap();
+    widget.set_sessions(Sessions::scripted(
+        RecentTarget::none(),
+        move |target, by, _| {
+            log.borrow_mut().push((target.clone(), by));
+            crate::inner::TerminalBackend::with_command(interactive_bash())
+                .map_err(|error| OpenError::Failed(error.to_string()))
+        },
+    ));
+    let doc = AutoCommit::new();
+    let settle =
+        |widget: &mut TerminalWidget, what: &str, done: &dyn Fn(&TerminalWidget) -> bool| {
+            let deadline = tilo_test_env::hang_deadline();
+            while !done(widget) {
+                assert!(std::time::Instant::now() < deadline, "{what}");
+                widget.sync(&doc, &ROOT);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+    widget.sync(&doc, &ROOT);
+    assert_eq!(widget.session_state(), &OpenState::Open);
+    assert!(!widget.can_restart(), "a running shell is not restarted");
+
+    widget.try_write_input(b"exit\r").unwrap();
+    settle(&mut widget, "the shell exits", &|w| w.is_disconnected());
+    assert!(widget.shell_exited());
+    assert!(
+        widget.lifecycle_banner().is_some(),
+        "the ended session stays"
+    );
+    assert!(widget.can_restart());
+
+    widget
+        .perform(crate::resource::TerminalEffect::Restart)
+        .expect("the shell starts again");
+    assert_eq!(widget.session_state(), &OpenState::Open);
+    assert!(!widget.is_disconnected());
+    assert_eq!(widget.lifecycle_banner(), None);
+    let first = opens.borrow()[0].clone();
+    assert_eq!(
+        opens.borrow().as_slice(),
+        &[first.clone(), first],
+        "the new session runs where the ended one did"
+    );
+    widget
+        .try_write_input(b"printf 'TILO_%s\\n' RESTARTED\r")
+        .unwrap();
+    settle(&mut widget, "the new shell runs commands", &|w| {
+        w.grid_text().contains("TILO_RESTARTED")
+    });
+}
+
 #[test]
 fn a_session_the_tab_replaced_or_dropped_closes_nothing() {
     let window = ui::hosted_window::HostedWindow::new();
@@ -1471,9 +1530,174 @@ fn a_supervisors_report_names_how_a_remote_session_ended() {
         SessionEnd::Superseded
     );
     assert_eq!(
+        SessionEnd::from_report(br#"{"ended":"failed","reason":"no namespace"}"#),
+        SessionEnd::Failed("no namespace".into())
+    );
+    assert_eq!(
         SessionEnd::from_report(b"not a report"),
         SessionEnd::Exited,
         "a lease closing is the shell exiting"
+    );
+}
+
+// An environment that could not be set up is not a shell that exited: the
+// window stays, says so plainly with Try again, and the supervisor's reason
+// is never shown, in the terminal or on the tab.
+#[cfg(unix)]
+#[test]
+fn an_environment_that_could_not_be_set_up_keeps_its_window_and_says_so() {
+    let handed: Handed = Rc::default();
+    let attaches: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+    let window = ui::hosted_window::HostedWindow::new();
+    let mut app = App::new().unwrap();
+    let lent = window.clone();
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.show_in_window(Some(lent)))
+        .unwrap();
+    let keep = handed.clone();
+    attach_with(&mut app, &attaches, move |_, _| {
+        let (output, supervisor_output) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (lease, supervisor_lease) = std::os::unix::net::UnixStream::pair().unwrap();
+        keep.borrow_mut()
+            .push((supervisor_output, supervisor_lease));
+        Ok(crate::inner::TerminalBackend::for_test_leased(
+            output, lease,
+        ))
+    });
+    on_tab(&mut app, |tab| {
+        tab.switch_target(&SessionTarget::environment("work"), Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(
+        on_tab(&mut app, |tab| tab.session_state().clone()),
+        OpenState::Open
+    );
+
+    let reason = "ush: the shell's sandbox could not be set up: its network namespace: denied";
+    end_remote(
+        &handed,
+        &format!(
+            "{}\n",
+            serde_json::json!({"ended": "failed", "reason": reason})
+        ),
+    );
+    settle_until(&mut app, "the tab notices the failed setup", |app| {
+        on_tab(app, |tab| tab.start_failure().is_some())
+    });
+    assert!(!window.take_close(), "a failed setup keeps the window");
+    let said = crate::i18n::t("terminal-setup-failed");
+    on_tab(&mut app, |tab| {
+        assert_eq!(tab.start_failure(), Some(said.as_str()));
+        assert!(
+            !tab.grid_text().contains("namespace"),
+            "the reason is never written into the terminal"
+        );
+    });
+
+    // Try again opens the session anew.
+    let before = attaches.borrow().len();
+    assert!(on_tab(&mut app, TerminalWidget::retry_session));
+    assert_eq!(attaches.borrow().len(), before + 1);
+    assert_eq!(
+        on_tab(&mut app, |tab| tab.session_state().clone()),
+        OpenState::Open
+    );
+}
+
+/// A fake shell runtime on `runtime`'s session socket that answers the
+/// environments panel's directory requests from `environments`, a record
+/// key and name each, making the one a create names.
+#[cfg(unix)]
+fn directory_runtime(
+    runtime: &std::path::Path,
+    environments: Vec<(String, String)>,
+) -> std::thread::JoinHandle<Vec<serde_json::Value>> {
+    use std::io::{BufRead, Write};
+    let listener = crate::tests::private_ush_listener(runtime);
+    std::thread::spawn(move || {
+        let mut environments = environments;
+        let mut asked = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            let mut line = String::new();
+            if std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .is_err()
+            {
+                continue;
+            }
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let reply = match request["op"].as_str() {
+                Some("list-relays") => serde_json::json!({"result": "relays", "relays": []}),
+                Some("stop") => break,
+                op => {
+                    if op == Some("create-environment") {
+                        let name = request["name"].as_str().unwrap().to_owned();
+                        environments.push((format!("env-{}", environments.len()), name));
+                    }
+                    let listed: Vec<serde_json::Value> = environments
+                        .iter()
+                        .map(|(key, name)| serde_json::json!({"key": key, "name": name}))
+                        .collect();
+                    serde_json::json!({"result": "environments", "environments": listed})
+                }
+            };
+            asked.push(request);
+            let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
+        }
+        asked
+    })
+}
+
+// The environments panel offers its form only where the shell runtime
+// answers: while it does not, the panel says so with Try again and nothing
+// can be made; once it answers, Try again lists its environments and the
+// name field makes a new one there.
+#[cfg(unix)]
+#[test]
+fn the_environments_panel_makes_environments_only_where_the_runtime_answers() {
+    use crate::inner::PanelOffer;
+    let runtime = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
+    let mut widget = TerminalWidget::spawn_hosted_deferred();
+
+    widget.open_environments_panel();
+    assert_eq!(
+        widget.environments_panel_offer(),
+        PanelOffer::Problem {
+            message: crate::i18n::t("terminal-env-unreachable"),
+            retry: true,
+        },
+        "no runtime answered: no form, and a way to ask again"
+    );
+    widget.set_environment_name_input("Writing");
+    widget.submit_environment_name();
+    assert!(widget.sessions().environments.is_empty(), "nothing is made");
+
+    let runtime_answers = directory_runtime(
+        runtime.path(),
+        vec![("default".to_owned(), "Default".to_owned())],
+    );
+    widget.open_environments_panel();
+    assert_eq!(widget.environments_panel_offer(), PanelOffer::Environments);
+    widget.set_environment_name_input("Writing");
+    widget.submit_environment_name();
+    let names: Vec<&str> = widget
+        .sessions()
+        .environments
+        .iter()
+        .map(|env| env.name.as_str())
+        .collect();
+    assert_eq!(names, ["Default", "Writing"]);
+
+    let stop = crate::HostedProcessServices::ask(&serde_json::json!({"op": "stop"}));
+    drop(stop);
+    let asked = runtime_answers.join().unwrap();
+    assert!(
+        asked
+            .iter()
+            .any(|request| request["op"] == "create-environment" && request["name"] == "Writing"),
+        "{asked:?}"
     );
 }
 

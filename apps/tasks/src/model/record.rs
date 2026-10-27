@@ -161,7 +161,12 @@ fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
     issue.comments.push(id, message);
 }
 
-#[resource(kind = "tasks.tracker", label = "Tasks", search = crate::model::search::entries)]
+#[resource(
+    kind = "tasks.tracker",
+    label = "Tasks",
+    search = crate::model::search::entries,
+    effects = crate::note::TasksEffect
+)]
 impl Tracker {
     /// Create an issue.
     ///
@@ -555,6 +560,43 @@ impl Tracker {
             .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
         run.phase = RunPhase::Stopped;
         run.paused = None;
+        run.updated_ms = now;
+        target.status = Status::Todo;
+        Ok(())
+    }
+
+    /// End a run that stopped showing a step longer than `after_ms` ago,
+    /// as idle: what it did stays, and the issue is left to be picked up
+    /// again.
+    ///
+    /// Any change of the run moves when it last showed one, so a run that
+    /// keeps reporting its step is never ended this way, and a paused one
+    /// waits as long as its person leaves it.
+    ///
+    /// # Errors
+    /// Refuses a run that is not going, or one that showed a step more
+    /// recently than `after_ms`.
+    #[action(housekeeping, writes = issues)]
+    pub fn end_idle_run(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("How long the run may go without a step, in milliseconds")] after_ms: i64,
+    ) -> Result<(), Refusal> {
+        if after_ms <= 0 {
+            return Err(Refusal::new("An idle run waits at least a moment"));
+        }
+        let now = cx.now_ms();
+        let target = self.issue_mut(issue)?;
+        let run = target
+            .run
+            .as_mut()
+            .filter(|run| run.phase.active() && run.paused.is_none())
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        if now.saturating_sub(run.updated_ms) < after_ms {
+            return Err(Refusal::new("The run showed a step that recently"));
+        }
+        run.phase = RunPhase::Stopped;
         run.updated_ms = now;
         target.status = Status::Todo;
         Ok(())

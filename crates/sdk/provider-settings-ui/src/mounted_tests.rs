@@ -579,6 +579,9 @@ fn mounted_test_connection_lists_models_to_choose_from_and_says_why_it_failed() 
         .unwrap()
         .unwrap_err();
     assert_eq!(refused, crate::i18n::t("agent-test-key-refused"));
+    // The refusal is said once, on the provider's own card, not again in one
+    // notice line that speaks for every provider.
+    assert_eq!(with_panel(&mut app, |panel| panel.notice.clone()), None);
 
     backend
         .state
@@ -591,6 +594,12 @@ fn mounted_test_connection_lists_models_to_choose_from_and_says_why_it_failed() 
         .unwrap()
         .unwrap();
     assert_eq!(listed.len(), 2);
+    // The result names the provider it is about.
+    let notice = with_panel(&mut app, |panel| panel.notice.clone()).unwrap_or_default();
+    assert!(
+        notice.contains("OpenRouter") && notice.contains('2'),
+        "the test result names its provider and its count: {notice}"
+    );
     // Listing changes nothing until a model is chosen.
     assert_eq!(config(&mut app).profiles[0].default_model, None);
 

@@ -145,12 +145,8 @@ impl ActionCx {
 
     /// A fresh UUID, unique to this action and stable under replay.
     pub fn uuid(&mut self) -> uuid::Uuid {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"uuid");
-        hasher.update(&self.seed);
-        hasher.update(&self.minted.to_le_bytes());
+        let uuid = minted_uuid(&self.seed, self.minted);
         self.minted = self.minted.saturating_add(1);
-        let uuid = uuid_from(hasher.finalize().as_bytes());
         note_minted(&uuid.to_string());
         uuid
     }
@@ -284,6 +280,14 @@ pub fn fresh_uuid() -> uuid::Uuid {
     })
 }
 
+fn minted_uuid(seed: &[u8; 32], counter: u64) -> uuid::Uuid {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"uuid");
+    hasher.update(seed);
+    hasher.update(&counter.to_le_bytes());
+    uuid_from(hasher.finalize().as_bytes())
+}
+
 fn minted(seed: &[u8; 32], counter: u64) -> Id {
     let mut hasher = blake3::Hasher::new();
     hasher.update(seed);
@@ -298,6 +302,25 @@ fn minted(seed: &[u8; 32], counter: u64) -> Id {
 /// its action created (the first id of a "new snippet"). For an action
 /// that is not a group, applied with nothing else pending.
 pub fn minted_ids(envelope: &tilo_actions::ActionEnvelope) -> impl Iterator<Item = Id> {
+    let seed = envelope_seed(envelope);
+    (0_u64..).map(move |counter| minted(&seed, counter))
+}
+
+/// What the action `envelope` committed may have minted at each count, in
+/// order: the id [`ActionCx::id`] mints there and the UUID [`ActionCx::uuid`]
+/// mints there instead, as the action minted one or the other.
+pub fn minted_keys(envelope: &tilo_actions::ActionEnvelope) -> impl Iterator<Item = [String; 2]> {
+    let seed = envelope_seed(envelope);
+    (0_u64..).map(move |counter| {
+        [
+            minted(&seed, counter).as_str().to_owned(),
+            minted_uuid(&seed, counter).to_string(),
+        ]
+    })
+}
+
+/// The seed the action `envelope` committed minted its ids from.
+fn envelope_seed(envelope: &tilo_actions::ActionEnvelope) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo-resource/action-seed/v1");
     hasher.update(envelope.actor().to_bytes());
@@ -307,8 +330,7 @@ pub fn minted_ids(envelope: &tilo_actions::ActionEnvelope) -> impl Iterator<Item
         hasher.update(head);
     }
     hasher.update(&envelope.action.payload);
-    let seed = *hasher.finalize().as_bytes();
-    (0_u64..).map(move |counter| minted(&seed, counter))
+    *hasher.finalize().as_bytes()
 }
 
 /// A deterministic seed for applying `payload` to `doc`: the document's

@@ -3853,21 +3853,25 @@ impl Widget for DataTableCore {
         for cell in &mut self.mounted_cells {
             children_changed |= cell.widget.update(state, path);
         }
-        // A reveal in progress, like a glide, moves only the viewport.
+        // A reveal in progress, like a glide, moves only the viewport. Rows
+        // draw themselves where it stands; the cells of a column of controls
+        // are placed by a layout, and rows it brings near mount through that
+        // layout's rebuild. It is no change of the model, so it does not
+        // report one (as `Scrollable::update`).
+        let offset = self.viewport.offset();
         self.follow_scroll_to(crate::motion::frame_now());
-        if !self.momentum.is_active() {
-            self.refresh_view_anchor();
-            return received_changes || children_changed;
+        if self.momentum.is_active() {
+            let delta = self.momentum.advance(now);
+            let before = self.viewport.offset();
+            self.set_scroll_offset(before + delta);
+            if self.viewport.offset().to_bits() == before.to_bits() {
+                self.momentum.stop();
+            }
         }
-        // A glide moves only the viewport, which the frame it asks for lays
-        // out; rows it brings near mount through that layout's rebuild. It
-        // is no change of the model, so it does not report one (as
-        // `Scrollable::update`).
-        let delta = self.momentum.advance(now);
-        let before = self.viewport.offset();
-        self.set_scroll_offset(before + delta);
-        if self.viewport.offset().to_bits() == before.to_bits() {
-            self.momentum.stop();
+        if self.viewport.offset().to_bits() != offset.to_bits()
+            && (self.remount || !self.mounted_cells.is_empty())
+        {
+            crate::widget::note_layout_moved();
         }
         self.refresh_view_anchor();
         received_changes || children_changed

@@ -2527,9 +2527,12 @@ pub fn minted_items(
     if stored.is_empty() {
         return Vec::new();
     }
-    tilo_resource::minted_ids(envelope)
-        .map_while(|id| {
-            let obj = doc.import_obj(&stored.get(id.as_str())?.to_string()).ok()?;
+    tilo_resource::minted_keys(envelope)
+        .map_while(|keys| {
+            let (id, obj) = keys
+                .into_iter()
+                .find_map(|id| stored.get(id.as_str()).map(|obj| (id, obj.to_string())))?;
+            let obj = doc.import_obj(&obj).ok()?;
             automerge::ReadDoc::get(&*doc, &obj, id.as_str())
                 .ok()
                 .flatten()?;

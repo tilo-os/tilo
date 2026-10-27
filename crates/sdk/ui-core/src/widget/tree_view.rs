@@ -3221,11 +3221,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             .flatten();
         let body = Rect::new(self.rect.x0, self.body_top(), self.rect.x1, self.rect.y1);
         // A settled tree damages the rows that changed (a renamed or hovered
-        // row, the rename field's caret), not its column. Rows in motion,
-        // a drag, an open menu, delegated rows and navigation tiles prove
-        // nothing, and repaint the tree.
-        let tracks_rows = !self.is_nav()
-            && self.mounted_rows.is_empty()
+        // row, the rename field's caret), not its column; navigation rows
+        // too, which paint inside their row. Rows in motion, a drag, an open
+        // menu and delegated rows prove nothing, and repaint the tree.
+        let tracks_rows = self.mounted_rows.is_empty()
             && !self.transitions.is_active(now)
             && !self.reorder.is_active()
             && !self.reorder.is_tracking()
@@ -3363,8 +3362,18 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                             &row_rect,
                         );
                     }
-                    let painted =
-                        self.draw_nav_row(scene, transform, text_renderer, theme, id, row_rect);
+                    // The pointer where the row paints: unscrolled with it.
+                    let pointer = self
+                        .last_cursor
+                        .map(|point| point + vello::kurbo::Vec2::new(0.0, shift + give));
+                    let painted = self.draw_nav_row(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        id,
+                        (row_rect, pointer),
+                    );
                     if faded {
                         scene.pop_layer();
                     }

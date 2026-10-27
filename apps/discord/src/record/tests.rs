@@ -640,8 +640,8 @@ fn photo_of(bot: &Replica<Guild>) -> (Option<String>, Option<String>) {
 
 #[test]
 fn a_linked_avatar_is_kept_as_a_picture_of_the_hash_it_is_of() {
-    let mut bot = link_ada(connected());
     const PNG: &str = "data:image/png;base64,iVBORw0KGgo=";
+    let mut bot = link_ada(connected());
     assert!(set_photo(&mut bot, "a1b2", "https://cdn.discordapp.com/x.png").is_err());
     assert!(set_photo(&mut bot, "a1b2", "data:image/gif;base64,R0lG").is_err());
     let long = format!("data:image/png;base64,{}", "A".repeat(MAX_PHOTO_CHARS));

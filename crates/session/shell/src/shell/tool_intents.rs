@@ -288,6 +288,12 @@ fn decide_open(
         crate::shell::catalogue::available_apps,
     );
     if resolution == app_opens::Resolution::Launch {
+        // Personal Settings runs in the person's personal workspace,
+        // whichever workspace the app that asked for it is in.
+        let room = chrome
+            .borrow()
+            .tree_mut()
+            .room_for_app(&app_opens::opened_app(&open.request.intent), room);
         return Decision::Launch(room);
     }
     app_opens::show(
@@ -341,7 +347,7 @@ fn ensure_active_workspace_matches(chrome: &Chrome, request: &ToolRequest) -> Re
         .map(|workspace| workspace.room().to_string())
         .ok_or_else(|| "there is no active workspace".to_string())?;
     if active_room != request.workspace_id {
-        return Err("Personal Settings is attached to a different workspace".into());
+        return Err("the request is attached to a different workspace".into());
     }
     Ok(())
 }
