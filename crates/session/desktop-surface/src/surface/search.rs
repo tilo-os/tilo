@@ -491,9 +491,10 @@ impl DesktopSurface {
             .map(|scope| scope.label.clone())
             .or_else(|| window_app(&self.shared.borrow().tree, group))
             .filter(|name| !name.is_empty());
+        let published = host.window_search(doc);
         let data = SearchData {
-            resources: ui::widget::published_resources(host, doc),
-            providers: ui::widget::published_search_providers(host),
+            resources: published.resources,
+            providers: published.providers,
             window: true,
             scope: scope.map(|scope| scope.anchor.clone()),
             placeholder: searched.map(|name| {
