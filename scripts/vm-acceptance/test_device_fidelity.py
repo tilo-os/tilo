@@ -129,6 +129,14 @@ class FakeVm:
         path.write_bytes(data)
 
     def actions(self, query=""):
+        notes = self.state / "notes"
+        if query and query != "permission-prompts":
+            # The desktop's listing for a title: Notes' page of that title, and an
+            # unrelated action that mentions nothing of it.
+            pages = notes.read_text().splitlines() if notes.exists() else []
+            return [{"provider": "app-actions", "id": "so.tilo.settings\x1foutside"}] + [
+                {"provider": "7", "application": "so.tilo.notes", "id": f"page:{t}", "title": t}
+                for t in pages if query in t]
         if not (self.state / "prompt").exists() or (self.state / "answer").exists() or not self.answer_prompts:
             return []
         return [{"provider": "permission-prompts", "id": f"{d}@p1"} for d in ("allow-once", "deny")]
@@ -139,9 +147,6 @@ class FakeVm:
         return {}
 
     def run(self, *args, **kwargs):
-        notes = self.state / "notes"
-        if args[:2] == ("control", "read") and notes.exists():
-            return json.dumps({"notes": notes.read_text().splitlines()})
         return ""
 
     def raw(self, op, timeout=60):
