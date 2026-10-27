@@ -296,7 +296,12 @@ impl App {
             });
             self.focusable_order = node.into_iter().collect();
             self.accessibility.focus_trap_active = true;
-            self.focused_node = node;
+            // The trap takes the keyboard as it appears, so the owner is
+            // chosen here rather than by a Tab or a click. Tell it: a control
+            // that is not told publishes `focused: false` while the keyboard
+            // is on it, and a screen reader, an agent and `tilo-control` read
+            // focus from that node.
+            self.hand_focus_to(node);
             return;
         }
         if self.close_admission.dialog.is_none() {
@@ -713,6 +718,34 @@ impl App {
         // like any other edit.
         if changed {
             self.broadcast_doc_delta();
+        }
+    }
+
+    /// Make `node` the owner and make sure its widget knows. The focus order
+    /// runs every layout, so this is also where a control that became the
+    /// owner without being told is repaired: a widget that answers
+    /// `focused: false` while the keyboard is on it leaves a screen reader, an
+    /// agent and `tilo-control` believing nothing is focused.
+    fn hand_focus_to(&mut self, node: Option<NodeId>) {
+        let Some(node) = node else {
+            self.set_focused_node(None);
+            return;
+        };
+        if let Some(old) = self.focused_node
+            && old != node
+        {
+            let _ = self.mutate_node(old, |widget| widget.set_focus(false));
+        }
+        let told = self
+            .inspect_node(node, |widget| widget.is_focused())
+            .unwrap_or(false);
+        if !told {
+            let _ = self.mutate_node(node, |widget| widget.set_focus(true));
+        }
+        if self.focused_node != Some(node) {
+            self.focused_node = Some(node);
+            self.layout.layout_dirty = true;
+            self.needs_sync = true;
         }
     }
 
