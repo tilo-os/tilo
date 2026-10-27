@@ -95,7 +95,7 @@ fn shown(list: TodoList, show: Show) -> List<Todo> {
 /// The list's window. Which items it shows is the window's: everyone looking sees the same.
 view todo_list(todos: TodoList) {
     window show: Show = .all
-    list(shown(todos, show), filter: show, empty: "Nothing to do")
+    std.list(todos, shown(todos, show), filter: show, count: s -> shown(todos, s).len(), empty: "Nothing to do")
 }
 
 /// One item in a list: a checkbox for whether it is done.
@@ -105,7 +105,7 @@ view item_row(item: Todo) {
 
 /// An item's window.
 view item_editor(item: Todo) {
-    document {
+    std.document(item) {
         input(bind: item.title, placeholder: "Title")
         toggle(label: "Done", bind: item.done)
         field("Due") {

@@ -62,6 +62,10 @@ pub fn description_of(node: &UiNode) -> Option<&'static Description> {
     catalogue().get(component_name(&node.kind)?)
 }
 
+/// Where the rows of a virtual list come from: the host renders them as the list shows them.
+/// Given the list node's key, its rows; `None` when the host renders no rows for it.
+pub type RowsOf = Rc<dyn Fn(&str) -> Option<ui::component::SharedRows>>;
+
 /// What a built component's events do, kept by its key until its node is built again.
 struct Built {
     component: String,
@@ -77,6 +81,8 @@ struct Built {
 pub struct Adapter {
     fired: ui::Intents<Fired>,
     built: Rc<RefCell<HashMap<String, Built>>>,
+    /// The resources components were given, by id: what an event that carries one reports.
+    resources: Rc<RefCell<HashMap<String, ResourceRef>>>,
 }
 
 impl Adapter {
@@ -98,11 +104,35 @@ impl Adapter {
                     };
                 }
                 if component.events.contains(&fired.event) {
-                    return Some(UiEvent::Fire(fired.key, fired.event));
+                    let value = fired.value.as_ref().and_then(|value| self.value_of(value));
+                    return Some(UiEvent::Fire(fired.key, fired.event, value));
                 }
                 component.presents.clone().map(UiEvent::Open)
             })
             .collect()
+    }
+
+    /// What an event carries, as the runtime's value: a resource by the id it was given as.
+    fn value_of(&self, value: &Prop) -> Option<Value> {
+        Some(match value {
+            Prop::Text(text) | Prop::Choice(text) | Prop::Icon(text) => Value::Text(text.clone()),
+            Prop::Int(number) => Value::Int(*number),
+            Prop::Float(number) => Value::Float(*number),
+            Prop::Bool(flag) => Value::Bool(*flag),
+            Prop::Resource(id) => Value::resource(self.resources.borrow().get(id)?),
+            Prop::Principal { identity, .. } => {
+                Value::Principal(tilolang_tilo::runtime::Principal::new(identity.clone()))
+            }
+            Prop::None | Prop::List(_) => return None,
+        })
+    }
+
+    /// Keep the resource `target` a component was given, by its id.
+    fn given(&self, target: &ResourceRef) {
+        self.resources
+            .borrow_mut()
+            .entry(target.id_string())
+            .or_insert_with(|| target.clone());
     }
 
     /// Keep what the events of `node`, about to be built, do.
@@ -127,23 +157,40 @@ fn presented(node: &UiNode, description: &Description) -> Option<ResourceRef> {
     }
 }
 
-/// The nodes in the slot `slot` of `node`.
+/// The nodes in the slot `slot` of `node`, a view call's or a loop row's fragment seen through:
+/// the components a slot that takes components holds, wherever the view's calls and loops put
+/// them.
+#[must_use]
+pub fn slot_parts<'a>(node: &'a UiNode, description: &Description, slot: &str) -> Vec<&'a UiNode> {
+    fn through<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
+        if node.kind == "fragment" {
+            for child in &node.children {
+                through(child, out);
+            }
+        } else {
+            out.push(node);
+        }
+    }
+    let mut out = Vec::new();
+    for child in slot_nodes(node, description, slot) {
+        through(child, &mut out);
+    }
+    out
+}
+
+/// The nodes in the slot `slot` of `node`: those of its `slot` child of that name, and for the
+/// default slot those given without a name too.
 #[must_use]
 pub fn slot_nodes<'a>(node: &'a UiNode, description: &Description, slot: &str) -> Vec<&'a UiNode> {
-    if description.slot(slot).is_some_and(|s| s.default) {
-        return node
-            .children
-            .iter()
-            .filter(|child| child.kind != SLOT)
-            .collect();
-    }
+    let unnamed = description.slot(slot).is_some_and(|s| s.default);
+    let named = node.children.iter().filter(|child| {
+        child.kind == SLOT
+            && matches!(child.props.get("name"), Some(Value::Text(name)) if name == slot)
+    });
     node.children
         .iter()
-        .filter(|child| {
-            child.kind == SLOT
-                && matches!(child.props.get("name"), Some(Value::Text(name)) if name == slot)
-        })
-        .flat_map(|child| child.children.iter())
+        .filter(|child| unnamed && child.kind != SLOT)
+        .chain(named.flat_map(|child| child.children.iter()))
         .collect()
 }
 
@@ -220,7 +267,10 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
             identity: who.0.clone(),
             name: reconciler.person(&who.0),
         },
-        (Type::Resource, Value::Ref(reference)) => Prop::Resource(reference.target.id_string()),
+        (Type::Resource, Value::Ref(reference)) => {
+            reconciler.adapter().given(&reference.target);
+            Prop::Resource(reference.target.id_string())
+        }
         (Type::Icon, Value::Text(name)) => Prop::Icon(name.replace('_', "-")),
         (Type::Choice { .. }, Value::Text(case)) => Prop::Choice(case.clone()),
         _ => return None,
@@ -290,14 +340,41 @@ impl Source for NodeSource<'_> {
         })
     }
 
+    /// Each view built: a component as its widget (a header's button stays the button the
+    /// header lays out), anything else in a pane the reconciler reaches again.
     fn children(&mut self, slot: &str) -> Vec<Element> {
         if !self.build_views {
             return Vec::new();
         }
         slot_nodes(self.node, self.description, slot)
             .into_iter()
-            .map(|child| Box::new(Pane::new(self.reconciler.build(child))) as Element)
+            .map(|child| {
+                let built = self.reconciler.build(child);
+                if description_of(child).is_some() {
+                    built
+                } else {
+                    Box::new(Pane::new(built)) as Element
+                }
+            })
             .collect()
+    }
+
+    fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
+        slot_parts(self.node, self.description, slot)
+            .into_iter()
+            .map(|child| component_name(&child.kind).map(str::to_owned))
+            .collect()
+    }
+
+    fn rows(&mut self, slot: &str) -> Option<ui::component::SharedRows> {
+        let is_rows = self
+            .description
+            .slot(slot)
+            .is_some_and(|s| s.default && s.many);
+        if !is_rows || !tilolang_tilo::runtime::view::is_virtual(&self.node.kind) {
+            return None;
+        }
+        self.reconciler.rows_of(&self.node.key)
     }
 
     fn components(
@@ -305,7 +382,7 @@ impl Source for NodeSource<'_> {
         slot: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
-        let nodes = slot_nodes(self.node, self.description, slot);
+        let nodes = slot_parts(self.node, self.description, slot);
         let mut count = 0usize;
         for child in nodes {
             let Some(description) = description_of(child) else {
@@ -333,6 +410,8 @@ impl Source for NodeSource<'_> {
 /// key), and in the slots that accept components, the same components by the same rule.
 #[must_use]
 pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
+    // The rows of a virtual list change through the host's rows, never through the node.
+    let virtual_rows = tilolang_tilo::runtime::view::is_virtual(&b.kind);
     a.props == b.props
         && a.binding == b.binding
         && a.events.keys().eq(b.events.keys())
@@ -340,10 +419,11 @@ pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
             .slots
             .iter()
             .filter(|slot| matches!(slot.accepts, Accepts::Component(_)))
+            .filter(|slot| !(virtual_rows && slot.default))
             .all(|slot| {
                 let (old, new) = (
-                    slot_nodes(a, description, &slot.name),
-                    slot_nodes(b, description, &slot.name),
+                    slot_parts(a, description, &slot.name),
+                    slot_parts(b, description, &slot.name),
                 );
                 old.len() == new.len()
                     && old.iter().zip(&new).all(|(x, y)| {
@@ -402,7 +482,8 @@ mod tests {
         std::ptr::from_ref(widget).cast::<()>() as usize
     }
 
-    /// The widgets the views of a component hold, in order, through their panes.
+    /// The widgets the views of a component hold, in order: those in panes, and the texts the
+    /// tests give each view, one letter each (a component's own title is a word).
     fn views(widget: &mut Element) -> Vec<usize> {
         fn walk(widget: &mut dyn Widget, out: &mut Vec<usize>) {
             if let Some(pane) = widget
@@ -410,6 +491,14 @@ mod tests {
                 .and_then(|any| any.downcast_mut::<Pane>())
             {
                 out.push(identity(pane.content_mut().as_ref()));
+                return;
+            }
+            let lettered = widget
+                .accessibility()
+                .and_then(|node| node.name)
+                .is_some_and(|name| name.chars().count() == 1);
+            if lettered {
+                out.push(identity(&*widget));
                 return;
             }
             for child in widget.children_mut() {
@@ -422,7 +511,7 @@ mod tests {
     }
 
     fn label(widget: &Element) -> Option<String> {
-        widget.accessibility().and_then(|node| node.name.clone())
+        widget.accessibility().and_then(|node| node.name)
     }
 
     #[test]
@@ -532,7 +621,7 @@ mod tests {
         event.fire(None);
         assert_eq!(
             reconciler.adapter().take_events(),
-            vec![UiEvent::Fire("b".to_owned(), "press".to_owned())],
+            vec![UiEvent::Fire("b".to_owned(), "press".to_owned(), None)],
             "the window fires the action reference the view attached"
         );
 
