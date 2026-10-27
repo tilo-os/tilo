@@ -93,6 +93,13 @@ impl ShellOverlayHost {
             ));
             self.last_search_query = "\0resource-scope-enter\0".into();
         }
+        // A search on a resource of the app's opens with the text that finds
+        // its row, and that row under the cursor.
+        self.palette_anchor = request.anchored().cloned();
+        let query = self
+            .palette_anchor
+            .as_ref()
+            .map_or(query, |anchor| anchor.query.clone());
         self.palette.set_query(&query);
         self.palette_visible = true;
     }
@@ -155,6 +162,7 @@ impl ShellOverlayHost {
         // An app's prepared action belongs to the search it opened.
         self.palette_offer = None;
         self.palette_asked = None;
+        self.palette_anchor = None;
         let effective = if matches!(scope, SearchScope::ActiveApp)
             && self
                 .chrome
@@ -584,6 +592,7 @@ impl ShellOverlayHost {
     }
 
     pub(super) fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
+        let anchor = self.palette_anchor.clone();
         self.poll_pending_action_admissions();
         // A step collecting an argument owns the list until it ends.
         if self.param_flow.is_some() || self.secondary_flow.is_some() {
@@ -693,10 +702,41 @@ impl ShellOverlayHost {
             self.palette.selected_id().map(str::to_owned)
         };
         self.search_results = results;
+        self.select_anchored_row(anchor.as_ref());
         self.sync_filter_band();
         // New entry count needs a new palette node height on the next
         // rebuild, or the palette stays pinned at its first-paint size.
         self.palette_layout_dirty = true;
+    }
+
+    /// A search opened on a resource of the app's
+    /// ([`ui::search::SearchRequest::on`]) starts on the row that opens it,
+    /// whatever the ranking put first, so one Enter opens it. Until the
+    /// person moves the cursor, the row is kept as the automatic selection
+    /// and follows what the providers answer.
+    fn select_anchored_row(&mut self, anchor: Option<&ui::search::Anchor>) {
+        let Some(anchor) = anchor else {
+            return;
+        };
+        let Some(index) = self.search_results.iter().position(|result| {
+            let resource = crate::shell::search::row_resource(result);
+            resource == anchor.resource
+                || resource
+                    .strip_suffix("#open")
+                    .is_some_and(|base| base == anchor.resource)
+        }) else {
+            return;
+        };
+        let Some(cursor) = self
+            .palette
+            .visible_entries()
+            .iter()
+            .position(|entry| entry.id == format!("result:{index}"))
+        else {
+            return;
+        };
+        self.palette.set_cursor(cursor);
+        self.auto_selected_row = self.palette.selected_id().map(str::to_owned);
     }
 
     /// Keep an open palette's rows true to what they show: rebuild them when

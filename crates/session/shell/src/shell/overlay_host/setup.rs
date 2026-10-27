@@ -425,6 +425,7 @@ impl ShellOverlayHost {
             param_flow: None,
             palette_offer: None,
             palette_asked: None,
+            palette_anchor: None,
             secondary_flow: None,
             expanded_kinds: Vec::new(),
             more_rows: Vec::new(),

@@ -96,6 +96,7 @@ impl ContinueProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         };
         Some(row.with_facts([app, opened]))
     }
