@@ -175,14 +175,17 @@ struct Held {
 }
 
 /// A list as one snapshot of the index has it, read page by page: the entry at an index, and
-/// where an entry is. Only the directory and the page read last are held.
+/// where an entry is. Only the directory and the two pages read last are held: a list is read
+/// where it ends as well as where its rows are shown, and holding one page alone would read
+/// them in turn.
 pub struct Pages<S: ListSource> {
     source: Arc<S>,
     list: String,
     dir: Dir,
     /// Per page, how many entries the pages up to and with it hold.
     ends: Vec<usize>,
-    held: RefCell<Option<Held>>,
+    /// The page read last, then the one before.
+    held: RefCell<[Option<Held>; 2]>,
     stats: Arc<super::IndexStats>,
 }
 
@@ -218,7 +221,7 @@ impl<S: ListSource> Pages<S> {
             list: list.to_owned(),
             dir,
             ends,
-            held: RefCell::new(None),
+            held: RefCell::new([None, None]),
             stats,
         })
     }
@@ -231,10 +234,13 @@ impl<S: ListSource> Pages<S> {
         self.len() == 0
     }
 
-    /// Run `f` over the page `index`, read if it is not the one held.
+    /// Run `f` over the page `index`, read if it is not one held.
     fn with_page<T>(&self, index: usize, f: impl FnOnce(&Held) -> T) -> Option<T> {
         let mut held = self.held.borrow_mut();
-        if held.as_ref().is_none_or(|page| page.index != index) {
+        let [last, before] = &mut *held;
+        if before.as_ref().is_some_and(|page| page.index == index) {
+            std::mem::swap(last, before);
+        } else if last.as_ref().is_none_or(|page| page.index != index) {
             let page = self.dir.pages.get(index)?;
             self.stats.count_page();
             let Ok(entries) = read_page(&*self.source, &self.list, page.seq) else {
@@ -245,9 +251,9 @@ impl<S: ListSource> Pages<S> {
                 .into_iter()
                 .map(|(key, id)| (key.into_boxed_str(), Rc::<str>::from(id)))
                 .unzip();
-            *held = Some(Held { index, ids, keys });
+            *before = last.replace(Held { index, ids, keys });
         }
-        held.as_ref().map(f)
+        last.as_ref().map(f)
     }
 
     /// The page holding the entry at `index`, and where in it the entry is.
