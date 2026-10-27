@@ -156,7 +156,8 @@ fn asked_of_governor(chrome: &Chrome) -> Vec<GovernanceRequest> {
         .iter()
         .filter_map(|entry| match &entry.change {
             shell::shell::state::RoomChange::Governance(request) => Some(request.clone()),
-            shell::shell::state::RoomChange::Receipt(_) => None,
+            shell::shell::state::RoomChange::Receipt(_)
+            | shell::shell::state::RoomChange::WindowUnshare { .. } => None,
         })
         .collect()
 }

@@ -601,6 +601,17 @@ impl AppActionBroker {
             .flatten()
     }
 
+    /// The connection (`PublishedSurface::peer_id`) of the local app window
+    /// the shell launched for window instance `instance`, while it is
+    /// connected: where an action meant for that one window goes.
+    #[must_use]
+    pub fn window_peer(&self, instance: u64) -> Option<u64> {
+        self.state
+            .while_live(|state| Ok(state.window_peer(instance)))
+            .ok()
+            .flatten()
+    }
+
     /// Generation of the retained published-surface source.  Palette query
     /// edits use this inexpensive read before deciding to clone a new source
     /// snapshot.
