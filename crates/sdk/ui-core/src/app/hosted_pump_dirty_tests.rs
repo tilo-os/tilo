@@ -430,6 +430,7 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: owned_declared_directory_factory,
     };
     let permissions = Rc::new(RefCell::new(
@@ -529,6 +530,7 @@ fn a_component_queue_notification_reaches_its_app_without_forcing_a_sync() {
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: owned_declared_directory_factory,
     };
     let context = HostContext::prepare(

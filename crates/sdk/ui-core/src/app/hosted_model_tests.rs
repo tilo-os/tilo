@@ -272,6 +272,7 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: owned_declared_directory_factory,
     };
     let context = HostContext::prepare(
