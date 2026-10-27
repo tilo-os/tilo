@@ -43,21 +43,40 @@ let tab;
 let observer;
 const stages = [];
 const stage = name => {stages.push(name); observer?.mark(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
+/** Where the journey stands: each step that waits on the page (a navigation,
+ * a card it presses, a submit) as well as each completed stage, so a journey
+ * that stops names the wait it never got past. */
+const marks = [];
+const mark = name => {
+  marks.push({name, at: new Date().toISOString(), stage: stages.at(-1) ?? null});
+  observer?.mark(name);
+};
 const evidence = resolve(fixture.encryptedRestart ? 'target/mounted-resource-encrypted' : fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
 mkdirSync(evidence, {recursive:true});
-/** What the page says, and what its graphics start-up waits on while its
- * first frame is late (`data-gpu-step`: device, pipelines, surface,
- * first-frame). */
+/** What the page says, where it says it is getting in (`data-arrival`: load,
+ * join, open, draw, done or stopped), which card it asks (`data-card`) or
+ * what it settled on (`data-entry`), and what its graphics start-up waits
+ * on while its first frame is late (`data-gpu-step`: device, pipelines,
+ * surface, first-frame). */
 const pageState = () => Promise.race([
   tab?.evaluate(`JSON.stringify({status: document.querySelector("#status")?.textContent ?? "",
+    arrival: document.documentElement.dataset.arrival ?? null,
+    card: document.querySelector(".tilo-entry-card")?.dataset.card ?? null,
+    entry: document.documentElement.dataset.entry ?? null,
     gpuStep: document.documentElement.dataset.gpuStep ?? null})`, {timeout:250})
     .then(JSON.parse).catch(() => ({status: 'status unavailable'})) ?? {status: 'status unavailable'},
   new Promise(resolve => setTimeout(() => resolve({status: 'status observation unavailable'}), 250)),
 ]);
 const deadline = setTimeout(async () => {
   const page = await pageState();
+  const since = marks.findLast(mark => mark.name === stages.at(-1))?.at;
   writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'timeout',
-    lastStage:stages.at(-1) ?? null, pageStatus: String(page.status ?? '').slice(0, 500),
+    lastStage:stages.at(-1) ?? null,
+    lastMark: marks.at(-1)?.name ?? null,
+    lastMarkMs: marks.at(-1) ? Date.parse(marks.at(-1).at) - Date.parse(marks[0]?.at ?? marks.at(-1).at) : null,
+    sinceStageMs: marks.at(-1) && since ? Date.parse(marks.at(-1).at) - Date.parse(since) : null,
+    pageStatus: String(page.status ?? '').slice(0, 500),
+    arrival: page.arrival ?? null, card: page.card ?? null, entry: page.entry ?? null,
     gpuStep: page.gpuStep ?? null}, null, 2) + '\n');
   console.error('Mounted resource journey exceeded its 130-second bound');
   await observer?.finish().catch(error => console.error('main-thread evidence unavailable', error));
@@ -245,8 +264,10 @@ try {
     assert.equal(offered.length, 2, `the account choice offers both fixture accounts: ${JSON.stringify(offered)}`);
   };
   const chooseAccount = async name => {
+    mark(`choose-account ${name}`);
     await waitForAccounts();
     await tab.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(accountChoice + ' button')})).find(button => button.textContent.includes(${JSON.stringify(name)})).click()`);
+    mark(`account-chosen ${name}`);
   };
   observer.mark('navigate-link');
   await tab.navigate(link);
@@ -254,6 +275,7 @@ try {
   await tab.waitFor(`${entryOutcome} !== undefined`);
   assert.equal(await tab.evaluate(entryOutcome), 'refused');
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
+  mark('unadmitted-reader-refused');
   stage('explicit-unadmitted-account-refused-without-enrollment');
   await tab.navigate(origin + '/fixture.html');
   await tab.navigate(link);
@@ -261,7 +283,10 @@ try {
   await chooseAccount('Fixture reader');
   await tab.waitFor(`${entryOutcome} !== undefined`, {timeout:45_000});
   assert.equal(await tab.evaluate(entryOutcome), 'open', 'the admitted reader must reopen the shared resource');
-  assert.ok(await tab.evaluate('document.querySelector("#surface canvas")?.width > 0'));
+  mark('reader-page-open');
+  // The page says it opened this link before it draws the app's first frame,
+  // so the canvas is what is still on its way here, not the reopen.
+  await tab.waitFor('document.querySelector("#surface canvas")?.width > 0');
   assert.equal(await tab.evaluate('location.href'), link, 'the opened page keeps the exact link in its address');
   stage('production-account-choice-and-resource-page-mount');
   await tab.navigate(origin + '/fixture.html');
@@ -277,6 +302,7 @@ try {
   await tab.waitFor(`${entryOutcome} !== undefined`, {timeout:45_000});
   assert.equal(await tab.evaluate(entryOutcome), 'refused');
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
+  mark('revoked-reader-refused');
   stage('governed-revocation-refuses-link-reopen');
   // A page that cannot run is not open. Created synchronously, vello's
   // pipelines held the browser's GPU thread and blocked the reopened page
@@ -285,11 +311,14 @@ try {
   const longest = observer.longestStall();
   assert.ok(longest.ms < 15_000, `the page's main thread stalled ${longest.ms} ms on ${longest.url}`);
   writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.encryptedRestart ? 'certified-browser-encrypted-cold' : fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
-    app:'so.tilo.chat', stages}, null, 2) + '\n');
+    app:'so.tilo.chat', stages, marks}, null, 2) + '\n');
 } catch (error) {
   const page = await pageState();
   writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'error',
-    lastStage:stages.at(-1) ?? null, pageStatus:String(page.status ?? '').slice(0, 500),
+    lastStage:stages.at(-1) ?? null,
+    lastMark: marks.at(-1)?.name ?? null,
+    pageStatus:String(page.status ?? '').slice(0, 500),
+    arrival: page.arrival ?? null, card: page.card ?? null, entry: page.entry ?? null,
     gpuStep: page.gpuStep ?? null, error:String(error).slice(0, 500)}, null, 2) + '\n');
   throw error;
 } finally {

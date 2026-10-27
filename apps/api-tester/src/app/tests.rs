@@ -1497,3 +1497,13 @@ fn copying_part_of_a_response_that_is_not_there_is_refused() {
     assert!(a.copy_headers().is_err());
     assert!(a.error.is_some(), "the pane says why nothing was copied");
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<ApiTesterShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}

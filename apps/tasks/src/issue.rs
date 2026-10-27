@@ -426,7 +426,9 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
 }
 
 /// What the issue links to, each a reference chip that opens it in the app
-/// that keeps it. Nothing shows while it links to nothing.
+/// that keeps it; the way to write a note for it in Notes, which links the
+/// note here; and the way to link a note already written, picked by its
+/// title in the system palette.
 fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let links = cx.value({
         let id = id.clone();
@@ -438,14 +440,14 @@ fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 .unwrap_or_default()
         }
     });
-    cx.switch(&links, |cx, links| {
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related);
-        if links.is_empty() {
-            return Box::new(column) as Element;
-        }
+    let write_note = cx
+        .effect_button(
+            "tasks-write-note",
+            &crate::TasksEffect::WriteNote { issue: id.clone() },
+        )
+        .with_icon(ui::icons::Icon::Plus);
+    let link_note = link_note_button(id);
+    let chips = cx.switch(&links, |cx, links| {
         let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
         for link in links {
             let reference = ui::tilo_reference::ResourceRef::whole(
@@ -459,13 +461,44 @@ fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 &reference,
             )));
         }
-        column = column
+        Box::new(row) as Element
+    });
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(
-                Text::new("tasks-links").with_role(TextRole::Heading),
+                Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(
+                        Container::new()
+                            .with_flex_grow()
+                            .with_no_padding()
+                            .with_child(Box::new(
+                                Text::new("tasks-links").with_role(TextRole::Heading),
+                            )),
+                    ))
+                    .push(Box::new(link_note))
+                    .push(Box::new(write_note)),
             ))
-            .push(Box::new(row));
-        Box::new(column) as Element
-    })
+            .push(chips),
+    )
+}
+
+/// The button that opens the system palette on the issue's "Link a note",
+/// where the person picks the note by its title.
+fn link_note_button(id: &Id) -> Button {
+    let issue = ui::tilo_resource::items::item_resource_id::<Tracker>("issues", id);
+    let request = ui::search::SearchRequest::within(ui::search::ScopeDecl::new(
+        issue.clone(),
+        crate::tr("tasks-link-note-scope"),
+    ))
+    .with_query(crate::tr("tasks-link-note"));
+    Button::new(&format!("tasks-link-note-{issue}"), "tasks-link-note")
+        .with_icon(ui::icons::Icon::Link)
+        .on_action(ui::search::open_search_binding(&request))
 }
 
 fn status_badge(status: Status) -> Badge {

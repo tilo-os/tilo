@@ -188,8 +188,12 @@ fi
 # are read from the same lines as they pass (ci_test_timings.py record). The job
 # records into the run's file, which the run's other jobs add to, so the file
 # holds the whole run.
+# t asks for nextest's libtest events itself (--message-format libtest-json-plus), and nextest
+# takes one format: the run asks for them only when its caller did not.
+format=(--message-format json-pretty)
+[[ " $* " == *" --message-format "* || " $* " == *" --message-format="* ]] && format=()
 status=0
-bash "$root/tools/test-env.sh" "${arguments[@]}" --message-format json-pretty 2>&1 \
+bash "$root/tools/test-env.sh" "${arguments[@]}" "${format[@]}" 2>&1 \
     | python3 -u "$root/tools/ci/ci_test_timings.py" record --json "$timings" || status=$?
 # The run's own verdict, not the recording's.
 exit "$status"

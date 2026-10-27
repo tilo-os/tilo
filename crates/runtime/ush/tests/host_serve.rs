@@ -249,3 +249,61 @@ fn read_until(master: &std::fs::File, needle: &str, timeout: Duration) -> String
     }
     seen
 }
+
+/// One directory request over the service socket, as Terminal's environments
+/// panel asks it, and the environments the answer names.
+fn directory(socket: &Path, request: &serde_json::Value) -> Vec<(String, String)> {
+    let stream = UnixStream::connect(socket).unwrap();
+    let mut line = serde_json::to_vec(request).unwrap();
+    line.push(b'\n');
+    (&stream).write_all(&line).unwrap();
+    let mut reply = String::new();
+    BufReader::new(&stream).read_line(&mut reply).unwrap();
+    match serde_json::from_str(reply.trim()).unwrap() {
+        ServeResponse::Environments { environments } => environments
+            .into_iter()
+            .map(|entry| (entry.key, entry.name))
+            .collect(),
+        other => panic!("not an environment list: {other:?}"),
+    }
+}
+
+/// The environments panel's requests: a new environment named in it is made,
+/// and listed from then on, by name, under a record key of its own.
+#[test]
+fn an_environment_named_over_the_socket_is_made_and_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (socket, store) = serving(dir.path());
+    // A new environment starts on the default environment's runtime.
+    ush::records::Records::at(store.records_root())
+        .create(
+            tilo_environment::DEFAULT_RECORD,
+            &tilo_environment::Environment::new(
+                "Default",
+                "2026.10",
+                tilo_environment::host_arch(),
+                &tilo_environment::PackageId::from_bytes([0x11; 32]),
+            ),
+        )
+        .unwrap();
+    let before = directory(&socket, &serde_json::json!({"op": "list-environments"}));
+    assert!(
+        !before.iter().any(|(_, name)| name == "Writing"),
+        "{before:?}"
+    );
+
+    let after = directory(
+        &socket,
+        &serde_json::json!({"op": "create-environment", "name": "Writing"}),
+    );
+    let made: Vec<&(String, String)> = after
+        .iter()
+        .filter(|(key, _)| !before.iter().any(|(old, _)| old == key))
+        .collect();
+    assert_eq!(made.len(), 1, "one environment is made: {after:?}");
+    assert_eq!(made[0].1, "Writing");
+    assert!(tilo_environment::is_record_key(&made[0].0), "{made:?}");
+
+    let listed = directory(&socket, &serde_json::json!({"op": "list-environments"}));
+    assert!(listed.contains(made[0]), "{listed:?}");
+}

@@ -1,6 +1,9 @@
 //! What assistive technology addresses: the targets the last paint recorded, the semantic hit they resolve to, the entries published for a reader and the tree a change becomes.
 
-use super::*;
+use super::{
+    BranchAction, ChangeArea, ChangesHit, DiffHit, GitClientApp, Hit, HunkAction, PanelHit, Rect,
+    TextInput, Widget, change_list, changes, history, t, t_args,
+};
 
 impl GitClientApp {
     /// The semantic inventory of the last paint: one node per control and

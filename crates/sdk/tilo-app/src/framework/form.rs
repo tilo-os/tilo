@@ -168,7 +168,7 @@ where
 
     fn control_binding(self, actions: &Actions<P::Resource>) -> Option<ActionBinding<()>> {
         let slots = self.slots;
-        actions.deferred_binding(P::ACTION.id, move || {
+        actions.deferred_binding(P::ACTION.key(), move || {
             let params = read::<P>(&slots)?;
             let arguments = P::ACTION.arguments(&params)?;
             clear(&slots);

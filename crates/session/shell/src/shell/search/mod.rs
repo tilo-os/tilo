@@ -19,6 +19,7 @@ mod fallbacks;
 pub mod files_index;
 pub mod invocation_wake;
 pub mod launcher;
+mod merge_strength;
 pub mod providers;
 pub mod recent_places;
 #[cfg(test)]
@@ -38,6 +39,12 @@ use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use crate::shell::i18n::t;
 use action_api::{ActionArgs, ActionError, ActionParam};
 
+#[cfg(test)]
+use merge_strength::looks_like_a_path;
+use merge_strength::{
+    files_follow_what_was_named, loose_matches_give_way, only_loosely_matched, proximity_boost,
+    usage_strength, window_intent,
+};
 use ui::search::system::{self, query_input_is_bounded};
 
 /// Portable search vocabulary and provider page contract, retained at the native API path.
@@ -743,6 +750,15 @@ pub trait SearchProvider {
     /// an app serves) gives way to it. Zero for most rows.
     fn intent_strength(&self, _result: &SearchResult, _needle: &str) -> f32 {
         0.0
+    }
+
+    /// Where `result` stands among the rows one source ranks itself: the
+    /// source (an app) and the row's rank in it, higher first. The merge
+    /// keeps each source's order among its own rows
+    /// ([`sources_keep_their_order`]), whatever their titles' lexical fit
+    /// says. `None` for rows no source ranks, most of them.
+    fn source_order(&self, _result: &SearchResult) -> Option<(String, i64)> {
+        None
     }
 
     /// The word `result` matched `needle` through when neither its title nor
@@ -1693,6 +1709,7 @@ impl SearchRegistry {
             .enabled_providers()
             .map(|provider| (provider.id(), provider.as_ref()))
             .collect();
+        sources_keep_their_order(&mut merged, &providers);
         system::order_hits(&mut merged, |row| {
             let availability = providers
                 .get(row.provider_id.as_str())
@@ -1876,8 +1893,18 @@ impl SearchRegistry {
                 kind: group.kind,
                 total: group.total,
                 results: group.results.into_iter().map(|(_, row)| row).collect(),
-            })
-            .collect();
+            });
+        let groups = if args.scope == SearchScope::ActiveApp {
+            // An app's search is about what the app holds: its resources
+            // lead, and what can be done follows them, however well an
+            // action's name matched.
+            let (actions, mut held): (Vec<KindGroup>, Vec<KindGroup>) =
+                groups.partition(|group| group.kind == ResourceKind::Action);
+            held.extend(actions);
+            held
+        } else {
+            groups.collect()
+        };
         self.trim_groups(groups, row_budget, &[])
     }
 }
@@ -1889,166 +1916,72 @@ pub fn in_the_store() -> ResourceKind {
     ResourceKind::Custom(t("search-group-in-the-store"))
 }
 
-/// How much nearer the person a row is in Workspace scope: from the focused
-/// app's provider, and in the workspace being looked at.
-fn proximity_boost(provider: &dyn SearchProvider, row: &SearchResult, args: &QueryArgs<'_>) -> f32 {
-    if args.scope != SearchScope::Workspace {
-        return 0.0;
-    }
-    let active_app = if args.active_provider_id == Some(provider.id()) {
-        system::ACTIVE_APP_PROXIMITY_BOOST
-    } else {
-        0.0
-    };
-    let workspace = if provider.proximity(row, args.chrome) == SearchProximity::CurrentWorkspace {
-        system::ACTIVE_APP_PROXIMITY_BOOST
-    } else {
-        0.0
-    };
-    active_app + workspace
-}
-
-/// Queries this short are what launchers live on: the thing chosen most
-/// leads every other prefix match.
-const SHORT_QUERY_SCALARS: usize = 3;
-/// How much a row's whole frecency adds at the merge, for a short query and
-/// for a longer one. For a short query it outweighs the gap between an exact
-/// name and a prefix (1.5) and an app's launch intent; for a longer one it
-/// only settles near ties.
-const SHORT_QUERY_USAGE: f32 = ui::tokens::search::SHORT_QUERY_USAGE;
-const LONG_QUERY_USAGE: f32 = 0.4;
-/// What a row chosen before for the same typed text adds: it leads.
-const SAME_TEXT_CHOICE: f32 = ui::tokens::search::SAME_TEXT_CHOICE;
-/// A title matched from a word start: the hits frecency may reorder.
-const WORD_START_LEXICAL: f32 = 1.5;
-
-/// What the person chose before adds to a row at the merge: how often and
-/// how recently they chose it, which leads a short query's prefix matches
-/// ("t" is the Terminal they open daily, not whichever action sorts first),
-/// and whether they chose it before for this very text.
-fn usage_strength(needle: &str, row: &SearchResult) -> f32 {
-    let typed = needle.trim();
-    if typed.is_empty() {
-        return 0.0;
-    }
-    let choice = usage::choice_share(typed, &row.provider_id, &row.id) * SAME_TEXT_CHOICE;
-    let lexical = system::lexical_strength(typed, &row.kind, &row.title, None);
-    if lexical < WORD_START_LEXICAL {
-        return choice;
-    }
-    let weight = if typed.chars().count() <= SHORT_QUERY_SCALARS {
-        SHORT_QUERY_USAGE
-    } else {
-        LONG_QUERY_USAGE
-    };
-    choice + usage::share(&row.provider_id, &row.id) * weight
-}
-
-/// A window named by a query is as much what the person reaches for as the
-/// app it belongs to: it gets the launch intent an app row gets.
-fn window_intent(needle: &str, row: &SearchResult, top: i32) -> f32 {
-    if needle.trim().is_empty()
-        || row.kind != ResourceKind::Tab
-        || row.operation_kind != tilo_actions::OperationKind::View
-    {
-        return 0.0;
-    }
-    system::application_intent_boost(row.score, top)
-}
-
-/// What a row that matched every word of the query, spread over its fields
-/// (the least a real match ranks), scores on its provider's scale, as a
-/// share of the top. A row below it matched only by a typo.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "provider scores are small integers"
-)]
-fn loose_share() -> f32 {
-    provider_score(tilo_search::SPANNING_RANK) as f32 / system::MAX_PROVIDER_SCORE as f32
-}
-
-/// Whether `row` matched `needle` only loosely: by a typo, with nothing of
-/// the query in its title. A row that holds every word the person typed,
-/// spread over its fields ("gnome calculator": GNOME's Calculator, whose
-/// title is "Calculator"), is a real match, not a loose one.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "provider scores are small integers"
-)]
-fn only_loosely_matched(needle: &str, row: &SearchResult, top: i32) -> bool {
-    (row.score as f32 / top.max(1) as f32) < loose_share()
-        && system::lexical_strength(needle, &row.kind, &row.title, None) < 1.0
-}
-
-/// A typo is how a misspelt name is still found, not a reason to list
-/// everything one letter away from a word that matched: once anything
-/// matches the query as typed, the rows that only match it loosely go
-/// ("move" lists the move actions, not "Mobile broadband").
-fn loose_matches_give_way(
+/// An app orders its own rows ([`SearchProvider::source_order`]): among
+/// one source's rows the merge hands the strongest strengths and earliest
+/// places to the rows the source ranks first, whatever the merge read in
+/// their titles. Tube's "Search `YouTube` for “lofi”" leads the videos that
+/// begin with "lofi", so Enter searches, and the videos keep `YouTube`'s
+/// order. The rows only trade their strengths and places among themselves,
+/// so a source's rows weigh no more against other providers' than they
+/// did: no ranking of its own floods a search with one app.
+fn sources_keep_their_order(
     merged: &mut Vec<(SearchResult, f32)>,
-    loose: &HashSet<(String, String)>,
+    providers: &HashMap<&str, &dyn SearchProvider>,
 ) {
-    let key = |row: &SearchResult| (row.provider_id.clone(), row.id.clone());
-    if merged.iter().any(|(row, _)| !loose.contains(&key(row))) {
-        merged.retain(|(row, _)| !loose.contains(&key(row)));
+    // Each source's rows: where each stands, its strength, its rank there.
+    type Rows = Vec<(usize, f32, i64)>;
+    let mut sources: HashMap<(String, String), Rows> = HashMap::new();
+    for (at, (row, strength)) in merged.iter().enumerate() {
+        let Some((source, order)) = providers
+            .get(row.provider_id.as_str())
+            .and_then(|provider| provider.source_order(row))
+        else {
+            continue;
+        };
+        sources
+            .entry((row.provider_id.clone(), source))
+            .or_default()
+            .push((at, *strength, order));
     }
-}
-
-/// Whether typed text asks for a file by its shape: a path, a home-relative
-/// path, or a name with an extension ("report.pdf").
-fn looks_like_a_path(needle: &str) -> bool {
-    let typed = needle.trim();
-    if typed.contains('/') || typed.starts_with('~') {
-        return true;
-    }
-    typed.rsplit_once('.').is_some_and(|(stem, extension)| {
-        !stem.is_empty()
-            && (1..=5).contains(&extension.len())
-            && extension.chars().all(|c| c.is_ascii_alphanumeric())
-            && extension.chars().any(|c| c.is_ascii_alphabetic())
-    })
-}
-
-/// Files and folders follow every app, window, action and setting the query
-/// names by a word start of its title, unless the query is shaped like a
-/// file ([`looks_like_a_path`]). A launcher that leads with
-/// `Settings-backup.txt` for "settings" is a filename grep; the files are
-/// still there, below what the person most likely meant.
-fn files_follow_what_was_named(merged: &mut [(SearchResult, f32)], needle: &str) {
-    if looks_like_a_path(needle) {
-        return;
-    }
-    let is_file = |kind: &ResourceKind| matches!(kind, ResourceKind::File | ResourceKind::Folder);
-    let is_named = |kind: &ResourceKind| {
-        matches!(
-            kind,
-            ResourceKind::Action
-                | ResourceKind::Application
-                | ResourceKind::Tab
-                | ResourceKind::WindowGroup
-                | ResourceKind::Custom(_)
-        )
-    };
-    // The weakest best of the kinds whose title the query named: files sit
-    // just below it, so no named group is ordered after them.
-    let mut best: HashMap<(u8, String), f32> = HashMap::new();
-    for (row, strength) in merged.iter() {
-        if is_named(&row.kind)
-            && system::lexical_strength(needle, &row.kind, &row.title, None) >= WORD_START_LEXICAL
-        {
-            let slot = best.entry(row.kind.sort_key()).or_insert(f32::MIN);
-            *slot = slot.max(*strength);
+    // Where each place's row and strength come from.
+    let mut from: Vec<(usize, f32)> = merged
+        .iter()
+        .enumerate()
+        .map(|(at, (_, strength))| (at, *strength))
+        .collect();
+    let mut moved = false;
+    for mut rows in sources.into_values().filter(|rows| rows.len() > 1) {
+        // The places and strengths these rows hold, best first ...
+        let mut places: Vec<(usize, f32)> = rows
+            .iter()
+            .map(|&(at, strength, _)| (at, strength))
+            .collect();
+        places.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        // ... go to the rows in their source's order; rows it ranks alike
+        // keep the merge's order.
+        rows.sort_by(|a, b| {
+            b.2.cmp(&a.2)
+                .then_with(|| b.1.total_cmp(&a.1))
+                .then(a.0.cmp(&b.0))
+        });
+        for ((place, strength), (row, _, _)) in places.into_iter().zip(rows) {
+            if let Some(slot) = from.get_mut(place) {
+                moved |= slot.0 != row;
+                *slot = (row, strength);
+            }
         }
     }
-    let Some(floor) = best.values().copied().reduce(f32::min) else {
+    if !moved {
         return;
-    };
-    let ceiling = floor - 0.01;
-    for (row, strength) in merged.iter_mut() {
-        if is_file(&row.kind) && *strength >= floor {
-            *strength = ceiling;
-        }
     }
+    let mut taken: Vec<Option<SearchResult>> = merged.drain(..).map(|(row, _)| Some(row)).collect();
+    // `from` is a permutation of the places: every row moves once.
+    merged.extend(from.into_iter().filter_map(|(row, strength)| {
+        taken
+            .get_mut(row)
+            .and_then(Option::take)
+            .map(|row| (row, strength))
+    }));
 }
 
 fn scope_allows(
@@ -3001,6 +2934,50 @@ mod tests {
             });
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].provider_id, "notes");
+        }
+
+        // Phase `an_apps_search_lists_what_it_holds_before_what_it_does`.
+        // Scoped to an app, the app's resources lead and its actions follow,
+        // even where an action's name matched better; over the workspace
+        // the best match leads.
+        {
+            let mut reg = SearchRegistry::new();
+            reg.register(Rc::new(FakeProvider {
+                id: "notes".into(),
+                kinds: vec![ResourceKind::Note, ResourceKind::Action],
+                results: vec![
+                    mk_result(ResourceKind::Action, "notes", "new", "Note", 100),
+                    mk_result(ResourceKind::Note, "notes", "n1", "Trains, a note", 5),
+                ],
+                max_score: Some(100),
+            }));
+            let chrome = mk_chrome();
+            let (doc, root) = mk_doc();
+            let kinds = |scope| -> Vec<ResourceKind> {
+                reg.query_grouped(
+                    &QueryArgs {
+                        needle: "note",
+                        scope,
+                        active_provider_id: Some("notes"),
+                        wanted_kinds: &[],
+                        chrome: &chrome.borrow(),
+                        doc: &doc,
+                        doc_root: &root,
+                    },
+                    0,
+                )
+                .into_iter()
+                .map(|group| group.kind)
+                .collect()
+            };
+            assert_eq!(
+                kinds(SearchScope::ActiveApp),
+                [ResourceKind::Note, ResourceKind::Action]
+            );
+            assert_eq!(
+                kinds(SearchScope::Workspace),
+                [ResourceKind::Action, ResourceKind::Note]
+            );
         }
 
         // Phase `active_app_scope_leaves_out_the_systems_actions`.

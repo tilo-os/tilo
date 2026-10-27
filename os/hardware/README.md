@@ -53,6 +53,13 @@ identity, `{"sys_vendor": ..., "product_name": ...}`, as `/sys/class/dmi/id`
 reports it. It is only for a board with `"devicetree": null` and is refused
 beside a device tree, which already names the model; see the handheld
 section.
+The optional `hardening_defaults` (version 2) lists the hardening actions a
+board accepts by default, as `{"action": ..., "driver": ...}` pairs. It is
+only for a board whose kernel cannot deliver the feature an action removes,
+which is why the driver that would have to be built in is named beside it:
+a board relaxing hardening without the feature behind it would be a hole
+opened for nothing. The accepted actions and the options each may name are in
+`HARDENING_ACTIONS` (`os/dev/hardware_profile.py`); see the handset section.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -531,3 +538,108 @@ keyboard, and that the on-screen keyboard appears when a text field takes
 focus. A board whose DMI strings differ from those in its profile silently
 gets none of its model-bound settings, so read `/sys/class/dmi/id/product_name`
 on the machine and correct the definition rather than widening it.
+
+## Handsets
+
+A handset is the other kind of reduced personal computer: it has a device tree
+rather than firmware-described devices, it is panel-first (there is no external
+monitor), and it is a personal computer rather than a host, so it suspends.
+`pinephone-pro` describes the PinePhone Pro (Rockchip RK3399S); its kernel must
+supply `dtb/rockchip/rk3399-pinephone-pro.dtb`.
+
+The profile is data only. The shared aarch64 kernel already builds in the MMC
+host, the display controller (`rockchipdrm`, `dw-mipi-dsi`, `analogix-dp`), the
+panel backlight and the I2C-HID keyboard path this board needs; the profile's
+`boot_modules` names the drivers dracut has to reach before the encrypted root
+is open, and the parts of the audio card and camera the kernel has not built in
+are what `hardening_defaults` is for.
+
+Both a camera and a microphone are inside this board's one audio/camera card,
+and both are kernel options (`CONFIG_MEDIA_SUPPORT`, `CONFIG_SND`) that the
+shared image builds in for other boards. So instead of every release step
+carrying a list of handset names, the definition says which hardening actions
+`tilo harden` may accept by default here and which option each of those relaxes:
+
+```json
+"hardening_defaults": [
+  {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"},
+  {"action": "microphone", "driver": "CONFIG_SND"}
+]
+```
+
+`hardware_profile.py` refuses an action it does not know, a driver that is not
+a kernel option, a driver its action does not cover (so a board cannot relax the
+camera hardening because of a sound card), and the same action twice. The
+declaration is data, not a branch: nothing in the image builder names a board
+here.
+
+### What a handset image cannot prove
+
+Everything above is checked at build time, and a correct profile is not a boot.
+Installing on the phone itself needs a boot chain the image does not own:
+PinePhone Pro wakes its mask ROM with a U-Boot built for that board and written
+to the SD card (or the eMMC) in front of the ESP — the Orange Pi's
+`idbloader`/`u-boot.itb` path above is the same idea for a different SoC and is
+not reusable here. Until such a second-stage loader is built and sealed by the
+same release step, the profile is declarative: it describes the board, it does
+not make this image flashable onto one.
+
+What a device run has to establish, once a loader exists: the panel upright from
+the firmware handle-off, the greeter accepting the touchscreen, the on-screen
+keyboard appearing for a text field, suspend and resume from the power button,
+and the modem and audio paths (which need `pd-mapper`, `rmtfs`,
+`ModemManager` and `callaudiod`, none of which the image installs today).
+
+## Raspberry Pi 4 and 5
+
+Two profiles register the two Broadcom boards this image's kernel describes:
+`raspberry-pi-4b` for the Raspberry Pi 4 Model B, 400 and CM4 (BCM2711,
+VideoCore VI) and `raspberry-pi-5` for the Raspberry Pi 5, 500 and CM5
+(BCM2712, VideoCore VII). They embed `broadcom/bcm2711-rpi-4-b.dtb` and
+`broadcom/bcm2712-rpi-5-b.dtb`: the self-contained device trees, not the
+`-ovl-rp1` variants, because the RP1 nodes are already resolved in the image
+rather than loaded as an overlay at runtime.
+
+What is built in rather than modular is what a root cannot wait for. The SD
+card and eMMC sit on the Arasan SDHCI-compatible host the iProc driver binds,
+and on a Pi 5 they sit on the RP1 south bridge — a PCIe multifunction device
+carrying the Ethernet, USB, GPIO and clock generators the rest of the board
+needs. So `MMC_SDHCI_IPROC`, `BLK_DEV_NVME`, `PCIE_BRCMSTB`, `MISC_RP1`,
+`PINCTRL_RP1` and `COMMON_CLK_RP1` are pinned `=y` in
+`os/kernel/config-fragments/aarch64.config`: a board whose storage controller
+arrives as a module would have to load it from an initramfs generated on a
+machine that had the module, and the ARM64 UKI is shared. The display and
+network drivers stay modular, because the VideoCore firmware keeps the monitor
+lit until `vc4` binds and nothing at boot reads a network. The profile still
+names `vc4`, `v3d`, `brcmfmac` and `cfg80211` in `boot_modules` so the radio on
+the SDIO host is enumerated before the root is open.
+
+`v3d` is the render node Mesa's V3DV Vulkan driver talks to. The profile
+declares it, but whether its compute shaders run against this board's
+workgroup limits and buffer bindings is a device fact — `tilo-ui`'s Vello
+compute suite has to be run on a Pi 4 and a Pi 5 to establish it, and the
+profile alone proves nothing about it.
+
+Fedora's `brcmfmac-firmware` already ships the BCM43455 files this radio wants,
+including the per-board NVRAM for `raspberrypi,4-model-b`,
+`raspberrypi,5-model-b` and `500`, so the profiles carry no local firmware and
+`system_firmware` stays empty. Boards under 4 GiB are out of scope: the desktop
+session does not fit, and the profile is written for the models that hold a
+session.
+
+The crash record is honest about what a Pi leaves behind. Its device tree
+reserves no memory for `ramoops`, so `storage` is `none`. The PM block's
+watchdog is a real one and its driver is a module, so `watchdog` is `module`
+with `bcm2835_wdt` in `boot_modules` and `systemd.watchdog_sec=30` on the
+command line to feed it; `lockup` is `none` because nothing on that command
+line makes a stuck CPU panic.
+
+The profiles are declarative, for the same reason the PinePhone's are. A Pi
+does not boot an EFI payload from its ESP on its own: `config.txt` on the boot
+partition tells the VideoCore firmware which kernel and device tree to load,
+and neither a U-Boot built for `rpi_arm64` nor an `edk2-rpi` firmware is in
+this image or installed by the disk step, which special-cases only the Orange
+Pi's Rockchip loader. Until that second-stage firmware exists and is sealed by
+the same release step, `TILO_HARDWARE_PROFILE=raspberry-pi-5 ./os/build.sh`
+describes the board and embeds its device tree; it does not make the result
+flashable onto one.

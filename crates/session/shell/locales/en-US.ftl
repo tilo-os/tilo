@@ -32,6 +32,8 @@ workspace-deleted-undo = Undo
 workspace-left-toast = Left { $name }
 # The name of a workspace joined before its host told its name.
 workspace-joined-name = Shared workspace
+# The workspace made for Personal Settings when the person had no workspace only they are in.
+workspace-personal-name = Personal
 # A workspace whose host no longer lets this person in.
 workspace-needs-join-again = Join again to take part
 # A workspace that was being joined when Tilo last closed.
@@ -492,11 +494,12 @@ portal-launcher-reason = Review the launcher before it is added to your applicat
 portal-launcher-confirm = Add launcher
 portal-launcher-icon-supplied = Supplied image (validated)
 portal-launcher-icon-monogram = Tilo monogram
-portal-chooser-nothing-granted = This app has been given no files to choose from.
+portal-chooser-cannot-give = This device can't give apps the files you choose right now. Sign out and back in, then try again.
+portal-chooser-not-managed = Only the people who manage this workspace can give its apps your files. Ask one of them to share the file in the workspace.
 portal-chooser-file-not-granted = This app has not been given { $path }.
 portal-chooser-no-file = There is no file to open.
 portal-chooser-session-closing = The session is closing.
-portal-chooser-other-workspace = The app's workspace is not the one on screen.
+portal-chooser-other-workspace = This app's workspace isn't the one on screen. Switch to it, then try again.
 portal-chooser-open-uri-undeclared = This app has not declared that it opens links.
 portal-chooser-save-disabled = Saving to disk is turned off on this device.
 portal-launcher-icon-compass = Tilo web compass
@@ -2355,6 +2358,7 @@ window-move-hosted-workspace = That workspace is run by its owner, and this devi
 window-move-not-permitted = That workspace doesn't let you open this app there.
 window-move-already-moving = This window is already being moved.
 window-move-nobody-to-confirm = Moving a window needs the person at this desktop to agree to what crosses, and nobody is here to ask.
+window-move-personal = Settings is yours alone, so it stays in your personal workspace.
 window-transfer-title = Move “{ $window }” to { $to }?
 window-transfer-carries = The document in “{ $window }” goes to { $to } with its full edit history, and the window reopens there where you left it.
 window-transfer-move-detail = Move: it leaves { $from }, whose history keeps a note that it moved to { $to }.

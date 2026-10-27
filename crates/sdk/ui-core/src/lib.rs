@@ -296,6 +296,7 @@ pub mod host_operation {
 pub(crate) mod draw_cull;
 pub mod host_palette;
 pub mod mentions;
+pub mod own_paint;
 pub mod published;
 pub mod reader_hud;
 pub mod record;

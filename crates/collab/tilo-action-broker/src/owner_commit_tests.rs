@@ -763,6 +763,10 @@ mod owner_commit_tests {
         f.state.pending_invocations.lock().unwrap().insert(
             1,
             PendingInvocation {
+                reach: tilo_action_policy::Reach {
+                    kind: tilo_actions::ActionKind::Outside,
+                    privileged: false,
+                },
                 caller: None,
                 activity: None,
                 owner: key.owner.clone(),
@@ -1811,6 +1815,10 @@ mod owner_commit_tests {
                 let invocation = tilo_actions::InvocationId::new();
                 let (tx, _rx) = std::sync::mpsc::channel();
                 let pending = PendingInvocation {
+                    reach: tilo_action_policy::Reach {
+                        kind: tilo_actions::ActionKind::Outside,
+                        privileged: false,
+                    },
                     caller: None,
                     activity: None,
                     owner: InvocationOwner::Certified {

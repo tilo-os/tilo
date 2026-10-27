@@ -22,12 +22,11 @@ RUN --network=none \
 # (with the side builds: the AirPlay sender, joycond, bootc,
 # xwayland-satellite), the Windows components, the signed runtime bundle and
 # the font catalog's names, the runtimes' publishers, the app store (left out of
-# it what the layers below hold already). They are made over nothing, a scratch
-# stage, so they don't depend on the layers below them: t builds this stage
-# alone and puts its layers over the trust layer as they are, so the same binary
-# gives the same layer whatever the variant. One `podman build` of the whole
-# image (os/Containerfile) copies the stage into the rootfs whole.
-FROM scratch AS binaries-out
+# it what the layers below hold already). One layer each, so a tree that did not
+# change is the same layer as before and an update sends only the trees that
+# did: a changed program doesn't send the runtimes, the side builds or the app
+# store again.
+FROM trust AS binaries
 COPY --from=component-files /image/rollback-files/ /
 COPY --from=component-files /image/recovery-files/ /
 COPY --from=component-files /image/extension-files/ /
@@ -39,9 +38,7 @@ COPY --from=component-files /image/extension-files/ /
 # that do are here too. (tilo-rollback, which the initramfs carries, arrives
 # earlier with rollback-files.)
 #
-# Compositor, FUSE driver, system apps, settings and model services. The
-# enumerated scratch overlay preserves their individual paths and metadata but
-# costs this large rootfs only one commit.
+# Compositor, FUSE driver, system apps, settings and model services.
 # Settings. Everything the compositor's quick-settings popover cannot
 # reach lives here — Wi-Fi profiles, audio device routing, display scale,
 # keyboard layout, power policy, touchpad — so an image without it is an
@@ -94,6 +91,3 @@ COPY --from=native-builder-payload \
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
 COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
-
-FROM trust AS binaries
-COPY --from=binaries-out / /

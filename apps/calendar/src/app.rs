@@ -305,6 +305,10 @@ pub struct CalendarApp {
     /// The accounts are a capture's sample ones: their servers answer from
     /// bundled sample calendars, and display choices are not saved.
     sample_accounts: bool,
+    /// The configuration directory of the host's profile, where this
+    /// window's accounts, their credentials and their sync health are kept;
+    /// `None` outside a live window.
+    config_root: Option<std::path::PathBuf>,
     /// The person's accounts, which Settings keeps and every device of theirs
     /// shares, followed in a live window; and the revision last shown.
     person_accounts: Option<(
@@ -359,6 +363,10 @@ pub struct CalendarApp {
     /// pristine object; every other event follows normal autosave semantics.
     fresh_draft: Option<Event>,
     dirty: bool,
+    /// What the view painted, this frame and as the last presented frame
+    /// showed it: the frame damages the view's box only when it painted
+    /// differently, so a hover in the sidebar repaints none of it.
+    own: ui::own_paint::OwnPaint,
     /// The editor's switch and checkboxes, sliding and filling as a click
     /// turns them.
     faces: ui::widget::FaceMotions,
@@ -472,6 +480,7 @@ impl CalendarApp {
             selection: None,
             detail_open: false,
             accounts: accounts.clone(),
+            config_root: None,
             device_accounts: std::rc::Rc::new(std::cell::RefCell::new(accounts.clone())),
             configured: accounts,
             display: crate::display::CalendarDisplay::default(),
@@ -532,6 +541,7 @@ impl CalendarApp {
             status_actions: status::StatusActions::default(),
             fresh_draft: None,
             dirty: true,
+            own: ui::own_paint::OwnPaint::default(),
             faces: ui::widget::FaceMotions::default(),
             timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
@@ -799,8 +809,12 @@ impl CalendarApp {
         // for it frame by frame while a slow server keeps the request open.
         let (tx, rx) = ui::wake::waking_channel();
         let today = self.today;
+        let config_root = self.config_root.clone();
         for id in &sync_account_ids {
-            if let Err(error) = accounts::AccountSyncReporter::new(id.clone()).started() {
+            if let Some(root) = &config_root
+                && let Err(error) =
+                    accounts::AccountSyncReporter::in_root(id.clone(), root).started()
+            {
                 tracing::warn!(%error, account = id, "calendar: could not persist sync start");
             }
         }
@@ -815,18 +829,20 @@ impl CalendarApp {
                     &sync_tokens,
                 )
                 .await;
-                let reporter = accounts::AccountSyncReporter::new(id.clone());
-                let persisted = match &account_outcome {
-                    caldav::SyncOutcome::Synced { .. } => reporter.succeeded(),
-                    caldav::SyncOutcome::Offline => reporter.offline(),
-                    caldav::SyncOutcome::Failed(reason)
-                        if reason.contains("401") || reason.contains("403") =>
-                    {
-                        reporter.needs_authentication()
+                let persisted = config_root.as_ref().map(|root| {
+                    let reporter = accounts::AccountSyncReporter::in_root(id.clone(), root);
+                    match &account_outcome {
+                        caldav::SyncOutcome::Synced { .. } => reporter.succeeded(),
+                        caldav::SyncOutcome::Offline => reporter.offline(),
+                        caldav::SyncOutcome::Failed(reason)
+                            if reason.contains("401") || reason.contains("403") =>
+                        {
+                            reporter.needs_authentication()
+                        }
+                        caldav::SyncOutcome::Failed(_) => reporter.failed(),
                     }
-                    caldav::SyncOutcome::Failed(_) => reporter.failed(),
-                };
-                if let Err(error) = persisted {
+                });
+                if let Some(Err(error)) = persisted {
                     tracing::warn!(%error, account = id, "calendar: could not persist sync result");
                 }
                 result.events.append(&mut account_result.events);
@@ -2215,6 +2231,15 @@ impl CalendarApp {
         &self.configured
     }
 
+    /// Keep this window's accounts in the host profile at `config_root`, and
+    /// the accounts that profile holds on this device.
+    pub(crate) fn bind_profile(&mut self, config_root: Option<std::path::PathBuf>) -> AccountStore {
+        self.config_root = config_root;
+        self.config_root
+            .as_deref()
+            .map_or_else(AccountStore::default, AccountStore::load_from_settings_in)
+    }
+
     /// Follow the person's accounts, which Settings keeps, in this window.
     pub(crate) fn follow_person_accounts(
         &mut self,
@@ -2243,11 +2268,17 @@ impl CalendarApp {
         // The accounts show whether or not this device's credential store
         // opens: without it their servers refuse the sign-in, and the sync
         // says so, instead of the calendars vanishing.
-        let credentials = accounts::AccountCredentials::open()
-            .inspect_err(|error| {
-                tracing::error!(%error, "calendar account credentials could not be opened");
-            })
-            .ok();
+        let credentials = self
+            .config_root
+            .as_deref()
+            .map(accounts::AccountCredentials::open_in)
+            .and_then(|opened| {
+                opened
+                    .inspect_err(|error| {
+                        tracing::error!(%error, "calendar account credentials could not be opened");
+                    })
+                    .ok()
+            });
         let adopted = AccountStore::from_shared(&person.store(), credentials.as_ref());
         if adopted != self.configured {
             self.configured = adopted;
@@ -4102,72 +4133,13 @@ impl Widget for CalendarApp {
         // or a narrow window changed shows there this frame.
         self.declare_window_toolbar();
         // No ground of our own: the framework painted the window ground.
-        let mut hits = Vec::new();
-        if self.content_rect.area() > 0.0 {
-            let area = self.view_rect();
-            let mut ctx = PaintCtx::new(scene, t, text_renderer, theme);
-            match self.view {
-                View::Month => hits.extend(self.draw_month(&mut ctx, area)),
-                View::Week | View::Day => {
-                    let days = self.timeline_days();
-                    let events = self.timeline_render_events(&days);
-                    let now = self.now();
-                    let model = TimelineRenderModel {
-                        days: &days,
-                        events: &events,
-                        today: self.today,
-                        now: Some((
-                            self.today,
-                            i64::from(now.hour()) * 60 + i64::from(now.minute()),
-                        )),
-                        untitled: TITLE_PLACEHOLDER,
-                    };
-                    hits.extend(
-                        self.timeline
-                            .draw_timeline(&mut ctx, area, &model)
-                            .into_iter()
-                            .filter_map(|(rect, effect)| match effect {
-                                TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
-                                TimelineEffect::OpenDay(day) => Some((rect, Action::OpenDay(day))),
-                                TimelineEffect::Create { .. }
-                                | TimelineEffect::Move { .. }
-                                | TimelineEffect::Resize { .. } => None,
-                            }),
-                    );
-                }
-                View::Agenda => {
-                    let hidden = self.hidden_calendar_ids();
-                    hits.extend(
-                        self.agenda
-                            .draw(
-                                &mut ctx,
-                                area,
-                                &AgendaSource {
-                                    model: &self.model,
-                                    anchor: self.anchor,
-                                    hidden_calendars: &hidden,
-                                    calendar_filter: self.calendar_filter.as_deref(),
-                                    viewer: self.viewer,
-                                },
-                                self.today,
-                                self.last_mouse,
-                            )
-                            .into_iter()
-                            .map(|(rect, action)| {
-                                let action = match action {
-                                    AgendaAction::OpenEvent(id) => Action::OpenEvent(id),
-                                    AgendaAction::OpenTask(id) => Action::OpenTask(id),
-                                    AgendaAction::ToggleTask(id) => Action::ToggleTask(id),
-                                };
-                                (rect, action)
-                            }),
-                    );
-                }
-                View::Tasks => hits.extend(self.draw_tasks(&mut ctx, area, presence)),
-            }
-        }
-
-        self.hits = hits;
+        let mut own = std::mem::take(&mut self.own);
+        let rect = self.rect;
+        own.record(scene, t, |scene| {
+            self.draw_view(scene, t, text_renderer, theme, presence);
+            rect
+        });
+        self.own = own;
     }
 
     /// The window's top layer: the editor sheet and its pickers, the
@@ -4436,8 +4408,16 @@ impl Widget for CalendarApp {
             || self.tasks.needs_redraw()
     }
 
+    /// Where the view painted differently from the last presented frame.
+    /// The sheet, its pickers and the menus are in the overlay, which the
+    /// host repaints whole.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.own.damage(regions);
+    }
+
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.own.present();
         self.notes_editor.mark_drawn();
         self.title_input.mark_drawn();
         self.location_input.mark_drawn();
@@ -4530,6 +4510,84 @@ impl Widget for CalendarApp {
 }
 
 impl CalendarApp {
+    /// Paint the view in view (month, week or day, agenda, tasks) and take
+    /// the places a click acts on.
+    fn draw_view(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let mut hits = Vec::new();
+        if self.content_rect.area() > 0.0 {
+            let area = self.view_rect();
+            let mut ctx = PaintCtx::new(scene, t, text_renderer, theme);
+            match self.view {
+                View::Month => hits.extend(self.draw_month(&mut ctx, area)),
+                View::Week | View::Day => {
+                    let days = self.timeline_days();
+                    let events = self.timeline_render_events(&days);
+                    let now = self.now();
+                    let model = TimelineRenderModel {
+                        days: &days,
+                        events: &events,
+                        today: self.today,
+                        now: Some((
+                            self.today,
+                            i64::from(now.hour()) * 60 + i64::from(now.minute()),
+                        )),
+                        untitled: TITLE_PLACEHOLDER,
+                    };
+                    hits.extend(
+                        self.timeline
+                            .draw_timeline(&mut ctx, area, &model)
+                            .into_iter()
+                            .filter_map(|(rect, effect)| match effect {
+                                TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
+                                TimelineEffect::OpenDay(day) => Some((rect, Action::OpenDay(day))),
+                                TimelineEffect::Create { .. }
+                                | TimelineEffect::Move { .. }
+                                | TimelineEffect::Resize { .. } => None,
+                            }),
+                    );
+                }
+                View::Agenda => {
+                    let hidden = self.hidden_calendar_ids();
+                    hits.extend(
+                        self.agenda
+                            .draw(
+                                &mut ctx,
+                                area,
+                                &AgendaSource {
+                                    model: &self.model,
+                                    anchor: self.anchor,
+                                    hidden_calendars: &hidden,
+                                    calendar_filter: self.calendar_filter.as_deref(),
+                                    viewer: self.viewer,
+                                },
+                                self.today,
+                                self.last_mouse,
+                            )
+                            .into_iter()
+                            .map(|(rect, action)| {
+                                let action = match action {
+                                    AgendaAction::OpenEvent(id) => Action::OpenEvent(id),
+                                    AgendaAction::OpenTask(id) => Action::OpenTask(id),
+                                    AgendaAction::ToggleTask(id) => Action::ToggleTask(id),
+                                };
+                                (rect, action)
+                            }),
+                    );
+                }
+                View::Tasks => hits.extend(self.draw_tasks(&mut ctx, area, presence)),
+            }
+        }
+
+        self.hits = hits;
+    }
+
     /// Declare the window bar's slots ([`crate::window_bar`]).
     fn declare_window_toolbar(&self) {
         // The location names the task list only on the Tasks screen.

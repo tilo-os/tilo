@@ -24,7 +24,7 @@ use shell::compositor::capture::CaptureExecutor;
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
-use shell::shell::state::WorkspaceTree;
+use shell::shell::state::{AppKind, WorkspaceTree};
 use ui::Widget;
 
 use taffy::prelude::NodeId;
@@ -2006,6 +2006,22 @@ impl ShellDriver {
             "palette" => self.scene_palette(),
             "palette_app_query" => self.scene_palette_app_query(),
             "palette_in_app_query" => self.scene_palette_in_app_query(),
+            "app_search_files" => self.scene_app_search(AppKind::FileExplorer, "Files", ""),
+            "app_search_files_query" => {
+                self.scene_app_search(AppKind::FileExplorer, "Files", "wel");
+            }
+            "app_search_code" => {
+                self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "")
+            }
+            "app_search_code_query" => {
+                self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "new");
+            }
+            "app_search_notes" => {
+                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "")
+            }
+            "app_search_notes_query" => {
+                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "note");
+            }
             "palette_records" => self.scene_palette_records(),
             "palette_no_results" => self.scene_palette_no_results(),
             "palette_ask_agent" => self.scene_palette_ask_agent(true),
@@ -2344,6 +2360,64 @@ impl ShellDriver {
         self.fb
             .host_mut()
             .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// An app alone in a window, its search opened the way its own search
+    /// control opens it (`ShellOverlayHost::open_app_search`), with `query`
+    /// typed or nothing yet: the palette scoped to the app, standing in its
+    /// window, over what the app holds and what it can do.
+    fn scene_app_search(&mut self, kind: AppKind, label: &str, query: &str) {
+        use shell::shell::state::{
+            MintIds, ProcessIds, Tab, TileContent, WindowGroup, WindowWidth,
+        };
+        let tab = Tab {
+            id: ProcessIds.mint_id(),
+            title: label.into(),
+            tile: TileContent::AppPlaceholder {
+                kind,
+                label: label.into(),
+            },
+            app_title: None,
+        };
+        let tab_id = tab.id;
+        self.with_chrome(|st| {
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.desktop.active_workspace_mut() {
+                    for strip in &mut ws.strips {
+                        strip.window_groups.clear();
+                    }
+                    if let Some(strip) = ws.strips.first_mut() {
+                        strip.window_groups.push(WindowGroup {
+                            id: ProcessIds.mint_id(),
+                            active_tab: tab_id,
+                            tabs: vec![tab],
+                            width: WindowWidth::Normal,
+                            maximized: false,
+                            focus_history: Vec::new(),
+                        });
+                    }
+                }
+            }
+            st.bump();
+        });
+        self.open_tab_records(&[tab_id]);
+        self.relayout();
+        // The window arrives, and its app comes up and publishes what it
+        // holds, before search is asked for.
+        for _ in 0..60 {
+            let _ = self.paint_settled();
+            std::thread::sleep(Duration::from_millis(FRAME_MS));
+        }
+        let _ = self.focus_tab_titled(label);
+        self.relayout();
+        self.fb.host_mut().open_app_search_for_shots(tab_id, query);
+        self.fb.host_mut().force_palette_settled();
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+        self.relayout();
     }
 
     /// Seeded in other rooms deliberately — a record already in the active
