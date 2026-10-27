@@ -88,6 +88,7 @@ fn main() {
                 app: "so.tilo.notes".into(),
                 name: "Notes".into(),
                 control: None,
+                record: None,
             }))
             .expect("subject");
         let component = feedback.prepare("device", "person", 1).expect("composer");

@@ -17,6 +17,9 @@ tilo-feedback-review = { path = "../feedback-review" }
 # A reviewed submission is a stored value of the record it is filed in.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 
+[dev-dependencies]
+automerge.workspace = true
+
 [lints]
 workspace = true
 
