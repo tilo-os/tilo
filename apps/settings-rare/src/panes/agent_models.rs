@@ -248,7 +248,7 @@ pub enum AgentModelsEffect {
     AddGoogleGemini,
     /// Save the Gemini provider being added, once signed in with Google, or
     /// change the Cloud project an existing one bills.
-    #[effect(job, row)]
+    #[effect(job)]
     SetGeminiProvider {
         #[param("The provider's id; omit for the one being added")]
         provider: Option<String>,
@@ -263,7 +263,7 @@ pub enum AgentModelsEffect {
     },
     /// Save the Vertex AI provider being added, once signed in, or change
     /// an existing one's project, location and model.
-    #[effect(job, row)]
+    #[effect(job)]
     SetVertexProvider {
         #[param("The provider's id; omit for the one being added")]
         provider: Option<String>,
