@@ -26,12 +26,14 @@ use tilo_browser_peer::DocumentRoute;
 pub use tilo_model_gateway::host_backend::ApiKey;
 
 use crate::planner::{
-    NoReads, Obligations, PlanContext, Planner, Reads, Step, StepAction, Wait, observation_within,
-    readable, rendered_picture, written_steps,
+    NoReads, Obligations, PlanContext, Planner, Reads, Role, Step, StepAction, Wait,
+    observation_within, readable, rendered_picture, written_steps,
 };
 use crate::vision::{Picture, Seen};
 
 mod converse;
+#[cfg(test)]
+mod item_model_tests;
 mod openai;
 #[cfg(test)]
 mod picture_read_tests;
@@ -300,6 +302,10 @@ impl PlanModel for GatewayModel {
 /// Explicit steps as written; anything else planned by a model.
 pub struct ModelPlanner {
     model: Box<dyn PlanModel>,
+    /// The model the items of a coordinated task plan with, when it is not
+    /// [`Self::model`] ([`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`]); the
+    /// coordinator's turns and whole tasks plan with that.
+    item_model: Option<Box<dyn PlanModel>>,
     /// Whether its tasks are checked against their requests once done.
     checks_work: bool,
     /// Whether the last plan it made was the model's.
@@ -319,6 +325,7 @@ impl ModelPlanner {
     pub fn new(model: Box<dyn PlanModel>) -> Self {
         Self {
             model,
+            item_model: None,
             checks_work: false,
             by_model: false,
             continued: None,
@@ -332,6 +339,14 @@ impl ModelPlanner {
     #[must_use]
     pub fn decomposing(mut self, on: bool) -> Self {
         self.decomposes = on;
+        self
+    }
+
+    /// This planner, the items of its coordinated tasks planned by `model`
+    /// ([`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`]).
+    #[must_use]
+    pub fn with_item_model(mut self, model: Box<dyn PlanModel>) -> Self {
+        self.item_model = Some(model);
         self
     }
 
@@ -1157,9 +1172,15 @@ impl Planner for ModelPlanner {
         if let Some(steps) = written_steps(task, context) {
             return steps;
         }
+        // An item's agent plans with the item model, when there is one.
+        let model = match (&context.role, self.item_model.as_mut()) {
+            (Role::Item { .. }, Some(items)) => items,
+            _ => &mut self.model,
+        };
+        let sees = model.sees();
         let (catalogue, targets) = catalogue(context);
         let mut briefing = briefing(context, &catalogue);
-        let mut read = PlanningReads::new(&targets, context, reads, self.model.sees());
+        let mut read = PlanningReads::new(&targets, context, reads, sees);
         briefing.pictures = read.newest_look();
         // A request that names exactly one operation of an open record, all
         // of whose arguments it states, is that operation: the model would
@@ -1171,7 +1192,7 @@ impl Planner for ModelPlanner {
         self.by_model = direct.is_none();
         let answer = match direct {
             Some(answer) => answer,
-            None => self.model.choose_briefed(
+            None => model.choose_briefed(
                 &with_results(task, context),
                 &briefing,
                 &catalogue,
@@ -1189,13 +1210,8 @@ impl Planner for ModelPlanner {
             adjust: answer.adjust.clone(),
             reply: answer.reply.clone(),
         };
-        let (mut steps, rest, wait) = answer_steps(
-            answer,
-            task,
-            (&catalogue, &targets),
-            context,
-            self.model.sees(),
-        )?;
+        let (mut steps, rest, wait) =
+            answer_steps(answer, task, (&catalogue, &targets), context, sees)?;
         if let Some(wait) = wait {
             // The wait ends this plan: what `then` left is planned with
             // what arrived, so it rides with the wait.

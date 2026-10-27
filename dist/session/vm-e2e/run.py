@@ -11,7 +11,11 @@ typed on the VM's keyboard through QMP). The session must have imported the
 GNOME input sources on its first login, and the lock screen password and app
 names are typed on the German layout it imported. After each app starts, the compositor
 must still be the same process for the whole dwell, with no crash record,
-core dump, unexpected session exit or panic.
+core dump, unexpected session exit or panic. Installing the same packages
+again must leave the session and the person's files intact, and removing
+them must give the host back exactly what it had: its ordinary login, its
+previous desktop, its packages and the login user's files, still offering the
+same session the display manager started before Tilo was added.
 
     run.py source --rpms DIR --producer CHECK   record DIR/source.json
     run.py test --rpms DIR --out DIR        the VM test; exit 0 only on pass
@@ -60,6 +64,14 @@ GUEST_PASSWORD = "tilo-e2e-password"
 # ['compose:ralt']): crates/session/shell/src/firstboot.rs.
 IMPORTED_INPUT = {"keyboard_layout": "de:nodeadkeys", "keyboard_layouts": ["de:nodeadkeys"],
                   "compose_key": "ralt"}
+# The login session the packaged tilo-session entry adds, and the one the
+# Fedora Cloud image this test boots offers before it is added.
+TILO_SESSION = "tilo.desktop"
+PREVIOUS_SESSION = "gnome"
+# Two files in the login user's home that must read back unchanged after an
+# update, after returning to the previous desktop and after the uninstall.
+DELIVERED_ONE = "documents/added-before-tilo.txt"
+DELIVERED_TWO = "notes-after-tilo.txt"
 # Written once the import has completed; its absence means it never ran.
 IMPORT_MARKER = "host_input_migration_version"
 # QMP sends key positions. Where a layout puts a character on another key
@@ -337,6 +349,9 @@ class Report:
                  f"| Guest | {Path(IMAGE_URL).name}, {self.meta['memory_mb']} MiB, {self.meta['cpus']} vCPU, "
                  "two virtio-gpu cards without virgl |",
                  "| Session | SDDM autologin into tilo.desktop, gnome-keyring Secret Service unlocked |",
+                 "| Host | packages installed over, then signed out of to the previous desktop, "
+                 "then removed with dnf |" if self.meta.get("journey") else
+                 "| Host | left as installed; the update, return and uninstall are not exercised |",
                  f"| Dwell after each app | {self.meta['dwell']} s |", "",
                  "| Check | Result | Detail | Numbers |", "|---|---|---|---|"]
         for c in self.checks:
@@ -387,6 +402,103 @@ def record_source(rpms_dir: Path, producer: str) -> dict:
     return source
 
 
+def last_line(result) -> str:
+    """The guest's last output line, the useful part of a step's failure."""
+    return ((result.stdout or "").strip().splitlines() or ["no output"])[-1]
+
+
+def switch_journey(vm, report: Report, shots: Path) -> None:
+    """Update, then go back: the previous desktop, then no Tilo at all.
+
+    These are the checks a person's own machine has to survive: an update
+    that keeps the session and their files, signing out and getting the
+    desktop they had before, and removing the packages without losing the
+    login, the session menu or the files they had.
+    """
+    # The host as it is with Tilo installed: the reference the uninstall is
+    # compared against, and the files the person had before the switch.
+    vm.guest("record", "installed", timeout=120)
+    vm.guest("files", DELIVERED_ONE, DELIVERED_TWO, timeout=120)
+    default_session = vm.guest("session-default", timeout=60, capture=True).stdout.strip()
+
+    log("installing the same packages again, as an update does")
+    upgraded = vm.guest("update", "/var/tmp/tilo-e2e/rpms", check=False, capture=True)
+    if not report.add("S01", "A package update installs over the running surface",
+                      upgraded.returncode == 0,
+                      "" if upgraded.returncode == 0 else last_line(upgraded)):
+        return
+    vm.guest("record", "upgraded", timeout=120)
+    compared = vm.guest("record-check", "upgraded", "installed", "--kept",
+                        "tilo-session", "--kept", "tilo-session-apps",
+                        check=False, capture=True)
+    report.add("S01b", "The update changes no other package or login session",
+               compared.returncode == 0,
+               "" if compared.returncode == 0 else last_line(compared))
+    kept = vm.guest("files-check", DELIVERED_ONE, DELIVERED_TWO,
+                    check=False, capture=True)
+    report.add("S02", "The person's files survive a package update",
+               kept.returncode == 0, "" if kept.returncode == 0 else last_line(kept))
+
+    log("signing out of Tilo")
+    vm.guest("logout", timeout=180)
+    st = vm.status([])
+    if not report.add("S03", "Signing out ends the Tilo session",
+                      not st.get("compositor_pid"),
+                      f"compositor {st.get('compositor_pid')} is still running"):
+        return
+
+    available = vm.guest("previous-available", check=False, capture=True)
+    previous = available.stdout.strip().startswith("guest: a previous desktop is installed")
+    # On an image with no other desktop there is nothing to sign back in to.
+    # Say so in the report and still check the transition the packages own.
+    report.add("S04", "The host still offers the desktop it had before Tilo",
+               previous, last_line(available))
+
+    if previous:
+        log("choosing the previous desktop at the login screen")
+        vm.guest("session-autologin", PREVIOUS_SESSION, timeout=120)
+        vm.guest("login", timeout=180)
+        painted = vm.guest("previous-probe", check=False, capture=True)
+        ok = painted.returncode == 0
+        detail = last_line(painted)
+        if painted.returncode == 3:
+            # A host without a free virtual console cannot prove this, and a
+            # check that cannot observe its subject must say so, not pass.
+            report.add("S05", "The previous desktop starts from the login screen", False,
+                       "not verified: " + detail)
+        else:
+            report.add("S05", "The previous desktop starts from the login screen", ok, detail)
+        vm.qmp.screendump(shots / "90-previous-desktop.png", GPUS[0])
+        vm.guest("logout", timeout=180)
+        if not ok:
+            return
+        vm.guest("session-autologin", TILO_SESSION, timeout=120)
+
+    log("removing the Tilo packages")
+    removed = vm.guest("uninstall", check=False, capture=True)
+    if not report.add("S06", "The Tilo packages remove cleanly", removed.returncode == 0,
+                      "" if removed.returncode == 0 else last_line(removed)):
+        return
+    vm.guest("record", "uninstalled", timeout=120)
+    compared = vm.guest("record-check", "uninstalled", "installed",
+                        "--gone", "tilo-session", "--gone", "tilo-session-apps",
+                        "--gone", TILO_SESSION, check=False, capture=True)
+    report.add("S07", "Nothing else is removed and the previous desktop is still offered",
+               compared.returncode == 0,
+               "" if compared.returncode == 0 else last_line(compared))
+    kept = vm.guest("files-check", DELIVERED_ONE, DELIVERED_TWO,
+                    check=False, capture=True)
+    report.add("S08", "The person's files survive the uninstall",
+               kept.returncode == 0, "" if kept.returncode == 0 else last_line(kept))
+    if default_session and default_session != "Session=unset":
+        report.add("S09", "The uninstall leaves the ordinary login as it found it",
+                   TILO_SESSION not in default_session,
+                   f"the display manager still starts {default_session}")
+    else:
+        report.add("S09", "The uninstall leaves the ordinary login as it found it", False,
+                   "not verified: the guest reported no ordinary login to compare")
+
+
 def run_test(args) -> int:
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -397,7 +509,8 @@ def run_test(args) -> int:
     meta = {"rpm_source": json.loads(source_file.read_text()) if source_file.exists()
             else {"rpms": [p.name for p in rpms]},
             "image": IMAGE_URL, "image_sha256": IMAGE_SHA256, "memory_mb": args.memory,
-            "cpus": args.cpus, "dwell": args.dwell, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+            "cpus": args.cpus, "dwell": args.dwell, "journey": bool(args.journey),
+            "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
     report = Report(out, meta)
     install = [p for p in rpms if not p.name.startswith("tilo-session-devel")]
     if len(install) != 2:
@@ -544,6 +657,8 @@ def run_test(args) -> int:
                        survived_s=round(survived, 1))
             if st.get("compositor_pid") != pid:
                 return 1
+        if args.journey:
+            switch_journey(vm, report, shots)
         return 0 if all(check["status"] == "pass" for check in report.checks) else 1
     except (Fail, subprocess.SubprocessError, OSError) as error:
         report.add("H00", "The test ran to completion", False, str(error))
@@ -577,6 +692,9 @@ def main() -> int:
     test.add_argument("--cpus", type=int, default=4)
     test.add_argument("--settle", type=int, default=30)
     test.add_argument("--dwell", type=int, default=45)
+    test.add_argument("--journey", action=argparse.BooleanOptionalAction, default=True,
+                      help="also update, return to the previous desktop and uninstall "
+                           "(--no-journey stops after the apps)")
     source = sub.add_parser("source")
     source.add_argument("--rpms", required=True)
     source.add_argument("--producer", required=True, help="the check that built the RPMs")

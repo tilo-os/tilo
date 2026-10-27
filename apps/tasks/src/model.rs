@@ -20,7 +20,7 @@ pub use issue::{
 };
 pub use record::{Tracker, tracker};
 pub use run::{
-    Budget, Confirmation, ConfirmationState, ModelChoice, Question, Run, RunOutcome, RunPhase,
+    Area, Budget, Confirmation, ConfirmationState, ModelChoice, Question, Run, RunOutcome, RunPhase,
 };
 
 /// The record kind issues live in.

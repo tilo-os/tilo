@@ -101,11 +101,11 @@ fn detail_pane(cx: &ViewCx<Notebook>, id: u64) -> Element {
     let title = cx
         .input(section.title)
         .with_id("tree-title-input")
-        .with_placeholder("tree-title-placeholder");
+        .with_placeholder(crate::locales::keys::TREE_TITLE_PLACEHOLDER);
     let notes = cx
         .input(section.notes)
         .with_id("tree-notes-input")
-        .with_placeholder("tree-notes-placeholder")
+        .with_placeholder(crate::locales::keys::TREE_NOTES_PLACEHOLDER)
         .multiline(true);
     let share = cx.actions().bind_invocation(
         Button::new("tree-share", "tree-share"),
@@ -115,8 +115,8 @@ fn detail_pane(cx: &ViewCx<Notebook>, id: u64) -> Element {
         Text::new(&node_label(id))
             .with_id("tree-selected-item")
             .with_role(TextRole::Title),
-        labeled_field("tree-title-label", title),
-        labeled_field("tree-notes-label", notes),
+        labeled_field(crate::locales::keys::TREE_TITLE_LABEL, title),
+        labeled_field(crate::locales::keys::TREE_NOTES_LABEL, notes),
         Text::new("tree-preview-heading").with_role(TextRole::Heading),
         cx.text(move |notebook| notebook
             .section(id)

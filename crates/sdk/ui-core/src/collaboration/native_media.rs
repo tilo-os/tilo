@@ -70,7 +70,7 @@ fn reply(shared: &Shared, id: u64, result: Result<Snapshot, String>) {
     }
     shared
         .inbound
-        .send_durable(CollabEvent::NativeMediaCommandResult {
+        .send_reply(CollabEvent::NativeMediaCommandResult {
             request_id: id,
             result,
         });

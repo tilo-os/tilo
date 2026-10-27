@@ -419,6 +419,10 @@ pub struct BrowserWidget {
     /// field edits submitted through it. `None` until a host attaches
     /// one; a bare widget changes no document.
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Browser>>,
+    /// Where a picture of the page is kept: content the agent's answer names
+    /// by hash. `None` until a host attaches one, so a bare widget pictures
+    /// nothing and says so.
+    content: Option<tilo_content::ContentStore>,
     /// The origins tracker protection is off for, as the document holds them.
     site_exceptions: std::collections::BTreeSet<String>,
     initial_url: String,
@@ -1251,6 +1255,13 @@ impl BrowserWidget {
             self.structure_dirty = true;
         }
     }
+    /// The content store a picture of the page is kept in: opaque bytes by
+    /// hash, which the agent's answer names, so what a page shows as pixels
+    /// reaches the reader who can see them.
+    pub(crate) fn attach_content(&mut self, content: tilo_content::ContentStore) {
+        self.content = Some(content);
+    }
+
     /// Fill forms from, and edit, the person's address book.
     pub(crate) fn attach_address_book(
         &mut self,
@@ -1328,6 +1339,7 @@ impl BrowserWidget {
             service_forget: None,
             headless,
             dispatch: None,
+            content: None,
             site_exceptions: std::collections::BTreeSet::new(),
             address: ui::LocalState::new(initial_url.clone()),
             address_navigation_value: None,
@@ -2277,13 +2289,47 @@ impl BrowserWidget {
         // Everything here came from the page: data to reason about, never
         // instructions to follow.
         value.insert("provenance".into(), "web-content".into());
+        // A picture is not a finding: its bytes travel as the action's own
+        // content, which a reader that can see shows and one that cannot
+        // leaves alone. A picture nothing could keep says so, rather than
+        // answering as if the page had none.
+        let resources = match (&reply.image, &self.content) {
+            (Some(image), Some(content)) => match Self::kept_picture(image, content) {
+                Ok(address) => vec![address],
+                Err(error) => {
+                    value.insert("picture".into(), error.into());
+                    Vec::new()
+                }
+            },
+            (Some(_), None) => {
+                value.insert(
+                    "picture".into(),
+                    "this window has no place to keep a picture of the page".into(),
+                );
+                Vec::new()
+            }
+            (None, _) => Vec::new(),
+        };
         ui::tilo_actions::InvocationUpdate::Succeeded {
             invocation,
             output: ui::tilo_actions::ActionOutput {
                 value: Some(value.into()),
-                resources: Vec::new(),
+                resources,
             },
         }
+    }
+
+    /// A picture of the page kept as content the answer can name, or why it
+    /// could not be kept.
+    fn kept_picture(
+        image: &[u8],
+        content: &tilo_content::ContentStore,
+    ) -> Result<String, &'static str> {
+        let hash = content
+            .put(image)
+            .map_err(|_| "this window could not keep a picture of the page")?;
+        ui::tilo_actions::content_resource(&hash)
+            .ok_or("this window kept the picture under no address")
     }
 
     fn completed_download_path(&self, id: &str) -> Result<std::path::PathBuf, String> {
@@ -5665,6 +5711,14 @@ impl BrowserWidget {
             (E::ReadPageConsole { since: None }, &["since"][..]),
             (E::ReadPageNetwork { since: None }, &["since"][..]),
             (
+                E::CapturePage {
+                    element: None,
+                    max_width: None,
+                    frame: None,
+                },
+                &["element", "max_width", "frame"][..],
+            ),
+            (
                 E::PointerPage {
                     steps: Vec::new(),
                     button: None,
@@ -6695,6 +6749,7 @@ mod tests {
             message: "Read 2 lines".into(),
             outline: Some("- heading \"Where are you?\"\n".into()),
             data: None,
+            image: None,
             navigation: ui::webview::page::PageNavigation::None,
             loading: false,
         };

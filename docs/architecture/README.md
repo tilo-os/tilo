@@ -99,6 +99,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `permissions.md` | grants over the published tree: kinds, answers, delegation, enforcement at doors and on receipt |
 | `compositor.md` | strips, window model, input |
 | `window-management.md` | one model for windows, strips and workspaces: chords, gestures, pointer, overlays, actions, motion |
+| `surfaces.md` | everything painted over the desktop: kind, placement, modality, focus, dismissal, ownership, accessibility, stacking |
 | `collaboration.md` | CRDT sync, presence, peers |
 | `workspace.md` | one workspace: layout, people and state in one room, one engine for every host |
 | `rooms.md` | workspaces, hosts, membership |

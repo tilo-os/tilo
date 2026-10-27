@@ -99,6 +99,15 @@ pub(crate) fn tr(key: &str) -> String {
     I18nManager::lookup_plain(key)
 }
 
+/// A message with named text arguments.
+pub(crate) fn tr_with(key: &str, args: &[(&str, &str)]) -> String {
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+        .iter()
+        .map(|(name, value)| (*name, ui::i18n::ArgValue::Text((*value).to_string())))
+        .collect();
+    I18nManager::format(key, &args)
+}
+
 pub struct App;
 
 impl ResourceApp for App {

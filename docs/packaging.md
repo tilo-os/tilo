@@ -154,6 +154,22 @@ When this repository publishes a newer `tilo-session`, the normal
 into the next deployment together with the host OS update. Users do not download
 or reinstall release RPMs by hand.
 
+### What the package route is tested to do
+
+Fedora 44 on x86-64 is the release-gated combination
+(`docs/install-contract.json`); ARM64 packages build but are not release-gated.
+The packaged session is exercised on that combination by t's check
+`host-session-e2e`: the signed-route RPMs from a release are installed with dnf
+on a stock Fedora 44 Cloud image, a person logs in to Tilo through the display
+manager's session menu, and the way back is taken as well — the same packages
+installed over a running session, signing out to the desktop the host had
+before Tilo, and `dnf remove` of only the Tilo packages. The run fails if
+anything but those packages and their own session entry changes, if the previous
+desktop stops being offered or startable, or if the login user's files differ
+before and after. `dist/session/README.md`, "VM test", lists the individual
+checks; the checks are the record of the tested distribution, architecture,
+package build and session behaviour.
+
 ### When the layering is refused
 
 An Atomic host owns most of `/usr`, so `rpm-ostree install` accepts the layer

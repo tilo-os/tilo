@@ -142,6 +142,10 @@ pub(crate) fn source_catalog(app_dir: &Path) -> Result<Option<BTreeSet<String>>>
     ))
 }
 
+/// Every message id a Fluent source defines, each entry id as it is written.
+///
+/// A term (`-brand`) is not a message; an attribute (`key.attr`) is resolved
+/// with its message.
 fn message_ids(source: &str) -> Result<BTreeSet<String>> {
     Ok(
         crate::catalog_message_ids(&crate::parse_fluent_catalog(source)?)
@@ -614,5 +618,32 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path, Path::new("locales/de-DE.ftl"));
         assert!(found[0].message.starts_with("missing c-d"));
+    }
+
+    /// Fluent keeps the last of two entries with one id, so a catalogue that
+    /// defines a message twice cannot say which text a person reads.
+    #[test]
+    fn a_catalogue_that_defines_a_message_twice_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let locales = temp.path().join("locales");
+        std::fs::create_dir_all(&locales).unwrap();
+        // Written by appending so this fixture is not itself a second
+        // definition of the id it repeats.
+        let path = locales.join("en-US.ftl");
+        std::fs::write(&path, "notes-add = Add\nnotes-edit = Edit\n").unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, b"notes-add = Add a note\n").unwrap();
+        let error = source_catalog(temp.path()).unwrap_err();
+        let mut said = String::new();
+        let mut cause = std::error::Error::source(&*error);
+        while let Some(inner) = cause {
+            said.push_str(&inner.to_string());
+            cause = inner.source();
+        }
+        assert!(said.contains("notes-add"), "{said}");
+        assert!(!said.contains("notes-edit"), "{said}");
     }
 }

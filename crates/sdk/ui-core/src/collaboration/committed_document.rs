@@ -1526,10 +1526,13 @@ pub(super) async fn install(
                 {
                     break;
                 }
-                if !inbound.send_durable(CollabEvent::CommittedDocument {
-                    route: spec.clone(),
-                    read,
-                }) {
+                if !inbound
+                    .send_durable(CollabEvent::CommittedDocument {
+                        route: spec.clone(),
+                        read,
+                    })
+                    .await
+                {
                     break;
                 }
                 until_merged(&staged, || {

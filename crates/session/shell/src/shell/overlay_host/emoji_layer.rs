@@ -6,13 +6,34 @@ use ui::a11y::AccessNode;
 use vello::kurbo::Rect;
 use winit::event::{ElementState, WindowEvent};
 
-use super::layers::{LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
+use super::layers::{
+    Anchor, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Material, Modality, Role,
+    Routed, ShellLayer, Surface,
+};
 
 /// Owns every key and pointer event while open; its own shortcut closes it
 /// again.
 impl ShellLayer for EmojiPicker {
     fn id(&self) -> LayerId {
         LayerId::EmojiPicker
+    }
+
+    /// A picker anchored to the caret it inserts into, window-modal while
+    /// it is up: what it does not take goes nowhere behind it.
+    fn surface(&self) -> Option<Surface> {
+        Some(Surface::shell(
+            Role::Overlay,
+            match self.anchor() {
+                Some(caret) => Anchor::Beside {
+                    at: caret,
+                    gap: 0.0,
+                },
+                None => Anchor::Center,
+            },
+            Modality::WindowModal,
+            Material::Floating,
+            Self::is_open(self),
+        ))
     }
 
     fn is_open(&self) -> bool {
