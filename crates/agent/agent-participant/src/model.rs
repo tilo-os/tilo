@@ -37,6 +37,8 @@ mod catalog_tests;
 mod converse;
 #[cfg(test)]
 mod item_model_tests;
+#[cfg(test)]
+mod look_tests;
 mod openai;
 #[cfg(test)]
 mod picture_read_tests;
@@ -63,8 +65,9 @@ pub const MOST_STEPS: usize = 40;
 pub struct Briefing {
     /// The operations of the apps the agent may use with their parameters
     /// in full. The same bytes for every agent and task granted the same
-    /// apps, whatever the room holds, so it leads the prompt and a
-    /// provider's prompt cache keeps it; empty when there is none.
+    /// apps, whatever the room holds, so it follows the instructions as
+    /// system content, where a provider's prompt cache keeps it
+    /// ([`catalog::system_messages`]); empty when there is none.
     pub reference: String,
     /// What changes from plan to plan: what the documents the task is about
     /// hold now, and which apps a step would open first. Empty for none.

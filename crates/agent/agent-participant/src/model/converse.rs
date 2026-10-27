@@ -1,9 +1,9 @@
 //! The planning conversation, over the model gateway's neutral protocol.
 //!
-//! One conversation per plan: the planner's instructions, then a first turn
-//! with what the apps can do, the operations published now, what the
-//! records hold and the request, then turns of tool calls until the model
-//! calls `plan`. Besides `apps/agent`'s discovery tools it offers
+//! One conversation per plan: the planner's instructions and what the apps
+//! can do, as system messages, then a first turn with the operations
+//! published now, what the records hold and the request, then turns of
+//! tool calls until the model calls `plan`. Besides `apps/agent`'s discovery tools it offers
 //! [`READ_VIEW`] (a read of an open record, answered at once),
 //! [`LOOK_CONTENT`] (a picture the conversation named, to a model that
 //! sees), [`crate::search::SEARCH_ROOM`] and `plan`'s `wait_for`.
@@ -33,9 +33,9 @@ use crate::vision::{Eyes, LOOK_CONTENT, Seen};
 
 /// What the planning model is told before every task.
 pub(crate) const PLANNER_INSTRUCTIONS: &str = "You drive Tilo apps only through the resource/action tools. \
-    The request starts with what your apps can do, every parameter in full, then the operations \
-    published right now with the ids to name, then what the documents the request is about \
-    hold now, then the request itself. Plan the WHOLE request in one `plan` call: every step in \
+    After these instructions comes what your apps can do, every parameter in full; the request \
+    then starts with the operations published right now with the ids to name, then what the \
+    documents the request is about hold now, then the request itself. Plan the WHOLE request in one `plan` call: every step in \
     order, each with complete arguments, using the schemas shown. Use `describe_operation`, \
     when it is offered, only for an operation whose parameters are left out. When the plan \
     needs a value a document holds that is not shown (a size, an id, its text), call \
@@ -365,28 +365,21 @@ struct Talk {
 }
 
 impl Talk {
-    /// The conversation's opening: the planner's instructions, then the
-    /// first turn (the published operations, revealed, with the briefing on
-    /// the records the task is about, so a task they answer is planned on
-    /// the first turn), its pictures after its text so the prefix a provider
-    /// caches holds.
+    /// The conversation's opening: the planner's instructions and the
+    /// apps' reference as system messages
+    /// ([`super::catalog::system_messages`]), then the first turn (the
+    /// published operations, revealed, with the briefing on the records the
+    /// task is about, so a task they answer is planned on the first turn),
+    /// its pictures after its text.
     fn open(asked: &Asked<'_>) -> Self {
         let mut revealed = tilo_agent::tools::Revealed::new();
-        let (stable, rest) =
-            first_turn_parts(asked.task, asked.briefing, asked.catalogue, &mut revealed);
+        let text = first_turn_text(asked.task, asked.briefing, asked.catalogue, &mut revealed);
         let mut eyes = Eyes::new(asked.sees);
-        eyes.show(&stable);
-        eyes.show(&rest);
+        eyes.show(&text);
         let (note, first_pictures) = eyes.attach_first(&asked.briefing.pictures);
-        let mut first = vec![Content::Text {
-            text: stable + &rest + &note,
-        }];
+        let mut first = vec![Content::Text { text: text + &note }];
         first.extend(first_pictures.iter().map(crate::vision::Picture::content));
-        let mut messages = if asked.briefing.catalog == Catalog::Relevant {
-            super::catalog::system_messages(PLANNER_INSTRUCTIONS, asked.briefing)
-        } else {
-            vec![Message::text(Role::System, PLANNER_INSTRUCTIONS)]
-        };
+        let mut messages = super::catalog::system_messages(PLANNER_INSTRUCTIONS, asked.briefing);
         messages.push(Message {
             role: Role::User,
             content: first,
@@ -1154,30 +1147,21 @@ pub(crate) fn answer_call(
     })
 }
 
-/// The first turn's text as its stable reference and the rest: the
-/// briefing's reference, then the operations published, the briefing's
-/// state and the request. Every id the reference or the operations show is
-/// revealed.
-pub(crate) fn first_turn_parts(
+/// The first turn's text: the operations published now (the same while
+/// the agent's records are), then the briefing's state and the request,
+/// which change every plan. The apps' reference comes before it as system
+/// content ([`super::catalog::system_messages`]). Every id the reference or
+/// the operations show is revealed.
+pub(crate) fn first_turn_text(
     task: &str,
     briefing: &Briefing,
     catalogue: &Catalogue,
     revealed: &mut tilo_agent::tools::Revealed,
-) -> (String, String) {
+) -> String {
     let turn =
         tilo_agent::model::action_user_turn_listing(task, catalogue, revealed, MOST_PUBLISHED);
     for id in &briefing.shown {
         revealed.reveal(id.clone());
-    }
-    // Stable first: the apps' reference (the same for every agent and task
-    // granted them), then the operations published now (the same while the
-    // agent's records are) and what changes every plan. Told only the
-    // relevant apps, the plan has the line per app and the reference in its
-    // instructions instead ([`super::catalog::system_messages`]).
-    let mut stable = String::new();
-    if !briefing.reference.is_empty() && briefing.catalog == Catalog::All {
-        stable.push_str(&briefing.reference);
-        stable.push('\n');
     }
     let mut text = String::new();
     for part in [turn.operations.as_str(), briefing.state.as_str()] {
@@ -1187,7 +1171,7 @@ pub(crate) fn first_turn_parts(
         }
     }
     text.push_str(&turn.task);
-    (stable, text)
+    text
 }
 
 /// Why `answer` cannot run: a step that takes what the step before it

@@ -1331,11 +1331,11 @@ pub(crate) fn canvas_context() -> PlanContext {
     }
 }
 
-/// The first turn carries the apps' operations with their parameters in
-/// full (types, required, choices, constraints), then the operations
-/// published now, then what the record holds, then the request — the
-/// stable part first — and reveals what it shows; an operation whose
-/// schema alone is beyond the budget is left to `describe_operation`.
+/// The reference carries the apps' operations with their parameters in
+/// full (types, required, choices, constraints); the first turn the
+/// operations published now, then what the record holds, then the request,
+/// and reveals what both show; an operation whose schema alone is beyond
+/// the budget is left to `describe_operation`.
 #[test]
 fn the_first_turn_shows_full_schemas_and_what_the_record_holds() {
     let mut context = canvas_context();
@@ -1371,12 +1371,13 @@ fn the_first_turn_shows_full_schemas_and_what_the_record_holds() {
     assert!(briefed.shown.contains(&"canvas.artwork#draw".to_owned()));
     assert!(!briefed.shown.contains(&"canvas.artwork#apply".to_owned()));
 
-    // The reference, the operations, the state, then the request; what
-    // the reference shows may be planned.
+    // The operations, the state, then the request; what the reference
+    // shows may be planned.
     let mut revealed = tilo_agent::tools::Revealed::new();
     let turn = first_turn_text(task, &briefed, &offered, &mut revealed);
-    assert!(turn.starts_with(REFERENCE_INTRO), "{turn}");
+    assert!(!turn.contains(REFERENCE_INTRO), "{turn}");
     let operations = turn.find("Operations published right now").unwrap();
+    assert_eq!(operations, 0, "{turn}");
     let state = turn.find(SNAPSHOT_INTRO).unwrap();
     let request = turn.find(task).unwrap();
     assert!(operations < state && state < request, "{turn}");
@@ -1481,7 +1482,7 @@ fn a_replan_lists_the_clips_earlier_steps_added_beside_the_projects_export() {
         briefed.reference, before.reference,
         "the cached prefix is stable"
     );
-    assert!(turn.starts_with(&briefed.reference));
+    assert!(!turn.contains(&briefed.reference));
 }
 
 /// The casework room after a wait: Chat open on the room's record with
@@ -1845,7 +1846,8 @@ fn a_first_turn_for_real_apps_is_bounded_and_its_prefix_shared() {
     let (offered, _) = catalogue(&after_context);
     let briefed = briefing(&after_context, &offered);
     let mut revealed = tilo_agent::tools::Revealed::new();
-    let after = first_turn_text(task, &briefed, &offered, &mut revealed);
+    let turn = first_turn_text(task, &briefed, &offered, &mut revealed);
+    let after = format!("{}\n{turn}", briefed.reference);
     eprintln!(
         "first turn, Canvas + Word Processor: before {} tokens (list only; more turns \
              needed), after {} tokens (reference {} + list + state {}); stable prefix {} tokens",
@@ -1861,10 +1863,8 @@ fn a_first_turn_for_real_apps_is_bounded_and_its_prefix_shared() {
     assert!(tokens(&briefed.reference) > tokens(&briefed.state));
     assert!(after.contains("word-processor.document#"), "{after}");
     assert!(after.contains("canvas.artwork#export"), "{after}");
-    // The same reference for another task of the same agent.
-    let again = first_turn_text("Draw a teal band", &briefed, &offered, &mut revealed);
-    assert!(again.starts_with(&briefed.reference));
-    assert!(after.starts_with(&briefed.reference));
+    // The reference is system content, never part of the turn.
+    assert!(!turn.contains(&briefed.reference), "{turn}");
 }
 
 /// Answers with whatever it was built with, and is shown pictures.
@@ -2189,7 +2189,7 @@ pub(crate) fn pictures(message: &Message) -> usize {
         .count()
 }
 
-fn tool_names(request: &ModelRequest) -> Vec<String> {
+pub(crate) fn tool_names(request: &ModelRequest) -> Vec<String> {
     request.tools.iter().map(|tool| tool.name.clone()).collect()
 }
 
@@ -2283,8 +2283,11 @@ fn read_view_answers_in_the_same_conversation() {
             && !answered.contains("AAAAAAAA"),
         "{answered}"
     );
-    let first = text_of(&requests[0].messages[1]);
-    assert!(first.contains("marks: array — "), "{first}");
+    let reference = text_of(&requests[0].messages[1]);
+    assert!(
+        requests[0].messages[1].role == Role::System && reference.contains("marks: array — "),
+        "{reference}"
+    );
     let system = text_of(&requests[0].messages[0]);
     assert!(
         system.contains("WHOLE request in one `plan`") && system.contains("read_view"),
@@ -2411,161 +2414,6 @@ fn search_room_finds_a_record_and_the_plan_opens_it() {
 fn the_search_tool_costs_little() {
     let definition = serde_json::to_string(&crate::search::definition()).unwrap();
     assert!(tokens(&definition) < 120, "{definition}");
-}
-
-fn look_read() -> serde_json::Value {
-    serde_json::json!({"operation": "canvas.artwork#look", "arguments": {}})
-}
-
-fn draw_plan() -> serde_json::Value {
-    serde_json::json!({"steps": [{"operation": "canvas.artwork#draw",
-        "arguments": {"marks": []}}], "then": ""})
-}
-
-/// A tool result takes text alone: a look's picture follows the tool
-/// results in one user message, which names it first.
-#[test]
-fn a_look_read_shows_its_picture_after_the_tool_results() {
-    let (mut planner, sent) = scripted(
-        vec![
-            called("r1", READ_VIEW, &look_read()),
-            called("p1", tilo_agent::tools::PLAN, &draw_plan()),
-        ],
-        true,
-    );
-    let mut reads = Looks::new('a');
-    planner
-        .plan_reading("look, then draw", &look_context(), &mut reads)
-        .unwrap();
-    let requests = sent.lock().unwrap().clone();
-    assert!(tool_names(&requests[0]).contains(&LOOK_CONTENT.to_owned()));
-    let messages = &requests[1].messages;
-    assert_eq!(messages[3].role, Role::Tool);
-    assert!(results(&requests[1])[0].contains("picture shown below, 8×6 PNG"));
-    assert_eq!(messages[4].role, Role::User);
-    assert!(text_of(&messages[4]).starts_with("The pictures the calls above showed"));
-    assert_eq!(pictures(&messages[4]), 1);
-}
-
-/// A model that is not shown pictures is not offered `look_content`, reads
-/// that a look's picture was not shown, and nothing is fetched.
-#[test]
-fn a_model_that_does_not_see_gets_no_look_content_and_is_told_so() {
-    let (mut planner, sent) = scripted(
-        vec![
-            called("r1", READ_VIEW, &look_read()),
-            called("p1", tilo_agent::tools::PLAN, &draw_plan()),
-        ],
-        false,
-    );
-    let mut reads = Looks::new('a');
-    planner
-        .plan_reading("look, then draw", &look_context(), &mut reads)
-        .unwrap();
-    let requests = sent.lock().unwrap().clone();
-    assert!(!tool_names(&requests[0]).contains(&LOOK_CONTENT.to_owned()));
-    let answered = &results(&requests[1])[0];
-    assert!(
-        answered.contains(&reads.rendered) && answered.contains("picture not shown"),
-        "{answered}"
-    );
-    assert_eq!(requests[1].messages.len(), 4, "no pictures message");
-    assert!(reads.looked.is_empty(), "nothing fetched for a blind model");
-    assert!(
-        requests[1]
-            .messages
-            .iter()
-            .all(|message| pictures(message) == 0)
-    );
-}
-
-/// `look_content` looks only at an address the conversation named, and at
-/// a room's own picture only where the agent may show them; a PDF is
-/// pointed to pdf-viewer. Allowed, a room's picture is written out again in
-/// the confined worker and shown.
-#[test]
-fn look_content_refuses_unshown_addresses_and_room_pictures_unless_allowed() {
-    let mut reads = Looks::new('a');
-    let scan = reads.keep('b', crate::vision::tests::png(10, 10));
-    let pdf = reads.keep('c', b"%PDF-1.4\n".to_vec());
-    let unshown = crate::vision::tests::address('d');
-    let look = |address: &str| serde_json::json!({"content": address});
-    let (mut planner, sent) = scripted(
-        vec![
-            called("l1", LOOK_CONTENT, &look(&unshown)),
-            called("l2", LOOK_CONTENT, &look(&scan)),
-            called("l3", LOOK_CONTENT, &look(&pdf)),
-            called("p1", tilo_agent::tools::PLAN, &draw_plan()),
-        ],
-        true,
-    );
-    let task = format!("trace the scan {scan} onto the canvas; the brief is {pdf}");
-    planner
-        .plan_reading(&task, &look_context(), &mut reads)
-        .unwrap();
-    let requests = sent.lock().unwrap().clone();
-    let unnamed = &results(&requests[1])[0];
-    assert!(
-        unnamed.starts_with("Not shown:") && unnamed.contains("was not named"),
-        "{unnamed}"
-    );
-    let room = &results(&requests[2])[0];
-    assert!(room.contains("not shown the room's pictures"), "{room}");
-    let document = &results(&requests[3])[0];
-    assert!(
-        document.contains("is a PDF") && document.contains("look-page"),
-        "{document}"
-    );
-    assert!(
-        !reads
-            .looked
-            .contains(&crate::vision::content_hash(&unshown).unwrap()),
-        "an unnamed address is never fetched"
-    );
-
-    let (mut planner, sent) = scripted(
-        vec![
-            called("l1", LOOK_CONTENT, &look(&scan)),
-            called("p1", tilo_agent::tools::PLAN, &draw_plan()),
-        ],
-        true,
-    );
-    let mut context = look_context();
-    context.room_pictures = true;
-    planner.plan_reading(&task, &context, &mut reads).unwrap();
-    let requests = sent.lock().unwrap().clone();
-    let shown = &results(&requests[1])[0];
-    assert!(shown.contains("10×10 JPEG picture"), "{shown}");
-    assert_eq!(pictures(&requests[1].messages[4]), 1);
-}
-
-/// A re-plan's first turn shows the newest picture the task's steps looked
-/// at, after the text, and the text says it is shown.
-#[test]
-fn a_replan_shows_the_newest_looked_at_picture_in_its_first_turn() {
-    let (mut planner, sent) = scripted(
-        vec![called("p1", tilo_agent::tools::PLAN, &draw_plan())],
-        true,
-    );
-    let mut reads = Looks::new('a');
-    let older = reads.keep('e', crate::vision::tests::png(4, 4));
-    let mut context = look_context();
-    context.request = Some("draw a band, then check it looks right".into());
-    context.pictures = vec![older, reads.rendered.clone()];
-    planner
-        .plan_reading("check it looks right", &context, &mut reads)
-        .unwrap();
-    let first = sent.lock().unwrap()[0].messages[1].clone();
-    assert_eq!(pictures(&first), 1, "only the newest");
-    assert!(
-        matches!(first.content.last(), Some(Content::Image { .. })),
-        "after the text"
-    );
-    let text = text_of(&first);
-    assert!(
-        text.contains(&format!("{} picture shown below, 8×6 PNG", reads.rendered)),
-        "{text}"
-    );
 }
 
 /// A refusal ends the plan at once, saying the model refused in its own
@@ -2741,15 +2589,14 @@ fn the_plan_tool_waits_and_says_little() {
     );
 }
 
-/// The first turn's text, its stable part first.
+/// The first turn's text.
 fn first_turn_text(
     task: &str,
     briefing: &Briefing,
     catalogue: &Catalogue,
     revealed: &mut tilo_agent::tools::Revealed,
 ) -> String {
-    let (stable, rest) = converse::first_turn_parts(task, briefing, catalogue, revealed);
-    stable + &rest
+    converse::first_turn_text(task, briefing, catalogue, revealed)
 }
 
 /// Turns answered from a script, keeping each call's key and whether it
