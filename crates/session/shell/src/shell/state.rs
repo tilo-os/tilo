@@ -7,6 +7,7 @@ use tilo_clock::unix_now_i64;
 
 mod continuation_labels;
 mod local_app_records;
+mod personal_apps;
 mod room_bases;
 mod room_binding;
 mod tree_handle;
@@ -16,6 +17,7 @@ use super::fs_authority::schedule_fs_authority_publication;
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use continuation_labels::{ContinuationLabels, UnresolvedContinuationLabels};
 pub use local_app_records::LocalAppRecord;
+pub use personal_apps::is_personal_app;
 pub(crate) use room_binding::room_holds_files;
 pub use tree_handle::{
     WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard, next_policy_revision,
@@ -3835,19 +3837,25 @@ impl WorkspaceTree {
         Some(stored)
     }
 
-    /// The active workspace after the person at this machine opens `app`.
+    /// The workspace `app` opens in after the person at this machine opens
+    /// it: the active one, or for a personal app the personal workspace
+    /// ([`Self::workspace_for_app`]).
     ///
     /// The launch that follows must use this workspace: its sandbox is what
     /// the new process is told, and a workspace launch with no author
     /// capability opens the app as a viewer.
     pub fn workspace_after_opening_app(&mut self, app: &str) -> Option<Workspace> {
-        let (id, room) = {
-            let workspace = self.desktop.active_workspace()?;
-            (workspace.id, workspace.room())
-        };
+        let shown = self.desktop.active_workspace()?.id;
+        // A personal app opens in the personal workspace, whichever is shown.
+        let id = self.home_for_app(app, shown);
+        let room = self.room_of(id)?;
         let person = local_user_id_for_room(&room);
         let _ = self.grant_app_authorship(id, &person, app);
-        self.desktop.active_workspace().cloned()
+        self.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .cloned()
     }
 
     /// Persist an exact, owner-signed ownership offer without changing roles.
@@ -5342,6 +5350,27 @@ impl WorkspaceTree {
         new_group_id: GroupId,
         target: DropTarget,
     ) -> bool {
+        // A personal app's window never goes onto a shared workspace's strip.
+        let destination = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|ws| ws.strips.iter().any(|strip| strip.id == dest_strip_id))
+            .map(|ws| ws.id);
+        let app = self
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|ws| &ws.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == tab_id)
+            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile));
+        if let (Some(destination), Some(app)) = (destination, app)
+            && !self.may_hold_app(destination, &app)
+        {
+            return false;
+        }
         // Cache and Automerge document form one transaction. Keep snapshots
         // so a stale/malformed document cannot leave the live cache moved
         // while replication still describes the old layout.

@@ -500,7 +500,7 @@ CARGO_CHECKS: dict[str, dict] = {
         "dev": False,
         "target": "wasm32-unknown-unknown",
         "unread": ["crates/browser/tilo-browser-runtime/web", "crates/browser/tilo-browser-compute/web"],
-        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "tools/font-catalog.py",
+        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "tools/font-catalog.py",
                    "tools/web/generate_web_desktop.py", "tools/web/crate_source.py", "tools/web/wasm-split/**",
                    "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "apps/*/search/*.ftl",
                    "crates/agent/agent-participant/Cargo.toml", "crates/agent/agent-participant/src/web_apps.rs",
@@ -517,7 +517,7 @@ CARGO_CHECKS: dict[str, dict] = {
         "features": ["tilo-relay/agents"],
         "unread": [f"crates/hosting/tilo-room-service/{name}"
                    for name in ("README.md", "container", "dev", "grafana", "web")],
-        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/room-service-binaries.sh", ".cargo/**", "apps/*/surface.toml",
+        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/room-service-binaries.sh", ".cargo/**", "apps/*/surface.toml",
                    "apps/*/tilo-app.toml", "apps/*.rs", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py",
                    "tools/test-assets.py", "tools/test-assets-build.rs"],
     },
@@ -615,7 +615,7 @@ PUSH_GATE_SIZE_ARCH = "aarch64"
 # to compile: t-release.sh and what it sources, the app plan (app_release.py, which reads every
 # app's manifests and the collections), the architecture guard, package-apps.sh up to its
 # compile, build-thin-apps.sh and the rustc wrappers it puts in front of the compiler;
-SIZE_COMPILE = ["tools/apps/t-release.sh", "tools/apps/release-lib.sh", "tools/ci/publish/lib.sh",
+SIZE_COMPILE = ["tools/apps/t-release.sh", "tools/apps/release-lib.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh",
                 "tools/ci/python.py", "tools/ci/__init__.py", "tools/ci/runner_labels.py",
                 "tools/ci/workspace_graph.py", "tools/apps/app_release.py", "dist/apps/app-collections.toml",
                 "apps/*/tilo-app.toml", "os/dev/assert-native-arch.sh", "dist/apps/package-apps.sh",

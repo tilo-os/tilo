@@ -44,3 +44,12 @@ fn cold_start() {
         "the first frame builds the tree once and composes it once for its size"
     );
 }
+
+/// What a hover moving down the sidebar and back repaints and costs, each
+/// motion on the live window path. Reports only.
+#[test]
+fn sidebar_hover() {
+    ui::framework::testing::perf::sidebar_sweep::<settings::SettingsShell>(2)
+        .expect("settings opens")
+        .print();
+}

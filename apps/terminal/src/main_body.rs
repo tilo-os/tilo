@@ -8,7 +8,7 @@ use ui::{
     tokens::TextRole,
     widget::{
         Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, FindOptions, Findable,
-        PressOutcome, ScrollMetrics, Scrollbar, Widget, paint_find_match,
+        OverlayScrollbar, PressOutcome, ScrollMetrics, Widget, paint_find_match,
     },
 };
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
@@ -591,8 +591,9 @@ pub struct TerminalWidget {
     wheel_remainder_px: f64,
     /// The scrollback as a scroll view (`scrollback_ui.rs`).
     view: ScrollbackView,
-    /// Shared toolkit interaction model for the terminal history bar.
-    scrollbar: Scrollbar,
+    /// The history bar: the toolkit's overlay bar over the right padding,
+    /// shown while the history scrolls and faded at rest.
+    scrollbar: OverlayScrollbar,
 
     conventions: ui::PlatformConventions,
     /// Local find-in-scrollback state: the matches the window bar's search
@@ -617,6 +618,8 @@ pub struct TerminalWidget {
     banner_rect: Rect,
     /// Whether this widget was made without any process behind it.
     headless: bool,
+    /// The command a terminal made to run one starts again on restart.
+    respawn: Option<CommandBuilder>,
 
     /// Last palette-derived cursor color, captured on every `draw`. Exposed
     /// for behavioural tests that want to verify palette swaps actually
@@ -676,21 +679,20 @@ pub struct TerminalWidget {
     viewport_start_y: usize,
 
     /// The single source of truth for grid geometry: the widget
-    /// [`rect`](Self::rect) inset by a uniform body padding on every side, with
-    /// a scrollbar gutter reserved on the right. Every grid read — cell layout,
+    /// [`rect`](Self::rect) inset by a uniform body padding on every side; the
+    /// history bar lies over the right padding. Every grid read — cell layout,
     /// cursor, selection, pointer hit-testing — is relative to this exact rect,
     /// computed once by [`grid_content_rect`](Self::grid_content_rect) and used
     /// identically by `set_geometry` and `draw`, so a glyph, its cursor, and a
     /// click all resolve to the same cell. The compositor draws the window
     /// decoration (the tab/title chrome); the app draws only the grid.
     grid_rect: Rect,
-    /// Cached body geometry (padding, scrollbar gutter), refreshed from the
+    /// Cached body geometry (padding), refreshed from the
     /// theme on every `draw` so `set_geometry` and pointer hit-testing — neither of which receives a
     /// `Theme` — inset the grid by the exact amounts `draw` painted with.
     /// Seeded to the default token values so the first (pre-draw) layout is
     /// already correct.
     chrome_body_pad: f64,
-    chrome_scrollbar_w: f64,
     /// Latches true the first time the mirrored grid holds any non-blank
     /// content. Gates the honest empty-state watermark so it only shows before
     /// the session has ever produced output — never over a legitimately
@@ -894,7 +896,7 @@ impl TerminalWidget {
             scroll_offset: 0,
             wheel_remainder_px: 0.0,
             view: ScrollbackView::default(),
-            scrollbar: Scrollbar::vertical(),
+            scrollbar: OverlayScrollbar::vertical(),
             conventions: ui::PlatformConventions::default(),
             find_matches: Vec::new(),
             find_current: 0,
@@ -903,6 +905,7 @@ impl TerminalWidget {
             chrome_top_band: 0.0,
             banner_rect: Rect::ZERO,
             headless: false,
+            respawn: None,
             last_cursor_color: Color::TRANSPARENT,
             last_fg_default: Color::TRANSPARENT,
             last_bg_default: Color::TRANSPARENT,
@@ -920,12 +923,10 @@ impl TerminalWidget {
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             grid_rect: Rect::ZERO,
-            // Seeded to the default token metrics (body pad 12, scrollbar
-            // gutter 8) so the first layout — which runs before the first
-            // `draw` refreshes these from the live theme — already insets the
-            // grid correctly.
+            // Seeded to the default token metrics (body pad 12) so the first
+            // layout — which runs before the first `draw` refreshes it from
+            // the live theme — already insets the grid correctly.
             chrome_body_pad: 12.0,
-            chrome_scrollbar_w: 8.0,
             ever_nonblank: false,
             title: "Terminal".to_string(),
             links: HashMap::new(),
@@ -1215,6 +1216,21 @@ impl TerminalWidget {
                 EffectStatus::unavailable(E::PASTE, code, reason),
                 EffectStatus::unavailable(E::PASTE_PRIMARY, code, reason),
             ]);
+        }
+        if !self.can_restart() {
+            statuses.push(if self.is_disconnected() {
+                EffectStatus::unavailable(
+                    E::RESTART,
+                    "restart_unavailable",
+                    "This terminal cannot start its shell again",
+                )
+            } else {
+                EffectStatus::unavailable(
+                    E::RESTART,
+                    "session_running",
+                    "The shell is still running",
+                )
+            });
         }
         if self.grid.len() <= self.current_visible_rows() {
             statuses.push(EffectStatus::unavailable(
@@ -1727,6 +1743,12 @@ impl TerminalWidget {
         self.forced_cell = true;
     }
 
+    /// The history bar's opacity at this frame — for tests.
+    #[cfg(test)]
+    pub(crate) fn scrollbar_opacity(&self) -> f32 {
+        self.scrollbar.opacity()
+    }
+
     /// The inner grid content rect (below the header, inside the padding).
     /// Test accessor for the chrome-inset geometry.
     #[cfg(test)]
@@ -1943,14 +1965,14 @@ impl TerminalWidget {
             .max(1.0) as usize
     }
 
-    /// Refresh the cached body metrics (padding, scrollbar gutter) from the
+    /// Refresh the cached body metrics (padding, the history bar's sizes) from the
     /// theme. Called each `draw`; the cached values then feed `set_geometry`
     /// and pointer hit-testing, which never see a `Theme`. Both derive from the
     /// shared spacing scale so the OS can retune the spacing centrally.
     fn refresh_chrome_metrics(&mut self, theme: &Theme) {
         let sp = &theme.tokens.spacing;
         self.chrome_body_pad = f64::from(sp.s3);
-        self.chrome_scrollbar_w = f64::from(sp.s2);
+        self.scrollbar.set_theme(theme);
         self.chrome_header_h =
             ui::widget::ButtonFace::height(ui::widget::ControlSize::Small, theme)
                 + f64::from(sp.s2);
@@ -1966,8 +1988,8 @@ impl TerminalWidget {
     }
 
     /// The inner grid content rect for a given widget rect: the widget rect
-    /// inset by a uniform body padding on every side, with a scrollbar gutter
-    /// reserved on the right. No header — the compositor owns window
+    /// inset by a uniform body padding on every side; the history bar lies
+    /// over the right padding and takes no columns. No header — the compositor owns window
     /// decoration, so the grid starts under the find and session bands (when
     /// they are showing) and the top padding. Uses the cached body
     /// metrics so it is available without a `Theme`. This is the *single*
@@ -1976,7 +1998,7 @@ impl TerminalWidget {
         let pad = self.chrome_body_pad;
         let x0 = rect.x0 + pad;
         let y0 = rect.y0 + self.chrome_top_band + pad;
-        let x1 = (rect.x1 - pad - self.chrome_scrollbar_w).max(x0);
+        let x1 = (rect.x1 - pad).max(x0);
         let y1 = (rect.y1 - pad).max(y0);
         Rect::new(x0, y0, x1, y1)
     }
@@ -1993,10 +2015,26 @@ impl TerminalWidget {
         self.view_rows().saturating_sub(self.current_visible_rows())
     }
 
+    /// What the history bar lies over: the grid's rows across the whole
+    /// width, so the bar stands in the right padding.
+    fn scrollbar_area(&self) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            self.grid_rect.y0,
+            self.rect.x1,
+            self.grid_rect.y1,
+        )
+    }
+
     fn scrollbar_track(&self) -> Rect {
-        let x1 = self.rect.x1 - self.chrome_body_pad;
-        let width = (self.chrome_scrollbar_w - 2.0).max(3.0);
-        Rect::new(x1 - width, self.grid_rect.y0, x1, self.grid_rect.y1)
+        self.scrollbar.track(self.scrollbar_area())
+    }
+
+    /// How far the view stands back from the live output, in logical
+    /// pixels: what moves the history bar. Output at the live bottom does
+    /// not, so it does not show the bar.
+    fn scrollback_depth(&self) -> f64 {
+        self.scroll_offset as f64 * self.char_h.max(1.0) - self.view.sub
     }
 
     fn scrollbar_metrics(&self) -> ScrollMetrics {
@@ -2368,6 +2406,7 @@ impl TerminalWidget {
                     | E::PastePrimary { .. }
                     | E::Interrupt
                     | E::Clear
+                    | E::Restart
             )
     }
 
@@ -2473,6 +2512,7 @@ impl TerminalWidget {
             E::Paste { text } | E::PastePrimary { text } => self.try_paste(&text)?,
             E::Interrupt => self.try_write_input(&[0x03])?,
             E::Clear => self.try_write_input(&[0x0c])?,
+            E::Restart => self.restart_session()?,
             E::CopySelection => {
                 let text = self
                     .selected_text()
@@ -2906,6 +2946,7 @@ impl TerminalWidget {
         // waker (or an embedding host's own pump), is what shows output.
         self.pump();
         self.type_asked_run();
+        self.show_setup_failure();
         self.begin_reconnect_if_lost();
         self.reconnect_when_due();
         self.sync_window_bar();
@@ -3146,8 +3187,15 @@ impl Widget for TerminalWidget {
     /// animation demand made every idle embedded terminal repaint the complete
     /// desktop continuously.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        // The next automatic reconnect to a remote shell.
-        self.reconnect_deadline()
+        // The next automatic reconnect to a remote shell, and when the
+        // history bar starts to fade.
+        match (
+            self.reconnect_deadline(),
+            self.scrollbar.next_wake_deadline(),
+        ) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3166,6 +3214,7 @@ impl Widget for TerminalWidget {
             || self.view.glide.give_needs_frame(ui::motion::frame_now());
         queued
             || gliding
+            || self.scrollbar.needs_animation_frame()
             || self.folder_picker_pending()
             || self.bell_flash(ui::theme::Theme::default().motion()) > 0.0
     }
@@ -3227,7 +3276,7 @@ impl Widget for TerminalWidget {
         let cell_style = theme.text(TextRole::Code);
         self.palette = Self::grid_palette(theme);
         // Refresh the body geometry from the theme and re-derive the inner grid
-        // rect (inside the padding, minus the scrollbar gutter) — the same
+        // rect (inside the padding) — the same
         // `grid_content_rect` `set_geometry` and pointer hit-testing use, so the
         // grid origin is single-sourced. `set_geometry` and hit-testing read the
         // cached metrics — neither sees a `Theme`.
@@ -3292,6 +3341,7 @@ impl Widget for TerminalWidget {
         }
         // What the terminal paints that does not scroll: the header and the
         // bands above the grid, or what stands in place of the grid.
+        self.life.restart_action.set(Rect::ZERO);
         let mut outside = Scene::new();
         self.draw_target_header(&mut outside, transform, text_renderer, theme);
         // A shell that could not start says so, with a retry, in place of
@@ -3304,15 +3354,7 @@ impl Widget for TerminalWidget {
             return;
         }
         self.life.retry_rect = Rect::ZERO;
-        // With no shell behind the grid (or one that has already ended) and
-        // nothing ever printed, say so instead of showing a blank void. A live
-        // shell that has not drawn its prompt yet shows its blank grid. A
-        // window closing for its exited shell shows nothing new.
-        if !self.alt_active
-            && !self.ever_nonblank
-            && !self.closing_for_exit()
-            && (self.headless || self.is_disconnected())
-        {
+        if self.shows_empty_state() {
             self.draw_empty_state(&mut outside, transform, text_renderer, theme);
             self.draw_top_bands(&mut outside, transform, text_renderer, theme);
             scene.append(&outside, None);
@@ -3399,6 +3441,9 @@ impl Widget for TerminalWidget {
                     *ctx.modifiers,
                     ctx.handled,
                 );
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.scrollbar.pointer_left();
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -3655,6 +3700,16 @@ impl Widget for TerminalWidget {
                     .with_live(Politeness::Assertive),
             );
         }
+        if self.can_restart() {
+            transcript.children.push(
+                AccessNode::new(Role::Button)
+                    .with_hashed_key("terminal-restart")
+                    .with_name(t("terminal-restart"))
+                    .with_action_target(self.restart_target())
+                    .with_bounds(self.life.restart_action.get())
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         Some(match selection {
             Some((anchor, focus)) => transcript.with_text_selection(anchor, focus),
             None => transcript,
@@ -3709,6 +3764,13 @@ impl Widget for TerminalWidget {
         }
         if target == format!("terminal.retry:{}", self.pane_id) {
             return self.retry_session();
+        }
+        if target == self.restart_target() {
+            if !self.can_restart() {
+                return false;
+            }
+            self.submit_effect(crate::resource::TerminalEffect::Restart);
+            return true;
         }
         let link_prefix = format!("terminal.link:{}:", self.pane_id);
         if let Some(link_id) = target
@@ -3933,18 +3995,20 @@ impl TerminalWidget {
         // winit (Pressed arrives without coordinates).
         let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor_pos = logical;
+        let area = self.scrollbar_area();
+        let metrics = self.scrollbar_metrics();
         if self.scrollbar.is_dragging() {
-            let track = self.scrollbar_track();
-            let metrics = self.scrollbar_metrics();
-            if let Some(offset) = self.scrollbar.drag_to(track, metrics, logical) {
+            if let Some(offset) = self.scrollbar.drag_to(area, metrics, logical) {
                 self.set_scrollbar_offset(offset);
                 *handled = true;
             }
             return;
         }
-        let track = self.scrollbar_track();
-        let metrics = self.scrollbar_metrics();
-        self.scrollbar.update_hover(track, metrics, logical);
+        if self.scrollbar_visible(self.current_visible_rows()) {
+            self.scrollbar.update_pointer(area, metrics, logical);
+        } else {
+            self.scrollbar.pointer_left();
+        }
         if self.modes.mouse_report
             && !modifiers.state().shift_key()
             && (self.modes.mouse_tracking == 1003
@@ -3985,9 +4049,9 @@ impl TerminalWidget {
         let pressed = matches!(element_state, ElementState::Pressed);
         if button == MouseButton::Left && !self.alt_active {
             if pressed && self.scrollbar_visible(self.current_visible_rows()) {
-                let track = self.scrollbar_track();
+                let area = self.scrollbar_area();
                 let metrics = self.scrollbar_metrics();
-                match self.scrollbar.press(track, metrics, self.last_cursor_pos) {
+                match self.scrollbar.press(area, metrics, self.last_cursor_pos) {
                     PressOutcome::Thumb => {
                         *handled = true;
                         return;
@@ -4331,8 +4395,10 @@ impl TerminalWidget {
                 Some(t("terminal-start-retry")),
             ));
         }
+        let restart =
+            (self.can_restart() && !self.shows_empty_state()).then(|| t("terminal-restart"));
         self.status_banner_message()
-            .map(|message| (BannerKind::Warning, message, None))
+            .map(|message| (BannerKind::Warning, message, restart))
     }
 
     /// Paint the session banner laid out by
@@ -4354,9 +4420,12 @@ impl TerminalWidget {
             let mut content = BannerContent::new(kind, &message);
             content.action = action.as_deref();
             let hit = Banner::paint(&mut ctx, self.banner_rect, &content, self.last_cursor_pos);
-            self.life
-                .banner_action
-                .set(hit.action.unwrap_or(Rect::ZERO));
+            let action = hit.action.unwrap_or(Rect::ZERO);
+            if self.life.reconnect.is_some() {
+                self.life.banner_action.set(action);
+            } else if self.can_restart() {
+                self.life.restart_action.set(action);
+            }
         }
     }
 
@@ -4626,9 +4695,9 @@ impl TerminalWidget {
         !self.alt_active && visible_rows > 0 && self.content_rows() > visible_rows
     }
 
-    /// The shared scrollbar thumb in the reserved right gutter, drawn only
-    /// when the buffer overflows the viewport. The toolkit brightens it while
-    /// it is hovered or dragged.
+    /// The toolkit's overlay bar over the right padding, while the buffer
+    /// overflows the viewport: shown while the history scrolls and faded at
+    /// rest, brightened while it is hovered or dragged.
     fn draw_scrollbar(
         &self,
         scene: &mut Scene,
@@ -4636,19 +4705,14 @@ impl TerminalWidget {
         theme: &Theme,
         visible_rows: usize,
     ) {
+        self.scrollbar.note_offset(self.scrollback_depth());
         if !self.scrollbar_visible(visible_rows) {
             return;
         }
         let from_top = self.viewport_start_y as f64 + self.view.sub / self.char_h.max(1.0);
         let metrics = ScrollMetrics::new(self.view_rows() as f64, visible_rows as f64, from_top);
-        self.scrollbar.draw(
-            scene,
-            transform,
-            self.scrollbar_track(),
-            metrics,
-            theme,
-            false,
-        );
+        self.scrollbar
+            .paint(scene, transform, self.scrollbar_area(), metrics, theme);
     }
 
     /// What the grid says while no shell runs behind it: the toolkit's empty
@@ -4674,10 +4738,12 @@ impl TerminalWidget {
             self.sessions.state,
             crate::sessions::OpenState::Open | crate::sessions::OpenState::Fixed
         );
+        let restart = t("terminal-restart");
         let content = if self.is_disconnected() && shell_ran {
             EmptyStateContent {
                 icon: Some(Icon::Terminal),
                 message: Some("The shell exited before it printed anything."),
+                action_label: self.can_restart().then_some(restart.as_str()),
                 ..EmptyStateContent::new("No output")
             }
         } else {
@@ -4687,7 +4753,11 @@ impl TerminalWidget {
                 ..EmptyStateContent::new("No shell running")
             }
         };
-        EmptyState::paint(&mut ctx, area, &content, self.last_cursor_pos);
+        if let Some(action) = EmptyState::paint(&mut ctx, area, &content, self.last_cursor_pos)
+            && content.action_label.is_some()
+        {
+            self.life.restart_action.set(action);
+        }
     }
 
     /// Convert a logical pointer position into a **buffer-absolute**
@@ -4981,6 +5051,14 @@ impl TerminalWidget {
             crate::resource::TerminalEffect::Clear,
             live,
         );
+        if self.can_restart() {
+            self.push_menu_effect(
+                &mut menu,
+                &t("terminal-restart"),
+                crate::resource::TerminalEffect::Restart,
+                true,
+            );
+        }
         self.menu_rows.find = Some(menu.items().len());
         menu.push(MenuItem::action(
             crate::i18n::t("terminal-find-scrollback"),
@@ -6804,11 +6882,25 @@ impl TerminalBackend {
         relay_session: &str,
     ) -> Self {
         Self {
+            relay_session: Some(relay_session.to_owned()),
+            ..Self::for_test_leased(output, lease)
+        }
+    }
+
+    /// A session on this device whose terminal output arrives on `output`,
+    /// held open by `lease`, on which the supervisor reports how it ended.
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(crate) fn for_test_leased(
+        output: std::os::unix::net::UnixStream,
+        lease: std::os::unix::net::UnixStream,
+    ) -> Self {
+        Self {
             writer: Box::new(std::io::sink()),
             reader: Box::new(output),
             master: Box::new(NullMaster),
             shell_name: "ush".into(),
-            relay_session: Some(relay_session.to_owned()),
+            relay_session: None,
             supervisor_session: None,
             runs: None,
             native_editor: None,
@@ -7326,14 +7418,10 @@ pub(crate) fn ush_request(
         if let Some(session) = relay_session {
             fields.insert("relay_session".to_string(), serde_json::json!(session));
         }
-        // A remote shell's lease says how its session ended, so a lost
-        // connection reconnects and only an exit closes the window.
-        if target
-            .location()
-            .is_some_and(|location| !location.is_this_device())
-        {
-            fields.insert("end_report".to_string(), serde_json::json!(true));
-        }
+        // The lease says how the session ended: only a shell that exited
+        // closes the window; a lost connection to a remote shell reconnects,
+        // and an environment that could not be set up says so on the tab.
+        fields.insert("end_report".to_string(), serde_json::json!(true));
         if let Some(key) = runs {
             fields.insert("runs".to_string(), serde_json::json!(key));
         }
@@ -7840,9 +7928,11 @@ impl TerminalWidget {
     ///
     /// Returns an error if PTY creation or the command spawn fails.
     pub fn spawn_command(cmd: CommandBuilder) -> anyhow::Result<Self> {
-        let backend =
-            TerminalBackend::with_command(cmd).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        Ok(Self::from_backend(backend))
+        let backend = TerminalBackend::with_command(cmd.clone())
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let mut widget = Self::from_backend(backend);
+        widget.respawn = Some(cmd);
+        Ok(widget)
     }
 
     /// A terminal with a null backend: a sink writer, an empty reader, and a

@@ -1536,7 +1536,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // A reveal in progress, like a glide, moves only the viewport.
         self.follow_scroll_to(crate::motion::frame_now());
         if self.viewport.offset().to_bits() != offset.to_bits() {
-            crate::widget::note_placement_moved();
+            crate::widget::note_layout_moved();
         }
         if self.reorder.is_active() {
             let motion = self.reorder.tick(self.rect, elapsed, now);

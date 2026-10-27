@@ -281,41 +281,8 @@ impl AccountStore {
             .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
     }
 
-    /// Compatibility loader; reports a sanitized error if custody cannot be opened.
-    pub fn load_from_settings() -> Option<Self> {
-        if let Ok(store) = Self::try_load() {
-            Some(store)
-        } else {
-            tracing::error!("calendar account credentials could not be opened");
-            None
-        }
-    }
-
-    /// Load accounts, returning credential custody failures to the caller.
-    pub fn try_load() -> Result<Self, String> {
-        let root = accounts::config_root().ok_or("no config dir for calendar accounts")?;
-        let credentials = AccountCredentials::open()?;
-        Ok(Self::from_shared(
-            &SharedStore::load_in(&root),
-            Some(&credentials),
-        ))
-    }
-
-    /// Persist Calendar's account projection to the canonical shared store.
-    /// Other account types and their sealed secrets are retained by
-    /// [`Self::persist_in`]; callers receive an error when the real config
-    /// root cannot be resolved or written, rather than claiming a setting was
-    /// saved when it was not.
-    pub fn persist(&self) -> std::io::Result<()> {
-        let root = accounts::config_root()
-            .ok_or_else(|| std::io::Error::other("no config dir for calendar accounts"))?;
-        self.persist_with_vault(
-            &root,
-            AccountCredentials::open().map_err(std::io::Error::other)?,
-        )
-    }
-
-    /// Compatibility loader under an explicit recovery/test config root.
+    /// The accounts kept under the config root `config_root`, none when its
+    /// credentials cannot be opened.
     pub fn load_from_settings_in(config_root: &Path) -> Self {
         Self::try_load_in(config_root).unwrap_or_else(|_| {
             tracing::error!("calendar account credentials could not be opened");

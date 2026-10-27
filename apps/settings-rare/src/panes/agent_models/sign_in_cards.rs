@@ -11,7 +11,7 @@ use super::{AgentModelsEffect, AgentModelsModel};
 use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::panes::agent_sign_in::{self, SignInSetup, SignedIn};
-use crate::panes::agent_vertex::{self, VertexSetup};
+use crate::panes::agent_vertex::VertexSetup;
 use crate::widgets::{
     Item, SettingsSection, StatusTone, note, row, rows, section, semantic_status_pill, value_row,
 };
@@ -113,9 +113,7 @@ impl AgentModelsModel {
             setup.cancel();
             if !setup.existing {
                 // Nothing may have been sealed yet; there is nothing to report.
-                let _ = self
-                    .custodian
-                    .forget_oauth(&agent_vertex::grant_id(&setup.profile_id));
+                self.forget_grant(&setup.profile_id, false);
             }
         }
         self.changed = true;
@@ -135,7 +133,7 @@ impl AgentModelsModel {
                     let existing = setup.existing;
                     if let Err(error) = self.save_sign_in(setup, signed) {
                         if !existing {
-                            let _ = self.custodian.forget_oauth(&agent_vertex::grant_id(&id));
+                            self.forget_grant(&id, false);
                         }
                         self.notice = Some(error);
                     }
@@ -145,9 +143,7 @@ impl AgentModelsModel {
             Err(error) => {
                 if let Some(mut setup) = self.sign_in.take() {
                     if !setup.existing {
-                        let _ = self
-                            .custodian
-                            .forget_oauth(&agent_vertex::grant_id(&setup.profile_id));
+                        self.forget_grant(&setup.profile_id, false);
                     }
                     if let Some(reply) = setup.reply.take() {
                         reply.finish(Err(error.clone()));
@@ -425,6 +421,7 @@ impl AgentModelsModel {
 mod tests {
     use super::super::tests::{mock, model_over, snapshot};
     use super::*;
+    use crate::panes::agent_vertex;
     use crate::panes::model::PaneModel as _;
     use account_custody::{Capability, Custodian, GrantState, OAuthIssuer, OAuthUse};
     use std::sync::Arc;
@@ -505,6 +502,7 @@ mod tests {
         let cancelled = pane.sign_in.as_ref().unwrap().profile_id.clone();
         pane.cancel_sign_in();
         assert!(pane.sign_in.is_none());
+        super::super::tests::forgotten(&mut pane);
         assert_eq!(
             pane.custodian
                 .oauth_grant_state(&agent_vertex::grant_id(&cancelled))

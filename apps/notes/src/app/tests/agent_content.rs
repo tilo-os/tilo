@@ -272,3 +272,13 @@ fn export_markdown_content_without_a_note_keeps_the_whole_notebook_under_title_h
     assert!(alpha < beta, "notebook order: {markdown}");
     assert!(markdown.contains("Second body."));
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<crate::NotesShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}

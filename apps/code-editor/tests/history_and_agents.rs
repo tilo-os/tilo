@@ -201,3 +201,13 @@ fn a_past_version_of_a_project_reads_as_its_paths_and_texts() {
         "the terminal's session is no part of what the project reads as"
     );
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<CodeEditorShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}
