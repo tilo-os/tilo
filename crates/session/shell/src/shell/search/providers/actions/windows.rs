@@ -217,6 +217,7 @@ mod tests {
             ("group.move-left", serde_json::json!({})),
             ("group.maximize", serde_json::json!({})),
             ("group.close", serde_json::json!({})),
+            ("group.toggle-maximize", serde_json::json!({})),
             ("group.move-to-strip", serde_json::json!({ "strip": 1 })),
         ] {
             assert!(

@@ -793,26 +793,22 @@ impl ShellOverlayHost {
             &AllVisible,
         );
         let action = catalog.select(&resource)?;
-        let mut args = serde_json::Map::new();
-        // The magnifier's step is the one published action whose whole
-        // meaning is its argument, and whose argument a chord always knows.
-        if let Some(step) = id
-            .strip_prefix("magnifier.")
-            .and_then(|_| id.split_once('.'))
-            && let Some(step) = settings_store::magnifier::MagnifierStep::from_id(step.1)
-        {
-            args.insert("step".into(), step.id().into());
-        }
         let _ = invoked_by;
-        action
+        let outcome = action
             .invoke_json(
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &chrome,
-                &args,
+                &serde_json::Map::new(),
             )
             .ok()
-            .map(|disposition| matches!(disposition, InvocationDisposition::Accepted(_)))
+            .map(|disposition| matches!(disposition, InvocationDisposition::Accepted(_)));
+        // An action asks the compositor for a window change by queueing a
+        // request; a chord that runs it does not wait for the next update to
+        // learn its outcome, so the person sees the same thing they saw when
+        // the key had a handler of its own.
+        self.run_requested_shortcut_actions();
+        outcome
     }
 
     /// Resolve a previously enumerated action by its stable address. Dynamic
