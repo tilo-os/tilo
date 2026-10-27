@@ -49,6 +49,47 @@ impl ShellNetwork {
         )
     }
 
+    /// In a room this device governs whose records its native owner
+    /// commits, give the room its shared desktop record when it has none
+    /// yet, so every member's layout has the record to land in. A room made
+    /// now holds it from the start ([`tilo_peer_state::workspace_seed`]).
+    pub(crate) fn prepare_workspace_layout(&self, owner: &NativeWorkspaceOwner, room: RoomId) {
+        use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+        let commits = self
+            .replica
+            .lock()
+            .is_ok_and(|replica| replica.tree.read().commits_native_documents(room));
+        let Some(identity) = self.host_identity.as_ref().filter(|_| commits) else {
+            return;
+        };
+        let prepared = owner
+            .with_current(room, |view| {
+                if !view.governed_here() {
+                    return Ok(None);
+                }
+                Ok(Some(identity.current_native_material(view.workspace())?.0))
+            })
+            .and_then(|certificate| {
+                let Some(certificate) = certificate else {
+                    return Ok(false);
+                };
+                owner.prepare_application_record(
+                    room,
+                    &certificate,
+                    &identity.device_signing_key,
+                    &tilo_joined_room::ApplicationRecord::host(DESKTOP_APP, DESKTOP_RECORD)?,
+                    SystemTime::now(),
+                )
+            });
+        match prepared {
+            Ok(true) => self.schedule_native_owner_publication(room),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%room, %error, "the workspace's layout record was not made")
+            }
+        }
+    }
+
     pub(crate) fn initialize_native_application(
         &self,
         owner: &NativeWorkspaceOwner,
