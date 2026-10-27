@@ -17,12 +17,28 @@ const AGENT_PREFIX: &str = "desktop:agent:";
 const GRANT_APP_AUTHORSHIP: &str = "grant-app-authorship";
 
 impl CapnpBrokerState {
+    /// [`Self::stage_workspace_membership`], started once its admission is
+    /// durable, on a thread that may block: never the broker's loop.
     pub(crate) fn invoke_workspace_membership(
         &self,
         room: &str,
         command: &WorkspaceMembershipCommand,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<super::InvocationJob, String> {
+        self.stage_workspace_membership(room, command, certificate)?
+            .start_blocking(self)
+    }
+
+    /// Admit one membership command as `certificate`'s person. Nobody hears
+    /// of it before its admission is durable: the caller starts it, waiting
+    /// for that on its own thread or, on the broker's loop, without holding
+    /// the loop.
+    fn stage_workspace_membership(
+        &self,
+        room: &str,
+        command: &WorkspaceMembershipCommand,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<super::StagedJob, String> {
         command.validate()?;
         let (resource, action, argument) = match command {
             WorkspaceMembershipCommand::AddAgent { agent, preset } => {
@@ -124,13 +140,18 @@ impl CapnpBrokerState {
         if !decided_here {
             return Ok(());
         }
-        let job = self.invoke_workspace_membership(
-            &route.cluster_id,
-            &WorkspaceMembershipCommand::GrantAppAuthorship {
-                app: route.app_id.clone(),
-            },
-            certificate,
-        )?;
+        // This runs on the broker's loop, which answers every other app
+        // meanwhile: the admission's write is waited for without holding it.
+        let job = self
+            .stage_workspace_membership(
+                &route.cluster_id,
+                &WorkspaceMembershipCommand::GrantAppAuthorship {
+                    app: route.app_id.clone(),
+                },
+                certificate,
+            )?
+            .start(self)
+            .await?;
         let completed = tokio::task::spawn_blocking(move || job.completion.recv())
             .await
             .map_err(|_| "app authorship worker stopped")?
@@ -149,7 +170,7 @@ impl CapnpBrokerState {
         action: &str,
         argument: Option<&str>,
         certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<super::InvocationJob, String> {
+    ) -> Result<super::StagedJob, String> {
         let route = CrdtRoute::record(APP, room, RECORD);
         let peers = self
             .surfaces
@@ -220,9 +241,7 @@ impl CapnpBrokerState {
                 admitted: Box::new(admitted),
                 time,
             }),
-        )?
-        // A host-side call from the shell's threads, never the broker's loop.
-        .start_blocking(self)
+        )
     }
 
     pub(super) fn refresh_workspace_membership_services(self: &Arc<Self>) -> Result<(), String> {
