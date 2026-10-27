@@ -202,6 +202,21 @@ impl Row {
             Self::Divider { y1, .. } | Self::Line { y1, .. } => *y1,
         }
     }
+
+    /// The band the row occupies, top to bottom: its divider, or its author
+    /// line, bubble and caption.
+    fn band(&self) -> (f64, f64) {
+        match self {
+            Self::Divider { y0, y1, .. } | Self::Line { y0, y1, .. } => (*y0, *y1),
+        }
+    }
+
+    /// Whether any of the row lies inside `viewport`, as a row scrolled half
+    /// out of a view still does.
+    fn meets(&self, viewport: Rect) -> bool {
+        let (y0, y1) = self.band();
+        y1 > viewport.y0 && y0 < viewport.y1
+    }
 }
 
 /// The list's geometry, measured once and painted from the same measurements.
@@ -323,6 +338,10 @@ pub struct ListWork {
     pub measured: usize,
     /// Lines whose kept measurement the last layout reused.
     pub reused: usize,
+    /// Rows the last frame painted.
+    pub painted: usize,
+    /// Rows the last frame skipped, lying wholly above or below its viewport.
+    pub culled: usize,
 }
 
 /// A list's layout, kept from one frame to the next.
@@ -372,6 +391,13 @@ impl ListCache {
 struct MeasuredCounts {
     measured: usize,
     reused: usize,
+}
+
+/// What one paint drew and skipped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Painted {
+    painted: usize,
+    culled: usize,
 }
 
 /// The bubble and ink for a line on `theme`.
@@ -527,6 +553,8 @@ impl<'a> ListFace<'a> {
             cache.work = ListWork {
                 measured: 0,
                 reused: self.lines.len(),
+                painted: 0,
+                culled: 0,
             };
             return &cache.layout;
         }
@@ -536,6 +564,8 @@ impl<'a> ListFace<'a> {
         cache.work = ListWork {
             measured: counts.measured,
             reused: counts.reused,
+            painted: 0,
+            culled: 0,
         };
         &cache.layout
     }
@@ -708,11 +738,22 @@ impl<'a> ListFace<'a> {
     /// Paint the list from `rect`'s top left, `rect`'s width wide, keeping
     /// nothing between frames.
     pub fn paint(&self, paint: &mut PaintCtx<'_>, rect: Rect) {
-        self.paint_in(paint, rect, &mut ListCache::default());
+        self.paint_in(paint, rect, None, &mut ListCache::default());
     }
 
-    /// Paint the rows of `rect`, reusing and keeping `cache`'s measurements.
-    pub fn paint_in(&self, paint: &mut PaintCtx<'_>, rect: Rect, cache: &mut ListCache) {
+    /// Paint the rows of `rect` that meet `viewport` — all of them when it is
+    /// `None` — reusing and keeping `cache`'s measurements.
+    ///
+    /// A row outside the viewport is neither measured again (its kept box is
+    /// still right) nor shaped: the frame costs what is on screen, not what the
+    /// conversation holds.
+    pub fn paint_in(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        rect: Rect,
+        viewport: Option<Rect>,
+        cache: &mut ListCache,
+    ) {
         let layout = self.layout(
             cache,
             paint.text,
@@ -721,16 +762,29 @@ impl<'a> ListFace<'a> {
             rect.width(),
             rect.y0,
         );
-        self.paint_layout(paint, layout);
+        let painted = self.paint_layout(paint, layout, viewport);
+        cache.work.painted = painted.painted;
+        cache.work.culled = painted.culled;
     }
 
     /// Paint rows already measured by [`Self::layout`], so a caller that needs
     /// the geometry (a list storing its rows for its accessible nodes) lays
     /// out once.
-    fn paint_layout(&self, paint: &mut PaintCtx<'_>, layout: &Layout) {
+    fn paint_layout(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        layout: &Layout,
+        viewport: Option<Rect>,
+    ) -> Painted {
         let theme = paint.theme;
         let radius = f64::from(theme.tokens.radii.control);
+        let mut painted = Painted::default();
         for row in &layout.rows {
+            if viewport.is_some_and(|viewport| !row.meets(viewport)) {
+                painted.culled += 1;
+                continue;
+            }
+            painted.painted += 1;
             match row {
                 Row::Divider {
                     y0,
@@ -772,6 +826,7 @@ impl<'a> ListFace<'a> {
                 }
             }
         }
+        painted
     }
 
     /// The time, and the delivery state of one of your own lines, under its
@@ -956,7 +1011,9 @@ impl Widget for ConversationList {
         }
         let face = ListFace::standing(&self.lines, ConversationClock::local());
         let mut paint = PaintCtx::new(scene, transform, text_renderer, theme);
-        face.paint_in(&mut paint, self.rect, &mut self.cache);
+        // The rows that meet what the view shows, and no others: a long
+        // conversation shapes what is on screen, not what it holds.
+        face.paint_in(&mut paint, self.rect, presence.viewport(), &mut self.cache);
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1009,6 +1066,10 @@ impl Widget for ConversationList {
 #[cfg(test)]
 #[path = "list_cache_tests.rs"]
 mod cache_tests;
+
+#[cfg(test)]
+#[path = "list_cull_tests.rs"]
+mod cull_tests;
 
 #[cfg(test)]
 #[path = "list_frame_tests.rs"]
