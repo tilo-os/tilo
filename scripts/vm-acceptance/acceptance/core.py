@@ -636,6 +636,19 @@ def pump_lines_after(ctx, mark: int) -> list[str]:
     return [line.strip() for line in out.splitlines() if PUMP_STALL in line]
 
 
+SLOW_SCENE = re.compile(r"SLOW-SCENE total=([0-9.]+)(ms|µs|us|s) (.*)")
+
+
+def slowest_scenes(lines: list[str], n: int = 2) -> list[str]:
+    """The `n` slowest `SLOW-SCENE` lines (a retained scene build over 16 ms, split by phase
+    and by desktop section), slowest first, each as `total: phase=… section=…`."""
+    def ms(value: str, unit: str) -> float:
+        return float(value) * {"ms": 1.0, "µs": 1e-3, "us": 1e-3, "s": 1e3}[unit]
+
+    found = [(ms(m[1], m[2]), m[3]) for m in (SLOW_SCENE.search(line) for line in lines) if m]
+    return [f"{total:.1f} ms: {split[:400]}" for total, split in sorted(found, reverse=True)[:n]]
+
+
 def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
     """What a failed frame-pacing scenario leaves to tell its stalls apart: the
     compositor's per-phase pump breakdown for every pump that held input up since
@@ -650,7 +663,15 @@ def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
     else:
         shown = "; ".join(line[-320:] for line in lines[-3:])
         pumps = f"{len(lines)} pre-paint pump stall line(s), the last: {shown}"
-    return f" [guest CPU steal over the scenario {steal_text}; {pumps}; {check_id}-pump.log has them all]"
+    # The compositor names where a slow scene build went (`SLOW-SCENE`: its phases and the
+    # desktop sections drawn); a failed check keeps no files, so the slowest go here.
+    scenes = slowest_scenes((ctx.vm.exec(
+        f'tail -n +{log_mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "SLOW-SCENE"; true',
+        check=False) or "").splitlines())
+    scene_text = (f"; slowest scene builds: {' | '.join(scenes)}" if scenes
+                  else "; no SLOW-SCENE line in the session log")
+    return (f" [guest CPU steal over the scenario {steal_text}; {pumps}{scene_text}; "
+            f"{check_id}-pump.log has them all]")
 
 
 def switch_lines_after(ctx, mark: int) -> list[dict]:

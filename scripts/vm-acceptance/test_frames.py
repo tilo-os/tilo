@@ -275,6 +275,19 @@ class DemandLatenessTest(unittest.TestCase):
         self.assertEqual(st["late_ms_max"], 4.0)
 
 
+
+
+class SlowScenes(unittest.TestCase):
+    def test_the_slowest_scene_builds_are_named_with_their_split(self):
+        from acceptance import core
+        lines = ["x SLOW-SCENE total=18.2ms scene/layout=2ms scene/draw-sections=15ms",
+                 "SLOW-SCENE total=46.561ms scene/draw-sections=40ms overview=38ms",
+                 "noise", "SLOW-SCENE total=1.2s scene/draw-sections=1.1s"]
+        self.assertEqual(core.slowest_scenes(lines),
+                         ["1200.0 ms: scene/draw-sections=1.1s",
+                          "46.6 ms: scene/draw-sections=40ms overview=38ms"])
+        self.assertEqual(core.slowest_scenes([]), [])
+
 if __name__ == "__main__":
     unittest.main()
 
