@@ -2218,23 +2218,32 @@ impl NavShell {
         }
     }
 
+    /// A title that comes or goes changes the header row; a shown title that says something
+    /// else is the same part, measured and painted again (an item's title as it is typed).
     fn set_title(&mut self, column: Column, title: String) {
         let title = (!title.trim().is_empty()).then_some(title);
-        if let Some(header) = self.headers.get_mut(column.index())
-            && header.title.title != title
-        {
-            header.title.title = title;
+        let Some(header) = self.headers.get_mut(column.index()) else {
+            return;
+        };
+        if header.title.title == title {
+            return;
+        }
+        let comes_or_goes = header.title.is_shown() != title.is_some();
+        header.title.title = title;
+        if comes_or_goes {
             self.slots_changed();
+        } else {
+            self.invalidate();
         }
     }
 
+    /// The count is drawn inside the title's part, which measures and paints it again.
     fn set_count(&mut self, column: Column, count: Option<usize>) {
         if let Some(header) = self.headers.get_mut(column.index())
             && header.title.count != count
         {
             header.title.count = count;
             self.invalidate();
-            self.structure_dirty = true;
         }
     }
 
