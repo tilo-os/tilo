@@ -2748,6 +2748,55 @@ fn is_white([r, g, b]: [u8; 3]) -> bool {
     r >= 240 && g >= 240 && b >= 240
 }
 
+/// The centre of the tile showing white: the X11 window, as the person sees
+/// it before pressing Print. The X11 window fills its tile white; the native
+/// client's is grey.
+fn white_tile_centre(compositor: &Compositor, paint: &dyn Fn()) -> (f64, f64) {
+    let end = deadline_end();
+    loop {
+        assert!(
+            Instant::now() < end,
+            "the X11 window never showed its white content in any tile {:?}\n{}",
+            compositor.foreign_surface_rects(),
+            compositor.recent_log()
+        );
+        paint();
+        let shown = compositor
+            .foreign_surface_rects()
+            .into_iter()
+            .map(|[x, y, w, h]| (x + w / 2.0, y + h / 2.0))
+            .find(|&at| is_white(screen_pixel(compositor, "before-print", at)));
+        if let Some(at) = shown {
+            return at;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The capture bar and its shutter are wholly on the screen.
+fn assert_capture_tool_on_screen(compositor: &Compositor) {
+    let screen = [
+        0.0,
+        0.0,
+        f64::from(compositor.size.0),
+        f64::from(compositor.size.1),
+    ];
+    for name in ["capture.bar", "capture.shutter"] {
+        let [x, y, w, h] = compositor
+            .named_rect(name)
+            .unwrap_or_else(|| panic!("{name} is laid out after Print"));
+        assert!(
+            w > 0.0
+                && h > 0.0
+                && x >= screen[0] - 0.5
+                && y >= screen[1] - 0.5
+                && x + w <= screen[2] + 0.5
+                && y + h <= screen[3] + 0.5,
+            "{name} [{x}, {y}, {w}, {h}] is wholly on the screen {screen:?}"
+        );
+    }
+}
+
 /// A host program under Xwayland (a terminal such as Alacritty) is focused
 /// and the person presses Print: the capture bar comes up and the window
 /// keeps showing what it showed, held for the screenshot, never a greyed or
@@ -2787,28 +2836,7 @@ fn print_over_a_focused_x11_window_opens_the_capture_bar_and_keeps_the_window_sh
         .unwrap();
         conn.flush().unwrap();
     };
-    // The X11 window fills its tile white; the native client's is grey.
-    // Find the tile showing white: that is the X11 window, as the person
-    // sees it before pressing Print.
-    let end = deadline_end();
-    let centre = loop {
-        assert!(
-            Instant::now() < end,
-            "the X11 window never showed its white content in any tile {:?}\n{}",
-            compositor.foreign_surface_rects(),
-            compositor.recent_log()
-        );
-        paint();
-        let shown = compositor
-            .foreign_surface_rects()
-            .into_iter()
-            .map(|[x, y, w, h]| (x + w / 2.0, y + h / 2.0))
-            .find(|&at| is_white(screen_pixel(&compositor, "before-print", at)));
-        if let Some(at) = shown {
-            break at;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let centre = white_tile_centre(&compositor, &paint);
 
     for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
         let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
@@ -2824,26 +2852,7 @@ fn print_over_a_focused_x11_window_opens_the_capture_bar_and_keeps_the_window_sh
         |name| name.starts_with("capture."),
         "the capture tool opening",
     );
-    let screen = [
-        0.0,
-        0.0,
-        f64::from(compositor.size.0),
-        f64::from(compositor.size.1),
-    ];
-    for name in ["capture.bar", "capture.shutter"] {
-        let [x, y, w, h] = compositor
-            .named_rect(name)
-            .unwrap_or_else(|| panic!("{name} is laid out after Print"));
-        assert!(
-            w > 0.0
-                && h > 0.0
-                && x >= screen[0] - 0.5
-                && y >= screen[1] - 0.5
-                && x + w <= screen[2] + 0.5
-                && y + h <= screen[3] + 0.5,
-            "{name} [{x}, {y}, {w}, {h}] is wholly on the screen {screen:?}"
-        );
-    }
+    assert_capture_tool_on_screen(&compositor);
     let held = screen_pixel(&compositor, "capture-open", centre);
     assert!(
         is_white(held),
