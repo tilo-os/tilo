@@ -151,6 +151,9 @@ pub struct Declaration {
     /// The other words people use for the action
     /// ([`tilo_actions::ActionSpec::keywords`]).
     pub keywords: Vec<String>,
+    /// The action's own picture, by its Lucide name
+    /// ([`tilo_actions::ActionSpec::icon`]).
+    pub icon: Option<String>,
     pub description: Option<String>,
     pub params: Vec<ActionParam>,
     /// What the action is able to do. See [`tilo_actions::ActionContract::kind`].
@@ -213,6 +216,7 @@ impl Declaration {
             id,
             label,
             keywords: Vec::new(),
+            icon: None,
             description: None,
             params,
             kind: ActionKind::Undoable,

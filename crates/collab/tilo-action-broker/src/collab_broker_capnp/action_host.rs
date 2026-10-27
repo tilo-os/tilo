@@ -350,6 +350,7 @@ pub(super) fn offered_action(
         resource_label: app.display_name.clone(),
         action_label: offer.label.clone(),
         keywords: Vec::new(),
+        icon: None,
         description: offer.description.clone(),
         operation_kind: match offer.operation {
             OfferOperation::Document => tilo_actions::OperationKind::Document,
@@ -393,6 +394,7 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
         resource_label: display_name.clone(),
         action_label: format!("Open {display_name}"),
         keywords: Vec::new(),
+        icon: None,
         description: Some(description.into()),
         locus: ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,
@@ -446,6 +448,7 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
         resource_label: display_name.to_string(),
         action_label: format!("Close {display_name}"),
         keywords: Vec::new(),
+        icon: None,
         description: Some(
             "Close this application's windows in the current workspace; opening it again \
              starts it with the permissions it holds now"
@@ -3590,6 +3593,7 @@ mod device_pairing_tests {
                         resource_label: "Nearby device pairing".into(),
                         action_label: step.into(),
                         keywords: Vec::new(),
+                        icon: None,
                         description: None,
                         locus: tilo_actions::ExecutionLocus::default(),
                         kind: tilo_actions::OperationKind::Effect,

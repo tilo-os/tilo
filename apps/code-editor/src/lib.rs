@@ -84,4 +84,6 @@ pub fn launch_record(path: &std::path::Path) -> Option<ui::record::RecordId> {
 }
 
 #[cfg(test)]
+mod action_icons_tests;
+#[cfg(test)]
 mod action_keywords_tests;

@@ -278,7 +278,7 @@ impl Source for Actions {
                     subtitle: Some(flat.resource_label.clone()),
                     facts: Vec::new(),
                     score,
-                    icon: None,
+                    icon: crate::window::action_icon(flat.action),
                     target: Target::Action(Box::new(ActionTarget {
                         resource: flat.resource_id.clone(),
                         resource_kind: flat.resource_kind.clone(),

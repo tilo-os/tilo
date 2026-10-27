@@ -276,6 +276,7 @@ mod legacy_invoke_door {
             resource_label: "Workspace".into(),
             action_label: "Open".into(),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: OperationKind::Effect,
             params: Vec::new(),

@@ -855,6 +855,8 @@ pub struct ActionSpec {
     /// every surface that lists the action knows them; never a list kept
     /// inside a search provider.
     pub keywords: Vec<String>,
+    /// The action's own picture beside its label, by its Lucide name.
+    pub icon: Option<String>,
     pub description: Option<String>,
     /// Declared execution locus (mirrors the concrete action's
     /// [`Action::locus`]), so the palette can show/route it before the
@@ -931,6 +933,7 @@ impl Clone for ActionSpec {
             id: self.id.clone(),
             label: self.label.clone(),
             keywords: self.keywords.clone(),
+            icon: self.icon.clone(),
             description: self.description.clone(),
             locus: self.locus,
             kind: self.kind,
@@ -1220,6 +1223,7 @@ impl ActionSpec {
             id,
             label,
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus,
             kind,
@@ -1271,6 +1275,7 @@ impl ActionSpec {
             id: id.into(),
             label: label.into(),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1310,6 +1315,7 @@ impl ActionSpec {
             id: id.into(),
             label: label.into(),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1359,6 +1365,7 @@ impl ActionSpec {
             id: id.into(),
             label: label.into(),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1437,6 +1444,7 @@ impl ActionSpec {
             id: id.into(),
             label: label.into(),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
@@ -1477,6 +1485,7 @@ impl ActionSpec {
             id: id.into(),
             label: label.into(),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
@@ -1592,6 +1601,7 @@ impl ActionSpec {
             id: seed.id,
             label: seed.label,
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: seed.locus,
             kind: seed.kind,
@@ -1674,6 +1684,13 @@ impl ActionSpec {
     #[must_use]
     pub fn with_keywords<S: Into<String>>(mut self, keywords: impl IntoIterator<Item = S>) -> Self {
         self.keywords = keywords.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Give the action its own picture ([`Self::icon`]), by its Lucide name.
+    #[must_use]
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
         self
     }
 

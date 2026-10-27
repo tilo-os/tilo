@@ -411,6 +411,35 @@ fn keyword_list(list: &syn::LitStr) -> syn::Result<Vec<String>> {
     Ok(words)
 }
 
+/// `icon = "folder-plus"`: a picture by its Lucide name, lowercase words
+/// joined by hyphens. Whether the toolkit draws that name is checked where
+/// the toolkit is: each app's tests resolve every icon it declares.
+fn icon_name(name: &syn::LitStr) -> syn::Result<String> {
+    let value = name.value();
+    let well_formed = !value.is_empty()
+        && value.split('-').all(|word| {
+            !word.is_empty()
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    if !well_formed {
+        return Err(syn::Error::new(
+            name.span(),
+            "an icon is named by its Lucide name, such as `folder-plus`",
+        ));
+    }
+    Ok(value)
+}
+
+/// `Some("…")` or `None`, as tokens of an `Option<&'static str>`.
+fn optional_str(value: Option<&str>) -> proc_macro2::TokenStream {
+    match value {
+        Some(value) => quote::quote!(::core::option::Option::Some(#value)),
+        None => quote::quote!(::core::option::Option::None),
+    }
+}
+
 fn field_list(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Vec<String>> {
     let fields = meta.value()?.parse::<syn::LitStr>()?;
     Ok(fields

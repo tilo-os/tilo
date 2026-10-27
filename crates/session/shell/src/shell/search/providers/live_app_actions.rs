@@ -2661,14 +2661,12 @@ impl SearchProvider for LiveAppActionsProvider {
         &self.resource_kinds
     }
 
-    /// An app's action wears that app's icon, live or retained alike.
     fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
-        let parts = Self::result_parts(&result.id)?;
-        Some(ui::icons::app_glyph(parts.app, None))
+        self.row_picture(&result.id).0
     }
 
     fn row_image(&self, result: &SearchResult) -> Option<ui::icons::AppImage> {
-        crate::app_icons::for_window_app_id(Self::result_parts(&result.id)?.app)
+        self.row_picture(&result.id).1
     }
 
     fn action_hierarchy(&self, id: &str) -> Option<ActionHierarchy> {
@@ -2740,8 +2738,7 @@ impl SearchProvider for LiveAppActionsProvider {
         true
     }
 
-    /// Its rows of the focused app are the broker's copy of what the app's
-    /// window publishes: a window the shell reads itself answers instead.
+    /// The broker's copy of what the app's window publishes.
     fn gives_way_to_window(&self) -> bool {
         true
     }
@@ -3598,19 +3595,14 @@ fn index_actions(
     index
 }
 
+#[path = "live_app_actions/row_picture.rs"]
+mod row_picture;
+
 #[cfg(test)]
-pub(crate) fn fixture_with_directory_page(
-    broker: AppActionBroker,
-    peer: u64,
-    actor: String,
-    page: CataloguePage,
-) -> Rc<dyn SearchProvider> {
-    let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
-    provider
-        .directory_pages_mut()
-        .insert((peer, actor, String::new(), Vec::new()), page);
-    provider
-}
+#[path = "live_app_actions/fixture.rs"]
+mod fixture;
+#[cfg(test)]
+pub(crate) use fixture::fixture_with_directory_page;
 
 #[cfg(test)]
 #[allow(
@@ -4005,6 +3997,7 @@ mod tests {
             resource_label: "Fixture".into(),
             action_label: label.into(),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::View,
@@ -4247,6 +4240,7 @@ mod tests {
             resource_label: "Fixture".into(),
             action_label: label.into(),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::View,
             params: Vec::new(),

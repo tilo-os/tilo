@@ -79,6 +79,7 @@ fn place_row(workspace_id: u64) -> CatalogueRow {
             resource_label: label.into(),
             action_label: "Choose a device for a compute job".into(),
             keywords: Vec::new(),
+            icon: None,
             description: Some(
                 "Names the device of yours best placed to run a job of this app now, \
                  and why each other device was passed over. Runs nothing."

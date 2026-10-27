@@ -1829,6 +1829,7 @@ impl App {
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),
             keywords: action.keywords.clone(),
+            icon: action.icon.clone(),
             description: action.description.clone(),
             locus: action.locus,
             kind: action.kind,

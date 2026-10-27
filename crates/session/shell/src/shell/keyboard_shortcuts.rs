@@ -190,6 +190,7 @@ impl ShortcutResource {
             resource_label: self.label.clone(),
             action_label,
             keywords: Vec::new(),
+            icon: None,
             description: Some(description),
             locus: ExecutionLocus::default(),
             kind,

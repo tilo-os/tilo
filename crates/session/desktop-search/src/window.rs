@@ -38,6 +38,12 @@ fn offered(spec: &ActionSpec) -> bool {
         && spec.operation_type.as_deref() != Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
 }
 
+/// The picture `spec` declares for itself, when the toolkit draws it.
+#[must_use]
+pub fn action_icon(spec: &ActionSpec) -> Option<ui::icons::Icon> {
+    spec.icon.as_deref().and_then(ui::icons::Icon::from_name)
+}
+
 /// Whether resources of `kind` are the toolkit's mirrors of controls the
 /// window already shows (its buttons, segmented controls, the host's search
 /// field), published so agents and assistive technology can press them:
@@ -106,7 +112,12 @@ impl Source for Actions<'_> {
                     }
                     MAX_PROVIDER_SCORE.saturating_sub(at.min(count))
                 } else if flat.depth == 0 {
-                    rank::action_match_score(needle, &row.title, &flat.resource_label)?
+                    rank::action_match_score(
+                        needle,
+                        &row.title,
+                        &flat.action.keywords,
+                        &flat.resource_label,
+                    )?
                 } else {
                     rank::item_action_match_score(needle, &flat.resource_label)?
                 };
@@ -118,7 +129,7 @@ impl Source for Actions<'_> {
                     subtitle: row.subtitle,
                     facts: Vec::new(),
                     score: score.clamp(0, MAX_PROVIDER_SCORE),
-                    icon: None,
+                    icon: action_icon(flat.action),
                     target: Target::Action(Box::new(ActionTarget {
                         resource: flat.resource_id.clone(),
                         resource_kind: flat.resource_kind.clone(),
@@ -280,7 +291,7 @@ mod tests {
         };
         let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notebook")
             .with_action(open())
-            .with_action(action("new-note", "New note"))
+            .with_action(action("new-note", "New note").with_icon("file-plus"))
             .with_action(
                 action("bold", "Bold").requires(tilo_actions::ContextRequirement::Selection),
             );
@@ -341,6 +352,18 @@ mod tests {
             .map(|hit| (hit.title.as_str(), hit.subtitle.as_deref()))
             .collect();
         assert_eq!(actions, [("Rename note", Some("Trip plan"))]);
+    }
+
+    #[test]
+    fn an_action_wears_its_own_icon() {
+        let hits = search("");
+        let icon = |title: &str| {
+            hits.iter()
+                .find(|hit| hit.title == title)
+                .map(|hit| hit.icon)
+        };
+        assert_eq!(icon("New note"), Some(Some(ui::icons::Icon::FilePlus)));
+        assert_eq!(icon("Bold"), Some(None), "one without wears its app's");
     }
 
     #[test]
