@@ -56,7 +56,7 @@ impl NativeProcessHost {
     ) -> Result<Self, LaunchError> {
         let launcher_instance = environment.continuity_instance.is_some();
         let resolved = environment.resolve(definition.app_id, &author)?;
-        let permissions = Rc::new(RefCell::new(resolved.permissions));
+        let permissions = crate::permissions::SharedPermissions::new(resolved.permissions);
         // A workspace launch's participation follows the room's grants, as
         // the shell tells the window (`crate::room_sync`): read-only becomes
         // writable the moment the app's authorship arrives, and back.
@@ -635,7 +635,7 @@ pub struct ApplicationHost {
     owners: RecordOwners,
     views: Rc<InstanceViewStore>,
     device_id: String,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: crate::permissions::SharedPermissions,
     author: UserId,
     action_context: tilo_actions::ActionContext,
     /// Where the person's own records are kept: the host's store unless the
@@ -661,7 +661,7 @@ impl ApplicationHost {
         device_id: String,
         workspace_id: &str,
         author: UserId,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
         lifetime: Rc<dyn std::any::Any>,
     ) -> Result<Self, LaunchError> {
@@ -688,7 +688,7 @@ impl ApplicationHost {
         device_id: String,
         workspace_id: &str,
         author: UserId,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
         if !profile_root.is_absolute() {
@@ -712,7 +712,7 @@ impl ApplicationHost {
         device_id: String,
         workspace_id: &str,
         author: UserId,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
         validate_identity(&author.0).map_err(LaunchError::Restore)?;

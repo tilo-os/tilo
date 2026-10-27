@@ -432,9 +432,9 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         room_record: false,
         create: owned_declared_directory_factory,
     };
-    let permissions = Rc::new(RefCell::new(
+    let permissions = crate::permissions::SharedPermissions::new(
         crate::permissions::PermissionContext::permissive(),
-    ));
+    );
     let context = HostContext::prepare(
         &definition,
         HostContextInputs {
@@ -489,7 +489,9 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
     );
     assert_eq!(app.actions.resource_generation.get(), generation);
     // What HostWorker::pump does with the host's recomputed authority.
-    *permissions.borrow_mut() = crate::permissions::PermissionContext::stranger("fixture-user");
+    permissions.set(crate::permissions::PermissionContext::stranger(
+        "fixture-user",
+    ));
     let report = app.pump_hosted_model_as(false);
     assert!(report.synced && report.published);
     assert_ne!(app.actions.resource_generation.get(), generation);
@@ -538,9 +540,9 @@ fn a_component_queue_notification_reaches_its_app_without_forcing_a_sync() {
             views,
             device_id: "D".into(),
             instance_id: 83,
-            permissions: Rc::new(RefCell::new(
+            permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
             author: crate::permissions::UserId("fixture-user".into()),
             action_context: tilo_actions::ActionContext::default(),
         },

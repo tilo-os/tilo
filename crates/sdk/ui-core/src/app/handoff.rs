@@ -159,7 +159,7 @@ impl App {
         let viewer = crate::permissions::PermissionContext::read_only;
         if let Some(sync) = self.actions.bound_record_sync.as_ref() {
             let read_only = viewer(&sync.binding.permissions.borrow());
-            *sync.binding.permissions.borrow_mut() = read_only;
+            sync.binding.permissions.set(read_only);
         }
         let read_only = viewer(&self.permission_ctx);
         self.set_permission_ctx(read_only);

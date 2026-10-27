@@ -263,7 +263,6 @@ pub(super) fn mount_with_network_and_reads(
     use std::{
         cell::{Cell, RefCell},
         os::unix::fs::PermissionsExt as _,
-        rc::Rc,
     };
     let tree = crate::shell::native_workspace_owner::test_tree_of(owner);
     assert!(
@@ -306,9 +305,9 @@ pub(super) fn mount_with_network_and_reads(
                 hex::encode(identity.device_cert.device_public_key),
                 tilo_joined_room::testing::ROOM,
                 ui::permissions::UserId(ui::permissions::LOCAL_USER.into()),
-                Rc::new(RefCell::new(
+                ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::permissive(),
-                )),
+                ),
                 tilo_actions::ActionContext::default(),
             )
             .unwrap();

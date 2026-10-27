@@ -2789,7 +2789,7 @@ mod prepared_launch_tests {
         definition: &crate::application::ApplicationDefinition,
         args: &LaunchArgs,
         target: LaunchTarget,
-        authority: Rc<std::cell::RefCell<crate::permissions::PermissionContext>>,
+        authority: crate::permissions::SharedPermissions,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         PREPARES.set(PREPARES.get().saturating_add(1));
         let root = PathBuf::from(args.value("--fixture-root").expect("explicit test root"));

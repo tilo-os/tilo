@@ -7,7 +7,6 @@ use crate::{
     launch::LaunchError,
     permissions::PermissionContext,
 };
-use std::{cell::RefCell, rc::Rc};
 
 #[cfg(unix)]
 pub mod private_actions;
@@ -21,7 +20,7 @@ pub use crate::invocation_scope::{
 
 pub struct HostWorker {
     app: crate::App,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: crate::permissions::SharedPermissions,
     /// Last presence handed to the host per participant, for
     /// [`HostWorker::take_participant_presence_changes`].
     published_presence:
@@ -41,7 +40,7 @@ impl HostWorker {
         definition: &ApplicationDefinition,
         inputs: PreparedComponentInputs,
         collaboration: CollaborationManager,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
     ) -> Result<Self, LaunchError> {
         Self::mount_inner(definition, inputs, collaboration, permissions)
     }
@@ -51,7 +50,7 @@ impl HostWorker {
         definition: &ApplicationDefinition,
         mut inputs: PreparedComponentInputs,
         collaboration: CollaborationManager,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
         retirement: crate::semantic_document_read::retirement::MountRetirement,
     ) -> Result<Self, LaunchError> {
         inputs.context.bind_retirement(retirement)?;
@@ -61,7 +60,7 @@ impl HostWorker {
         definition: &ApplicationDefinition,
         inputs: PreparedComponentInputs,
         mut collaboration: CollaborationManager,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
     ) -> Result<Self, LaunchError> {
         // The actual admitted record exists before the factory. Defaults or
         // migrations performed by the factory cannot become a trusted baseline.
@@ -161,7 +160,7 @@ impl HostWorker {
     /// may have happened.
     pub fn pump(&mut self, current: PermissionContext) -> Result<(), String> {
         self.app.published_invocation_health()?;
-        *self.permissions.borrow_mut() = current;
+        self.permissions.set(current);
         self.app.pump_hosted_model();
         self.app.published_invocation_health()?;
         if !self.app.collaboration_is_connected() {
@@ -179,7 +178,7 @@ impl HostWorker {
     pub fn app_mut(&mut self) -> &mut crate::App {
         &mut self.app
     }
-    pub fn permissions(&self) -> &Rc<RefCell<PermissionContext>> {
+    pub fn permissions(&self) -> &crate::permissions::SharedPermissions {
         &self.permissions
     }
 }

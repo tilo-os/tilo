@@ -190,15 +190,13 @@ mod tests {
 
     #[test]
     fn the_composer_appears_the_moment_authorship_arrives() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
         use ui::room_sync::{RoomSync, RoomSyncState};
         // The launch opened Chat read-only: its room did not let Chat author.
-        let launch = Rc::new(RefCell::new(PermissionContext::member_of(
+        let launch = ui::permissions::SharedPermissions::new(PermissionContext::member_of(
             "3f2b1c00-0000-4000-8000-000000000001",
             "u_guest",
             Role::Viewer,
-        )));
+        ));
         ui::room_sync::follow_participation(&launch);
         let chat = || ChatPermissions::from_context(launch.borrow().clone());
         assert!(!chat().can_participate(), "read-only, no composer");

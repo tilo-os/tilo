@@ -26,7 +26,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::automerge::AutoCommit;
-use ui::permissions::{PermissionContext, UserId};
+use ui::permissions::{PermissionContext, SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
@@ -132,7 +132,7 @@ pub(crate) struct Inputs {
     pub salt: String,
     pub room: String,
     pub author: String,
-    pub permissions: Rc<RefCell<PermissionContext>>,
+    pub permissions: SharedPermissions,
     pub models: ui::models::Models,
     /// What a report's review calls [`Self::models`].
     pub model_name: String,
