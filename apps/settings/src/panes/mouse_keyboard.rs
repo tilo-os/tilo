@@ -12,6 +12,7 @@
 //!   fields follow.
 
 pub(crate) mod keyboard_editor;
+mod pointing;
 mod tablet;
 
 use std::cell::RefCell;
@@ -1626,21 +1627,6 @@ impl MouseKeyboardPane {
         }
     }
 
-    fn field_row(
-        &self,
-        label: &str,
-        description: &str,
-        field: tilo_resource::Path<InputPrefs, bool>,
-        id: &str,
-    ) -> Item {
-        self.cx
-            .row(t(label))
-            .described(t(description))
-            .id(id)
-            .of(&self.input, field)
-            .toggle()
-    }
-
     /// A dropdown over stable ids for one of a tablet's or pad's choices.
     fn device_dropdown(
         &self,
@@ -1758,8 +1744,10 @@ impl MouseKeyboardPane {
                         InputPrefs::paths().touchpad_pointer_speed,
                         |speed| fraction(speed).map(Some),
                     ),
-                self.field_row(
-                    "input-touchpad-natural-scroll",
+                pointing::scroll_direction(
+                    &self.cx,
+                    &self.input,
+                    false,
                     "input-touchpad-natural-scroll-description",
                     InputPrefs::paths().touchpad_natural_scroll,
                     "input.touchpad_natural_scroll",
@@ -1807,31 +1795,8 @@ impl MouseKeyboardPane {
     fn touchpad_click_scroll_card(&self) -> crate::widgets::SettingsSection {
         let mut content = self.tapping_rows();
         content.extend([
-            self.cx
-                .row(t("input-click-method"))
-                .described(t("input-click-method-caption"))
-                .id("input.touchpad_click_method")
-                .keyed_choice(
-                    localized_choices(&CLICK_METHOD_CHOICES),
-                    click_method_id(self.last.touchpad_click_method),
-                    InputPrefs::paths().touchpad_click_method,
-                    |id: String| {
-                        click_method_for_id(&id)
-                            .ok_or_else(|| format!("`{id}` is not a click method"))
-                    },
-                ),
-            self.cx
-                .row(t("input-scroll-method"))
-                .id("input.touchpad_scroll_method")
-                .keyed_choice(
-                    localized_choices(&SCROLL_METHOD_CHOICES),
-                    scroll_method_id(self.last.touchpad_scroll_method),
-                    InputPrefs::paths().touchpad_scroll_method,
-                    |id: String| {
-                        scroll_method_for_id(&id)
-                            .ok_or_else(|| format!("`{id}` is not a scroll method"))
-                    },
-                ),
+            pointing::click_method(&self.cx, &self.input),
+            pointing::scroll_method(&self.cx, &self.input),
         ]);
         section(&t("input-clicking-title"), rows(content))
     }
@@ -1853,8 +1818,10 @@ impl MouseKeyboardPane {
                         InputPrefs::paths().mouse_pointer_speed,
                         |speed| fraction(speed).map(Some),
                     ),
-                self.field_row(
-                    "input-mouse-natural-scroll",
+                pointing::scroll_direction(
+                    &self.cx,
+                    &self.input,
+                    true,
                     "input-mouse-natural-scroll-description",
                     InputPrefs::paths().mouse_natural_scroll,
                     "input.mouse_natural_scroll",

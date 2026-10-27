@@ -42,6 +42,23 @@ fn canonical_notes_default_motion_and_word_boundary_preserve_sparse_gpu_pixels()
 
 #[test]
 fn canonical_notes_timestamp_boundary_preserves_sparse_gpu_pixels() {
+    // The edit's own write stamps the note from the thread that saves it, not
+    // from the one typing: the clock this case moves on has to reach every
+    // thread of the process, so the case takes the process to itself.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "canonical_notes_timestamp_boundary_preserves_sparse_gpu_pixels",
+        a_timestamp_boundary_at_the_time_the_case_moves_on,
+    );
+}
+
+fn a_timestamp_boundary_at_the_time_the_case_moves_on() {
+    // The note the case opens, and every write after it, is stamped from
+    // whichever thread lands the commit, so the clock spans the whole case.
+    let _held = ui::time::testing::hold_wall_everywhere(
+        ui::time::testing::OwnProcess::of_a_test_in_its_own_process(),
+        ui::time::UNIX_EPOCH + ui::time::Duration::from_secs(1_790_000_000),
+    );
     paragraph_input(false, "y", "xy", true);
 }
 
@@ -112,7 +129,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // A key interaction draws its press and release. Retain the union of
     // actual frame damage; the unchanged release must not erase the press.
     damage.borrow_mut().clear();
-    type_with_timestamp(&mut driver, key, advance_timestamp, &mut clock);
+    let _moved_on = type_with_timestamp(&mut driver, key, advance_timestamp, &mut clock);
     let actual = f
         .records
         .read(&checkout.id, |doc| {
@@ -274,14 +291,22 @@ fn type_with_timestamp(
     key: &str,
     advance_timestamp: bool,
     clock: &mut u64,
-) {
+) -> Option<ui::time::testing::WallHold> {
     let before = advance_timestamp.then(|| date_captions(driver));
-    if advance_timestamp {
+    // The note's own write stamps it from the thread that saves, not from the
+    // one typing, so the clock has to be held over the whole process — which
+    // this case has to itself — for as long as the edit is in flight.
+    let moved_on = advance_timestamp.then(|| {
         // Only wall time advances: the ordinary action stamps a new minute
         // while the production monotonic animation clock continues running.
         *clock = 1_790_000_120;
+        let at = ui::time::UNIX_EPOCH + ui::time::Duration::from_secs(*clock);
         hold_edit_clock(driver, *clock);
-    }
+        ui::time::testing::hold_wall_everywhere(
+            ui::time::testing::OwnProcess::of_a_test_in_its_own_process(),
+            at,
+        )
+    });
     driver.key(key);
     if let Some(before) = before {
         assert!(
@@ -294,4 +319,5 @@ fn type_with_timestamp(
             "the ordinary edit updates the painted metadata caption"
         );
     }
+    moved_on
 }
