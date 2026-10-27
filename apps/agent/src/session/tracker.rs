@@ -301,15 +301,15 @@ impl Session {
             tracing::warn!(action, "the Tasks app offers the issue's actions nowhere");
             return Ok(None);
         };
-        let step = match task_action_from_offer(offer, arguments.clone()) {
-            Ok(step) => step,
+        let child = match task_action_from_offer(offer, arguments.clone()) {
+            Ok(child) => child,
             Err(error) => {
                 tracing::warn!(action, %error, "the issue's action refused its arguments");
                 return Ok(None);
             }
         };
         let deadline = self.task_deadline.take();
-        let outcome = self.invoke_task_action(run, &step, arguments);
+        let outcome = self.invoke_task_action(run, &child, arguments);
         self.task_deadline = deadline;
         match outcome? {
             Ok(_) => Ok(None),
