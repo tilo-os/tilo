@@ -612,6 +612,31 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             Answer::json(204, &Value::Null)
         }
         ("GET", ["guilds", GUILD, "channels"]) => Answer::json(200, &json!(state.channels)),
+        ("PATCH", ["guilds", GUILD, "channels"]) => {
+            // Discord's bulk position change: every channel named is
+            // checked first, then each one moved sends its update.
+            let places = body.as_array().cloned().unwrap_or_default();
+            if places
+                .iter()
+                .any(|place| !state.channels.iter().any(|c| c["id"] == place["id"]))
+            {
+                return Answer::error(404, 10003, "Unknown Channel");
+            }
+            for place in places {
+                let id = place["id"].as_str().unwrap_or_default().to_owned();
+                let Some(stored) = state.channel_mut(&id) else {
+                    continue;
+                };
+                for field in ["position", "parent_id"] {
+                    if let Some(value) = place.get(field) {
+                        stored[field] = value.clone();
+                    }
+                }
+                let event = stored.clone();
+                state.dispatch("CHANNEL_UPDATE", event);
+            }
+            Answer::json(204, &Value::Null)
+        }
         ("POST", ["guilds", GUILD, "channels"]) => {
             let id = state.snowflake();
             let channel = json!({

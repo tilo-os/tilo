@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use discord_wire::op::{
-    AnswerInteractionOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteEmojiOp, DeleteOp,
-    DiscordOp, DiscordResult, EditOp, EmojiSpec, FetchAssetOp, InAttachment, MemberOp,
+    AnswerInteractionOp, ArrangeOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteEmojiOp,
+    DeleteOp, DiscordOp, DiscordResult, EditOp, EmojiSpec, FetchAssetOp, InAttachment, MemberOp,
     MemberRolesOp, OverwriteKind, OverwriteOp, ReactOp, RoleSpec, SendOp, StartThreadOp,
 };
 use serde_json::{Value, json};
@@ -191,6 +191,7 @@ impl Performer {
                 let path = format!("/channels/{}", segment(&op.channel));
                 self.gone_is_done(Method::DELETE, &path, None).await
             }
+            DiscordOp::ArrangeChannels(op) => self.arrange(op).await,
             DiscordOp::ApplyRole(spec) => self.apply_role(spec).await,
             DiscordOp::DeleteRole(op) => {
                 let path = format!(
@@ -777,12 +778,10 @@ impl Performer {
         })
     }
 
+    /// Create a channel where `spec` places it, or bring an existing one's
+    /// name and topic back in line: its place is the arrangement's.
     async fn apply_channel(&self, spec: ChannelSpec) -> OpResult {
-        let mut body = json!({
-            "name": spec.name,
-            "parent_id": spec.parent,
-            "position": spec.position,
-        });
+        let mut body = json!({"name": spec.name});
         if spec.kind == ChannelKind::Text {
             body["topic"] = json!(spec.topic);
         }
@@ -792,6 +791,8 @@ impl Performer {
                 .await?
         } else {
             body["type"] = json!(spec.kind.discord_type());
+            body["parent_id"] = json!(spec.parent);
+            body["position"] = json!(spec.position);
             let path = format!("/guilds/{}/channels", segment(&self.guild()?));
             self.call(Method::POST, &path, Body::Json(body), None)
                 .await?
@@ -804,6 +805,26 @@ impl Performer {
                 .unwrap_or_default(),
             tilo: spec.tilo,
         })
+    }
+
+    /// Put channels and categories in their places with one bulk change,
+    /// so Discord moves them together. A category keeps no parent.
+    async fn arrange(&self, op: ArrangeOp) -> OpResult {
+        let places: Vec<Value> =
+            op.categories
+                .iter()
+                .map(|c| json!({"id": c.category, "position": c.position}))
+                .chain(op.channels.iter().map(
+                    |c| json!({"id": c.channel, "parent_id": c.parent, "position": c.position}),
+                ))
+                .collect();
+        if places.is_empty() {
+            return Ok(DiscordResult::Done);
+        }
+        let path = format!("/guilds/{}/channels", segment(&self.guild()?));
+        self.call(Method::PATCH, &path, Body::Json(Value::Array(places)), None)
+            .await
+            .map(|_| DiscordResult::Done)
     }
 
     async fn apply_role(&self, spec: RoleSpec) -> OpResult {
