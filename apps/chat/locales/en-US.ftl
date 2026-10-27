@@ -202,6 +202,11 @@ chat-move-channel = { $up ->
     [true] Moved #{ $item } up
    *[false] Moved #{ $item } down
 }
+chat-move-category = { $up ->
+    [true] Moved the category { $item } up
+   *[false] Moved the category { $item } down
+}
+chat-arrange-channels = Rearranged the channels
 chat-delete-channel = Deleted the channel #{ $item }
 chat-rename-channel = Renamed #{ $item } to #{ $name }
 chat-rename-category = Renamed the category { $item } to { $name }
