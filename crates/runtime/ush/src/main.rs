@@ -92,6 +92,7 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         Some("quarantine") => guest::quarantine(rest),
         Some("undo") => guest::undo_file_action(rest),
         Some("history") => guest::file_history(rest),
+        Some("version") => guest::version(rest),
         Some(name) if ush::file_actions::cli::Tool::of(name).is_some() => {
             guest::file_action(name, rest)
         }
@@ -124,6 +125,10 @@ Inside a guest:
   cp | mv | rm | mkdir | rmdir | ln | truncate   one action each, undoable
   history [--json]                 what was removed or replaced, and its id
   undo file-action ID              put one back
+  version status | log | show | diff | restore
+                                   a file's own history: revisions, their
+                                   contents, what changed, and a checked
+                                   restore (see `version --help`)
 ";
 
 // host side
@@ -962,6 +967,14 @@ explain when the host does not offer them.\n";
         }
         println!("\n`undo file-action ID` puts one back.");
         Ok(0)
+    }
+
+    /// `version`: a file's own history, with the verbs an agent already
+    /// knows. Nothing here keeps a store of its own — the mount's history is
+    /// the history, which is the same one the file manager's History view
+    /// shows.
+    pub fn version(args: &[String]) -> anyhow::Result<i32> {
+        Ok(ush::version::run(args))
     }
 
     /// `undo file-action ID` — the second half of what `rm` printed.
