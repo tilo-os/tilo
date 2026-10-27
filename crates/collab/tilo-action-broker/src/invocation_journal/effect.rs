@@ -150,7 +150,7 @@ impl InvocationJournal {
         let started = self.snapshot.records.get(at).cloned();
         let (prepared, durable) = self.stage_prepared_effect(key, update, request)?;
         let started = started.ok_or("unknown prepared invocation")?;
-        self.settle(at, started, durable)?;
+        self.settle(at, &started, durable)?;
         Ok(prepared)
     }
 
@@ -165,7 +165,7 @@ impl InvocationJournal {
         let started = self.snapshot.records.get(at).cloned();
         let (record, durable) = self.stage_finished_effect(key, prepared)?;
         let started = started.ok_or("unknown prepared invocation")?;
-        self.settle(at, started, durable)?;
+        self.settle(at, &started, durable)?;
         Ok(record)
     }
 
