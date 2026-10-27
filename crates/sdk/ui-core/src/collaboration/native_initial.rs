@@ -1077,8 +1077,10 @@ mod tests {
     fn a_record_the_apps_own_channel_answers_has_no_committed_read() {
         let room = uuid::Uuid::new_v4();
         let checkout = crate::record::RecordCheckout::new(
-            crate::record::RecordId::parse("derived:part.0@derived:messages@derived:default")
-                .expect("a record id"),
+            crate::record::RecordId::parse(
+                "derived:part.0@derived:messages@derived:default@tab:0000000000000000",
+            )
+            .expect("a record id"),
             crate::record::RecordKind::new("chat.part"),
         );
         let route = RouteSpec::record("so.tilo.chat", room, checkout.id.as_str());

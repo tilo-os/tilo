@@ -11,7 +11,8 @@ use std::rc::Rc;
 use tilo_actions::ParamType;
 use tilo_desktop::search::{
     DESTINATION_PARAM, WINDOWS_PROVIDER_ID, WindowAction, WindowRow, WindowRowKind,
-    window_row_app_id, window_row_tile, window_rows, window_rows_revision, windows_provider_name,
+    window_row_app_id, window_row_tile, window_rows_revision, window_rows_with_sharing,
+    windows_provider_name,
 };
 use ui::search::{FieldWeight, ListIndex};
 
@@ -38,6 +39,114 @@ fn move_contract() -> tilo_actions::ActionContract {
         tags: vec!["desktop".into(), "window".into(), "move".into()],
         ..tilo_actions::ActionContract::default()
     }
+}
+
+fn share_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        kind: tilo_actions::ActionKind::Undoable,
+        risk: tilo_actions::RiskLevel::Low,
+        retry: tilo_actions::RetryPolicy::Idempotent,
+        tags: vec!["desktop".into(), "window".into(), "share".into()],
+        ..tilo_actions::ActionContract::default()
+    }
+}
+
+/// Whether `tab` of `workspace` can be shared with the workspace's people,
+/// and whether it is: a window this device runs (a legacy window, whose
+/// state lives only here) in a workspace whose layout is each person's own.
+/// Elsewhere every window is shared with the layout already, or is
+/// another device's to share.
+pub(crate) fn sharing(
+    tree: &crate::shell::state::WorkspaceTree,
+    workspace: &crate::shell::state::Workspace,
+    tab: &crate::shell::state::Tab,
+    now_ms: u64,
+) -> Option<bool> {
+    let room = workspace.room();
+    (matches!(tab.tile, TileContent::Foreign { .. })
+        && tilo_desktop_model::peer_salt_of(tab.id) == tree.local_salt()
+        && tree.room_layout(room).is_personal())
+    .then(|| tree.is_window_shared(room, tab.id, now_ms))
+}
+
+/// The window `tab` this device can share with its workspace's people, with
+/// that workspace and whether the window is shared now
+/// ([`sharing`]): `None` for any other tab.
+pub(crate) fn shareable_window(
+    tree: &crate::shell::state::WorkspaceTree,
+    tab: TabId,
+    now_ms: u64,
+) -> Option<(&crate::shell::state::Workspace, bool)> {
+    tree.desktop.workspaces.iter().find_map(|workspace| {
+        let shown = workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|candidate| candidate.id == tab)?;
+        sharing(tree, workspace, shown, now_ms).map(|shared| (workspace, shared))
+    })
+}
+
+/// What sharing the window `tab` with its workspace's people (`share`), or
+/// stopping, asks of the network, in the workspace it asks it in: the one
+/// request `tab.share` / `tab.unshare`, the window menu and the window
+/// bar's menu all make. `None` when the tab is no window this device can
+/// share ([`sharing`]).
+pub(crate) fn share_request(
+    tree: &crate::shell::state::WorkspaceTree,
+    tab: TabId,
+    share: bool,
+) -> Option<(
+    crate::shell::state::WorkspaceId,
+    crate::shell::peer_sync_overlay::PeerSyncRequest,
+)> {
+    let (workspace, _) = shareable_window(tree, tab, tilo_clock::unix_now_ms())?;
+    let app_id = workspace
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .find_map(|candidate| match &candidate.tile {
+            TileContent::Foreign { app_id, .. } if candidate.id == tab => Some(app_id.clone()),
+            _ => None,
+        })?;
+    Some((
+        workspace.id,
+        crate::shell::peer_sync_overlay::PeerSyncRequest::ShareWindow {
+            room: workspace.room(),
+            tab,
+            app_id,
+            share,
+        },
+    ))
+}
+
+/// Share the window `tab` with its workspace's people, or stop: the room's
+/// host records the share, and the action answers once it has.
+fn begin_share(
+    chrome: &Chrome,
+    group: GroupId,
+    tab: TabId,
+    share: bool,
+) -> Result<crate::shell::search::InvocationDisposition, ActionError> {
+    tab_in_group(chrome, group, tab)?;
+    let request_id = {
+        let mut state = chrome.borrow_mut();
+        let found = share_request(&state.tree(), tab, share);
+        let (workspace, request) = found.ok_or_else(|| {
+            ActionError::Refused(format!(
+                "tab {tab} is no window of this computer's in a workspace each person lays out"
+            ))
+        })?;
+        state.begin_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::Network {
+            workspace,
+            request,
+        })
+    };
+    Ok(crate::shell::search::InvocationDisposition::Pending(
+        super::actions::peer_sync_ticket(chrome.clone(), request_id),
+    ))
 }
 
 fn tab_in_group(
@@ -138,6 +247,7 @@ fn contract(action: WindowAction) -> tilo_actions::ActionContract {
         | WindowAction::CopyTab { .. }
         | WindowAction::MoveTabTo { .. }
         | WindowAction::CopyTabTo { .. } => move_contract(),
+        WindowAction::ShareTab { .. } | WindowAction::StopSharingTab { .. } => share_contract(),
     }
 }
 
@@ -192,6 +302,9 @@ fn invoke(chrome: &Chrome, action: WindowAction, args: &ActionArgs) -> Result<()
             tab,
             workspace,
         } => transfer_tab(chrome, group, tab, workspace, TransferMode::Copy),
+        WindowAction::ShareTab { .. } | WindowAction::StopSharingTab { .. } => Err(
+            ActionError::Refused("sharing a window waits on the workspace's host".into()),
+        ),
     }
 }
 
@@ -256,7 +369,9 @@ fn result(row: WindowRow, app: Option<&str>, score: i32) -> SearchResult {
             | WindowAction::MoveTab { .. }
             | WindowAction::CopyTab { .. }
             | WindowAction::MoveTabTo { .. }
-            | WindowAction::CopyTabTo { .. } => tilo_actions::OperationKind::Effect,
+            | WindowAction::CopyTabTo { .. }
+            | WindowAction::ShareTab { .. }
+            | WindowAction::StopSharingTab { .. } => tilo_actions::OperationKind::Effect,
         },
         provider_id: WINDOWS_PROVIDER_ID.into(),
         id: row.id,
@@ -270,8 +385,30 @@ fn result(row: WindowRow, app: Option<&str>, score: i32) -> SearchResult {
             invoke(chrome, action, args)
         }),
         on_invoke: None,
-        on_begin_invoke: None,
+        on_begin_invoke: match action {
+            WindowAction::ShareTab { group, tab } | WindowAction::StopSharingTab { group, tab } => {
+                let share = matches!(action, WindowAction::ShareTab { .. });
+                Some(Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        begin_share(chrome, group, tab, share)
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>)
+            }
+            _ => None,
+        },
     }
+}
+
+/// The window rows of `tree` for `needle`, with a share row for each window
+/// [`sharing`] offers.
+fn rows_of(tree: &crate::shell::state::WorkspaceTree, needle: &str) -> Vec<WindowRow> {
+    let now_ms = tilo_clock::unix_now_ms();
+    window_rows_with_sharing(&tree.desktop, needle, &|workspace, tab| {
+        sharing(tree, workspace, tab, now_ms)
+    })
 }
 
 #[derive(Default)]
@@ -308,7 +445,7 @@ impl SearchProvider for DesktopWindowsProvider {
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
-        let mut rows = window_rows(&tree.desktop, ctx.needle);
+        let mut rows = rows_of(&tree, ctx.needle);
         if ctx.needle.trim().is_empty() {
             // Windows to go back to come in the order Alt+Tab walks them:
             // the one left last first. The rest keep their place after.
@@ -378,17 +515,23 @@ impl SearchProvider for DesktopWindowsProvider {
     /// `group.close` for the focused window `unknown_action` (A07).
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         let tree = ctx.chrome.tree();
-        let row = window_rows(&tree.desktop, id)
-            .into_iter()
-            .find(|row| row.id == id)?;
+        let row = rows_of(&tree, id).into_iter().find(|row| row.id == id)?;
         let app = app_name(&tree.desktop, &row);
         drop(tree);
         Some(result(row, app.as_deref(), self.max_score()))
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
+        use std::fmt::Write as _;
         let tree = ctx.chrome.tree();
-        let revision = window_rows_revision(&tree.desktop);
+        let mut revision = window_rows_revision(&tree.desktop);
+        // Which of this device's windows are shared changes their share
+        // rows, not the topology.
+        if let Some(workspace) = tree.desktop.active_workspace() {
+            for share in tree.shared_windows(workspace.room(), tilo_clock::unix_now_ms()) {
+                let _ = write!(revision, ":shared{}", share.tab);
+            }
+        }
         drop(tree);
         revision
     }
@@ -768,6 +911,73 @@ mod tests {
         );
     }
 
+    /// In a workspace whose layout is each person's own, each window of
+    /// this computer's offers to be shared with the workspace, as an
+    /// undoable action addressed by its tab; elsewhere no window does, as
+    /// the layout shares every window already.
+    #[test]
+    fn a_window_of_a_personal_workspace_offers_to_be_shared() {
+        use automerge::transaction::Transactable as _;
+        let (chrome, doc) = fixture();
+        let share = tilo_desktop::search::tab_share_id(100, 1);
+        let offered = |chrome: &Chrome| {
+            let state = chrome.borrow();
+            let catalog = ActionCatalog::build_exact(
+                &registry(),
+                &ResourceRef::new(WINDOWS_PROVIDER_ID, &share),
+                SearchScope::All,
+                None,
+                &state,
+                &doc,
+                &ROOT,
+                &AllVisible,
+            );
+            catalog
+                .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, &share))
+                .map(|action| {
+                    (
+                        action.title().to_owned(),
+                        action.contract().map(|contract| contract.kind),
+                    )
+                })
+        };
+        assert_eq!(
+            offered(&chrome),
+            None,
+            "a shared layout shares every window"
+        );
+
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let room = tree.desktop.workspaces[0].room();
+            let mut personal = AutoCommit::new();
+            personal
+                .put(
+                    ROOT,
+                    tilo_desktop_model::projection::ROOM_ID_KEY,
+                    room.to_string(),
+                )
+                .unwrap();
+            personal
+                .put(
+                    ROOT,
+                    tilo_desktop_model::projection::ROOM_LAYOUT_KEY,
+                    tilo_desktop_model::projection::RoomLayout::Personal.id(),
+                )
+                .unwrap();
+            personal.commit();
+            tree.project_room_document_for_test(room, &personal);
+        }
+        assert_eq!(
+            offered(&chrome),
+            Some((
+                "Share “Profilfehler aufgetreten” with the workspace".to_owned(),
+                Some(tilo_actions::ActionKind::Undoable),
+            ))
+        );
+    }
+
     #[test]
     fn a_tab_moves_to_another_workspace_by_its_exact_action() {
         let (chrome, mut doc) = fixture();
@@ -986,7 +1196,7 @@ mod tests {
         let (chrome, _doc) = fixture();
         let state = chrome.borrow();
         let tree = state.tree();
-        let rows = window_rows(&tree.desktop, "");
+        let rows = tilo_desktop::search::window_rows(&tree.desktop, "");
         assert!(
             !rows.is_empty(),
             "the fixture must offer window rows to resolve"

@@ -5326,9 +5326,12 @@ secrets = ["TAPP_PUBLISHER_IDENTITY"]
 name = "nested-session"
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
 # A development desktop to run, not a lint gate: warnings stay warnings (clippy and the tests
-# gate them), so dead code somewhere on main does not cost everyone the nested session.
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
-inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
+# gate them), so dead code somewhere on main does not cost everyone the nested session. The
+# env-runtime tree is the one a run's dev images ship: built from the tree's own RPM package set,
+# so it is cached across every commit that leaves the package set alone.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
+needs = ["image-env-runtime-dev-tree-x86_64"]
+inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "os/dev/resolve-env-runtime.sh", "os/Containerfile.env-runtime", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/nested-session/**"]
 requires = ["arch=x86_64"]
 # The shell's optimised link and the runtime library's link run side by side; under a
@@ -5359,7 +5362,7 @@ bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --
 # the sources stay read-only. The web view is served the images' desktop bundle.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 needs = ["nested-session", "test-assets", "web-desktop-bundle"]
-inputs = ["apps/**", "crates/**", "vendor/**", "dist/dev/**", "os/scripts/bake-runtime-bundle.sh", "os/scripts/stamp-runtime.sh", "os/usr/share/tilo/system-interfaces.toml", "tools/apps/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh", "Cargo.toml", "Cargo.lock"]
+inputs = ["apps/**", "crates/**", "vendor/**", "dist/dev/**", "os/scripts/bake-runtime-bundle.sh", "os/scripts/stamp-runtime.sh", "os/scripts/install-env-runtime.sh", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/systemd/user/tilo-ush.socket", "os/usr/share/tilo/system-interfaces.toml", "tools/apps/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/site-door-acceptance/**"]
 git = true
 requires = ["arch=x86_64"]
@@ -5629,9 +5632,12 @@ default = false
 name = "nested-session-arm64"
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
 # A development desktop to run, not a lint gate: warnings stay warnings (clippy and the tests
-# gate them), so dead code somewhere on main does not cost everyone the nested session.
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
-inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
+# gate them), so dead code somewhere on main does not cost everyone the nested session. The
+# env-runtime tree is the one a run's dev images ship: built from the tree's own RPM package set,
+# so it is cached across every commit that leaves the package set alone.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
+needs = ["image-env-runtime-dev-tree-aarch64"]
+inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "os/dev/resolve-env-runtime.sh", "os/Containerfile.env-runtime", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/nested-session/**"]
 requires = ["arch=arm64"]
 # The shell's optimised link and the runtime library's link run side by side; under a
@@ -8401,12 +8407,32 @@ run = "cp -a /src /tmp/tree && cd /tmp/tree && python3 tools/ci/member_units.py"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml", "tools/ci/member_units.py", "tools/ci/workspace_unify.py", "tools/ci/package_features.py"]
 on = ["main"]
 
+# Terminal in a nested session (dist/dev/nested-terminal-check.py): the session starts the ush
+# supervisor as its user unit does, with the env-runtime in its system store, and Terminal opens
+# and shows the output of a command it runs in its shell.
+[[check]]
+name = "nested-terminal"
+run = "bash tools/test-env.sh python3 -I dist/dev/nested-terminal-check.py --out /target/nested-terminal"
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
+needs = ["nested-session"]
+inputs = ["dist/dev/nested-terminal-check.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "dist/dev/nested-session-build.sh", "dist/dev/session-bus.sh", "os/scripts/install-env-runtime.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/stamp-runtime.sh", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/systemd/user/tilo-ush.socket", "os/usr/share/tilo/system-interfaces.toml", "apps/terminal/tilo-app.toml", "apps/terminal/surface.toml", "tools/apps/**", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh"]
+outputs = ["/target/nested-terminal/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 4, memory = "8GiB" }
+git = true
+# Terminal's shell runs in a guest of its own (bwrap, user namespaces), which the job sandbox
+# does not give; a micro-VM does.
+isolation = "vm"
+timeout_secs = 1800
+on = ["idle"]
+default = false
+
 [[check]]
 name = "lounge-invite-local"
 run = "bash tools/test-env.sh python3 -I dist/dev/lounge-invite-local.py t2024"
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 needs = ["nested-session", "test-assets"]
-inputs = ["dist/dev/lounge-invite-local.py", "dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "crates/hosting/tilo-room-service/dev/run.py", "tools/test-env.sh", "tools/with-test-environment.sh"]
+inputs = ["dist/dev/lounge-invite-local.py", "dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "os/scripts/install-env-runtime.sh", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/systemd/user/tilo-ush.socket", "crates/hosting/tilo-room-service/dev/run.py", "tools/test-env.sh", "tools/with-test-environment.sh"]
 outputs = ["/target/lounge-invite-local/**"]
 requires = ["arch=x86_64"]
 requirement = { cores = 8, memory = "16GiB" }
