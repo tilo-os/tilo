@@ -1371,7 +1371,7 @@ mod tests {
 
     /// The rules themselves, which say the same wherever the test runs (also
     /// inside a CI job, whose own filter answers the calls above first): the
-    /// allowance takes exactly name_to_handle_at out and leaves every other
+    /// allowance takes exactly `name_to_handle_at` out and leaves every other
     /// rule as it was.
     #[test]
     #[cfg(target_os = "linux")]
