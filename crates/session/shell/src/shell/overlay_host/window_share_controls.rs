@@ -8,10 +8,14 @@
 //!   in its bar's menu.
 //! - **The mark.** While shared, the window's bar says "Shared with
 //!   <workspace>", with the faces of the people there who see it
-//!   ([`ui::widget::SharedWith`]).
+//!   ([`ui::widget::SharedWith`]). On every other device, the window it
+//!   opens for the share reads as the sharer's: "Ana's window", with her
+//!   face ([`ui::widget::SharedBy`]).
 //! - **The end.** A share whose window this device no longer shows in that
-//!   workspace (closed, or moved to another one) is stopped. Leaving the
-//!   workspace stops its shares on the way out
+//!   workspace (closed, or moved to another one) is stopped, through the
+//!   room's outbox, which asks again on the host's next event until the
+//!   room no longer holds it. Leaving or deleting the workspace stops its
+//!   shares on the way out
 //!   ([`crate::shell::network::ShellNetwork::release_room`]).
 //!
 //! Every door asks the one request `tab.share` / `tab.unshare` make
@@ -20,7 +24,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ui::widget::{GroupRow, SharedWith};
+use ui::widget::{GroupRow, SharedBy, SharedWith};
 use ui::window_toolbar::ToolbarAction;
 
 use super::ShellOverlayHost;
@@ -44,9 +48,9 @@ pub(crate) struct WindowShareControls {
     shown: HashMap<TabId, Shown>,
     /// The windows a share item stands in the bar menu of.
     offered: HashSet<TabId>,
-    /// Shares this device asked to stop because their window went, until
-    /// the room's record no longer holds them.
-    ending: HashSet<TabId>,
+    /// The windows others shared that this device shows, each with whose
+    /// it is, as last read.
+    theirs: HashMap<TabId, SharedBy>,
 }
 
 /// One shareable window, as its bar shows it.
@@ -127,7 +131,46 @@ fn shareable_windows(
     shown
 }
 
+/// Every window others shared that this device shows in `tree`, with whose
+/// it is: the member who shared it, while they are here.
+pub(crate) fn windows_shared_by_others(
+    tree: &WorkspaceTree,
+    now_ms: u64,
+) -> HashMap<TabId, SharedBy> {
+    let local = tree.local_salt();
+    let mut theirs = HashMap::new();
+    for workspace in &tree.desktop.workspaces {
+        for (tab, sharer) in crate::shell::shared_window_people(tree, workspace, now_ms) {
+            if local != 0 && tilo_desktop_model::peer_salt_of(tab) == local {
+                continue;
+            }
+            theirs.insert(
+                tab,
+                SharedBy {
+                    sharer: (
+                        ui::permissions::UserId(sharer.id.clone()),
+                        sharer.name.clone(),
+                    ),
+                },
+            );
+        }
+    }
+    theirs
+}
+
 impl ShellOverlayHost {
+    /// Whose the bar of the window `tab` says it is, while someone else
+    /// shares it here. For tests, the `shots` renderer and the bench.
+    pub fn tab_shared_by(&self, tab: TabId) -> Option<SharedBy> {
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: read-only use under the field's stable-row contract.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.groups
+                .iter()
+                .find_map(|group| group.tab_shared_by(tab).cloned())
+        })
+    }
+
     /// Who the bar of the window `tab` says sees it, while it is marked
     /// shared. For tests, the `shots` renderer and the bench.
     pub fn tab_shared_with(&self, tab: TabId) -> Option<SharedWith> {
@@ -171,7 +214,7 @@ impl ShellOverlayHost {
         request: &PeerSyncRequest,
         refused: Option<&str>,
     ) {
-        let PeerSyncRequest::ShareWindow { tab, share, .. } = request else {
+        let PeerSyncRequest::ShareWindow { share, .. } = request else {
             return;
         };
         let Some(error) = refused else {
@@ -182,8 +225,6 @@ impl ShellOverlayHost {
         };
         let title = if *share {
             t("window-share-failed")
-        } else if self.window_share_controls.ending.contains(tab) {
-            t("window-share-end-failed")
         } else {
             t("window-unshare-failed")
         };
@@ -218,6 +259,7 @@ impl ShellOverlayHost {
                     state.local_user_for_room(&workspace.room())
                 };
                 self.window_share_controls.shown = shareable_windows(&tree, &local, now_ms);
+                self.window_share_controls.theirs = windows_shared_by_others(&tree, now_ms);
                 Some(tree.outlived_window_shares(now_ms))
             }
         };
@@ -227,6 +269,7 @@ impl ShellOverlayHost {
         self.offer_window_share_items();
         let mut changed = false;
         let shown = &self.window_share_controls.shown;
+        let theirs = &self.window_share_controls.theirs;
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
@@ -235,6 +278,7 @@ impl ShellOverlayHost {
                 for id in ids {
                     let mark = shown.get(&id).and_then(|shown| shown.mark.clone());
                     changed |= group.set_tab_shared(id, mark);
+                    changed |= group.set_tab_shared_by(id, theirs.get(&id).cloned());
                 }
             }
         }
@@ -242,34 +286,78 @@ impl ShellOverlayHost {
     }
 
     /// Put each shareable window's item in its bar's menu, and take it out
-    /// of the menus of the windows that are no longer shareable. A window
-    /// shared live into a conversation keeps that item instead: the two
-    /// never meet, since only a host window is shared with a workspace and
-    /// only a Tilo app's window is shared into a conversation.
+    /// of the menus of the windows that are no longer shareable. A Tilo
+    /// app's window may also be shared live into a conversation: its menu
+    /// keeps that item ([`super::live_shares`], set first each frame) and
+    /// gets this one after it.
     fn offer_window_share_items(&mut self) {
         let controls = &mut self.window_share_controls;
-        let now: HashSet<TabId> = controls
-            .shown
-            .keys()
-            .copied()
-            .filter(|tab| !self.live_shares.offers(*tab))
-            .collect();
+        let now: HashSet<TabId> = controls.shown.keys().copied().collect();
         for tab in &now {
             if let Some(shown) = controls.shown.get(tab) {
-                self.window_toolbars
-                    .set_host_items(*tab, vec![shown.item.clone()]);
+                let mut items: Vec<_> = if self.live_shares.offers(*tab) {
+                    self.window_toolbars
+                        .host_items(*tab)
+                        .iter()
+                        .filter(|item| !is_share_item(&item.id))
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                items.push(shown.item.clone());
+                if self.window_toolbars.host_items(*tab) != items.as_slice() {
+                    self.window_toolbars.set_host_items(*tab, items);
+                }
             }
         }
         for gone in controls.offered.difference(&now) {
-            self.window_toolbars.set_host_items(*gone, Vec::new());
+            if self.live_shares.offers(*gone) {
+                // Its conversation item stands alone again.
+                let kept: Vec<_> = self
+                    .window_toolbars
+                    .host_items(*gone)
+                    .iter()
+                    .filter(|item| !is_share_item(&item.id))
+                    .cloned()
+                    .collect();
+                self.window_toolbars.set_host_items(*gone, kept);
+            } else {
+                self.window_toolbars.set_host_items(*gone, Vec::new());
+            }
         }
         controls.offered = now;
     }
 
+    /// Delete the workspace `room`, which shares this device's windows: on
+    /// the network worker, which stops the shares at the room's host before
+    /// the room goes, as leaving does. Without a network no host can be
+    /// asked, and the room goes as it would without shares.
+    pub(super) fn delete_workspace(
+        &mut self,
+        room: crate::shell::state::RoomId,
+        request_id: Option<u64>,
+    ) {
+        if self.peer_sync.is_running() {
+            self.run_room_request(PeerSyncRequest::DeleteWorkspace(room), request_id);
+            return;
+        }
+        if let Some(chrome) = self.chrome.as_ref() {
+            let tree = chrome.borrow().tree_handle();
+            if let Err(error) =
+                crate::shell::native_workspace_owner::release_workspace_room(&tree, room)
+            {
+                tracing::warn!(%room, %error, "the workspace was not deleted");
+            }
+        }
+        self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+    }
+
     /// Stop each share in `outlived` (by room), the shares whose window this
-    /// device no longer shows, once: the same request `tab.unshare` makes.
-    /// A share asked to stop is not asked again while the room's record
-    /// still holds it.
+    /// device no longer shows: through the room's outbox, which asks the
+    /// room's host until the room's record no longer holds the share, again
+    /// on the host's next event (its session coming up, the room changing)
+    /// when it refused or could not be reached. A refusal is said once.
     fn end_outlived_window_shares(
         &mut self,
         outlived: Vec<(
@@ -277,42 +365,31 @@ impl ShellOverlayHost {
             tilo_desktop_model::window_share::WindowShare,
         )>,
     ) {
+        if outlived.is_empty() {
+            return;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        if outlived.is_empty() && self.window_share_controls.ending.is_empty() {
+        let state = chrome.borrow();
+        let new: Vec<_> = {
+            let tree = state.tree();
+            outlived
+                .into_iter()
+                .filter(|(room, share)| {
+                    !tree.room_outbox.iter().any(|entry| {
+                        entry.room == *room
+                            && matches!(&entry.change, crate::shell::state::RoomChange::WindowUnshare { tab, .. } if *tab == share.tab)
+                    })
+                })
+                .collect()
+        };
+        if new.is_empty() {
             return;
         }
-        let still: HashSet<TabId> = outlived.iter().map(|(_, share)| share.tab).collect();
-        self.window_share_controls
-            .ending
-            .retain(|tab| still.contains(tab));
-        for (room, share) in outlived {
-            if !self.window_share_controls.ending.insert(share.tab) {
-                continue;
-            }
-            let workspace = chrome
-                .borrow()
-                .tree()
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room() == room)
-                .map(|workspace| workspace.id);
-            let request = PeerSyncRequest::ShareWindow {
-                room,
-                tab: share.tab,
-                app_id: share.app_id,
-                share: false,
-            };
-            self.dispatch_peer_sync(
-                Job {
-                    request: request.clone(),
-                    require_pending: false,
-                    workspace,
-                },
-                FollowUp::Directory { request },
-            );
+        let mut tree = state.tree_mut();
+        for (room, share) in new {
+            tree.stop_outlived_share(room, share.tab, share.app_id);
         }
     }
 }

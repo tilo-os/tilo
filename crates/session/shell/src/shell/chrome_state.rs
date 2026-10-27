@@ -2621,6 +2621,20 @@ impl ChromeState {
         let Some((room, name)) = active else {
             return false;
         };
+        // This device's windows shared with the room stop being shared
+        // first, at its host, as on leaving: the network does it, then
+        // lets the room go.
+        if !self
+            .tree()
+            .own_window_shares(room, tilo_clock::unix_now_ms())
+            .is_empty()
+        {
+            self.push_peer_sync_request(
+                crate::shell::overlay_host::PeerSyncAction::DeleteWorkspace { room },
+            );
+            self.push_left_toast(name);
+            return true;
+        }
         // The workspace and its room go together: the room leaves this
         // device's record in the same step, and is joined again through its
         // host rather than undone.

@@ -537,6 +537,31 @@ impl Device {
         })
     }
 
+    /// Keep this device's identity on this machine as a device its person
+    /// set up from another of theirs keeps it, with its directory as the
+    /// system's identity tree (`TILO_IDENTITY_ROOT`): its device key (the
+    /// one its network already uses) and the certificate its person's root
+    /// gave it, and under `identity_dir` (the account's) the person's public
+    /// record as the account's identity and a fleet that knows the device.
+    /// The root never comes here. The device's broker then signs what it
+    /// admits as this device.
+    pub(crate) fn keep_identity_on_disk(&self, identity_dir: &Path) {
+        let paths = tilo_user_identity::IdentityPaths::under(&self.dir);
+        assert_eq!(
+            paths.device_privkey,
+            self.dir.join("device-private/keypair.bin"),
+            "the identity tree keeps the key the device's network uses"
+        );
+        let now = tilo_clock::unix_now_ns();
+        tilo_user_identity::persist::install_device_cert(&paths, &self.cert(), now)
+            .expect("the device keeps the certificate its person's root gave it");
+        assert!(
+            tilo_identity_host::provisioning::complete_enrolled_device(identity_dir, &paths, now)
+                .expect("the account takes the device's person"),
+            "the device is set up for its person"
+        );
+    }
+
     pub(crate) fn tree(&self) -> &WorkspaceTreeHandle {
         &self.tree
     }

@@ -3,7 +3,7 @@
 
 use super::super::tests::lay_out_at_width;
 use super::super::{TabBar, TabDescriptor};
-use super::SharedWith;
+use super::{SharedBy, SharedWith};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -195,4 +195,135 @@ fn a_shared_window_names_who_sees_it_with_their_faces() {
         bar.shared_chip(&mut tr, &theme).is_none(),
         "a share that ended is no longer marked"
     );
+}
+
+/// A window someone else shared with the workspace reads as theirs in its
+/// bar: "Ana Lima’s window" with her face, said to a reader too, only while
+/// it is in front and only while it is shared.
+#[test]
+fn a_window_someone_shared_names_whose_it_is_with_their_face() {
+    use crate::permissions::UserId;
+    let theme = Theme::light();
+    let mut tr = TextRenderer::new();
+    let mut bar = TabBar::new(
+        "shared-by",
+        vec![
+            TabDescriptor::new(1, "Agenda"),
+            TabDescriptor::new(2, "Notes"),
+        ],
+        1,
+    );
+    lay_out_at_width(&mut bar, 1200.0);
+    let ana = SharedBy {
+        sharer: (UserId("ana".into()), "Ana Lima".into()),
+    };
+    assert!(bar.set_shared_by(1, Some(ana.clone())));
+    assert!(!bar.set_shared_by(1, Some(ana.clone())), "unchanged");
+    assert_eq!(bar.shared_by(1), Some(&ana));
+    assert_eq!(bar.shared_with(1), None, "shared with this person, not by");
+    assert!(
+        !bar.set_shared(1, None),
+        "no mark of the other kind to clear"
+    );
+    assert_eq!(bar.shared_by(1), Some(&ana));
+    let (rect, label) = bar.shared_chip(&mut tr, &theme).expect("the mark shows");
+    assert_eq!(label, "Ana Lima\u{2019}s window");
+    assert!(rect.x0 >= bar.tab_rects[1].x1, "after the pills");
+    let chip_only = crate::widget::ChipFace::intrinsic_width(
+        &label,
+        crate::widget::ChipLead::None,
+        false,
+        &mut tr,
+        &theme,
+    );
+    assert!(
+        rect.width() >= chip_only + crate::presence::FaceStack::WINDOW.width(1),
+        "her face stands after the chip: {rect:?}"
+    );
+
+    let mut scene = Scene::new();
+    bar.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &PresenceCtx::default(),
+    );
+    let node = bar.shared_access().expect("a reader meets the mark");
+    assert_eq!(node.name.as_deref(), Some("Ana Lima\u{2019}s window"));
+    assert_eq!(node.description, None, "the name says whose it is");
+
+    bar.set_active(2);
+    assert!(
+        bar.shared_chip(&mut tr, &theme).is_none(),
+        "only its own window"
+    );
+    bar.set_active(1);
+    assert!(bar.set_shared_by(1, None));
+    assert!(
+        bar.shared_chip(&mut tr, &theme).is_none(),
+        "a share that ended is no longer marked"
+    );
+}
+
+/// In a window whose app put its slots in the bar, the share mark stands
+/// right after what the location shows, on its line, before the app's
+/// actions: "Agenda", then "Ana Lima’s window" with her face.
+#[test]
+fn the_share_mark_follows_an_apps_location_in_its_bar() {
+    use crate::permissions::UserId;
+    use crate::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::light().with_reduce_motion(true);
+    let mut tr = TextRenderer::new();
+    let mut bar = TabBar::new("slots", vec![TabDescriptor::new(1, "Agenda")], 1);
+    bar.set_window_controls(true);
+    assert!(bar.set_toolbar(
+        1,
+        Some(WindowToolbar {
+            location: Some(ToolbarLocation {
+                label: "Agenda".into(),
+                ..ToolbarLocation::default()
+            }),
+            actions: vec![ToolbarAction::new("new", "plus", "New note")],
+            ..WindowToolbar::default()
+        })
+    ));
+    assert!(bar.set_shared_by(
+        1,
+        Some(SharedBy {
+            sharer: (UserId("ana".into()), "Ana Lima".into()),
+        })
+    ));
+    let mut scene = Scene::new();
+    for _ in 0..2 {
+        super::super::tests::lay_out_at_width_with(&mut bar, 1200.0, &theme);
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+    }
+    let (rect, label) = bar
+        .shared_chip(&mut tr, &theme)
+        .expect("the mark shows beside the app's slots");
+    assert_eq!(label, "Ana Lima\u{2019}s window");
+    let (_, _, location, actions) = bar.toolbar_rects();
+    assert!(location.area() > 0.0, "the app's location stands");
+    assert!(
+        rect.x0 > location.x0 && rect.x0 < location.x1,
+        "right after what the location shows: {rect:?} in {location:?}"
+    );
+    assert!(
+        (rect.center().y - location.center().y).abs() < 0.5,
+        "on the location's line"
+    );
+    assert!(
+        actions.iter().all(|action| rect.x1 <= action.x0),
+        "before the app's actions: {rect:?} {actions:?}"
+    );
+    let node = bar.shared_access().expect("a reader meets the mark");
+    assert_eq!(node.name.as_deref(), Some("Ana Lima\u{2019}s window"));
 }
