@@ -494,6 +494,20 @@ completeness does not exempt a screen from these requirements.
   above or painted over the app's controls. An app may put its header *in*
   the bar (`NavShell::with_header_in_window_bar`): maximized, the header
   then hides with the bar and comes back over the content with it.
+- **The window's controls are a group of their own.** History, Full screen
+  and Close stand at the bar's trailing edge, `rhythm.group` apart from the
+  app's controls and the window's search before them; space parts the two
+  groups, never a drawn line. That edge never moves when the app's slots
+  change. The app's controls are its slots in declared order, at most
+  three in the row; a narrow bar folds the last of them into the app's
+  More menu before it squeezes the location, and the window's own
+  controls never fold.
+- **Every control gets its slot before the location.** The location takes
+  what the controls leave; only where that is less than its least width (a
+  phone's) do Forward and then the sidebar's toggle fold into More, Back
+  staying. A breadcrumb that does not fit folds its middle
+  levels into the `…`, then cuts the current level short, then shows the
+  current level alone, cut short; it never paints past its own bounds.
 - **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
   (§ toolkit) so light/dark and every temperature look intentional; no hard-coded
   colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping
