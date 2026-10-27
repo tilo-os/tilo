@@ -11,6 +11,7 @@
 //! built once per type, and for the types this crate defines, once.
 
 use std::any::Any;
+use std::borrow::Cow;
 use std::marker::PhantomData;
 use tilo_sort::CompactSort as _;
 
@@ -253,10 +254,16 @@ pub struct VariantDesc {
     pub fields: &'static [FieldDesc],
 }
 
-/// One field of a record, as [`RecordDesc`] lists it.
+/// One field of a record, as [`RecordDesc`] lists it, or of a variant, as
+/// [`VariantDesc`] lists it.
 pub struct FieldDesc {
-    /// The key it is stored under.
+    /// The key that names it in a path (a record's `body`, a variant's
+    /// `shape.rect.width`).
     pub key: &'static str,
+    /// The key it is stored under. `None` for a record's field, whose key is
+    /// its own; a data enum's field names its variant, so that two variants
+    /// naming a field alike do not share storage.
+    pub variant: Option<&'static str>,
     /// Its Rust name.
     pub name: &'static str,
     /// Its type's table.
@@ -267,6 +274,19 @@ pub struct FieldDesc {
     pub whole: bool,
     /// Its items, for a collection whose items are published.
     pub items: Option<&'static ItemOps>,
+}
+
+impl FieldDesc {
+    /// The key the document stores this field under: its own [`Self::key`]
+    /// for a record, and a key of its variant
+    /// ([`crate::model::field_key`]) for a data enum's field.
+    #[must_use]
+    pub fn storage_key(&self) -> Cow<'static, str> {
+        match self.variant {
+            Some(variant) => Cow::Owned(crate::model::field_key(variant, self.key)),
+            None => Cow::Borrowed(self.key),
+        }
+    }
 }
 
 /// Read a record, boxed, from the map it is stored in.
@@ -1218,12 +1238,10 @@ pub fn read_fields(
     obj: &ObjId,
     out: &mut dyn Any,
 ) -> Result<(), ModelError> {
-    let mut keys: Vec<&str> = Vec::with_capacity(record.fields.len());
-    for field in record.fields {
-        keys.push(field.key);
-    }
+    let keys: Vec<Cow<'static, str>> = record.fields.iter().map(FieldDesc::storage_key).collect();
+    let storage: Vec<&str> = keys.iter().map(|key| key.as_ref()).collect();
     let mut slots = vec![None; keys.len()];
-    crate::model::fill_slots(doc, obj, &keys, &mut slots);
+    crate::model::fill_slots(doc, obj, &storage, &mut slots);
     (record.build)(
         &mut DocSource {
             record,
@@ -1249,14 +1267,12 @@ pub(crate) fn read_fields_merged(
     objs: &[ObjId],
     out: &mut dyn Any,
 ) -> Result<(), ModelError> {
-    let mut keys: Vec<&str> = Vec::with_capacity(record.fields.len());
-    for field in record.fields {
-        keys.push(field.key);
-    }
+    let keys: Vec<Cow<'static, str>> = record.fields.iter().map(FieldDesc::storage_key).collect();
+    let storage: Vec<&str> = keys.iter().map(|key| key.as_ref()).collect();
     let mut slots = vec![None; keys.len()];
     for obj in objs {
         let mut found = vec![None; keys.len()];
-        crate::model::fill_slots(doc, obj, &keys, &mut found);
+        crate::model::fill_slots(doc, obj, &storage, &mut found);
         for (slot, found) in slots.iter_mut().zip(found) {
             if slot.is_none() {
                 *slot = found;
@@ -1320,15 +1336,16 @@ fn write_fields_leaving(
         .and_then(|()| (record.unwrap)(staged.as_ref()));
     for (index, field) in record.fields.iter().enumerate() {
         let inner = field_of(record, value, index)?;
+        let storage = field.storage_key();
         if field.table.scalar
             && absent
                 .and_then(|absent| (record.field)(absent, index))
                 .is_some_and(|empty| (field.table.ops.stores_as)(field.table, inner, empty))
-            && (fresh || Slot::Key(obj, field.key).current(doc)?.is_none())
+            && (fresh || Slot::Key(obj, storage.as_ref()).current(doc)?.is_none())
         {
             continue;
         }
-        (field.table.ops.store)(field.table, inner, doc, Slot::Key(obj, field.key))
+        (field.table.ops.store)(field.table, inner, doc, Slot::Key(obj, storage.as_ref()))
             .located(field.key)?;
     }
     Ok(())
@@ -1380,7 +1397,16 @@ pub fn write_changed_fields(
     for (index, field) in record.fields.iter().enumerate() {
         let now = field_of(record, value, index)?;
         let was = field_of(record, before, index)?;
-        write_key_changed(field.table, (now, was), doc, obj, field.key, dirty)?;
+        let storage = field.storage_key();
+        write_key_changed_at(
+            field.table,
+            (now, was),
+            doc,
+            obj,
+            field.key,
+            storage.as_ref(),
+            dirty,
+        )?;
     }
     Ok(())
 }
@@ -1399,12 +1425,31 @@ pub fn write_key_changed(
     key: &str,
     dirty: &Delta,
 ) -> Result<(), ModelError> {
+    write_key_changed_at(table, (now, was), doc, obj, key, key, dirty)
+}
+
+/// Write `now` under `storage`, the document key `key` names, of the map
+/// `obj`, which holds `was`: [`write_key_changed`] for a field whose logical
+/// key (`key`) and storage key differ, as a data enum's field's do.
+///
+/// # Errors
+/// The document's write error, located at `key`.
+#[doc(hidden)]
+pub fn write_key_changed_at(
+    table: &ModelTable,
+    (now, was): (&dyn Any, &dyn Any),
+    doc: &mut Doc,
+    obj: &ObjId,
+    key: &str,
+    storage: &str,
+    dirty: &Delta,
+) -> Result<(), ModelError> {
     let ops = table.ops;
-    match dirty.key(obj, key) {
-        Touch::Written => (ops.store)(table, now, doc, Slot::Key(obj, key)).located(key),
+    match dirty.key(obj, storage) {
+        Touch::Written => (ops.store)(table, now, doc, Slot::Key(obj, storage)).located(key),
         Touch::Untouched if (ops.stores_as)(table, now, was) => Ok(()),
         Touch::Untouched | Touch::Below => {
-            (ops.store_changed)(table, now, was, doc, Slot::Key(obj, key), dirty).located(key)
+            (ops.store_changed)(table, now, was, doc, Slot::Key(obj, storage), dirty).located(key)
         }
     }
 }
@@ -1420,7 +1465,9 @@ pub fn store_field(
     obj: &ObjId,
     value: &dyn Any,
 ) -> Result<(), ModelError> {
-    (field.table.ops.store)(field.table, value, doc, Slot::Key(obj, field.key)).located(field.key)
+    let storage = field.storage_key();
+    (field.table.ops.store)(field.table, value, doc, Slot::Key(obj, storage.as_ref()))
+        .located(field.key)
 }
 
 /// [`Model::stores_as`] of the value a [`FieldDesc`] holds: the comparison
@@ -1492,7 +1539,8 @@ pub fn load_field(
     obj: &ObjId,
     out: &mut dyn Any,
 ) -> Result<(), ModelError> {
-    let slot = crate::model::get_slot(doc, obj, field.key).located(field.key)?;
+    let storage = field.storage_key();
+    let slot = crate::model::get_slot(doc, obj, storage.as_ref()).located(field.key)?;
     load_slot(
         field.table,
         doc,
@@ -1577,7 +1625,8 @@ fn refresh_key(
     obj: &ObjId,
     delta: &Delta,
 ) -> Result<(), ModelError> {
-    refresh_slot(field.table, target, doc, obj, field.key, delta)?;
+    let storage = field.storage_key();
+    refresh_slot(field.table, target, doc, obj, storage.as_ref(), delta)?;
     if field.whole {
         (field.table.ops.read_whole)(field.table, target, doc).located(field.key)?;
     }
@@ -1704,8 +1753,16 @@ pub fn edit_fields(
                     field.name
                 )));
             }
-            (field.table.ops.edit)(field.table, doc, Slot::Key(obj, field.key), rest, op, cx)
-                .located(field.key)?;
+            let storage = field.storage_key();
+            (field.table.ops.edit)(
+                field.table,
+                doc,
+                Slot::Key(obj, storage.as_ref()),
+                rest,
+                op,
+                cx,
+            )
+            .located(field.key)?;
         }
         None => match op {
             EditOp::Set { value } => {

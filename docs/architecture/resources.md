@@ -59,7 +59,7 @@ want, not only for the value you hold.
 | `Reactions` | map of each reaction, keyed by emoji and who reacted | per person and emoji; changed only by `react`/`unreact`, which record whoever invokes them |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |
-| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, its fields beside it | per field of one variant; a change of variant is last writer wins, and fields the new variant does not carry stay as unused history (an explicit path `shape.rect.width` can edit an inactive variant's field) |
+| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, each of the variant's fields under a key of that variant | per field of one variant; a change of variant is last writer wins, and fields the new variant does not carry stay as unused history (an explicit path `shape.rect.width` can edit an inactive variant's field); fields of different variants never share a storage key, even when they share a name or path leaf |
 | `serde_json::Value` | an object as a map, an array as a list, everything else a scalar | per key of an object, by position in an array; only for JSON another party shapes (an account type's settings, a binding's literal value, a parameter's JSON Schema) |
 
 A type with a layout the table does not cover implements `Model` by hand. That
@@ -583,7 +583,10 @@ of an example: there is no ceiling to raise. What to write instead:
   struct the bound arguments are read into; a registered read publishes a
   typed `JsonSchema` parameter struct (`semantic_document_read::read_action`).
 - **A stored value** is a model type chosen for its merge (§1): a struct, an
-  enum (a data enum is a map naming its variant), `Collection`, `Map`, `Set`,
+  enum (a data enum is a map naming its variant, each field of a variant under
+  a key of that variant — so two variants naming a field alike, even with
+  different types, never read each other's, and what a variant stored stays
+  when the value leaves it), `Collection`, `Map`, `Set`,
   `RichText`, and `serde_json::Value` for JSON another party shapes. A value
   that is genuinely opaque — written whole, never merged, such as a retained
   import tree compared whole on retry — implements `Model` through
@@ -592,7 +595,9 @@ of an example: there is no ceiling to raise. What to write instead:
   (`#[resource(version, migrate)]`) and a test's fixture of an older shape
   write through the model's storage helpers: `write_key`, `Slot`,
   `evolution::retype_json` (an old JSON-string field rewritten as its model
-  type), `evolution::collection_items` and `evolution::fixture`.
+  type), `evolution::retype_variant_fields` (a data enum's fields rewritten
+  by their variant, reading the flat keys an older layout stored them under),
+  `evolution::collection_items` and `evolution::fixture`.
 
 Three apps act on other apps' published actions as data rather than through a
 resource of their own: the agent (it plans and invokes what the broker's

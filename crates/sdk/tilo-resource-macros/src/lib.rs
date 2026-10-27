@@ -810,6 +810,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         let whole = options.whole;
         descs.push(quote!(#table::FieldDesc {
             key: #key,
+            variant: ::core::option::Option::None,
             name: #field_name,
             table: #field_table,
             readonly: #readonly,

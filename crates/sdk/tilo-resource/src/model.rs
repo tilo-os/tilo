@@ -1011,29 +1011,104 @@ pub fn write_key_changed<T: Model>(
 }
 
 /// The key under which a data enum (`#[derive(Model)]` on an enum with
-/// fields) names its variant, beside the variant's fields. No Rust field can
-/// have this name, so it never collides with one.
+/// fields) names its variant. No Rust field can have this name, so it never
+/// collides with one.
 pub const VARIANT_KEY: &str = "$variant";
 
-/// The map a data enum's variant `variant` is stored in, in `slot`: made
-/// when the slot holds anything else, and its variant name written. The
-/// name is one scalar, so a change of variant is one last-writer-wins write;
-/// a field edit in the same variant leaves it untouched.
+/// The prefix of the keys a data enum stores a variant's fields under: one
+/// key per variant and field, [`field_key`]. No Rust field can have such a
+/// name (the derive refuses a key that begins with `$`), so no field is ever
+/// read from another variant's storage: two variants may name a field alike,
+/// even with different types, and whichever is active reads its own value.
+const FIELD_PREFIX: &str = "$field/";
+
+/// That variant `variant`'s fields are stored under per-variant keys in this
+/// version's layout, written by [`variant_map`] beside them: a value that has
+/// one is read from those keys alone, never from the flat keys an older
+/// version stored the fields under.
+#[doc(hidden)]
+#[must_use]
+pub fn variant_marker(variant: &str) -> String {
+    let mut key = String::from(FIELD_PREFIX);
+    escape_into(variant, &mut key);
+    key
+}
+
+/// The key variant `variant`'s field `field` is stored under.
+///
+/// `%` and `/` are escaped, so that one variant's field is never the key of
+/// another's, and a field named `a/b` is not the field `b` of the variant
+/// `a`.
+#[doc(hidden)]
+#[must_use]
+pub fn field_key(variant: &str, field: &str) -> String {
+    let mut key = variant_marker(variant);
+    key.push('/');
+    escape_into(field, &mut key);
+    key
+}
+
+fn escape_into(text: &str, out: &mut String) {
+    for ch in text.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            '/' => out.push_str("%2F"),
+            other => out.push(other),
+        }
+    }
+}
+
+/// The map a data enum's value is stored in, in `slot`: made when the slot
+/// holds anything else, its variant name written, the marker that the
+/// variant's fields are stored by variant written, and the fields of the
+/// variant stored in it one key each ([`field_key`]) — so concurrent edits of
+/// the same variant merge field by field, and a change of variant is one
+/// last-writer-wins write of its name, whose fields no other variant can
+/// reach. What another variant stored stays under its own keys: a value that
+/// returns to it (an undo of the change, say) reads its fields again.
 ///
 /// Fields a variant does not have are left where they are, unused: a
 /// concurrent edit of the variant being left keeps its value, and changing
-/// back reads it again. Writing the new variant's own fields replaces the
-/// keys they share; a field they do not carry is absent from them and so is
-/// not read by the new variant.
+/// back reads it again.
+///
+/// The flat key an older version stored each of the variant's fields under is
+/// removed: the field is stored by variant now, and a flat key left beside it
+/// would read as a write made since.
 ///
 /// # Errors
 /// Returns the document's write error.
 #[doc(hidden)]
 #[inline(never)]
-pub fn variant_map(doc: &mut Doc, slot: Slot<'_>, variant: &str) -> Result<ObjId, ModelError> {
+pub fn variant_map(
+    doc: &mut Doc,
+    slot: Slot<'_>,
+    variant: &str,
+    fields: &[&str],
+) -> Result<ObjId, ModelError> {
     let obj = slot.object(doc, ObjType::Map)?;
     Slot::Key(&obj, VARIANT_KEY).put_scalar(doc, ScalarValue::Str(variant.into()))?;
+    let marker = variant_marker(variant);
+    Slot::Key(&obj, marker.as_str()).put_scalar(doc, ScalarValue::Null)?;
+    let legacy: Vec<String> = doc
+        .keys(&obj)
+        .filter(|key| fields.contains(&key.as_str()))
+        .collect();
+    for key in legacy {
+        doc.delete(&obj, key.as_str())?;
+    }
     Ok(obj)
+}
+
+/// Whether variant `variant`'s fields are stored by variant in the map `obj`
+/// ([`variant_map`] wrote its marker), or are still in the flat keys an older
+/// version stored them under.
+///
+/// # Errors
+/// Returns the document's read error.
+#[doc(hidden)]
+#[inline(never)]
+pub fn variant_stored(doc: &Doc, obj: &ObjId, variant: &str) -> Result<bool, ModelError> {
+    Ok(doc.get(obj, variant_marker(variant).as_str())?.is_some())
 }
 
 /// The variant name a data enum stored in `slot` currently has, or `None`
@@ -1051,6 +1126,122 @@ pub fn slot_variant(doc: &Doc, slot: Slot<'_>) -> Result<Option<String>, ModelEr
         }
         Some(_) => Err(ModelError::shape("a map naming its variant")),
         None => Ok(None),
+    }
+}
+
+/// The fields of a data enum's variant `variant`, in the map `id` its value
+/// was stored in.
+#[doc(hidden)]
+pub struct VariantFields<'a> {
+    doc: &'a Doc,
+    /// Each field of the variant, with what this version stores it in and
+    /// what the flat key an older version stored it under holds, both in one
+    /// walk of the map.
+    fields: Vec<(&'a crate::table::FieldDesc, MapSlot, MapSlot)>,
+    /// Whether the variant's fields are stored by variant ([`variant_map`]),
+    /// or still in the flat keys an older version stored them under.
+    stored: bool,
+}
+
+/// The fields of the data enum variant `variant` stored at `value` (the map
+/// `id`), to be read one field at a time
+/// ([`VariantFields::read_field`]).
+///
+/// # Errors
+/// Returns a shape error when the slot holds no map naming a variant.
+#[doc(hidden)]
+#[inline(never)]
+pub fn variant_fields<'a>(
+    doc: &'a Doc,
+    value: &Value<'_>,
+    id: &ObjId,
+    variant: &'a str,
+    fields: &'a [crate::table::FieldDesc],
+) -> Result<VariantFields<'a>, ModelError> {
+    if !matches!(value, Value::Object(ObjType::Map)) {
+        return Err(ModelError::shape("a map naming its variant"));
+    }
+    let marker = variant_marker(variant);
+    let keys: Vec<String> = fields
+        .iter()
+        .map(|field| field.storage_key().into_owned())
+        .collect();
+    let mut read: Vec<(&crate::table::FieldDesc, MapSlot, MapSlot)> =
+        fields.iter().map(|field| (field, None, None)).collect();
+    let mut stored = false;
+    for item in doc.map_range(id, ..) {
+        let key = item.key.as_ref();
+        if key == marker {
+            stored = true;
+        } else if let Some(index) = keys.iter().position(|key| key == item.key.as_ref()) {
+            let slot = Some((item.value.clone().into_value(), item.id()));
+            if let Some(read) = read.get_mut(index) {
+                read.1 = slot;
+            }
+        } else if let Some(index) = fields.iter().position(|field| field.key == key) {
+            let slot = Some((item.value.clone().into_value(), item.id()));
+            if let Some(read) = read.get_mut(index) {
+                read.2 = slot;
+            }
+        }
+    }
+    Ok(VariantFields {
+        doc,
+        fields: read,
+        stored,
+    })
+}
+
+impl VariantFields<'_> {
+    /// The variant's field `field`, read into `out` an `Option` of its type:
+    /// [`Model::missing`] when it holds nothing.
+    ///
+    /// A document written before every variant stored its own fields is read
+    /// as it was written: the flat key the old layout stored the field under
+    /// is read, and the next write stores the field by variant. Once the
+    /// variant is stored by variant, a flat key beside its fields is a write
+    /// of that older layout made since — one of the two would be lost by
+    /// reading either — so it is an error, never a value that quietly wins.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] located at `field.key`: the document's read
+    /// error, a field of another shape, or a flat key beside the fields this
+    /// version stores.
+    pub fn read_field(
+        &self,
+        field: &crate::table::FieldDesc,
+        out: &mut dyn std::any::Any,
+    ) -> Result<(), ModelError> {
+        let found = self
+            .fields
+            .iter()
+            .find(|(candidate, ..)| candidate.key == field.key)
+            .map(|(_, stored, legacy)| (stored.as_ref(), legacy.as_ref()));
+        let Some((stored, legacy)) = found else {
+            return Ok(());
+        };
+        if self.stored || stored.is_some() {
+            if legacy.is_some() {
+                return Err(ModelError::invalid(
+                    "this field is stored both by variant and flat, as a version before that stored it: reading either would lose the other",
+                )
+                .at(field.key));
+            }
+            return crate::table::load_slot(
+                field.table,
+                self.doc,
+                stored.map(|(value, id)| (value, id)),
+                out,
+            )
+            .located(field.key);
+        }
+        crate::table::load_slot(
+            field.table,
+            self.doc,
+            legacy.map(|(value, id)| (value, id)),
+            out,
+        )
+        .located(field.key)
     }
 }
 

@@ -1,17 +1,18 @@
 //! `#[derive(Model)]` for an enum whose variants carry fields.
 //!
 //! A value is a map: the variant's name under `$variant`
-//! (`tilo_resource::VARIANT_KEY`), and each of the variant's fields under its
-//! own key, stored as its type stores it. Concurrent edits of one variant
-//! merge field by field (two people editing a text field of the same variant
-//! splice it); changing the variant is one last-writer-wins write of its name.
-//! Fields the new variant does not carry stay where they are, unused, so a
-//! concurrent edit of the variant being left is not lost and changing back
-//! reads it again.
+//! (`tilo_resource::VARIANT_KEY`), and each of the variant's fields under a
+//! key of its own (`tilo_resource::model::field_key`), stored as its type
+//! stores it. Concurrent edits of one variant merge field by field (two
+//! people editing a text field of the same variant splice it); changing the
+//! variant is one last-writer-wins write of its name.
 //!
 //! A field path names its variant before the field (`shape.rect.x`), so
 //! fields of different variants never share a path even when they share a
-//! storage key.
+//! storage key. A field belongs to the variant that stored it: another
+//! variant naming a field alike — with another type, even — never reads it,
+//! and what a variant stored stays when the value leaves it, so an undo of
+//! the change reads its fields again.
 //!
 //! Named fields keep their names (`#[model(rename = "key")]` changes one,
 //! `#[model(skip)]` leaves one out: its `Default` on read); the fields of a
@@ -110,6 +111,12 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
                     || humanize(&key),
                     |line| line.trim_end_matches('.').to_owned(),
                 );
+            if key.starts_with('$') {
+                return Err(syn::Error::new(
+                    field.span(),
+                    "a field's key may not begin with `$`: those name where a variant's fields are stored",
+                ));
+            }
             fields.push(Field {
                 member,
                 name,
@@ -226,7 +233,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
     };
 
     let variant_descs = variants.iter().map(|variant| {
-        let key = &variant.key;
+        let variant_key = &variant.key;
         let variant_name = variant.ident.to_string();
         let fields = variant.stored().map(|field| {
             let key = &field.key;
@@ -235,6 +242,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             let whole = field.whole;
             quote!(#table::FieldDesc {
                 key: #key,
+                variant: ::core::option::Option::Some(#variant_key),
                 name: #name,
                 table: #field_table,
                 readonly: false,
@@ -329,7 +337,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
 
     let load = variants.iter().enumerate().map(|(variant_index, variant)| {
         let key = &variant.key;
-        let built = variant.construct(|field| {
+        let read = variant.construct(|field| {
             if field.skip {
                 quote!(::core::default::Default::default())
             } else {
@@ -340,10 +348,8 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                 let ty = &field.ty;
                 quote!({
                     let mut __out: ::core::option::Option<#ty> = ::core::option::Option::None;
-                    #table::load_field(
+                    __fields.read_field(
                         &Self::__VARIANTS[#variant_index].fields[#field_index],
-                        doc,
-                        id,
                         &mut __out,
                     )?;
                     #table::filled(__out)?
@@ -352,7 +358,14 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
         });
         quote! {
             #key => {
-                let mut __value = #built;
+                let __fields = #model::variant_fields(
+                    doc,
+                    value,
+                    id,
+                    #key,
+                    Self::__VARIANTS[#variant_index].fields,
+                )?;
+                let mut __value = #read;
                 #krate::Model::read_whole(&mut __value, doc)?;
                 ::core::result::Result::Ok(__value)
             }
@@ -362,6 +375,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
     let store = variants.iter().enumerate().map(|(variant_index, variant)| {
         let pattern = variant.pattern_with("__field");
         let key = &variant.key;
+        let keys: Vec<&String> = variant.stored().map(|field| &field.key).collect();
         let writes = variant.stored().enumerate().map(|(field_index, field)| {
             let binding = binding_of(
                 variant
@@ -387,7 +401,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
         quote! {
             #pattern => {
                 #(let _ = #unused;)*
-                let __obj = #model::variant_map(doc, slot, #key)?;
+                let __obj = #model::variant_map(doc, slot, #key, &[#(#keys),*])?;
                 #(#writes)*
                 ::core::result::Result::Ok(())
             }
@@ -624,14 +638,19 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             let now = format_ident!("__now{}", index);
             let was = format_ident!("__was{}", index);
             quote! {
-                #table::write_key_changed(
-                    Self::__VARIANTS[#variant_index].fields[#field_index].table,
-                    (#now, #was),
-                    doc,
-                    &__obj,
-                    Self::__VARIANTS[#variant_index].fields[#field_index].key,
-                    dirty,
-                )?;
+                {
+                    let __field = &Self::__VARIANTS[#variant_index].fields[#field_index];
+                    let __storage = __field.storage_key();
+                    #table::write_key_changed_at(
+                        __field.table,
+                        (#now, #was),
+                        doc,
+                        &__obj,
+                        __field.key,
+                        __storage.as_ref(),
+                        dirty,
+                    )?;
+                }
             }
         });
         quote! {
@@ -646,6 +665,12 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                     )) => id,
                     _ => return self.store(doc, slot),
                 };
+                // A document of the older flat layout stores every field
+                // under its variant once, as a whole write does; writing only
+                // the changed fields would leave flat keys beside them.
+                if !#model::variant_stored(doc, &__obj, #key)? {
+                    return self.store(doc, slot);
+                }
                 #(#writes)*
                 ::core::result::Result::Ok(())
             }
@@ -802,13 +827,17 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             },
         );
 
-    let edit_direct = variants.iter().enumerate().map(|(variant_index, variant)| {
+    let edit_field = variants.iter().enumerate().map(|(variant_index, variant)| {
         let key = &variant.key;
+        let keys: Vec<&String> = variant.stored().map(|field| &field.key).collect();
         let fields = variant.stored().enumerate().map(|(field_index, field)| {
             let field_key = &field.key;
+            let ty = &field.ty;
+            let whole = field.whole;
             quote! {
                 if __field_key == #field_key {
                     let __field = &Self::__VARIANTS[#variant_index].fields[#field_index];
+                    let __storage = __field.storage_key();
                     let __obj = match slot.current(doc)? {
                         ::core::option::Option::Some((
                             #krate::__private::Value::Object(#krate::__private::ObjType::Map),
@@ -819,13 +848,32 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                                 "a map naming its variant",
                             ));
                         }
-                        ::core::option::Option::None => #model::variant_map(doc, slot, #key)?,
+                        ::core::option::Option::None => {
+                            #model::variant_map(doc, slot, #key, &[#(#keys),*])?
+                        }
                     };
+                    // An older version stored this field flat, beside the
+                    // variant's name. Read it as it was written, write it by
+                    // its variant, and leave the flat key gone; the edit then
+                    // lands on the field stored by variant.
+                    if !#model::variant_stored(doc, &__obj, #key)? {
+                        if let ::core::option::Option::Some((__legacy, __legacy_id)) =
+                            #krate::Slot::Key(&__obj, __field.key).current(doc)?
+                        {
+                            let mut __loaded: #ty = #table::Run(__field.table)
+                                .load(doc, &__legacy, &__legacy_id)?;
+                            if #whole {
+                                #krate::Model::read_whole(&mut __loaded, doc)?;
+                            }
+                            #table::store_field(__field, doc, &__obj, &__loaded)?;
+                            doc.delete(&__obj, __field.key)?;
+                        }
+                    }
                     #krate::LocatedAt::located(
                         #table::edit_field(
                             __field.table,
                             doc,
-                            #krate::Slot::Key(&__obj, __field.key),
+                            #krate::Slot::Key(&__obj, __storage.as_ref()),
                             __below,
                             op,
                             cx,
@@ -848,7 +896,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                     .collect();
                 return ::core::result::Result::Err(#krate::ModelError::invalid(format!(
                     "no field `{}` in variant `{}`; its fields are {}",
-                    __first,
+                    __field_key,
                     #key,
                     names.join(", "),
                 )));
@@ -894,6 +942,24 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                 match (variant, field) {
                     #(#field_refs)*
                     _ => ::core::option::Option::None,
+                }
+            }
+
+            /// Edit `field_key` of variant `variant_key`, whose field is
+            /// `below` the new path.
+            #[doc(hidden)]
+            pub fn __edit_field(
+                doc: &mut #krate::Doc,
+                slot: #krate::Slot<'_>,
+                __key: &str,
+                __field_key: &str,
+                __below: &[#krate::Segment],
+                op: &#krate::EditOp,
+                cx: &mut #krate::ActionCx,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                match __key {
+                    #(#edit_field)*
+                    _ => ::core::result::Result::Err(#model::unknown_variant(__key)),
                 }
             }
         }
@@ -1012,7 +1078,6 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                 if let ::core::option::Option::Some(__variant_index) = Self::__variant_named(__first)
                 {
                     let __key = Self::__VARIANTS[__variant_index].key;
-                    let __rest = __rest;
                     if __rest.is_empty() {
                         return ::core::result::Result::Err(#krate::ModelError::invalid(
                             "a variant is changed by setting the whole value",
@@ -1021,47 +1086,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                     let Some((#krate::Segment::Field(__field_key), __below)) = __rest.split_first() else {
                         return ::core::result::Result::Err(#krate::ModelError::unsupported(op));
                     };
-                    let __fields = Self::__VARIANTS[__variant_index].fields;
-                    let Some((__field_index, __field)) = __fields
-                        .iter()
-                        .enumerate()
-                        .find(|(_, field)| field.key == __field_key.as_str())
-                    else {
-                        let names: ::std::vec::Vec<&str> = __fields.iter().map(|field| field.key).collect();
-                        return ::core::result::Result::Err(#krate::ModelError::invalid(format!(
-                            "no field `{}` in variant `{}`; its fields are {}",
-                            __field_key,
-                            __key,
-                            names.join(", "),
-                        )));
-                    };
-                    let _ = __field_index;
-                    let __obj = match slot.current(doc)? {
-                        ::core::option::Option::Some((
-                            #krate::__private::Value::Object(#krate::__private::ObjType::Map),
-                            id,
-                        )) => id,
-                        ::core::option::Option::Some(_) => {
-                            return ::core::result::Result::Err(#krate::ModelError::shape(
-                                "a map naming its variant",
-                            ));
-                        }
-                        ::core::option::Option::None => #model::variant_map(doc, slot, __key)?,
-                    };
-                    #krate::LocatedAt::located(
-                        #table::edit_field(
-                            __field.table,
-                            doc,
-                            #krate::Slot::Key(&__obj, __field.key),
-                            __below,
-                            op,
-                            cx,
-                        ),
-                        __field.key,
-                    )?;
-                    let __value = #krate::__private::Value::Object(#krate::__private::ObjType::Map);
-                    Self::load(doc, &__value, &__obj)?.check().map_err(#krate::ModelError::refused)?;
-                    return ::core::result::Result::Ok(());
+                    return Self::__edit_field(doc, slot, __key, __field_key, __below, op, cx);
                 }
                 let __field_key = __first;
                 let __below = __rest;
@@ -1073,12 +1098,8 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                     .ok_or_else(|| #krate::ModelError::Missing {
                         path: ::std::string::String::new(),
                     })?;
-                match Self::__VARIANTS[__variant_index].key {
-                    #(#edit_direct)*
-                    _ => ::core::result::Result::Err(#krate::ModelError::invalid(format!(
-                        "no field `{__field_key}` in this variant"
-                    ))),
-                }
+                let __key = Self::__VARIANTS[__variant_index].key;
+                Self::__edit_field(doc, slot, __key, __field_key, __below, op, cx)
             }
 
             fn get_at(&self, path: &[#krate::Segment]) -> ::core::option::Option<&dyn ::core::any::Any> {

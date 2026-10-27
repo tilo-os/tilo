@@ -211,6 +211,30 @@ where
     Ok(rewrote)
 }
 
+/// Rewrite the data enum stored under `key` of the map `obj` as the storage
+/// its model writes now: the value read as it is (a document written before
+/// every variant stored its own fields is read from the flat keys it was
+/// written with), then stored again, which writes each of the variant's
+/// fields under its variant's own key and drops the flat key it was read
+/// from. The migration of a field whose type became a data enum, or whose
+/// variants' fields are stored by variant now. A key holding no value is left
+/// as it is. Returns whether it rewrote the key.
+///
+/// # Errors
+/// Returns why the value does not read as `T`, or the document's error.
+pub fn retype_variant_fields<T: crate::Model>(
+    doc: &mut Doc,
+    obj: &ObjId,
+    key: &str,
+) -> Result<bool, ModelError> {
+    if doc.get(obj, key)?.is_none() {
+        return Ok(false);
+    }
+    let value: T = crate::read_key(doc, obj, key)?;
+    crate::write_key(doc, obj, key, &value)?;
+    Ok(true)
+}
+
 /// Write the keys of the JSON object `shape` into the map `obj` as an older
 /// version of an app stored them: what a migration's test builds the
 /// document it migrates from. An object is a map, an array a list, a string,
