@@ -174,6 +174,7 @@ fn snoozed_alarm_rows(
                 on_begin_invoke: Some(std::rc::Rc::new(move |_, _, chrome, _| {
                     begin_alarm_action(chrome, &address, &expected_room, Some(&source))
                 })),
+                resource: None,
             })
         })
         .collect()
@@ -246,6 +247,7 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
                         begin_alarm_action(chrome, &action_id, &expected_room, None)
                     },
                 )),
+                resource: None,
             });
         }
     }
@@ -1127,7 +1129,7 @@ mod tests {
     ) -> crate::notifications::RemoteContinuityNotification {
         crate::notifications::RemoteContinuityNotification {
             source_device: source.into(),
-            source_label: "ada's phone".into(),
+            source_label: "Ada's phone".into(),
             projection: crate::notifications::ContinuityNotificationProjection {
                 id: tilo_desktop::notifications::ContinuityNotificationId {
                     epoch: [7; 16],
@@ -1159,7 +1161,7 @@ mod tests {
             assert_eq!(notification.body, "Secret preview");
             assert_eq!(
                 notification.app_name.as_deref(),
-                Some("Mail · From ada's phone")
+                Some("Mail · From Ada's phone")
             );
             assert_eq!(notification.sender_id, None);
             assert_eq!(notification.source_workspace, None);
@@ -1232,18 +1234,21 @@ mod tests {
             let chrome = new_chrome();
             let bridge = NotificationBridge::new();
             chrome.borrow_mut().set_notification_bridge(bridge.clone());
-            // The projection lives 10 ms: hold the clock the pump reads so it
-            // is still live when the pump first shows it.
-            tilo_clock::freeze_wall(tilo_clock::wall());
+            // The projection lives 10 ms: the pump is handed the clock it
+            // judges it by, so it is still live when it first shows it and
+            // has lapsed a moment later.
             let now = tilo_clock::unix_now_ms();
             let mut projection = live_remote_projection(8, "Brief");
             projection.expires_unix_ms = now.saturating_add(10);
             let id = projection.id;
             assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
-            chrome.borrow_mut().pump_dbus_notifications();
+            chrome
+                .borrow_mut()
+                .pump_remote_continuity_notifications_at(&bridge, now);
             assert_eq!(chrome.borrow().notifications().len(), 1);
-            bridge.expire_remote_continuity(now.saturating_add(11));
-            chrome.borrow_mut().pump_dbus_notifications();
+            chrome
+                .borrow_mut()
+                .pump_remote_continuity_notifications_at(&bridge, now.saturating_add(11));
             assert!(chrome.borrow().notifications().is_empty());
             assert!(chrome.borrow().notification_history().is_empty());
             assert!(!bridge.retire_remote_continuity("phone", id));

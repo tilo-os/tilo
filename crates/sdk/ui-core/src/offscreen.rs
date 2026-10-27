@@ -9,14 +9,28 @@
 //! vello assigns path-segment order via `atomicAdd` (GPU scheduling), and
 //! float addition isn't associative, so coverage on a quantisation
 //! boundary can land ±1 in a channel. Measured here: ≤4/57 600 pixels,
-//! always ±1, ink-count unchanged — a race between concurrent renders in
-//! one process, not a single-frame artifact. The order also follows the
-//! encoding: two scenes that differ only in a path far away render a pixel
-//! one unit apart, though each renders bit-identically every time. Measured
+//! always ±1, ink-count unchanged. A race between concurrent renders in one
+//! process is not the only way to see it, and neither is a difference in the
+//! scene: the calculator's plot at 768x1024 with `--text-scale 1.5` wrote two
+//! PNGs from 24 runs of one binary — 20 one way, 4 the other — differing in
+//! one pixel, (509, 330), by one unit, on the antialiased edge of a curve,
+//! while all 24 encoded the same scene (219 paths, 2 651 segments, equal
+//! `path_data` and `draw_data`). The difference is the order those segments
+//! summed in, not the frame the app asked for. Its 3D surface at 1366x768 is
+//! the same tie at scale: 6 435 paths, 28 962 segments, one encoding, two
+//! frames one pixel apart at (727, 221). `VELLO_CANONICAL_SEGMENT_ORDER=1`
+//! sums every tile's segments in a fixed order and takes the tie away: one
+//! hash in 12/12, 20/20 and 12/12 runs at those sizes, for about 0.08 s on a
+//! 0.58 s capture. vello selects it (its `Renderer::enable_canonical_segment_order`)
+//! only where the renderer also reads its budget back, which a capture does.
+//! Until a capture asks for it, a gate over these frames may not demand byte
+//! equality. The order also follows the encoding: two scenes that differ only
+//! in a path far away render a pixel one unit apart. Measured
 //! in the block editor's retained-paint test: moving a 2 px caret in the
 //! heading (x 76.5 to 91.2, y 8 to 40.5) changed one paragraph pixel 170 px
 //! away, (246, 77), from blue 51 to 52, with every glyph, draw and transform
-//! of the paragraph unchanged and repeated renders of either scene equal.
+//! of the paragraph unchanged and the renders of either scene equal within
+//! that ±1.
 //! Retained paint, which keeps undamaged pixels from the earlier scene,
 //! therefore matches a full render only within ±1. Compare with
 //! [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality. The
@@ -1200,17 +1214,37 @@ impl OffscreenRenderer {
         let unpadded = width.saturating_mul(bytes_per_pixel);
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
-        let renderer = Renderer::new(
-            device,
-            RendererOptions {
-                use_cpu,
-                // Only `Area` is ever asked for; `all()` would also build
-                // the msaa8/msaa16 pipelines nothing selects.
-                antialiasing_support: AaSupport::area_only(),
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
+        let options = || RendererOptions {
+            use_cpu,
+            // Only `Area` is ever asked for; `all()` would also build
+            // the msaa8/msaa16 pipelines nothing selects.
+            antialiasing_support: AaSupport::area_only(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        };
+        // A capture must be the same picture twice, and a frame is not: the
+        // rasteriser sums a scene's segments in whatever order the tiles
+        // finish, which moves one antialiased edge by one unit between two
+        // renders of the same scene (`VELLO_CANONICAL_SEGMENT_ORDER=1` shows
+        // it, and this is the same switch asked for by the caller that needs
+        // it rather than by an environment variable). The CPU path already
+        // sums in a fixed order. The order is chosen as the renderer is made,
+        // so its shaders compile once: turned on afterwards, vello compiles a
+        // second shader set and keeps both, which lavapipe holds in the heap
+        // (about 40 MiB in the idle compositor).
+        let renderer = if use_cpu {
+            Renderer::new(device, options())
+        } else {
+            Renderer::new_with_canonical_segment_order(device, options()).or_else(|error| {
+                // A shader set that will not build is not a reason to refuse
+                // to draw: say the frames may differ, and draw.
+                tracing::warn!(
+                    %error,
+                    "a capture cannot fix its segment order; two renders of one scene may differ by one unit"
+                );
+                Renderer::new(device, options())
+            })
+        }
         .map_err(OffscreenError::Renderer)?;
 
         drop(ctx);

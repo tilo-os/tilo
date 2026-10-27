@@ -1812,7 +1812,7 @@ impl Accounts {
                         )
                         .icon(Icon::Cloud)
                         .secondary(t("installer-accounts-add"))
-                        .on_activate(move || choose(AccountRequest::Provider(id.into()))),
+                        .on_effect(move || choose(AccountRequest::Provider(id.into()))),
                     ));
                 }
                 if self
@@ -1830,7 +1830,7 @@ impl Accounts {
                         )
                         .icon(Icon::Music)
                         .secondary(t("installer-accounts-add"))
-                        .on_activate(move || {
+                        .on_effect(move || {
                             choose(AccountRequest::Provider("spotify-options".into()))
                         }),
                     ));
@@ -1851,7 +1851,7 @@ impl Accounts {
                             } else {
                                 "installer-accounts-app-password-needed"
                             }))
-                            .on_activate(move || choose(AccountRequest::Provider(id.to_string()))),
+                            .on_effect(move || choose(AccountRequest::Provider(id.to_string()))),
                     ));
                 }
             }
@@ -1930,7 +1930,7 @@ impl Accounts {
                         ListRow::new(format!("installer.account.spotify.{id}"), t(label))
                             .icon(Icon::Music)
                             .secondary(t(detail))
-                            .on_activate(move || choose(AccountRequest::Provider(id.into()))),
+                            .on_effect(move || choose(AccountRequest::Provider(id.into()))),
                     ));
                 }
             }

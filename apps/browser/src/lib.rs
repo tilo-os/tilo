@@ -188,3 +188,6 @@ mod live_capture;
 pub use resource::{Browser, BrowserShell};
 
 ui::dev_reload_entry!(BrowserShell);
+
+#[cfg(test)]
+mod action_keywords_tests;

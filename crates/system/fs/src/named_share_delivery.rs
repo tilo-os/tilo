@@ -376,6 +376,7 @@ pub struct NamedShareInboxProtocol {
     credentials: PeerCredentials,
     revocations: Arc<RwLock<RevocationList>>,
     inbox: Arc<NamedShareInbox>,
+    now: fn() -> u64,
 }
 
 impl std::fmt::Debug for NamedShareInboxProtocol {
@@ -395,6 +396,19 @@ impl NamedShareInboxProtocol {
         revocations: Arc<RwLock<RevocationList>>,
         inbox: Arc<NamedShareInbox>,
     ) -> Result<Self, NamedShareDeliveryError> {
+        Self::new_at(endpoint, credentials, revocations, inbox, unix_now_ms)
+    }
+
+    /// [`Self::new`] with the wall clock read by `now`: an accept runs on the
+    /// endpoint's own runtime threads, which a test's thread-scoped clock does
+    /// not reach.
+    fn new_at(
+        endpoint: Endpoint,
+        credentials: PeerCredentials,
+        revocations: Arc<RwLock<RevocationList>>,
+        inbox: Arc<NamedShareInbox>,
+        now: fn() -> u64,
+    ) -> Result<Self, NamedShareDeliveryError> {
         if credentials.device_public_key() != *endpoint.id().as_bytes()
             || Ed25519PublicKey::from_bytes(credentials.user_public_key()) != inbox.local_person
         {
@@ -405,6 +419,7 @@ impl NamedShareInboxProtocol {
             credentials,
             revocations,
             inbox,
+            now,
         })
     }
 
@@ -435,10 +450,7 @@ impl NamedShareInboxProtocol {
         {
             DeliveryResponseV1::Refused
         } else {
-            match self
-                .inbox
-                .accept_at(request.envelope.clone(), unix_now_ms())
-            {
+            match self.inbox.accept_at(request.envelope.clone(), (self.now)()) {
                 Ok(inserted) => DeliveryResponseV1::Accepted {
                     grant_id: request.envelope.invite.id,
                     inserted,
@@ -996,22 +1008,32 @@ mod tests {
         }
     }
 
+    /// This test's wall clock, read by the inbox the delivering endpoint
+    /// accepts through: the accept runs on the endpoint's own threads, which a
+    /// thread-scoped pin does not reach. The invite's window then stands still,
+    /// so a slow run cannot outlast it.
+    fn test_now() -> u64 {
+        TEST_WALL.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    static TEST_WALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     #[tokio::test]
     async fn authenticated_delivery_is_durable_idempotent_and_human_bound() {
-        // The invite and envelope are valid for wall-clock windows; the wall
-        // clock stands still here, so a slow run cannot outlast them.
-        tilo_clock::freeze_wall(tilo_clock::wall());
         let owner = party(21).await;
         let recipient = party(22).await;
         let temp = tempfile::tempdir().unwrap();
         let person = Ed25519PublicKey::from_bytes(recipient.credentials.user_public_key());
         let inbox_path = temp.path().join("network-inbox.json");
-        let inbox = Arc::new(NamedShareInbox::open_at(&inbox_path, person, unix_now_ms()).unwrap());
-        let protocol = NamedShareInboxProtocol::new(
+        let at = unix_now_ms();
+        TEST_WALL.store(at, std::sync::atomic::Ordering::Relaxed);
+        let inbox = Arc::new(NamedShareInbox::open_at(&inbox_path, person, at).unwrap());
+        let protocol = NamedShareInboxProtocol::new_at(
             recipient.endpoint.clone(),
             recipient.credentials.clone(),
             Arc::new(RwLock::new(RevocationList::new())),
             Arc::clone(&inbox),
+            test_now,
         )
         .unwrap();
         let router = Router::builder(recipient.endpoint.clone())
@@ -1023,13 +1045,13 @@ mod tests {
                 record_id: fs_protocol::FileRecordId::new(),
                 subject: FileInviteSubject::Person(person),
                 permission: FilePermission::View,
-                expires_at_ms: Some(unix_now_ms() + 60_000),
+                expires_at_ms: Some(at + 60_000),
                 max_redemptions: None,
             },
             &owner.root,
         )
         .unwrap();
-        let bound_at = unix_now_ms();
+        let bound_at = at;
         let envelope =
             NamedShareEnvelopeV1::bind_at(owner.endpoint.addr(), invite, &owner.root, bound_at)
                 .unwrap();

@@ -392,7 +392,7 @@ pub fn blocked(state: &ImportProjection) -> Vec<Blocked> {
 /// with what cannot run.
 #[must_use]
 pub fn statuses(state: &ImportProjection) -> Vec<EffectStatus> {
-    let effect = |id| ActionRef::<ImportEffect, ()>::new(id, &[]);
+    let effect = |id| ActionRef::<ImportEffect, ()>::new(id, &[], ImportEffect::kind());
     LABELS
         .iter()
         .map(|(id, key)| EffectStatus::labelled(effect(id), strings::t(key)))

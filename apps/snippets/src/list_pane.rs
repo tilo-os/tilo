@@ -115,13 +115,12 @@ impl ListPane {
         .selection_follows_focus()
         // Moving through the list opens the snippet without bringing it to
         // the front of a narrow window.
-        .on_select(move |id, selected| {
-            if selected && let Ok(mut core) = follow.try_borrow_mut() {
+        .on_view("snippets.list", move |id| {
+            if let Ok(mut core) = follow.try_borrow_mut() {
                 core.open = Some(id);
             }
         })
         .on_activate(move |id| activate.borrow_mut().push(Action::OpenSnippet(id)))
-        .with_id("snippets.list")
         .with_accessible_name(name)
         .with_semantic_key(ToString::to_string)
     }

@@ -1,0 +1,72 @@
+# What Undo cannot take back, and why it stays that way.
+#
+# An action built with `.destructive()` is a deletion; Undo takes it back
+# unless what it destroys was never in the document to undo. Undo is a system
+# service, so a destructive action that is not undoable is asked about, and a
+# person who is always asked about an ordinary deletion has learned to answer
+# without reading. tools/policy/check_action_confirmation.py therefore refuses
+# such an action unless it is tagged `undo:irreversible` — which says what it
+# destroys, and makes every door ask — or listed here with the reason Undo
+# cannot take it back.
+#
+# A reason says what is lost outside what Undo holds, and in whose words the
+# person is asked: a running process, a drive holding someone else's data,
+# another person's copy the system cannot reach. "It is important", "users
+# expect a question" and "safer" are not reasons: the question is what makes a
+# deletion that could be undone feel final.
+#
+# An entry pins the one place its deletion is built, in one of three ways:
+#
+#   file = "apps/x/src/resource.rs"   the site that builds it; a `*` covers the
+#                                     files its directory holds
+#   file + effect = "EraseDevice"     the `#[effect(destructive)]` that site
+#                                     declares, which its surface's builder
+#                                     turns into a deletion
+#   resource = "x.thing"              the kind whose own builder publishes
+#                                     every action the resource declares
+#
+# An entry that neither names nor matches a deletion in the tree is refused:
+# the check says so, so an entry cannot outlive the code it was written for.
+
+[[deletion]]
+action = "restore"
+file = "crates/sdk/ui-core/src/standalone_history_host.rs"
+reason = """
+Restoring a checkpoint discards whatever the document now holds beyond it, and
+the discarded edits are in no document Undo holds: the history being restored
+is the one that would have to take that back. The question names the moment it
+returns to.
+"""
+
+[[deletion]]
+action = "format"
+file = "apps/disks/src/resource.rs"
+effect = "Format"
+reason = """
+Formatting writes a new filesystem over what the drive or partition holds, and
+nothing in the document remembers the bytes that were there: they are not this
+machine's copy to keep, and Undo has no version of them to restore. The person
+types the device's own name before it is written, so the question names what
+is lost.
+"""
+
+[[deletion]]
+action = "delete-offline-area"
+file = "apps/maps/src/resource.rs"
+effect = "DeleteOfflineArea"
+reason = """
+A downloaded area is copied from the map server, not edited by anyone, and
+deleting it frees the space it takes on this device: the document never held
+the bytes, so Undo cannot put them back, and offering it would promise a
+download nobody asked for again.
+"""
+
+[[deletion]]
+action = "clear-offline-areas"
+file = "apps/maps/src/resource.rs"
+effect = "ClearOfflineAreas"
+reason = """
+Clearing deletes every downloaded area at once, each of them a copy of the map
+server's own data that this device downloaded and owns. Undo cannot restore
+bytes the document never held, and none of them is anyone's work.
+"""

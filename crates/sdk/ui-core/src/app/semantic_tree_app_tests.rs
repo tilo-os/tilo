@@ -221,7 +221,9 @@ fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resour
                 &CounterAction::Bump,
             )
             .unwrap()
-            .with_contract(tilo_actions::ActionContract::default()),
+            .with_contract(tilo_actions::ActionContract::default())
+            // Pinging a service reaches outside the document.
+            .of_kind(tilo_actions::ActionKind::Outside),
         )
         .with_action(ActionSpec::prompted_param(
             "set-label",
@@ -1408,10 +1410,12 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             };
             assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
             observed.enqueue("run");
-            *binding.permissions.borrow_mut() = crate::permissions::PermissionContext::member(
-                "reader",
-                collab_types::role::Role::Viewer,
-            );
+            binding
+                .permissions
+                .set(crate::permissions::PermissionContext::member(
+                    "reader",
+                    collab_types::role::Role::Viewer,
+                ));
             let before = owner
                 .records
                 .read(&binding.checkout.id, automerge::AutoCommit::base_heads)

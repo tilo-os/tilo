@@ -4,6 +4,7 @@ db-run-query = Abfrage ausführen
 db-cancel-query = Abfrage abbrechen
 db-copy-row = Zeile kopieren
 db-copy-result = Ergebnis kopieren
+db-export-csv = Als CSV exportieren
 db-view-switcher = Ansicht
 
 ## Tabs
@@ -53,10 +54,7 @@ db-identity-exhausted = Der Abfragezähler ist erschöpft; Database Client neu s
 ## Seitenleiste
 
 db-catalog = Katalog
-db-tables = Tabellen
-db-saved-queries = Gespeicherte Abfragen
 db-connections = Verbindungen
-
 
 ## Fenstertitel und Tabs
 
@@ -157,3 +155,37 @@ db-client-add-connection = Die Verbindung { $name } hinzugefügt
 db-client-remove-connection = Die Verbindung { $item } entfernt
 db-client-save-query = Die Abfrage { $name } gespeichert
 db-client-remove-query = Die Abfrage { $item } entfernt
+
+## Anweisungen ausführen, exportieren und was eine Zelle zeigt
+
+db-runs-on = Das läuft auf { $name }.
+db-busy-operation = Datenbankvorgang …
+db-export-title = Abfrageergebnisse exportieren
+db-export-accept = CSV exportieren
+db-export-filter = CSV (kommagetrennte Werte)
+db-export-choosing = Wählen Sie, wohin die CSV gespeichert wird …
+db-exported = { $count ->
+    [one] 1 Zeile nach { $path } exportiert
+   *[other] { $count } Zeilen nach { $path } exportiert
+}
+db-export-failed = Die CSV-Datei konnte nicht geschrieben werden: { $error }
+db-export-dialog-failed = Der Speichern-Dialog konnte nicht geöffnet werden: { $error }
+db-export-dialog-closed = Der Speichern-Dialog wurde geschlossen, bevor ein Ort gewählt war.
+db-cell-truncated = { $value }… [gekürzt]
+db-cell-binary = Binärdaten, { $bytes } Byte
+db-unknown-engine = Es gibt keine Engine namens { $engine }.
+db-one-statement = Es läuft immer nur eine Anweisung auf einmal. { $error }
+
+## Suche: der Katalog, den diese App zur Systemsuche beiträgt
+
+db-search-kind = Datenbank
+db-search-connected-database = Verbundene Datenbank
+db-search-active-database = Aktive Datenbank
+db-search-schema-in = Schema in { $database }
+db-search-column-in = { $type } in { $schema }.{ $table }
+db-search-current-result = Aktuelles Abfrageergebnis
+db-search-transaction = Transaktion
+db-search-query-history = Lokaler Abfrageverlauf
+db-search-query-entry = Abfrage { $number }: { $summary }
+db-search-local-only = Nur lokal. Nie mit anderen geteilt.
+db-search-saved-query = Gespeicherte gemeinsame Abfrage

@@ -156,6 +156,8 @@ impl WorkspaceGovernanceServices for MediaImport {
             resource_kind: "workspace.legacy-media".into(),
             resource_label: "Legacy profile media".into(),
             action_label: "Import selected legacy media".into(),
+            keywords: Vec::new(),
+            icon: None,
             description: Some("Owner only. Creates new reachability in this room from exact resident hashes in this profile's content store; no scan or ownership inference. Up to 128 hashes and 256 MiB. Source store: runtime-profile-content; source room: unscoped.".into()),
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: tilo_actions::OperationKind::Effect,

@@ -69,6 +69,7 @@ impl ShellOverlayHost {
                 acknowledgement: self.current_acknowledgement(now).is_some_and(|ack| {
                     ack.fading_at(now, self.acknowledgement_reduce_motion.get())
                 }),
+                fullscreen_hint: self.fullscreen_hint_fading(now),
                 window_previews: self.window_previews.changed(),
                 peer_sync: self.peer_sync_overlay.needs_animation_frame(),
                 directory_sheet: self.directory_sheet.needs_animation_frame(),
@@ -754,7 +755,7 @@ impl ShellOverlayHost {
     pub(super) fn wake_deadline_sources(
         &self,
         now: Instant,
-    ) -> [(&'static str, Option<Instant>); 22] {
+    ) -> [(&'static str, Option<Instant>); 23] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -808,6 +809,7 @@ impl ShellOverlayHost {
                     ack.next_wake_at(now, self.acknowledgement_reduce_motion.get())
                 }),
             ),
+            ("fullscreen-hint", self.fullscreen_hint_deadline(now)),
             ("now-playing", self.now_playing_wake_deadline(now)),
             (
                 "quick-settings-scroll",

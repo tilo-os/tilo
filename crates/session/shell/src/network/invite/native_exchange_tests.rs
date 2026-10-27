@@ -155,7 +155,10 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
     let _host_signing = HostSigningIdentity::provision();
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let mut remote_owner = if cold_code {
-        cold_code::governor(directory.path())
+        cold_code::governor(
+            directory.path(),
+            matches!(mounted, Some(mounted_code::Journey::WorkspaceEmoji)),
+        )
     } else {
         TestGovernor::new()
     };

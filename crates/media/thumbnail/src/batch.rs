@@ -8,9 +8,11 @@
 //! package side of a compute job), and gets back exactly what
 //! [`thumbnail_batch`] would have produced locally.
 //!
-//! A batch is all or nothing: an input that is not a decodable image fails it
-//! ([`BatchError::Undecodable`]), locally and on a worker alike, so a caller
-//! never pairs a thumbnail with the wrong source.
+//! A batch is per input: an input that is not a decodable image makes no
+//! thumbnail of its own ([`Undecodable`]) while every other input still does,
+//! locally and on a worker alike. The failure names the picture by its
+//! content digest, never by a position in a deduplicated vector, so a caller
+//! can tell the person which picture to look at.
 
 use std::fmt;
 use std::fs;
@@ -25,16 +27,12 @@ pub const BATCH_EDGE: u32 = 256;
 pub const PACKAGE: &str = "so.tilo.thumbnails";
 /// The package's catalogue command that thumbnails a batch.
 pub const ENTRYPOINT: &str = "thumbnail-batch";
-/// The exit status of [`ENTRYPOINT`] for an input that is not an image.
-pub const EXIT_UNDECODABLE: u8 = 3;
 /// The exit status of [`ENTRYPOINT`] for a malformed or unreadable request.
 pub const EXIT_REQUEST: u8 = 2;
 
-/// Why a batch produced no thumbnails.
+/// Why a batch could not run at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchError {
-    /// Input `index` (in batch order) is not a decodable image.
-    Undecodable { index: usize },
     /// The compute request could not be read or the outputs not written.
     Request(String),
 }
@@ -42,7 +40,6 @@ pub enum BatchError {
 impl fmt::Display for BatchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Undecodable { index } => write!(formatter, "input {index} is not an image"),
             Self::Request(detail) => write!(formatter, "compute request: {detail}"),
         }
     }
@@ -54,28 +51,42 @@ impl BatchError {
     /// The exit status [`ENTRYPOINT`] reports this failure with.
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
-        match self {
-            Self::Undecodable { .. } => EXIT_UNDECODABLE,
-            Self::Request(_) => EXIT_REQUEST,
-        }
+        EXIT_REQUEST
     }
 }
 
+/// One input that made no thumbnail: the content's own digest, which is how
+/// the rest of Tilo names the picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Undecodable {
+    /// The BLAKE3 digest of the input bytes.
+    pub digest: [u8; 32],
+}
+
+impl fmt::Display for Undecodable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "the content {} is not an image",
+            hex::encode(self.digest)
+        )
+    }
+}
+
+impl std::error::Error for Undecodable {}
+
 /// A PNG thumbnail, at most [`BATCH_EDGE`] on its longest edge, of each of
-/// `inputs`, in order.
+/// `inputs`, in order, or why that input made none. One undecodable input
+/// does not sink the rest.
 ///
 /// The work is spread over the device's cores; the output order, and every
 /// byte of it, is independent of how.
-///
-/// # Errors
-///
-/// [`BatchError::Undecodable`] naming the first input that is not an image.
-pub fn thumbnail_batch(inputs: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, BatchError> {
+pub fn thumbnail_batch(inputs: &[Vec<u8>]) -> Vec<Result<Vec<u8>, Undecodable>> {
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
         .min(inputs.len().max(1));
     let per_worker = inputs.len().div_ceil(workers).max(1);
-    let mut thumbnails = vec![None; inputs.len()];
+    let mut thumbnails: Vec<Option<Result<Vec<u8>, Undecodable>>> = vec![None; inputs.len()];
     std::thread::scope(|scope| {
         for (inputs, slots) in inputs
             .chunks(per_worker)
@@ -83,15 +94,34 @@ pub fn thumbnail_batch(inputs: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, BatchError> {
         {
             scope.spawn(move || {
                 for (input, slot) in inputs.iter().zip(slots) {
-                    *slot = image_thumb(input, BATCH_EDGE).and_then(|thumb| encode_png(&thumb));
+                    *slot = Some(
+                        image_thumb(input, BATCH_EDGE)
+                            .and_then(|thumb| encode_png(&thumb))
+                            .map_or_else(
+                                || {
+                                    Err(Undecodable {
+                                        digest: *blake3::hash(input).as_bytes(),
+                                    })
+                                },
+                                Ok,
+                            ),
+                    );
                 }
             });
         }
     });
+    // Every slot is filled by its worker; one left empty reads as its input
+    // having made no thumbnail rather than taking the batch down.
     thumbnails
         .into_iter()
-        .enumerate()
-        .map(|(index, thumbnail)| thumbnail.ok_or(BatchError::Undecodable { index }))
+        .zip(inputs)
+        .map(|(thumbnail, input)| {
+            thumbnail.unwrap_or_else(|| {
+                Err(Undecodable {
+                    digest: *blake3::hash(input).as_bytes(),
+                })
+            })
+        })
         .collect()
 }
 
@@ -115,12 +145,14 @@ pub fn output_name(index: usize) -> String {
 /// lists them, into `outputs` as [`output_name`]. An input listed twice is
 /// one input, as the worker stages it once.
 ///
+/// Returns the inputs that made no thumbnail, named by digest; the rest are
+/// written. The job succeeds with those outputs, as the local batch does.
+///
 /// # Errors
 ///
 /// [`BatchError::Request`] when the request or an input cannot be read or an
-/// output cannot be written, and [`BatchError::Undecodable`] as
-/// [`thumbnail_batch`] reports it.
-pub fn run_compute_request(request: &Path, outputs: &Path) -> Result<(), BatchError> {
+/// output cannot be written.
+pub fn run_compute_request(request: &Path, outputs: &Path) -> Result<Vec<Undecodable>, BatchError> {
     let request_error = |error: io::Error| BatchError::Request(error.to_string());
     let staged: StagedRequest = serde_json::from_slice(&fs::read(request).map_err(request_error)?)
         .map_err(|error| BatchError::Request(error.to_string()))?;
@@ -138,10 +170,16 @@ pub fn run_compute_request(request: &Path, outputs: &Path) -> Result<(), BatchEr
             inputs.push(fs::read(input_dir.join(&digest)).map_err(request_error)?);
         }
     }
-    for (index, thumbnail) in thumbnail_batch(&inputs)?.into_iter().enumerate() {
-        fs::write(outputs.join(output_name(index)), thumbnail).map_err(request_error)?;
+    let mut failed = Vec::new();
+    for (index, thumbnail) in thumbnail_batch(&inputs).into_iter().enumerate() {
+        match thumbnail {
+            Ok(thumbnail) => {
+                fs::write(outputs.join(output_name(index)), thumbnail).map_err(request_error)?;
+            }
+            Err(error) => failed.push(error),
+        }
     }
-    Ok(())
+    Ok(failed)
 }
 
 /// [`ENTRYPOINT`]'s command line: `--tilo-compute-request <request.json>
@@ -151,7 +189,9 @@ pub fn run_compute_request(request: &Path, outputs: &Path) -> Result<(), BatchEr
 ///
 /// [`BatchError::Request`] for any other command line, or what
 /// [`run_compute_request`] reports.
-pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<(), BatchError> {
+pub fn run_from_args(
+    args: impl IntoIterator<Item = String>,
+) -> Result<Vec<Undecodable>, BatchError> {
     let mut request = None;
     let mut outputs = None;
     let mut args = args.into_iter();
@@ -196,20 +236,33 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_is_ordered_deterministic_and_all_or_nothing() {
+    fn a_batch_is_ordered_deterministic_and_fails_per_input() {
         let inputs = vec![jpeg(1200, 800, 1), jpeg(640, 960, 2), jpeg(300, 300, 3)];
-        let first = thumbnail_batch(&inputs).unwrap();
-        assert_eq!(first, thumbnail_batch(&inputs).unwrap());
+        let first = thumbnail_batch(&inputs);
+        assert_eq!(first, thumbnail_batch(&inputs));
         assert_eq!(first.len(), 3);
         for (thumbnail, (width, height)) in first.iter().zip([(256, 171), (171, 256), (256, 256)]) {
-            let decoded = crate::decode_png(thumbnail).unwrap();
+            let decoded = crate::decode_png(thumbnail.as_ref().unwrap()).unwrap();
             assert_eq!((decoded.width, decoded.height), (width, height));
         }
         let mut broken = inputs;
-        broken.insert(1, b"not an image".to_vec());
+        let bad = b"not an image".to_vec();
+        broken.insert(1, bad.clone());
+        let made = thumbnail_batch(&broken);
+        assert_eq!(made.len(), 4);
+        assert!(made[0].is_ok() && made[2].is_ok() && made[3].is_ok());
         assert_eq!(
-            thumbnail_batch(&broken),
-            Err(BatchError::Undecodable { index: 1 })
+            made[1],
+            Err(Undecodable {
+                digest: *blake3::hash(&bad).as_bytes()
+            })
+        );
+        assert!(
+            made[1]
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains(&hex::encode(blake3::hash(&bad).as_bytes()))
         );
     }
 
@@ -241,7 +294,10 @@ mod tests {
             io_root.join("outputs").display().to_string(),
         ])
         .unwrap();
-        let expected = thumbnail_batch(&inputs).unwrap();
+        let expected: Vec<_> = thumbnail_batch(&inputs)
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
         let mut names: Vec<_> = fs::read_dir(io_root.join("outputs"))
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())

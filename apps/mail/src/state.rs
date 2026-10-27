@@ -173,12 +173,37 @@ pub enum Intent {
     ConfirmBulkPurge,
 }
 
+/// A message waiting to leave in an account's outbox: who it goes to, what it
+/// says, the account that sends it, and why it has not gone — a server's
+/// refusal, in its own words, when one refused it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub account: String,
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+    /// Why the send stopped; `None` while it still waits its turn.
+    pub reason: Option<String>,
+}
+
+impl QueuedMessage {
+    /// The line the outbox shows under the subject: the server's refusal, or
+    /// the fact that nothing has refused it yet.
+    pub fn state_line(&self) -> &str {
+        self.reason.as_deref().unwrap_or("Waiting to be sent")
+    }
+}
+
 /// A command from the window's chrome (the sidebar, the header toolbars):
 /// queued by the control and applied by the app with the document in hand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     /// Browse explicit shared address-book recipient and sender choices.
     ContactRecipients,
+    /// Show an account's outbox: the messages waiting to leave, and why any
+    /// of them did not.
+    OpenOutbox(usize),
     OpenFolder(usize, Folder),
     /// Show every account's inbox in one list.
     OpenAllInboxes,
@@ -200,6 +225,8 @@ pub enum Command {
     Bulk(BulkAction),
     /// Apply an action to the open message.
     Message(CtxAction),
+    /// Take the queued message `id` out of the outbox unsent.
+    CancelSend(String),
 }
 
 /// The whole app's mutable state, minus the transient overlays (composer,
@@ -222,6 +249,13 @@ pub struct MailState {
     /// delete, or flag changes do replicate through the mailbox.
     pub bulk_selection: Vec<MessageId>,
     pub bulk_selecting: bool,
+    /// Select all is reading the rest of the folder from the server: the
+    /// rows that arrive join the selection, and an action waits until the
+    /// folder is whole rather than acting on the part of it this device
+    /// happened to hold.
+    pub selecting_all: bool,
+    /// The open folder has pages on the server this device has not read.
+    pub more_older: bool,
     /// The selected message was explicitly inspected rather than opened. This
     /// is transient presentation state (never collaborative data): it makes
     /// the no-side-effect mode visible in the reader and prevents the normal
@@ -233,6 +267,17 @@ pub struct MailState {
     pub status_undo: bool,
     /// The list shows every account's inbox at once.
     pub all_inboxes: bool,
+    /// The list and the reader show the open account's outbox rather than a
+    /// folder's messages.
+    pub outbox_open: bool,
+    /// The account whose outbox is open.
+    pub outbox_account: usize,
+    /// The messages waiting in every account's outbox, as the document holds
+    /// them, oldest first: what the outbox page lists, and how many each
+    /// account's sidebar row counts.
+    pub outbox: Vec<QueuedMessage>,
+    /// The queued message the outbox page has open.
+    pub outbox_selected: Option<String>,
     /// Why the active account cannot check mail, as last said; `None`
     /// while it works. A refresh that fails the same way says nothing new.
     pub sync_error: Option<String>,
@@ -412,6 +457,8 @@ impl MailState {
             selected: None,
             bulk_selection: Vec::new(),
             bulk_selecting: false,
+            selecting_all: false,
+            more_older: false,
             remote_senders: std::collections::BTreeSet::new(),
             remote_messages: std::collections::HashSet::new(),
             plain_text: std::collections::HashSet::new(),
@@ -421,6 +468,10 @@ impl MailState {
             status: None,
             status_undo: false,
             all_inboxes: false,
+            outbox_open: false,
+            outbox_account: 0,
+            outbox: Vec::new(),
+            outbox_selected: None,
             sync_error: None,
             wants_older: std::cell::Cell::new(false),
             first_fetch: None,
@@ -665,7 +716,82 @@ impl MailState {
     }
 
     /// Show every account's inbox in one list, newest first.
+    /// Show `account`'s outbox: the messages waiting to leave, and why any of
+    /// them did not.
+    pub fn open_outbox(&mut self, account: usize) {
+        self.set_active_account(account);
+        self.outbox_account = account;
+        self.outbox_open = true;
+        self.all_inboxes = false;
+        self.bulk_selecting = false;
+        self.selected = None;
+        self.outbox_selected = self.queued().last().map(|queued| queued.id.clone());
+        self.push_intent(Intent::ShowOverview);
+        self.dirty = true;
+    }
+
+    /// Leave the outbox for a folder.
+    pub fn close_outbox(&mut self) {
+        self.outbox_open = false;
+        self.outbox_selected = None;
+        self.dirty = true;
+    }
+
+    /// The queued messages the open account's outbox shows, oldest first.
+    pub fn queued(&self) -> Vec<&QueuedMessage> {
+        let email = self
+            .accounts
+            .accounts
+            .get(self.outbox_account)
+            .map_or_else(String::new, |account| account.config.email.clone());
+        self.outbox
+            .iter()
+            .filter(|queued| queued.account == email)
+            .collect()
+    }
+
+    /// How many messages `account` waits to send.
+    pub fn queued_count(&self, account: usize) -> usize {
+        let Some(account) = self.accounts.accounts.get(account) else {
+            return 0;
+        };
+        self.outbox
+            .iter()
+            .filter(|queued| queued.account == account.config.email)
+            .count()
+    }
+
+    /// The queued message the outbox page has open.
+    pub fn open_queued(&self) -> Option<&QueuedMessage> {
+        let id = self.outbox_selected.as_deref()?;
+        self.queued().into_iter().find(|queued| queued.id == id)
+    }
+
+    /// Open queued message `id`: the row's press.
+    pub fn select_queued(&mut self, id: &str) {
+        self.outbox_selected = Some(id.to_owned());
+        self.push_intent(Intent::ShowDetail);
+        self.dirty = true;
+    }
+
+    /// Take queued message `id` out of the outbox unsent: the `cancel-send`
+    /// verb, the same one an agent and the palette reach.
+    pub fn cancel_send(&mut self, doc: &mut ui::widget::Edits<'_>, id: &str) {
+        self.submit(
+            doc,
+            Mail::CANCEL_SEND.with(mailbox::CancelSend { id: id.to_owned() }),
+        );
+        self.outbox.retain(|queued| queued.id != id);
+        if self.outbox_selected.as_deref() == Some(id) {
+            self.outbox_selected = self.queued().last().map(|queued| queued.id.clone());
+        }
+        self.status = Some("Taken out of the outbox; nothing was sent".into());
+        self.dirty = true;
+    }
+
     pub fn open_all_inboxes(&mut self) {
+        self.close_outbox();
+        self.selecting_all = false;
         self.all_inboxes = true;
         self.folder = Folder::Inbox;
         self.mailbox.set_account(AccountConfig::default());
@@ -699,6 +825,8 @@ impl MailState {
     }
 
     pub fn select_folder(&mut self, _doc: &mut ui::widget::Edits<'_>, folder: Folder) {
+        self.close_outbox();
+        self.selecting_all = false;
         self.folder = folder;
         self.selected = self
             .current_threads()
@@ -715,6 +843,8 @@ impl MailState {
     /// Reveal a folder as local presentation state. Canonical resource `View`
     /// operations use this path, so navigation does not create a document edit.
     pub fn reveal_folder(&mut self, folder: Folder) {
+        self.close_outbox();
+        self.selecting_all = false;
         self.folder = folder;
         self.selected = self
             .current_threads()
@@ -747,9 +877,15 @@ impl MailState {
     /// local selection so a later accidental shortcut cannot act on messages
     /// the person no longer sees selected.
     pub fn set_bulk_selecting(&mut self, selecting: bool) {
+        // The outbox lists messages that have not left, not a folder's rows:
+        // there is nothing of a folder's to select while it shows.
+        if selecting && self.outbox_open {
+            return;
+        }
         self.bulk_selecting = selecting;
         if !selecting {
             self.bulk_selection.clear();
+            self.selecting_all = false;
         }
         self.dirty = true;
     }
@@ -779,14 +915,72 @@ impl MailState {
     /// cap. This is a selection operation only; no mailbox state changes until
     /// an explicit bulk action is chosen.
     pub fn select_all_visible(&mut self) {
+        if self.outbox_open {
+            return;
+        }
         self.bulk_selecting = true;
+        self.select_every_row_held();
+        self.dirty = true;
+    }
+
+    /// Every row the device holds, chosen.
+    fn select_every_row_held(&mut self) {
         self.bulk_selection = self
             .list_rows()
             .into_iter()
             .map(|(id, _)| id)
             .filter(|id| self.mailbox.get(*id).is_some())
             .collect();
+    }
+
+    /// Rows arrived while Select all is reading the folder: they are part of
+    /// "all" too, so they join the selection. Answers whether any did.
+    pub fn extend_selection(&mut self) -> bool {
+        if !self.selecting_all || !self.bulk_selecting {
+            return false;
+        }
+        let before = self.bulk_selection.len();
+        let held: Vec<MessageId> = self
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| self.mailbox.get(*id).is_some())
+            .collect();
+        for id in held {
+            if !self.bulk_selection.contains(&id) {
+                self.bulk_selection.push(id);
+            }
+        }
+        let grew = self.bulk_selection.len() != before;
+        self.dirty |= grew;
+        grew
+    }
+
+    /// The folder is whole: Select all has every message it holds.
+    pub fn finish_selection(&mut self, noun: &str) {
+        self.extend_selection();
+        self.selecting_all = false;
+        self.status = Some(format!(
+            "Selected all {} messages in {noun}",
+            self.selected_bulk_ids().len()
+        ));
+        self.status_undo = false;
         self.dirty = true;
+    }
+
+    /// Select all is still reading the folder, so an action would act on a
+    /// part of it: the action waits, and says so.
+    pub fn selection_still_arriving(&mut self) -> bool {
+        if !(self.selecting_all && self.more_older) {
+            return false;
+        }
+        self.status = Some(format!(
+            "Still reading this folder; {} selected so far",
+            self.selected_bulk_ids().len()
+        ));
+        self.status_undo = false;
+        self.dirty = true;
+        true
     }
 
     pub fn selected_bulk_ids(&self) -> Vec<MessageId> {
@@ -807,6 +1001,9 @@ impl MailState {
         doc: &mut ui::widget::Edits<'_>,
         action: BulkAction,
     ) -> usize {
+        if self.selection_still_arriving() {
+            return 0;
+        }
         let ids = self.selected_bulk_ids();
         if ids.is_empty() {
             return 0;
@@ -1140,6 +1337,77 @@ mod tests {
 
     fn version_count(doc: &AutoCommit) -> usize {
         ui::tilo_resource::history::versions(&mut doc.clone()).len()
+    }
+
+    /// Select all reaches the folder's pages on the server, not just the one
+    /// this device holds: the rows that arrive join the selection, and an
+    /// action waits for the whole folder instead of acting on its first page
+    /// and reporting that as "all".
+    #[test]
+    fn select_all_waits_for_the_pages_that_are_still_arriving() {
+        let mut st = state();
+        let held = st.list_rows().len();
+        assert!(held > 0, "the sample inbox holds rows");
+        // What the app does on Select all when the folder has more: the rows
+        // held are chosen, and the rest of the folder is on its way.
+        st.select_all_visible();
+        st.more_older = true;
+        st.selecting_all = true;
+        assert!(st.selecting_all, "the rest of the folder is being read");
+        assert_eq!(st.selected_bulk_ids().len(), held);
+
+        let mut doc = crate::resource::TestMail::doc();
+        let mut edits = ui::widget::Edits::lend(&mut doc);
+        assert_eq!(
+            st.apply_bulk_action(&mut edits, BulkAction::MarkRead),
+            0,
+            "a part of the folder is not the folder"
+        );
+        drop(edits);
+        assert_eq!(
+            st.status.as_deref(),
+            Some(format!("Still reading this folder; {held} selected so far").as_str())
+        );
+
+        // The next page arrives: its rows are part of "all".
+        let mut arriving = st
+            .mailbox
+            .messages_in(Folder::Starred)
+            .into_iter()
+            .next()
+            .cloned()
+            .expect("a message outside the inbox");
+        arriving.folder = Folder::Inbox;
+        arriving.id = uuid::Uuid::new_v4();
+        arriving.subject = "A page that arrived while selecting".into();
+        arriving.timestamp_min += 1;
+        // Mail that is only here (the account the mailbox is open on shows
+        // it), and its own conversation rather than a reply into one held.
+        arriving.account = String::new();
+        arriving.in_reply_to = None;
+        arriving.rfc_message_id = None;
+        st.mailbox.insert(arriving.clone());
+        let rows: Vec<MessageId> = st.list_rows().into_iter().map(|(id, _)| id).collect();
+        assert!(rows.len() > held, "the folder holds one more row");
+        assert!(st.extend_selection(), "the new rows joined the selection");
+        assert_eq!(
+            st.selected_bulk_ids().len(),
+            rows.len(),
+            "every row the device now holds is chosen"
+        );
+
+        // Nothing left to read: the selection is the folder.
+        st.more_older = false;
+        st.finish_selection("Inbox");
+        assert!(!st.selecting_all);
+        assert_eq!(st.selected_bulk_ids().len(), rows.len());
+        assert_eq!(
+            st.status.as_deref(),
+            Some(format!("Selected all {} messages in Inbox", rows.len()).as_str())
+        );
+
+        // And now an action takes the whole selection.
+        assert!(!st.selection_still_arriving());
     }
 
     /// Fetched messages are recorded as a mail action whose server flags

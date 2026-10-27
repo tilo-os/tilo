@@ -1,5 +1,6 @@
 #pragma once
 #include "page_automation_script.h"
+#include "key_mapping.h"
 #include "include/cef_browser.h"
 #include "include/cef_drag_data.h"
 #include "include/cef_devtools_message_observer.h"
@@ -7,6 +8,8 @@
 #include "include/cef_parser.h"
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <functional>
 #include <chrono>
@@ -78,11 +81,35 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // cancelled rather than answered for a page nobody is looking at.
   void NavigationStarted() {
     ++navigations_;CancelFileDialog();
-    if(pending_ && pending_->awaiting_start) { pending_->awaiting_start=false;pending_->awaiting_load=true; }
+    if(!pending_) return;
+    // The document the action ran in is being replaced: a wait for the page's
+    // fence, or for a frame's settle, can no longer be answered from it.
+    // Waiting for the navigation to load is what answers this action now.
+    pending_->awaiting_start=false;
+    pending_->waits_on_document=false;
+    if(!pending_->awaiting_load) pending_->awaiting_load=true;
   }
   void NavigationFinished() {
     if(pending_ && pending_->awaiting_load) Succeed(pending_->message,std::nullopt);
   }
+  // The page's renderer is gone (it crashed, or was replaced): no answer can
+  // come from a document that no longer exists. The action in flight is
+  // answered as an outcome nobody knows, so it never stays accepted.
+  void RendererGone() {
+    if(!pending_) return;
+    Finish(Failure("page_gone","The page's renderer went away while this action ran, so whether "
+      "it took effect is unknown; read the page again before acting on it"));
+  }
+  // The tab asked this action to stop. The page cannot be told mid-request, so
+  // the answer is the one thing that is true: it was not observed to finish,
+  // and whether it took effect is unknown.
+  void Cancel() {
+    if(!pending_) return;
+    Finish(Failure("cancelled","The action was cancelled before the page answered it, so whether "
+      "it took effect is unknown; read the page again to see what it did"));
+  }
+  // Whether an action is running: the tab refuses another one while it is.
+  bool Busy() const { return static_cast<bool>(pending_); }
   // A request the engine refused before it reached the page is answered in
   // the order the caller asked, behind anything still running. The tab is
   // told the request is settled here, so the same request reaching it after
@@ -139,6 +166,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       }
     }
     native_attempted_=false;native_object_.clear();
+    capture_=Area{};capture_label_.clear();
     // The document generation this action runs against (see host.cc's fences).
     const uint64_t generation=command->GetType("generation")==VTYPE_INT?static_cast<uint64_t>(command->GetInt("generation")):0;
     pending_=Pending(request,++token_,navigations_,false,owned,std::string{},generation);
@@ -213,7 +241,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // A held file chooser waits this long for `fill_files`, then is cancelled so
   // the page is never left waiting on input that will not come.
   static constexpr int64_t kFileDialogWaitMs=60000;
-  enum class Stage { FrameTree, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, TypeKey, FillTyped, Evaluate, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle, Scroll };
+  enum class Stage { FrameTree, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, TypeKey, FillTyped, Evaluate, Paint, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle, Scroll };
   // A gesture's own stages are numbered above every page stage, so one kind of
   // stage never stands for the other.
   enum class GestureStage { Tree, World, Locate, Place, PlaceWorld };
@@ -243,6 +271,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // not, and may still navigate later on its own. "frame": what it did, it
     // did inside a frame, which is not a way for the page to leave.
     std::string navigation="none";bool awaiting_start=false,awaiting_load=false;
+    // Whether this action's answer is read from the document it acted in. A
+    // navigation that begins then takes that document away unanswered.
+    bool waits_on_document=false;
     // Where a gesture's two ends are, in the view's space, once it began.
     int from_x=0,from_y=0,to_x=0,to_y=0;int steps=0,step=0;
     // What the page resolved when a drag began, so a drop nothing took can be
@@ -770,6 +801,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     read->SetInt("doc",document_);
     pending_->command=read;
     pending_->navigation="none";
+    // The document whose changing the caller waits to hear about is the one
+    // the read runs in: a navigation that began while the action waited means
+    // a new document is here, so what the action changed is unknown.
+    pending_->waits_on_document=true;
     world_request_.clear();place_frame_=PageFrame{};
     if(!main_world_ && !world_) {
       world_request_=main_id_;
@@ -920,6 +955,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       contexts_.erase(world_);world_=0;
       if(document!=document_ && !pending_->retried) { pending_->retried=true;Begin();return; }
     }
+    // The engine painted the area the page named: the picture is the answer.
+    if(At(Stage::Paint)) { Painted(success,result);return; }
     // The answer is handled where CEF delivered it, never from inside this
     // call's own dispatch: every method below is sent after the handler runs.
     if(At(Stage::NativeElement) || At(Stage::NativeDOM) || At(Stage::NativeDocument) ||
@@ -1461,6 +1498,75 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     settling_=settling;
     Call(Stage::FrameOffset,"Runtime.evaluate",params);
   }
+  // A capture of an element inside a frame is placed in the page by the
+  // frame's own place, exactly as a click inside it is.
+  void CaptureRegion(CefRefPtr<CefDictionaryValue> value) {
+    pending_->navigation="none";
+    if(!value || value->GetType("ok")!=VTYPE_BOOL || !value->GetBool("ok")) {
+      Fail(value && value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"script",
+        value && value->GetType("message")==VTYPE_STRING?value->GetString("message").ToString()
+          :"The page gave no area to picture");return;
+    }
+    auto data=value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr;
+    if(!data) { Fail("script","The page gave no area to picture");return; }
+    capture_={Number(data,"x"),Number(data,"y"),Number(data,"width"),Number(data,"height")};
+    capture_label_=Text(value,"message");
+    if(!(capture_.width>0 && capture_.height>0)) { Fail("invalid","The picture's area is empty");return; }
+    // An element read in a frame's document has a box in that document: the
+    // frame's place in the page is what moves it into the page's coordinates.
+    if(!world_frame_.number.empty() && world_frame_.id!=main_id_) {
+      if(main_world_) { MeasureFrameOffset(false);return; }
+      Fail("unavailable","The page around the frame could not be measured");return;
+    }
+    Paint();
+  }
+  // The frame's place is known: a picture of what sits in it moves by it.
+  void CapturePlaced() {
+    capture_.x+=world_frame_.x;capture_.y+=world_frame_.y;
+    Paint();
+  }
+  // Ask the engine to paint the area: the page cannot see, answer or refuse it.
+  void Paint() {
+    auto clip=CefDictionaryValue::Create();
+    clip->SetDouble("x",capture_.x);clip->SetDouble("y",capture_.y);
+    clip->SetDouble("width",capture_.width);
+    // A picture taller than the engine can paint is cut, and the answer says
+    // how much of the area it holds.
+    clip->SetDouble("height",std::min(capture_.height,kMaxCaptureHeight));
+    // A command that names no width asks for the widest picture the engine
+    // paints; one that does is bounded by the same limit.
+    const int max_width=pending_->command->HasKey("max_width")
+      ?std::min(std::max(1,pending_->command->GetInt("max_width")),kMaxCaptureWidth):kMaxCaptureWidth;
+    capture_.max_width=max_width;
+    // Never upscaled: a picture is worth nothing larger than the page paints.
+    clip->SetDouble("scale",std::min(1.0,static_cast<double>(max_width)/capture_.width));
+    auto params=CefDictionaryValue::Create();
+    params->SetString("format","png");
+    params->SetBool("captureBeyondViewport",true);
+    params->SetBool("fromSurface",true);
+    params->SetDictionary("clip",clip);
+    Call(Stage::Paint,"Page.captureScreenshot",params);
+  }
+  // The engine's picture: base64 PNG, which the browser stores as the action's
+  // own output and shows the agent.
+  void Painted(bool success,CefRefPtr<CefDictionaryValue> result) {
+    if(!success || !result) { Fail("unavailable","The engine could not paint the page");return; }
+    const auto data=result->GetType("data")==VTYPE_STRING?result->GetString("data"):CefString();
+    if(data.empty()) { Fail("script","The engine painted nothing");return; }
+    // The box is the page's, in page pixels; the picture is that box scaled
+    // to no wider than the caller asked for (never wider than the page's own
+    // size), so its size is the scaled one, as the pixels that came back.
+    const double scale=std::min(1.0, static_cast<double>(capture_.max_width)/std::max(1.0,capture_.width));
+    const double height=std::min(capture_.height,kMaxCaptureHeight);
+    auto answer=CefDictionaryValue::Create();
+    answer->SetDouble("x",capture_.x);answer->SetDouble("y",capture_.y);
+    answer->SetDouble("width",std::round(capture_.width*scale));
+    answer->SetDouble("height",std::round(height*scale));
+    answer->SetDouble("scale",scale);
+    answer->SetString("format","png");
+    answer->SetString("capture",data);
+    Succeed(capture_label_,std::nullopt,answer);
+  }
   void FrameOffsetResult(bool success,CefRefPtr<CefDictionaryValue> result) {
     auto remote=result?result->GetDictionary("result"):nullptr;
     auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
@@ -1479,6 +1585,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // document, so its step lands at the point the frame's place moves it to.
     // The frame's own world reads the box and reports it moved by that place.
     if(gesture_) { FramePlaceRead(value);return; }
+    if(Action()=="capture") { CapturePlaced();return; }
     ClickTarget(settling_);
   }
   void Act(CefRefPtr<CefDictionaryValue> value) {
@@ -1514,6 +1621,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A read runs none of the page's code, so it cannot have led anywhere.
     if(action=="outline" || action=="changes") { pending_->navigation="none";Succeed(Text(value,"message"),Text(value,"outline"));return; }
     if(action=="fill_files") { FileTarget(value);return; }
+    // A picture of the page is taken after the page says where the area is:
+    // the page's own box, never one the caller made up.
+    if(action=="capture") { CaptureRegion(value);return; }
     if(action=="at" || action=="settle" || action=="reader" || action=="prepare_text_input" || action=="start_text_input" || action=="check_text_input" || action=="commit_text_input" || action=="cancel_text_input" || action=="undo_text_input" || action=="redo_text_input") {
       Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr,
         PrivateText() && value->GetType("history")==VTYPE_DICTIONARY?value->GetDictionary("history"):nullptr);return;
@@ -1526,6 +1636,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(!world_frame_.number.empty()) { MeasureFrameOffset(true);return; }
       ClickTarget(false);
     } else if(action=="press") {
+      // A key the engine cannot press is named back, rather than sent as a key
+      // nothing types: a press the page ignored and a press of a key that does
+      // not exist would otherwise read the same to the caller.
+      if(const auto written=pending_->command->GetString("key").ToString();
+         !tilo::NamedKeyMapping(written) && written.size()!=1)
+        { Fail("invalid_key",NotAKey(written));return; }
       auto key=CefDictionaryValue::Create();key->SetString("key",pending_->command->GetString("key"));
       for(const char* flag:{"ctrl","shift","alt","meta"}) key->SetBool(flag,pending_->command->GetBool(flag));
       key_(key);
@@ -1643,7 +1759,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     else if(browser_->IsLoading()) pending_->awaiting_load=true;
     else { Succeed(pending_->message,std::nullopt);return; }
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
-      if(self->pending_ && self->pending_->token==token) self->Succeed(self->pending_->message,std::nullopt);
+      if(self->pending_ && self->pending_->token==token) self->Succeed(self->pending_->message+
+      "; the page did not finish loading that navigation in time",std::nullopt);
     },CefRefPtr<PageAutomation>(this),pending_->token),kLoadWaitMs);
   }
   // A click inside a frame is a pointer event in the top document, so its point
@@ -1680,6 +1797,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
     const auto message=Text(value,"message");
     Succeed(message.empty()?pending_->message:message,std::nullopt);
+  }
+  // What a key the engine cannot press is answered with: the key it was
+  // given, the keys it could have meant, and the case the caller need not match.
+  static std::string NotAKey(const std::string& written) {
+    std::string names;
+    for(const auto& named:tilo::kNamedKeys) names+=(names.empty()?"":", ")+std::string(named.name);
+    return "\""+written+"\" is not a key the browser has. Name one of "+names+
+      " (in any letter case), or a single character such as an a";
   }
   std::string Chord() const {
     static constexpr std::pair<const char*,const char*> kModifiers[]={{"ctrl","Control+"},{"shift","Shift+"},{"alt","Alt+"},{"meta","Meta+"}};
@@ -1843,6 +1968,15 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // step with the place of the frame it was made for, never another frame's.
   std::string frame_place_id_;
   Clicked clicked_;bool settling_=false;
+  // The widest picture a capture paints and the tallest area it covers: a
+  // picture is never larger than a person could look at, whatever was asked.
+  static constexpr int kMaxCaptureWidth=1600;
+  static constexpr double kMaxCaptureHeight=6000;
+  // The area a picture covers, in the page's own CSS pixels, and what the
+  // page called it.
+  struct Area { double x=0,y=0,width=0,height=0; double max_width=kMaxCaptureWidth; };
+  Area capture_;
+  std::string capture_label_;
   IMPLEMENT_REFCOUNTING(PageAutomation);
 };
 }

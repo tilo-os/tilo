@@ -83,9 +83,16 @@ def _names_check(ctx, res, names):
 @check("S01", AREA, "Super+Space opens search with a non-empty empty-query view")
 def empty_view(ctx, res):
     ctx.reset()
-    st = _open_palette(ctx)
-    ctx.settle(1.0)
-    st = ctx.state()
+    _open_palette(ctx)
+    seen = {}
+
+    def listed():
+        seen["st"] = ctx.state()
+        return bool(_palette(seen["st"]).get("rows"))
+
+    # Bounded: an empty view is what this check reports.
+    wait_until(listed, 5, 0.2)
+    st = seen["st"]
     rows = _palette(st).get("rows") or []
     res.metrics["rows"] = len(rows)
     res.metrics["row_sample"] = rows[:8]
@@ -129,10 +136,15 @@ def palette_open(ctx, res):
 def windows(ctx, res):
     ctx.reset()
     ctx.new_terminal_window()
-    ctx.settle(1.0)
-    results = ctx.vm.actions("Terminal")
-    wins = [a for a in results if a["provider"] == "desktop-windows"
-            and not a["id"].startswith(("tab.close", "group.close"))]
+    got = {}
+
+    def window_rows():
+        got["results"] = ctx.vm.actions("Terminal")
+        return [a for a in got["results"] if a["provider"] == "desktop-windows"
+                and not a["id"].startswith(("tab.close", "group.close"))]
+
+    wins = wait_until(window_rows, 5, 0.3) or []
+    results = got["results"]
     res.metrics["window_results"] = [(a["provider"], a["id"], a["title"]) for a in wins[:5]]
     res.metrics["all"] = [(a["provider"], a["id"]) for a in results[:10]]
     expect(wins, "search for 'Terminal' offers only close actions for the open window, "
@@ -176,11 +188,21 @@ def activity(ctx, res):
                         or any(g["id"] not in before for g in core.all_groups(s)), 5, "activity view open")
     tile = next((g for g in core.all_groups(st) if g["id"] not in before), None)
     res.metrics["presented_as"] = core.tab_app(tile["tabs"][0]) if tile else "overlay"
-    ctx.settle(1.0)
-    shot = ctx.shot("S08-activity")
-    img = core.load_image(shot)
+    ctx.wait_still()
     d = core.display_rects(st)[0]
-    stats = core.region_stats(img, (d[0] + d[2] * 0.25, d[1] + 60, d[2] * 0.5, d[3] * 0.6))
+    region = (d[0] + d[2] * 0.25, d[1] + 60, d[2] * 0.5, d[3] * 0.6)
+
+    shot = ctx.out / "shots" / "S08-activity.png"
+    got = {}
+
+    def content():
+        got["stats"] = core.region_stats(core.load_image(ctx.vm.shot(shot)), region)
+        return got["stats"]["stddev"] > 0.03
+
+    # The view fills in once it has read the workspace's activity: bounded.
+    wait_until(content, 5, 0.5)
+    ctx.evidence(shot)
+    stats = got["stats"]
     res.metrics["center_pixels"] = stats
     expect(stats["stddev"] > 0.03, f"the activity view's centre is blank (stddev {stats['stddev']})")
     if tile is None:
@@ -200,7 +222,18 @@ def history(ctx, res):
     before = ctx.state()
     t_before = {t["name"] for t in ctx.vm.targets()}
     ctx.vm.key("super+h")
-    ctx.settle(1.5)
+
+    def shown():
+        st = ctx.state()
+        names = {t["name"] for t in ctx.vm.targets()}
+        changed = (len(core.all_groups(st)) != len(core.all_groups(before))
+                   or core.active_group_id(st) != core.active_group_id(before)
+                   or any(core.overlays(st).values()) or names - t_before)
+        return (st, names) if changed else None
+
+    # Bounded: no history appearing is what this check reports.
+    wait_until(shown, 5, 0.3)
+    ctx.wait_still()
     after = ctx.state()
     t_after = {t["name"] for t in ctx.vm.targets()}
     ctx.shot("S09-history")

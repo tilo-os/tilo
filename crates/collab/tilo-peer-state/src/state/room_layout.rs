@@ -12,11 +12,10 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{ROOT, SystemTime, err};
 use automerge::transaction::Transactable as _;
 use ed25519_dalek::SigningKey;
-use tilo_desktop_model::ids::peer_salt_of;
 use tilo_desktop_model::projection::{
-    ROOM_LAYOUT_KEY, RoomLayout, contents_owners_of, drop_contents_except, room_layout,
-    room_layout_choice,
+    ROOM_LAYOUT_KEY, RoomLayout, room_layout, room_layout_choice,
 };
+use tilo_desktop_model::shared_record;
 
 impl PeerGovernance<'_> {
     /// The room's layout scope, as its governance document records it:
@@ -65,26 +64,25 @@ impl PeerGovernanceMut<'_> {
         self.peer.apply_governance_doc(doc, &before, key, now)
     }
 
-    /// Remove every strip, window group and window a member published into
-    /// the room's contents: each entry in a topology namespace registered to
-    /// a device other than the governor `key`'s. What the governor or the
-    /// room itself (an unregistered namespace) holds stays, and so does the
-    /// namespace registry. Returns whether it changed the room.
+    /// Remove every strip and window someone made from the room's layout,
+    /// with the groups left empty: in a room whose layout is personal, which
+    /// apps a person has open and their titles stay on their devices, the
+    /// governor's own included (its device takes them out itself). What the
+    /// room itself holds (nobody made) stays. Returns whether it changed the
+    /// room.
     pub fn drop_member_windows(self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
         self.peer.require_governance_writer(key, now)?;
         let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
         let before = doc.get_heads();
-        let owners = contents_owners_of(&doc);
-        let governor = hex::encode(key.verifying_key().to_bytes());
+        let authors = shared_record::read(&*doc, None)
+            .map(|desktop| desktop.authors)
+            .unwrap_or_default();
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
-        let dropped = drop_contents_except(&mut doc, &|id| {
-            owners
-                .get(&peer_salt_of(id))
-                .is_none_or(|owner| *owner == governor)
-        });
-        if dropped == 0 {
+        let dropped = shared_record::device::withdraw(&mut doc, &|id| authors.contains_key(&id))
+            .map_err(err)?;
+        if !dropped {
             return Ok(false);
         }
         doc.commit();
@@ -94,14 +92,16 @@ impl PeerGovernanceMut<'_> {
 
 #[cfg(test)]
 mod tests {
-    use automerge::ReadDoc as _;
     use tilo_desktop_model::ids::compose_id;
-    use tilo_desktop_model::projection::{
-        EmptyStrips, RoomLayout, contents_key, contents_of, project_owned_contents,
-    };
+    use tilo_desktop_model::projection::RoomLayout;
+    use tilo_desktop_model::shared_record::{self, device};
     use tilo_desktop_model::width::WindowWidth;
-    use tilo_desktop_model::{GroupId, Strip, StripId, Tab, TileContent, WindowGroup};
+    use tilo_desktop_model::{
+        GroupId, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
+    };
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    const MEMBER: u16 = 42;
 
     fn window(salt: u16, counter: u64, title: &str) -> WindowGroup {
         let id: GroupId = compose_id(salt, counter);
@@ -124,45 +124,78 @@ mod tests {
         }
     }
 
-    /// `salt`'s strip holding one window titled `title`, as the room-document
-    /// changes a member's device publishes, built on what `peer` admitted.
+    fn changes_since(
+        doc: &automerge::AutoCommit,
+        before: &[automerge::ChangeHash],
+    ) -> Vec<Vec<u8>> {
+        doc.clone()
+            .get_changes(before)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect()
+    }
+
+    /// The member's strip holding one window titled `title`, as the changes
+    /// the member's device writes into the room's layout, built on what
+    /// `peer` admitted.
     fn member_windows(
         peer: &crate::StatePeer,
-        salt: u16,
+        member: &tilo_user_identity::DeviceCert,
         title: &str,
     ) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
         let mut doc = peer.admitted_room().ok_or("room missing")?.clone();
         let before = doc.get_heads();
-        let mut strip = Strip::new(StripId(compose_id(salt, 1)), "Mine");
-        strip.window_groups.push(window(salt, 2, title));
-        project_owned_contents(&mut doc, &[strip], salt, None, EmptyStrips::Skip)?;
+        doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
+        let room = RoomId::parse(peer.room()).ok_or("room id")?;
+        let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Room");
+        let mut strip = Strip::new(StripId(compose_id(MEMBER, 1)), "Mine");
+        strip.window_groups.push(window(MEMBER, 2, title));
+        workspace.strips.push(strip);
+        let person = hex::encode(member.user_public_key);
+        let mine = |id: u64| tilo_desktop_model::peer_salt_of(id) == MEMBER;
+        device::write(
+            &mut doc,
+            room,
+            &workspace,
+            &device::Writer {
+                person: Some(&person),
+                mine: &mine,
+                retained: &|_| false,
+            },
+        )?;
         doc.commit();
-        Ok(doc
-            .get_changes(&before)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect())
+        Ok(changes_since(&doc, &before))
+    }
+
+    fn windows(peer: &crate::StatePeer) -> usize {
+        peer.admitted_room()
+            .and_then(|doc| shared_record::read(doc, None))
+            .map_or(0, |desktop| {
+                desktop
+                    .tree
+                    .workspaces
+                    .iter()
+                    .flat_map(|w| &w.strips)
+                    .flat_map(|s| &s.window_groups)
+                    .map(|g| g.tabs.len())
+                    .sum()
+            })
     }
 
     /// The governor makes a room personal: the windows it committed of a
-    /// member before go (its own namespace registry stays), and from then
-    /// on the room admits no member's window.
+    /// member before go, and from then on the room admits no member's
+    /// window.
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
         reason = "the regression returns setup errors and asserts actual production outcomes"
     )]
     fn a_personal_room_drops_and_refuses_its_members_windows() -> TestResult {
-        const MEMBER: u16 = 42;
         let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded();
         assert_eq!(peer.governance().room_layout(), RoomLayout::Shared);
-        assert!(
-            peer.governance_mut()
-                .claim_topology_namespace(&caller, MEMBER, &governor, now)?
-        );
         // While the room shares its layout, the member's window is admitted.
         let room = peer.room().to_owned();
-        let changes = member_windows(&peer, MEMBER, "~/private")?;
+        let changes = member_windows(&peer, &caller, "~/private")?;
         peer.receive_from(
             crate::TransportOrigin::RetainedRelayDelta(caller.device_public_key),
             crate::NeighbourMsg::SyncResp {
@@ -171,10 +204,7 @@ mod tests {
             },
             now,
         )?;
-        assert_eq!(
-            contents_of(peer.admitted_room().ok_or("room missing")?).len(),
-            1
-        );
+        assert_eq!(windows(&peer), 1);
 
         assert!(
             peer.governance_mut()
@@ -188,33 +218,18 @@ mod tests {
         );
         assert_eq!(peer.governance().room_layout(), RoomLayout::Personal);
         assert!(peer.governance_mut().drop_member_windows(&governor, now)?);
-        let room_doc = peer.admitted_room().ok_or("room missing")?;
-        assert!(contents_of(room_doc).is_empty());
-        assert!(
-            room_doc
-                .get(automerge::ROOT, "contents")?
-                .and_then(|(_, contents)| room_doc
-                    .get(&contents, contents_key(compose_id(MEMBER, 1)))
-                    .ok()
-                    .flatten())
-                .is_none()
-        );
-        assert_eq!(
-            tilo_desktop_model::projection::contents_owners_of(room_doc).get(&MEMBER),
-            Some(&hex::encode(caller.device_public_key)),
-            "the namespace registry stays"
-        );
+        assert_eq!(windows(&peer), 0);
         assert!(!peer.governance_mut().drop_member_windows(&governor, now)?);
 
         // The member's device publishes another window: refused.
-        let changes = member_windows(&peer, MEMBER, "ssh prod-db")?;
+        let changes = member_windows(&peer, &caller, "ssh prod-db")?;
         let refused = peer.receive_from(
             crate::TransportOrigin::RetainedRelayDelta(caller.device_public_key),
             crate::NeighbourMsg::SyncResp { changes, room },
             now,
         );
         assert!(refused.is_err(), "{refused:?}");
-        assert!(contents_of(peer.admitted_room().ok_or("room missing")?).is_empty());
+        assert_eq!(windows(&peer), 0);
         Ok(())
     }
 
@@ -226,14 +241,9 @@ mod tests {
         reason = "the regression returns setup errors and asserts actual production outcomes"
     )]
     fn a_member_takes_its_own_windows_out_of_a_personal_room() -> TestResult {
-        const MEMBER: u16 = 42;
         let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded();
-        assert!(
-            peer.governance_mut()
-                .claim_topology_namespace(&caller, MEMBER, &governor, now)?
-        );
         let room = peer.room().to_owned();
-        let changes = member_windows(&peer, MEMBER, "Groceries")?;
+        let changes = member_windows(&peer, &caller, "Groceries")?;
         peer.receive_from(
             crate::TransportOrigin::RetainedRelayDelta(caller.device_public_key),
             crate::NeighbourMsg::SyncResp {
@@ -248,22 +258,18 @@ mod tests {
         );
         let mut doc = peer.admitted_room().ok_or("room missing")?.clone();
         let before = doc.get_heads();
-        let dropped = tilo_desktop_model::projection::drop_contents_except(&mut doc, &|id| {
-            tilo_desktop_model::ids::peer_salt_of(id) != MEMBER
-        });
-        assert_eq!(dropped, 1, "the member's strip, with what it holds");
+        doc.set_actor(automerge::ActorId::from(caller.device_public_key.to_vec()));
+        assert!(device::withdraw(&mut doc, &|id| {
+            tilo_desktop_model::ids::peer_salt_of(id) == MEMBER
+        })?);
         doc.commit();
-        let changes = doc
-            .get_changes(&before)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect();
+        let changes = changes_since(&doc, &before);
         peer.receive_from(
             crate::TransportOrigin::RetainedRelayDelta(caller.device_public_key),
             crate::NeighbourMsg::SyncResp { changes, room },
             now,
         )?;
-        assert!(contents_of(peer.admitted_room().ok_or("room missing")?).is_empty());
+        assert_eq!(windows(&peer), 0);
         Ok(())
     }
 

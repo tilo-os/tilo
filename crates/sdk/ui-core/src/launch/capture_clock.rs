@@ -8,6 +8,7 @@ use super::LaunchArgs;
 /// capture.
 pub(super) fn pins_the_clock(args: &LaunchArgs) -> bool {
     args.shots.is_some()
+        || args.shots_dir.is_some()
         || args.responsive_matrix.is_some()
         || (args.headless.is_some() && args.scenario.is_some())
 }
@@ -32,6 +33,9 @@ mod tests {
             r#"{"scenario":"wide"}"#
         ])));
         assert!(pins_the_clock(&launch(&["app", "--shots", "/tmp/a.png"])));
+        // A directory of scenarios is as much a capture as one file: every
+        // frame it writes must be the same frame twice.
+        assert!(pins_the_clock(&launch(&["app", "--shots-dir", "/tmp/d"])));
         assert!(!pins_the_clock(&launch(&[
             "app",
             "--headless-drive",

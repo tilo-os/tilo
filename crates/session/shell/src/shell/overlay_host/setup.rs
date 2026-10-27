@@ -236,6 +236,10 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::QuickAnswersProvider::new(),
         ));
+        // Asking an agent: the first suggestion when nothing here matches.
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::AskAgentProvider::new(),
+        ));
         // The web, the last tier: searching it for what was typed, and the
         // web services people search by name.
         search_registry.register(std::rc::Rc::new(
@@ -369,6 +373,13 @@ impl ShellOverlayHost {
         inputs.search_registry.register_or_replace(std::rc::Rc::new(
             crate::shell::search::providers::authentication_prompts::AuthenticationPromptsProvider::new(inputs.portal_dialogs.queue().clone()),
         ));
+        // An app's search: what its window publishes, read from the window.
+        let focused_window =
+            std::rc::Rc::new(crate::shell::search::providers::FocusedWindowProvider::default());
+        inputs
+            .search_registry
+            .register_or_replace(std::rc::Rc::clone(&focused_window)
+                as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
         let file_picker_overlay = FilePickerOverlay::default();
         inputs.search_registry.register_or_replace(std::rc::Rc::new(
             crate::shell::search::providers::file_picker::FilePickerProvider::new(
@@ -418,12 +429,15 @@ impl ShellOverlayHost {
             outputs: Vec::new(),
             palette,
             app_actions: None,
+            focused_window,
             palette_visible: false,
             search_registry: inputs.search_registry,
             app_launcher: inputs.app_launcher,
             search_results: Vec::new(),
             param_flow: None,
             palette_offer: None,
+            palette_asked: None,
+            palette_anchor: None,
             secondary_flow: None,
             expanded_kinds: Vec::new(),
             more_rows: Vec::new(),
@@ -485,6 +499,7 @@ impl ShellOverlayHost {
             session_action_policy: inputs.session_action_policy,
             top_bar_reveal: top_bar_reveal::TopBarReveal::default(),
             fullscreen_bar_reveal: top_bar_reveal::FullscreenBarReveal::default(),
+            fullscreen_hint: None,
             top_edge_swipe: None,
             strip_pan_active: false,
             qs_refresh: inputs.qs_refresh,

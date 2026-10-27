@@ -22,7 +22,8 @@ crates/sdk/ui-core/src/widget/dropdown.rs pixel_const 5
 crates/sdk/ui-core/src/widget/filter_menu.rs pixel_const 4
 crates/sdk/ui-core/src/widget/floating_window.rs pixel_const 3
 crates/sdk/ui-core/src/widget/gauge.rs pixel_const 1
-crates/sdk/ui-core/src/widget/group_row.rs pixel_const 4
+crates/sdk/ui-core/src/widget/group_row.rs pixel_const 1
+crates/sdk/ui-core/src/widget/group_row_hint_places.rs pixel_const 3
 crates/sdk/ui-core/src/widget/image_viewer.rs pixel_const 1
 crates/sdk/ui-core/src/widget/input_hint.rs pixel_const 4
 crates/sdk/ui-core/src/widget/modal_dialog.rs pixel_const 2
@@ -33,7 +34,8 @@ crates/sdk/ui-core/src/widget/permission_prompt.rs pixel_const 6
 crates/sdk/ui-core/src/widget/progress_bar.rs pixel_const 1
 crates/sdk/ui-core/src/widget/resize_handle.rs pixel_const 3
 crates/sdk/ui-core/src/widget/screenshot_markup.rs pixel_const 6
-crates/sdk/ui-core/src/widget/scrollable.rs pixel_const 5
+crates/sdk/ui-core/src/widget/scrollable.rs pixel_const 4
+crates/sdk/ui-core/src/widget/scrollable_input.rs pixel_const 1
 crates/sdk/ui-core/src/widget/scrollbar.rs pixel_const 1
 crates/sdk/ui-core/src/widget/search_field.rs pixel_const 5
 crates/sdk/ui-core/src/widget/search_results.rs pixel_const 9

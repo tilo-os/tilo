@@ -54,6 +54,22 @@ fn content_parameter_is_marked_in_generated_declaration() {
 }
 
 #[test]
+fn a_parameter_picking_a_resource_declares_the_picked_reference() {
+    let attr: Attribute = syn::parse_quote!(#[action]);
+    let mut method = syn::parse_quote! {
+        fn link(&mut self, #[param("The note", resource = "notes.notebook.pages")] note: ResourceAt) {}
+    };
+    let verb = read_verb(&mut method, &attr).expect("picking action parses");
+    let note = &verb.params[0];
+    assert_eq!(note.picks.as_deref(), Some("notes.notebook.pages"));
+    let declaration = param_decl(note, &krate()).to_string();
+    assert!(
+        declaration.contains("schema : || tilo_resource :: __private :: picked_resource_schema (\"notes.notebook.pages\")"),
+        "{declaration}"
+    );
+}
+
+#[test]
 fn read_verb_preserves_parameter_metadata_and_secret_validation() {
     let attr: Attribute = syn::parse_quote!(#[action]);
     let mut method = syn::parse_quote! {

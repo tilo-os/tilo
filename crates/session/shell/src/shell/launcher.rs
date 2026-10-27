@@ -801,15 +801,18 @@ pub(crate) fn restart_on_new_build(package_id: &str) -> bool {
     if pids.is_empty() {
         return false;
     }
-    lock(&RESTARTING_ON_NEW_BUILD).insert(
-        package_id.to_owned(),
-        Instant::now() + RESTART_ON_NEW_BUILD_WITHIN,
-    );
+    lock(&RESTARTING_ON_NEW_BUILD).insert(package_id.to_owned(), restart_deadline());
     #[cfg(any(test, target_os = "linux"))]
     for pid in pids {
         terminate_process_tree(pid);
     }
     true
+}
+
+/// When a restart on a new build stops being told apart from a crash.
+fn restart_deadline() -> Instant {
+    let now = Instant::now();
+    now.checked_add(RESTART_ON_NEW_BUILD_WITHIN).unwrap_or(now)
 }
 
 /// Whether `package_id`'s launch ended because [`restart_on_new_build`]
@@ -824,10 +827,7 @@ pub(crate) fn restarting_on_new_build(package_id: &str) -> bool {
 /// [`restart_on_new_build`] does, without a process to end.
 #[cfg(test)]
 pub(crate) fn mark_restarting_for_test(package_id: &str) {
-    lock(&RESTARTING_ON_NEW_BUILD).insert(
-        package_id.to_owned(),
-        Instant::now() + RESTART_ON_NEW_BUILD_WITHIN,
-    );
+    lock(&RESTARTING_ON_NEW_BUILD).insert(package_id.to_owned(), restart_deadline());
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -963,6 +963,14 @@ pub enum LaunchError {
     ShellOwnedIntent,
     /// The workspace's selected identity could not be resolved safely.
     IdentityUnavailable { detail: String },
+    /// The room does not let this person open this app, and only an
+    /// administrator can extend that: nothing about trying again changes it.
+    AppNotInWorkspace { package_id: String },
+    /// The device that asked for the open is no longer admitted to the room;
+    /// the person has to be admitted again on it.
+    DeviceNotAdmitted { detail: String },
+    /// The room's governor refused to let this person author the app.
+    AppAuthorshipRefused { package_id: String, detail: String },
     /// The registry file exists but could not be read or parsed.
     RegistryUnreadable { detail: String },
     /// No `.desktop` entry with this id (distinct from
@@ -1016,6 +1024,15 @@ impl LaunchError {
             LaunchError::IdentityUnavailable { detail } => {
                 format!("the workspace identity could not be loaded: {detail}")
             }
+            LaunchError::AppNotInWorkspace { package_id } => {
+                format!("this workspace does not include {package_id}")
+            }
+            LaunchError::DeviceNotAdmitted { detail } => {
+                format!("this device is no longer in this workspace: {detail}")
+            }
+            LaunchError::AppAuthorshipRefused { package_id, detail } => {
+                format!("this workspace's host did not allow {package_id} for you: {detail}")
+            }
             LaunchError::RegistryUnreadable { detail } => {
                 format!("the app registry could not be read: {detail}")
             }
@@ -1035,7 +1052,7 @@ impl LaunchError {
     /// ids, paths, and backend errors belong in the session log and in the
     /// fallible caller's error, not in top-right chrome.
     pub(crate) fn notification_message(&self) -> String {
-        use crate::shell::i18n::t;
+        use crate::shell::i18n::{t, t_args};
         match self {
             Self::ProviderUnavailable { .. } => t("launch-error-provider-unavailable"),
             Self::NotInstalled { .. } | Self::HostAppNotFound { .. } => {
@@ -1053,6 +1070,15 @@ impl LaunchError {
             Self::NoWorkspace => t("launch-error-no-workspace"),
             Self::ShellOwnedIntent => t("launch-error-shell-owned-intent"),
             Self::IdentityUnavailable { .. } => t("launch-error-identity-unavailable"),
+            Self::AppNotInWorkspace { package_id } => t_args(
+                "launch-error-app-not-in-workspace",
+                &[("app", package_id.as_str().into())],
+            ),
+            Self::DeviceNotAdmitted { .. } => t("launch-error-device-not-admitted"),
+            Self::AppAuthorshipRefused { package_id, .. } => t_args(
+                "launch-error-app-authorship-refused",
+                &[("app", package_id.as_str().into())],
+            ),
             Self::RegistryUnreadable { .. } => t("launch-error-registry-unreadable"),
             Self::HostAppRefused { .. } => t("launch-error-host-app-refused"),
             Self::SystemBehind { .. } => t("launch-failed-system-behind"),
@@ -1077,6 +1103,13 @@ pub enum LaunchFailure {
     NoWorkspace,
     ShellOwnedIntent,
     IdentityUnavailable,
+    /// The room does not include this app for this person, and only its
+    /// administrator can.
+    AppNotInWorkspace,
+    /// This device is no longer admitted to the room.
+    DeviceNotAdmitted,
+    /// The room's governor refused to let this person author the app.
+    AppAuthorshipRefused,
     RegistryUnreadable,
     HostAppRefused,
     /// The room's file permissions changed between choosing to open the app
@@ -1125,6 +1158,9 @@ impl LaunchFailure {
             Self::NoWorkspace => "launch-error-no-workspace",
             Self::ShellOwnedIntent => "launch-error-shell-owned-intent",
             Self::IdentityUnavailable => "launch-error-identity-unavailable",
+            Self::AppNotInWorkspace => "launch-error-app-not-in-workspace",
+            Self::DeviceNotAdmitted => "launch-error-device-not-admitted",
+            Self::AppAuthorshipRefused => "launch-error-app-authorship-refused",
             Self::RegistryUnreadable => "launch-error-registry-unreadable",
             Self::HostAppRefused => "launch-error-host-app-refused",
             Self::AuthorityChanged => "launch-failed-authority-changed",
@@ -1156,6 +1192,9 @@ impl LaunchError {
             Self::NoWorkspace => LaunchFailure::NoWorkspace,
             Self::ShellOwnedIntent => LaunchFailure::ShellOwnedIntent,
             Self::IdentityUnavailable { .. } => LaunchFailure::IdentityUnavailable,
+            Self::AppNotInWorkspace { .. } => LaunchFailure::AppNotInWorkspace,
+            Self::DeviceNotAdmitted { .. } => LaunchFailure::DeviceNotAdmitted,
+            Self::AppAuthorshipRefused { .. } => LaunchFailure::AppAuthorshipRefused,
             Self::RegistryUnreadable { .. } => LaunchFailure::RegistryUnreadable,
             Self::HostAppRefused { .. } => LaunchFailure::HostAppRefused,
             Self::SystemBehind { .. } => LaunchFailure::SystemBehind,
@@ -4377,6 +4416,7 @@ pub(crate) fn queue_native_authoring_launch(
     let session = LaunchSession::current();
     let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
+    let refused_package = package.clone();
     let expected = tree
         .read()
         .installed_native_owner()
@@ -4404,7 +4444,8 @@ pub(crate) fn queue_native_authoring_launch(
                     .read()
                     .installed_native_owner()
                     .ok_or("native app owner disappeared")?;
-                let access = native_app_open_access(&owner, room, &certificate, &package)?;
+                let access = native_app_open_access(&owner, room, &certificate, &package)
+                    .map_err(|error| error.to_string())?;
                 if access != NativeAppOpenAccess::Delegate {
                     return Ok(native_launch_capabilities(
                         &native_launch_workspace(&tree, room)?,
@@ -4439,14 +4480,32 @@ pub(crate) fn queue_native_authoring_launch(
                 native_launch_workspace(&tree, room)
                     .map(|workspace| workspace.launch_grants(tilo_clock::unix_now()))
             };
-            prepare().map_err(|detail| LaunchError::IdentityUnavailable { detail })
+            prepare().map_err(|detail| {
+                if let Some(detail) = app_authorship_refusal(&detail) {
+                    return LaunchError::AppAuthorshipRefused {
+                        package_id: refused_package.clone(),
+                        detail,
+                    };
+                }
+                classify_app_open_refusal(room, &refused_package, detail)
+            })
         },
         QueuedOpen::default(),
         native_owner,
     )
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The room's refusal to delegate authorship, `"native app authorship
+/// refused: …"`, as what the person is told; `None` when `detail` is some
+/// other failure.
+fn app_authorship_refusal(detail: &str) -> Option<String> {
+    const MARKER: &str = "native app authorship refused:";
+    detail
+        .split_once(MARKER)
+        .map(|(_, refusal)| refusal.trim().to_string())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NativeAppOpenAccess {
     Delegate,
     Author,
@@ -4465,8 +4524,15 @@ pub(crate) fn queue_observed_native_launch(
         app,
         room,
         move || {
-            prepare_observed_native_launch(&tree, room, &package, &original)
-                .map_err(|detail| LaunchError::IdentityUnavailable { detail })
+            prepare_observed_native_launch(&tree, room, &package, &original).map_err(|detail| {
+                if let Some(detail) = app_authorship_refusal(&detail) {
+                    return LaunchError::AppAuthorshipRefused {
+                        package_id: package.clone(),
+                        detail,
+                    };
+                }
+                classify_app_open_refusal(room, &package, detail)
+            })
         },
         QueuedOpen::default(),
         native_owner,
@@ -4515,7 +4581,8 @@ fn prepare_observed_native_launch(
         .read()
         .installed_native_owner()
         .ok_or("native app owner disappeared")?;
-    let access = native_app_open_access(&owner, room, &certificate, package)?;
+    let access = native_app_open_access(&owner, room, &certificate, package)
+        .map_err(|error| error.to_string())?;
     if access == NativeAppOpenAccess::Delegate {
         let job = original.delegate_authorship()?;
         let completed = job
@@ -4531,7 +4598,8 @@ fn prepare_observed_native_launch(
         if original.certificate()? != certificate {
             return Err("original launch certificate changed during admission".into());
         }
-        if native_app_open_access(&owner, room, &certificate, package)?
+        if native_app_open_access(&owner, room, &certificate, package)
+            .map_err(|error| error.to_string())?
             != NativeAppOpenAccess::Author
         {
             return Err("native app authorship was not admitted by the canonical owner".into());
@@ -4572,54 +4640,140 @@ fn native_app_open_access(
     room: RoomId,
     certificate: &tilo_user_identity::DeviceCert,
     package: &str,
-) -> Result<NativeAppOpenAccess, String> {
-    owner.with_current(room, |view| {
-        if !view.peer().certificates().contains(certificate) {
-            return Err("native app opening certificate is no longer admitted".into());
-        }
-        let now = std::time::SystemTime::now();
-        let member = view
-            .peer()
-            .permissions(certificate.device_public_key, now)?;
-        let administrator = view
-            .peer()
-            .workspace()
-            .check_workspace_administration(certificate.device_public_key, now)
-            .is_ok();
-        let person_writes = member.allows(
-            &member.policy.node().app(package),
-            tilo_action_policy::ActionKind::Undoable,
-            now,
-        );
-        let application_writes = member
-            .policy
-            .app_authors(package, &tilo_action_policy::Context::at_time(now));
-        // A member who just joined holds the room's governance before any of
-        // its app data: an app the governor lets write in the room opens
-        // before this device has its document.
-        //
-        // The authorship decides, not whether this device happens to hold a
-        // copy of the app's document. A member whose device already has one
-        // opens the app exactly as a member whose device is still catching up
-        // does, so every launch path gives the same answer for the same
-        // member, room and app.
-        if !administrator && !application_writes {
-            if view.peer().document(package, "").is_none() {
-                return Err(
-                    "creating an application requires governor-authorized authorship".into(),
-                );
-            }
-            view.peer()
-                .check_document_read(certificate.device_public_key, package, "", now)?;
-        }
-        if person_writes && application_writes {
-            return Ok(NativeAppOpenAccess::Author);
-        }
-        Ok(if administrator {
-            NativeAppOpenAccess::Delegate
-        } else {
-            NativeAppOpenAccess::Viewer
+) -> Result<NativeAppOpenAccess, LaunchError> {
+    owner
+        .with_current(room, |view| {
+            native_room_app_open_access(view, certificate, package)
+                .map_err(|refusal| refusal.to_string())
         })
+        .map_err(|detail| classify_app_open_refusal(room, package, detail))
+}
+
+/// Why opening `package` in this room was refused, when the room itself says
+/// so. Each is a state nothing on this device can retry into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AppOpenRefusal {
+    /// This device is no longer a member's device in the room.
+    DeviceRefused(String),
+    /// The room's governor does not let this person author the app, so the
+    /// app cannot be created here. The common case: the workspace's host has
+    /// not let anyone add this app.
+    AppNotInWorkspace { package_id: String },
+    /// The person may only read in this app here, so it cannot be created.
+    AppNotReadable { package_id: String },
+}
+
+impl std::fmt::Display for AppOpenRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeviceRefused(detail) => formatter.write_str(detail),
+            Self::AppNotInWorkspace { package_id } => {
+                write!(
+                    formatter,
+                    "creating an application requires governor-authorized authorship: {package_id}"
+                )
+            }
+            Self::AppNotReadable { package_id } => {
+                write!(formatter, "record read forbidden: {package_id}")
+            }
+        }
+    }
+}
+
+/// Which refusal `detail` (what [`AppOpenRefusal`] renders as) stands for, so
+/// the person reads what happened instead of a broken identity.
+fn classify_app_open_refusal(room: RoomId, package: &str, detail: String) -> LaunchError {
+    match app_open_refusal(&detail) {
+        Some(AppOpenRefusal::DeviceRefused(_)) => LaunchError::DeviceNotAdmitted { detail },
+        Some(AppOpenRefusal::AppNotInWorkspace { .. } | AppOpenRefusal::AppNotReadable { .. }) => {
+            LaunchError::AppNotInWorkspace {
+                package_id: package.to_string(),
+            }
+        }
+        None => LaunchError::IdentityUnavailable {
+            detail: format!("room {room}: {detail}"),
+        },
+    }
+}
+
+/// The room's own refusal `detail` was rendered from, if it was one.
+fn app_open_refusal(detail: &str) -> Option<AppOpenRefusal> {
+    let marker = "native app opening certificate is no longer admitted";
+    if detail.contains(marker) {
+        return Some(AppOpenRefusal::DeviceRefused(detail.to_string()));
+    }
+    let marker = "creating an application requires governor-authorized authorship";
+    if let Some(package) = detail.split_once(marker) {
+        return Some(AppOpenRefusal::AppNotInWorkspace {
+            package_id: package.1.trim_start_matches([':', ' ']).to_string(),
+        });
+    }
+    let marker = "record read forbidden";
+    if let Some(package) = detail.split_once(marker) {
+        return Some(AppOpenRefusal::AppNotReadable {
+            package_id: package.1.trim_start_matches([':', ' ']).to_string(),
+        });
+    }
+    None
+}
+
+/// [`native_app_open_access`] against a room already held open.
+fn native_room_app_open_access(
+    view: &super::native_workspace_owner::NativeCommittedView,
+    certificate: &tilo_user_identity::DeviceCert,
+    package: &str,
+) -> Result<NativeAppOpenAccess, AppOpenRefusal> {
+    if !view.peer().certificates().contains(certificate) {
+        return Err(AppOpenRefusal::DeviceRefused(
+            "native app opening certificate is no longer admitted".into(),
+        ));
+    }
+    let now = std::time::SystemTime::now();
+    let member = view
+        .peer()
+        .permissions(certificate.device_public_key, now)
+        .map_err(AppOpenRefusal::DeviceRefused)?;
+    let administrator = view
+        .peer()
+        .workspace()
+        .check_workspace_administration(certificate.device_public_key, now)
+        .is_ok();
+    let person_writes = member.allows(
+        &member.policy.node().app(package),
+        tilo_action_policy::ActionKind::Undoable,
+        now,
+    );
+    let application_writes = member
+        .policy
+        .app_authors(package, &tilo_action_policy::Context::at_time(now));
+    // A member who just joined holds the room's governance before any of
+    // its app data: an app the governor lets write in the room opens
+    // before this device has its document.
+    //
+    // The authorship decides, not whether this device happens to hold a
+    // copy of the app's document. A member whose device already has one
+    // opens the app exactly as a member whose device is still catching up
+    // does, so every launch path gives the same answer for the same
+    // member, room and app.
+    if !administrator && !application_writes {
+        if view.peer().document(package, "").is_none() {
+            return Err(AppOpenRefusal::AppNotInWorkspace {
+                package_id: package.to_string(),
+            });
+        }
+        view.peer()
+            .check_document_read(certificate.device_public_key, package, "", now)
+            .map_err(|_| AppOpenRefusal::AppNotReadable {
+                package_id: package.to_string(),
+            })?;
+    }
+    if person_writes && application_writes {
+        return Ok(NativeAppOpenAccess::Author);
+    }
+    Ok(if administrator {
+        NativeAppOpenAccess::Delegate
+    } else {
+        NativeAppOpenAccess::Viewer
     })
 }
 
@@ -6188,18 +6342,6 @@ fn display_name_among(
 
 /// Whether a client's wayland app-id belongs to `package_id`: either the
 /// app-id *is* the package id, or its trailing component.
-/// Whether `package_id` runs in `room` and opens further windows in its
-/// process ([`window_doors`]): asking for it again is a new window of it.
-pub(crate) fn opens_more_windows(package_id: &str, room: RoomId) -> bool {
-    #[cfg(target_os = "linux")]
-    return window_doors::opens_more_windows(package_id, room);
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (package_id, room);
-        false
-    }
-}
-
 pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
     let needle = app_id.to_ascii_lowercase();
     let pid = package_id.to_ascii_lowercase();
@@ -7067,6 +7209,18 @@ mod tests {
                 ),
                 (LaunchFailure::NotInstalled, "launch-error-not-installed"),
                 (LaunchFailure::NoWorkspace, "launch-error-no-workspace"),
+                (
+                    LaunchFailure::AppNotInWorkspace,
+                    "launch-error-app-not-in-workspace",
+                ),
+                (
+                    LaunchFailure::DeviceNotAdmitted,
+                    "launch-error-device-not-admitted",
+                ),
+                (
+                    LaunchFailure::AppAuthorshipRefused,
+                    "launch-error-app-authorship-refused",
+                ),
                 (
                     LaunchFailure::PreviousInstanceBusy,
                     "launch-failed-previous-instance",
@@ -9147,440 +9301,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
-    fn host_window_tree(tabs: &[(u64, &'static str, u64)]) -> crate::shell::state::WorkspaceTree {
-        use crate::shell::state::{Tab, WindowGroup, WindowWidth};
-        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
-            id: 100,
-            tabs: tabs
-                .iter()
-                .map(|(id, app_id, surface)| Tab {
-                    id: *id,
-                    title: (*app_id).into(),
-                    tile: crate::shell::state::TileContent::Foreign {
-                        app_id: (*app_id).into(),
-                        surface_id: *surface,
-                    },
-                    app_title: None,
-                })
-                .collect(),
-            active_tab: tabs[0].0,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        }];
-        tree.seed_doc_from_cache();
-        tree
-    }
-
-    #[cfg(target_os = "linux")]
-    fn process_is_live(pid: u32) -> bool {
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            return false;
-        };
-        let Some((_, rest)) = stat.rsplit_once(") ") else {
-            return false;
-        };
-        // A killed child we have not `wait`ed is a zombie: it has already
-        // exited. A07's cmdline scan skips empty zombie cmdlines.
-        !rest.starts_with('Z')
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[serial_test::serial(process_env)]
-    fn terminate_unconfined_launches_stops_the_launcher_and_its_children() {
-        let standin = LauncherStandIn::spawn();
-        register_launched_process(standin.pid(), "wine-winefile", None, false);
-        assert_eq!(
-            verified_package_for_descendant(standin.pid()).as_deref(),
-            Some("wine-winefile"),
-            "the stand-in must be in the launch table"
-        );
-        terminate_unconfined_launches("wine-winefile");
-        tilo_test_env::wait_until(
-            "the unconfined host launch and its child exit after terminate",
-            || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[serial_test::serial(process_env)]
-    fn terminate_unconfined_launches_leaves_a_confined_launch_alone() {
-        let standin = LauncherStandIn::spawn();
-        register_launched_process(standin.pid(), "so.tilo.terminal", None, true);
-        terminate_unconfined_launches("so.tilo.terminal");
-        assert!(
-            process_is_live(standin.pid()),
-            "a sandboxed launch is asked to close, not signalled"
-        );
-        unregister_launched_process(standin.pid());
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[serial_test::serial(process_env)]
-    fn closing_the_last_host_window_stops_the_unconfined_launch() {
-        let standin = LauncherStandIn::spawn();
-        register_launched_process(standin.pid(), "wine-winefile", None, false);
-        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
-        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[(
-            1,
-            "wine-winefile",
-            501,
-        )]));
-        crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), 1)
-            .expect("close the last Wine File window");
-        tilo_test_env::wait_until(
-            "Wine File's host process tree exits after its last window closes",
-            || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[serial_test::serial(process_env)]
-    fn closing_a_wineboot_window_stops_the_winefile_launch() {
-        // A07's VM close is group.close. Wine File's tab announces
-        // wineboot.exe, not the desktop id the launch table uses.
-        let standin = LauncherStandIn::spawn();
-        register_launched_process(standin.pid(), "wine-winefile", None, false);
-        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
-        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[(
-            1,
-            "wineboot.exe",
-            501,
-        )]));
-        crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), 1)
-            .expect("close the last Wine File window");
-        tilo_test_env::wait_until(
-            "Wine File's host process tree exits after its wineboot.exe window closes",
-            || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
-        );
-    }
-
-    #[test]
-    fn an_auto_restart_helper_restarts_until_it_dies_too_quickly() {
-        let command = held("orca", &["run-host"]).command;
-        assert!(take_helper_restart("orca", Instant::now()).is_none());
-        note_restartable_session_helper("orca", "Screen Reader", command.clone());
-        let later = Instant::now() + HELPER_RESTART_LIMIT;
-        assert_eq!(
-            take_helper_restart("orca", later),
-            Some(("Screen Reader".to_string(), command))
-        );
-        // Dead again within the limit of that restart: given up for good.
-        assert!(take_helper_restart("orca", later + Duration::from_secs(1)).is_none());
-        assert!(take_helper_restart("orca", later + HELPER_RESTART_LIMIT * 2).is_none());
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[serial_test::serial(process_env)]
-    fn an_opened_wine_window_is_not_a_crash_and_helpers_are_not_toasted() {
-        let _ = drain_events();
-        clear_pending_placements();
-        clear_launched_for_test();
-
-        let wine = LauncherStandIn::spawn();
-        let geoclue = LauncherStandIn::spawn();
-        let applet = LauncherStandIn::spawn();
-        register_launched_process(wine.pid(), "wine-winefile", None, false);
-        register_launched_process(geoclue.pid(), "geoclue-demo-agent", None, false);
-        register_launched_process(applet.pid(), "nm-applet", None, false);
-        set_pending_placement(
-            "wine-winefile",
-            crate::shell::tab_binding::Placement::NewGroup,
-        );
-        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
-        note_session_helper("geoclue-demo-agent");
-        note_session_helper("nm-applet");
-        // The compositor records the toplevel the client actually announced.
-        record_host_window_open(501, "wineboot.exe");
-        record_host_window_open(502, "control.exe");
-        assert_eq!(
-            launch_key_for_surface(501).as_deref(),
-            Some("wine-winefile"),
-            "wineboot.exe is the window Wine File opened"
-        );
-        assert_eq!(
-            launch_key_for_surface(502).as_deref(),
-            Some("wine-winefile")
-        );
-
-        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[
-            (1, "wineboot.exe", 501),
-            (2, "control.exe", 502),
-        ]));
-        // group.close of the Wine File group. Wine Mono's window stays.
-        crate::shell::window_actions::close_tab_unrecorded(&mut chrome.borrow_mut(), 1)
-            .expect("close Wine File's wineboot.exe window");
-        assert!(
-            process_is_live(wine.pid())
-                && process_is_live(geoclue.pid())
-                && process_is_live(applet.pid()),
-            "a second X11 window keeps Wine File, and helpers stay up"
-        );
-        crate::shell::window_actions::close_tab_unrecorded(&mut chrome.borrow_mut(), 2)
-            .expect("close the last X11 window");
-        tilo_test_env::wait_until("Wine File exits after its last window closes", || {
-            !process_is_live(wine.pid()) && !process_is_live(wine.descendant())
-        });
-        assert!(
-            process_is_live(geoclue.pid())
-                && process_is_live(geoclue.descendant())
-                && process_is_live(applet.pid())
-                && process_is_live(applet.descendant()),
-            "closing Wine File must not signal Geoclue or the NetworkManager applet"
-        );
-
-        let crashed = "The app crashed before opening. Open Applications and try again.";
-        let event = |package_id: &str, display_name: &str| LaunchEvent {
-            package_id: package_id.to_string(),
-            display_name: display_name.to_string(),
-            managed_agent_id: None,
-            managed_workspace_id: None,
-            kind: LaunchEventKind::Failed {
-                code: None,
-                stderr_tail: String::new(),
-            },
-        };
-        for (id, name) in [
-            ("wine-winefile", "Wine File"),
-            ("geoclue-demo-agent", "Geoclue Demo agent"),
-            ("nm-applet", "NetworkManager Applet"),
-        ] {
-            let notice = event(id, name)
-                .failure_notice()
-                .expect("a signal exit is the crash notice");
-            assert_eq!(notice.body, crashed, "{name} is classified as a crash");
-            push_event(event(id, name));
-        }
-        let mut host = crate::shell::overlay_host::ShellOverlayHost::with_fixture_content(
-            Box::new(ui::widget::Container::new()),
-        )
-        .with_chrome(chrome.clone());
-        host.enable_persisted_launch_drain_for_test();
-        let _ = host.drain_launch_events();
-        drop(host);
-        let posted: Vec<(String, String)> = chrome
-            .borrow()
-            .notifications()
-            .iter()
-            .map(|note| (note.title.clone(), note.body.clone()))
-            .collect();
-        assert!(
-            posted
-                .iter()
-                .all(|(title, body)| body != crashed && !title.starts_with("Couldn't open")),
-            "an opened Wine File window and session helpers must not toast a crash: {posted:?}"
-        );
-
-        unregister_launched_process(wine.pid());
-        unregister_launched_process(geoclue.pid());
-        unregister_launched_process(applet.pid());
-        clear_pending_placements();
-        clear_launched_for_test();
-    }
-
-    #[cfg(target_os = "linux")]
-    fn wine_session_with_a_second_x11_window() -> crate::shell::state::WorkspaceTree {
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let mut groups = Vec::new();
-        for i in 1..=20u64 {
-            groups.push(WindowGroup {
-                id: i,
-                tabs: vec![Tab {
-                    id: 1_000_u64.saturating_add(i),
-                    title: format!("Notes {i}"),
-                    tile: TileContent::LocalApp {
-                        app_id: "so.tilo.notes".into(),
-                        label: format!("Notes {i}"),
-                        note: String::new(),
-                    },
-                    app_title: None,
-                }],
-                active_tab: 1_000_u64.saturating_add(i),
-                width: WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
-            });
-        }
-        for (group_id, tab_id, title, app_id, surface) in [
-            (9_001, 9_101, "Wine File", "wineboot.exe", 501),
-            (9_002, 9_102, "Wine Mono Installer", "control.exe", 502),
-        ] {
-            groups.push(WindowGroup {
-                id: group_id,
-                tabs: vec![Tab {
-                    id: tab_id,
-                    title: title.into(),
-                    tile: TileContent::Foreign {
-                        app_id: app_id.into(),
-                        surface_id: surface,
-                    },
-                    app_title: None,
-                }],
-                active_tab: tab_id,
-                width: WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
-            });
-        }
-        let strip = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop.workspaces[0].strips[0].window_groups = groups;
-        // Focus a Tilo window, not either X11 group. A07's installer took
-        // focus; the original Wine File group is the one closed first.
-        tree.desktop.set_active_group(strip, 1);
-        tree.seed_doc_from_cache();
-        tree
-    }
-
-    #[cfg(target_os = "linux")]
-    fn group_close_is_visible(
-        chrome: &crate::shell::chrome_state::Chrome,
-        registry: &crate::shell::search::SearchRegistry,
-        doc: &automerge::AutoCommit,
-        id: &str,
-    ) -> bool {
-        use crate::shell::chrome_state::SearchScope;
-        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
-        use automerge::ROOT;
-        let state = chrome.borrow();
-        ActionCatalog::build_for_resource(
-            registry,
-            &ResourceRef::new("desktop-windows", id),
-            SearchScope::All,
-            None,
-            &state,
-            doc,
-            &ROOT,
-            &AllVisible,
-        )
-        .select(&ResourceRef::new("desktop-windows", id))
-        .is_some()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn invoke_group_close(
-        chrome: &crate::shell::chrome_state::Chrome,
-        registry: &crate::shell::search::SearchRegistry,
-        doc: &mut automerge::AutoCommit,
-        id: &str,
-    ) {
-        use crate::shell::chrome_state::SearchScope;
-        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
-        use automerge::ROOT;
-        let catalog = {
-            let state = chrome.borrow();
-            ActionCatalog::build_for_resource(
-                registry,
-                &ResourceRef::new("desktop-windows", id),
-                SearchScope::All,
-                None,
-                &state,
-                doc,
-                &ROOT,
-                &AllVisible,
-            )
-        };
-        catalog
-            .select(&ResourceRef::new("desktop-windows", id))
-            .unwrap_or_else(|| panic!("{id} must stay a visible action"))
-            .invoke(&mut ui::widget::Edits::lend(doc), &ROOT, chrome, [])
-            .unwrap_or_else(|err| panic!("{id} failed: {err}"));
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[serial_test::serial(process_env)]
-    fn a_second_x11_window_stays_group_close_addressable() {
-        use std::rc::Rc;
-
-        use automerge::{AutoCommit, ROOT};
-
-        use crate::shell::search::providers::DesktopWindowsProvider;
-        use crate::shell::search::{SearchProvider, SearchRegistry};
-
-        let standin = LauncherStandIn::spawn();
-        register_launched_process(standin.pid(), "wine-winefile", None, false);
-        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
-        let chrome =
-            crate::shell::chrome_state::ChromeState::new(wine_session_with_a_second_x11_window());
-        let mut doc = AutoCommit::new();
-        let mut registry = SearchRegistry::new();
-        registry.register(Rc::new(DesktopWindowsProvider::new()));
-        let wine = "group.close:9001";
-        let mono = "group.close:9002";
-        assert!(
-            group_close_is_visible(&chrome, &registry, &doc, wine),
-            "exact group.close resolves the unfocused Wine File group"
-        );
-        assert!(
-            group_close_is_visible(&chrome, &registry, &doc, mono),
-            "exact group.close resolves the other X11 group past the palette page"
-        );
-        {
-            let state = chrome.borrow();
-            let page = DesktopWindowsProvider::new().query_page(
-                crate::shell::search::SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: "",
-                    wanted: &[],
-                    chrome: &state,
-                    doc: &doc,
-                    doc_root: &ROOT,
-                },
-                None,
-                crate::shell::search::SearchBudget::PALETTE,
-            );
-            assert!(
-                !page
-                    .results
-                    .iter()
-                    .any(|row| row.id == mono || row.id == wine),
-                "the empty palette page truncates both X11 closes: {:?}",
-                page.results.iter().map(|row| &row.id).collect::<Vec<_>>()
-            );
-        }
-        invoke_group_close(&chrome, &registry, &mut doc, wine);
-        assert!(
-            process_is_live(standin.pid()) && process_is_live(standin.descendant()),
-            "Wine Mono's window is still open, so the wine-winefile launch stays"
-        );
-        assert!(
-            group_close_is_visible(&chrome, &registry, &doc, mono),
-            "group.close of the remaining X11 group stays in the catalogue"
-        );
-        invoke_group_close(&chrome, &registry, &mut doc, mono);
-        tilo_test_env::wait_until("the launch exits after its last X11 window closes", || {
-            !process_is_live(standin.pid()) && !process_is_live(standin.descendant())
-        });
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[serial_test::serial(process_env)]
-    fn closing_one_of_two_host_windows_leaves_the_launch() {
-        let standin = LauncherStandIn::spawn();
-        register_launched_process(standin.pid(), "wine-winefile", None, false);
-        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
-        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[
-            (1, "wine-winefile", 501),
-            (2, "wine-winefile", 502),
-        ]));
-        crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), 1)
-            .expect("close one of two windows");
-        assert!(
-            process_is_live(standin.pid()),
-            "a second window of the same host app keeps the launch"
-        );
-        unregister_launched_process(standin.pid());
-    }
+    mod host_windows;
 
     #[test]
     #[cfg(target_os = "linux")]

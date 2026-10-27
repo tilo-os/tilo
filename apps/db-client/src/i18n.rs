@@ -54,6 +54,30 @@ mod tests {
         }
     }
 
+    /// Every German message parses and resolves to German text: the file
+    /// being complete is not the same as it being readable, and a broken
+    /// message would show its own key in the window the manifest advertises.
+    #[test]
+    fn the_german_window_says_every_message_in_german() {
+        // The manager is the thread's, so the German install happens on a
+        // thread of its own rather than being left for the next test here.
+        std::thread::spawn(|| {
+            ui::i18n::I18nManager::install(
+                "en-US",
+                "de-DE",
+                &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
+            )
+            .expect("the German catalogue parses");
+            for id in ids(DE_FTL) {
+                let text = ui::i18n::I18nManager::lookup_plain(&id);
+                assert!(!text.trim().is_empty(), "{id} says nothing in German");
+                assert_ne!(text, id, "{id} falls back to its key");
+            }
+        })
+        .join()
+        .expect("the German window reads");
+    }
+
     /// Every key the app asks for exists, so a fallback to a bare key is a
     /// test failure rather than something a person has to read.
     #[test]

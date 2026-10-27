@@ -856,6 +856,8 @@ mod tests {
                 resource_kind: "test-resource".into(),
                 resource_label: "Test resource".into(),
                 action_label: "Test action".into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: tilo_actions::ExecutionLocus::default(),
                 kind: tilo_actions::OperationKind::Effect,

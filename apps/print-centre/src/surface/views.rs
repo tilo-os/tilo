@@ -15,12 +15,12 @@ use ui::widget::{
     Actions, Badge, Banner, BarGauge, Button, ButtonRole, Card, CardGrid, CardWidth, ChipStyle,
     Column, Container, ControlSize, Divider, Dropdown, Field, Form, FormSection, GaugeThresholds,
     Image, ImageCropEditor, ListRow, NumberInput, ProgressBar, Property, PropertyList, Row,
-    Scrollable, Section, SectionHeader, Spacer, Text, Toggle, ToggleGroup, Tone,
+    Scrollable, Section, SectionHeader, Spacer, Text, TextInput, Toggle, ToggleGroup, Tone,
 };
 
 use super::{
-    Door, El, PrintPreview, ScanState, Snapshot, UiCommand, display_name, failed_areas,
-    friendly_queue_state, friendly_reason, job_title, supply_level,
+    Door, El, PrintChoice, PrintPreview, ScanState, Snapshot, UiCommand, display_name,
+    failed_areas, friendly_queue_state, friendly_reason, job_title, supply_level,
 };
 
 fn text(s: &str, role: TextRole) -> El {
@@ -904,14 +904,36 @@ fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dro
     })
 }
 
+/// What the print setup form is filled from: the range being typed, the
+/// options the chosen printer reports, the values chosen so far, and the page
+/// of the document under review.
+pub(super) struct PrintForm<'a> {
+    pub(super) copies: &'a ui::LocalState<f64>,
+    pub(super) two_sided: &'a ui::LocalState<bool>,
+    pub(super) range: &'a ui::LocalState<String>,
+    pub(super) options: &'a os_actions::printing::PrinterOptions,
+    pub(super) choice: &'a PrintChoice,
+    /// How many pages the document has: the range field is drawn only when
+    /// there is more than one to choose from.
+    pub(super) pages: usize,
+}
+
 /// The document being printed: its preview, which the person can check before
-/// anything is sent. The preview spans the card, so the page sits in its middle.
-fn document_card(filename: &str, preview: &PrintPreview) -> El {
+/// anything is sent, page by page for a document of more than one. A wrong
+/// page or a wrong paper size is caught here rather than on paper.
+fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
+    // How many pages the document has decides whether there is a pager at
+    // all: one page has nothing to turn.
+    let (page, pages) = match preview {
+        PrintPreview::Ready { page, pages, .. } => (*page, *pages),
+        _ => (0, 0),
+    };
     let preview_widget: El = match preview {
         PrintPreview::Ready {
             rgba,
             width,
             height,
+            ..
         } => Box::new(
             Container::new()
                 .with_height(300.0)
@@ -931,46 +953,129 @@ fn document_card(filename: &str, preview: &PrintPreview) -> El {
                 .push(muted("The original document is unchanged.")),
         ),
     };
-    Box::new(Card::new(preview_widget).with_title(filename))
+    let body = if pages > 1 {
+        let shown = page.min(pages.saturating_sub(1));
+        // The count keeps its own line above the pager: a card this narrow
+        // would otherwise break "Page 3 of 40" into three.
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(preview_widget)
+                .push(Box::new(
+                    Text::new(&format!("Page {} of {}", shown.saturating_add(1), pages))
+                        .with_role(TextRole::Label),
+                ))
+                .push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_align_items(taffy::AlignItems::Center)
+                        .with_gap(Spacing::BASE.s2)
+                        .push(Box::new(command_button(
+                            "print-centre.print.previous-page",
+                            "Previous",
+                            tx,
+                            UiCommand::PreviousPrintPage,
+                        )))
+                        .push(Box::new(command_button(
+                            "print-centre.print.next-page",
+                            "Next",
+                            tx,
+                            UiCommand::NextPrintPage,
+                        ))),
+                )),
+        ) as El
+    } else {
+        preview_widget
+    };
+    Box::new(Card::new(body).with_title(filename))
 }
 
-fn print_settings(
-    picker: Dropdown,
-    copies: &ui::LocalState<f64>,
-    two_sided: &ui::LocalState<bool>,
-    tx: &Door,
-) -> Form {
+fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
+    let mut options = FormSection::new("Options").grouped().field(
+        Field::new(
+            "Copies",
+            NumberInput::from_state(form.copies)
+                .with_range(1.0, 99.0)
+                .with_step(1.0)
+                .with_id("print-centre.print.copies")
+                .compact(),
+        )
+        .with_trailing_control(),
+    );
+    // A document with one page has no pages to choose, so it is not offered a
+    // field that would change nothing. The count comes with the preview, so
+    // the form is told it.
+    if form.pages > 1 {
+        options = options.field(
+            Field::new(
+                "Pages",
+                TextInput::from_state(form.range)
+                    .with_id("print-centre.print.pages")
+                    .with_placeholder("All pages")
+                    .with_accessible_name("Pages to print"),
+            )
+            .with_help("Print some of the pages, as in 3-5 or 1, 4, 9. Leave it empty for all."),
+        );
+    }
+    // The driver's own list decides which of these fields is drawn: a paper
+    // size, a colour mode, a two-sided mode or an orientation it never
+    // reported is a field it would silently ignore.
+    for (option, key, choices, chosen) in [
+        (
+            "Paper",
+            "page-size",
+            &form.options.page_sizes,
+            form.choice.page_size.as_deref(),
+        ),
+        (
+            "Colour",
+            "colour",
+            &form.options.colour_modes,
+            form.choice.colour.as_deref(),
+        ),
+        (
+            "Two sides",
+            "two-sided",
+            &form.options.duplex_modes,
+            form.choice.duplex.as_deref(),
+        ),
+        (
+            "Orientation",
+            "orientation",
+            &form.options.orientations,
+            form.choice.orientation.as_deref(),
+        ),
+    ] {
+        if choices.len() < 2 {
+            continue;
+        }
+        options = options.field(Field::new(
+            option,
+            driver_choice(key, choices, chosen, tx).with_accessible_name(option.to_owned()),
+        ));
+    }
+    // A printer that reports no duplex mode keeps the one setting every CUPS
+    // printer reads, so a person can still ask for both sides.
     let defaults = tx.clone();
+    if form.options.duplex_modes.len() < 2 {
+        options = options.field(
+            Field::new(
+                "Print on both sides",
+                Toggle::from_state(form.two_sided).on_change(move |value| {
+                    let _ = defaults.send(UiCommand::SetTwoSided(value));
+                }),
+            )
+            .with_trailing_control(),
+        );
+    }
     Form::new()
         .section(
             FormSection::new("Printer").field(
                 Field::new("Send to", picker).with_help("Choose where to send this document."),
             ),
         )
-        .section(
-            FormSection::new("Options")
-                .grouped()
-                .field(
-                    Field::new(
-                        "Copies",
-                        NumberInput::from_state(copies)
-                            .with_range(1.0, 99.0)
-                            .with_step(1.0)
-                            .with_id("print-centre.print.copies")
-                            .compact(),
-                    )
-                    .with_trailing_control(),
-                )
-                .field(
-                    Field::new(
-                        "Print on both sides",
-                        Toggle::from_state(two_sided).on_change(move |value| {
-                            let _ = defaults.send(UiCommand::SetTwoSided(value));
-                        }),
-                    )
-                    .with_trailing_control(),
-                ),
-        )
+        .section(options)
 }
 
 pub(super) fn print_setup_view(
@@ -980,25 +1085,29 @@ pub(super) fn print_setup_view(
     selected: Option<&str>,
     copies: &ui::LocalState<f64>,
     two_sided: &ui::LocalState<bool>,
+    form: &PrintForm<'_>,
     tx: &Door,
 ) -> El {
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Selected document");
-    let settings = print_settings(
-        printer_picker(snapshot, selected, tx),
+    let form = PrintForm {
         copies,
         two_sided,
-        tx,
-    );
+        range: form.range,
+        options: form.options,
+        choice: form.choice,
+        pages: form.pages,
+    };
+    let settings = print_settings(printer_picker(snapshot, selected, tx), &form, tx);
     let layout = Row::new()
         .align_start()
         .push(Box::new(
             Container::new()
                 .with_width(260.0)
                 .with_no_padding()
-                .with_child(document_card(filename, preview)),
+                .with_child(document_card(filename, preview, tx)),
         ))
         .push(Box::new(
             Container::new()
@@ -1030,6 +1139,37 @@ pub(super) fn print_setup_view(
         )));
     }
     page_with_footer(body, actions(buttons))
+}
+
+/// One of the driver's own options, as the choices it reported: the values
+/// it listed, with the one the person chose standing on the selection lift.
+fn driver_choice(
+    key: &str,
+    choices: &[os_actions::printing::OptionChoice],
+    chosen: Option<&str>,
+    tx: &Door,
+) -> ToggleGroup {
+    let default = os_actions::printing::PrinterOptions::default_key(choices).unwrap_or_default();
+    let selected = choices
+        .iter()
+        .position(|choice| choice.key == chosen.unwrap_or(default))
+        .unwrap_or(0);
+    let labels: Vec<&str> = choices.iter().map(|choice| choice.label.as_str()).collect();
+    let values: Vec<String> = choices.iter().map(|choice| choice.key.clone()).collect();
+    let send = tx.clone();
+    let key = key.to_owned();
+    let id = format!("print-centre.print.{key}");
+    ToggleGroup::new(segments(&labels), selected)
+        .with_id(&id)
+        .on_view(&format!("{id}.select"), move |index| {
+            let Some(value) = values.get(index) else {
+                return;
+            };
+            let _ = send.send(UiCommand::SetPrintOption {
+                option: key.clone(),
+                value: value.clone(),
+            });
+        })
 }
 
 /// A choice with its name above it.

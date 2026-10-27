@@ -64,7 +64,7 @@ impl Shelf {
     }
 
     /// Archive a card.
-    #[action(item = cards)]
+    #[action(item = cards, icon = "archive")]
     pub fn archive_card(&mut self, card: &Id) -> Result<(), Refusal> {
         let taken = self.cards.remove(card).ok_or("no such card")?;
         self.archive.push(card.clone(), taken);
@@ -262,7 +262,16 @@ fn item_verbs_are_offered_on_the_items_of_their_collection() {
         .find(|child| child.id.as_str() == format!("test.shelf/cards/{id}"))
         .unwrap();
     assert_eq!(card.label, "Tea");
-    assert!(card.actions.iter().any(|spec| spec.id == "archive-card"));
+    let archive = card
+        .actions
+        .iter()
+        .find(|spec| spec.id == "archive-card")
+        .expect("the card offers its archiving");
+    assert_eq!(
+        archive.icon.as_deref(),
+        Some("archive"),
+        "on its item the verb wears its own icon"
+    );
     assert!(card.actions.iter().all(|spec| spec.id != "restore"));
     shelf.apply(Shelf::ARCHIVE_CARD.with(id.clone())).unwrap();
     let tree = published(&shelf);
@@ -380,8 +389,11 @@ fn seed_availability_children_and_content() {
 #[test]
 fn an_input_that_does_not_bind_refuses_where_it_is_submitted() {
     // A hand-written reference whose names do not match its input.
-    let wrong: tilo_resource::ActionRef<Shelf, (String,)> =
-        tilo_resource::ActionRef::new("add", &["title", "colour"]);
+    let wrong: tilo_resource::ActionRef<Shelf, (String,)> = tilo_resource::ActionRef::new(
+        "add",
+        &["title", "colour"],
+        tilo_resource::ResourceKind::of::<Shelf>(),
+    );
     let invoke = wrong.with(("a".to_owned(),));
     assert!(invoke.refusal().is_some());
     assert!(invoke.arguments.is_empty());
@@ -715,6 +727,66 @@ fn an_item_label_is_made_of_several_fields() {
     assert_eq!(entry.item.unwrap().label, "Ada Lovelace");
 }
 
+/// A pinned folder, kept as a place every device resolves (`std:docs`) and
+/// named as a person knows it.
+#[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+#[model(label = Pin::name)]
+pub struct Pin {
+    pub place: tilo_resource::Atom,
+}
+
+impl Pin {
+    fn name(&self) -> String {
+        match self.place.0.as_str() {
+            "std:docs" => "Documents".to_owned(),
+            other => other.rsplit('/').next().unwrap_or(other).to_owned(),
+        }
+    }
+}
+
+#[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+pub struct Pins {
+    pub pins: Collection<Pin>,
+}
+
+#[resource(kind = "test.pins", label = "Pins", params = pins)]
+impl Pins {
+    /// Pin a place.
+    #[action]
+    pub fn pin(&mut self, cx: &mut ActionCx, place: String) {
+        self.pins.push(
+            cx.id(),
+            Pin {
+                place: tilo_resource::Atom(place),
+            },
+        );
+    }
+}
+
+/// A label that is not a field's text as stored is what the type's
+/// `label = path` names it: the value, its item resource and its search
+/// entry all read so.
+#[test]
+fn an_item_label_can_be_named_by_a_function() {
+    let mut pins = Replica::<Pins>::new();
+    pins.apply(Pins::PIN.with("std:docs".to_owned())).unwrap();
+    pins.apply(Pins::PIN.with("/srv/media".to_owned())).unwrap();
+    let state = pins.state().unwrap();
+    let labels: Vec<Option<String>> = state.pins.values().map(Model::label).collect();
+    assert_eq!(
+        labels,
+        [Some("Documents".to_owned()), Some("media".to_owned())]
+    );
+    let tree = pins.published().unwrap();
+    let mut items: Vec<&str> = tree
+        .children
+        .iter()
+        .map(|child| child.label.as_str())
+        .collect();
+    items.sort_unstable();
+    assert_eq!(items, ["Documents", "media"]);
+}
+
 /// A report, kept under the id of the app it is about.
 #[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
 pub struct Report {
@@ -1008,12 +1080,19 @@ fn reading_more_of_a_document_is_no_revision() {
 #[test]
 fn an_absent_positional_option_is_not_sent() {
     let add: tilo_resource::ActionRef<Shelf, (String, Option<Colour>)> =
-        tilo_resource::ActionRef::new("add", &["title", "colour"]);
+        tilo_resource::ActionRef::new(
+            "add",
+            &["title", "colour"],
+            tilo_resource::ResourceKind::of::<Shelf>(),
+        );
     let arguments = add.arguments(&("Tea".to_owned(), None)).unwrap();
     assert_eq!(arguments.len(), 1);
     assert_eq!(arguments["title"], "Tea");
-    let single: tilo_resource::ActionRef<Shelf, Option<String>> =
-        tilo_resource::ActionRef::new("retitle", &["title"]);
+    let single: tilo_resource::ActionRef<Shelf, Option<String>> = tilo_resource::ActionRef::new(
+        "retitle",
+        &["title"],
+        tilo_resource::ResourceKind::of::<Shelf>(),
+    );
     assert!(single.arguments(&None).unwrap().is_empty());
     let mut shelf = Replica::<Shelf>::new();
     shelf.apply(add.with(("Tea".to_owned(), None))).unwrap();

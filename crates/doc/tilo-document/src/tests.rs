@@ -1100,6 +1100,63 @@ fn the_document_remembers_the_file_it_was_read_from_and_written_to() {
     );
 }
 
+/// The document carries whether it holds work its file does not: an edit
+/// sets it, and the two actions that take a file's content clear it. That is
+/// what a window's bar marks "Edited" from — not a repaint flag, which is
+/// gone the moment after the frame is drawn.
+#[test]
+fn the_document_remembers_work_its_file_has_not_taken() {
+    use tilo_actions::Action;
+    let mut doc = automerge::AutoCommit::new();
+    RichText::initialize(&mut doc).unwrap();
+    assert!(
+        !RichText::read(&doc).unwrap().unsaved(),
+        "a new document is empty, not unsaved"
+    );
+
+    let bytes = b"# Report\n";
+    crate::action::RichTextAction::ReplaceFormatted {
+        format: crate::action::ImportFormat::Markdown,
+        bytes: bytes.to_vec(),
+    }
+    .apply(&mut doc)
+    .unwrap();
+    assert!(
+        !RichText::read(&doc).unwrap().unsaved(),
+        "the document is what its file holds"
+    );
+
+    let block = RichText::read(&doc)
+        .unwrap()
+        .body()
+        .id_at(0)
+        .unwrap()
+        .to_owned();
+    crate::action::RichTextAction::SpliceText {
+        region: RegionKind::Body,
+        block,
+        at: 0,
+        del: 0,
+        ins: "Work in progress: ".into(),
+    }
+    .apply(&mut doc)
+    .unwrap();
+    assert!(
+        RichText::read(&doc).unwrap().unsaved(),
+        "an edit is unsaved work"
+    );
+
+    crate::action::RichTextAction::NoteFileWritten {
+        digest: tilo_content::hash_bytes(b"saved"),
+    }
+    .apply(&mut doc)
+    .unwrap();
+    assert!(
+        !RichText::read(&doc).unwrap().unsaved(),
+        "the file took the work"
+    );
+}
+
 /// The body's blocks as `(id, kind, alt)`.
 fn block_alts(replica: &Replica<RichText>) -> Vec<(String, String, Option<String>)> {
     let c = replica.state().unwrap().containers().clone();

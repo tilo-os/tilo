@@ -969,6 +969,8 @@ const SCENARIOS: &[&str] = &[
     "date_popover",
     "time_popover",
     "calendar_popover",
+    "quick_add",
+    "shortcuts",
     "task_detail",
     "task_due_picker",
     "task_priority_picker",
@@ -1302,7 +1304,7 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
         let accounts = if let Some(sample) = cx.fixture::<SampleAccounts>() {
             Some(sample.0.clone())
         } else if cx.mode().is_live() {
-            Some(crate::AccountStore::load_from_settings().unwrap_or_default())
+            Some(self.bind_profile(cx.storage().config_root()))
         } else {
             None
         };

@@ -6,7 +6,8 @@
 
 use tilo_document::ClipBlock;
 use ui::feedback::{
-    FrameTimings, Hidden, Interaction, Outcome, ReviewedSelection, ReviewedText, TextKind,
+    FrameTimings, Hidden, Interaction, Outcome, RecordingRef, ReviewedSelection, ReviewedText,
+    TextKind,
 };
 use ui::tilo_resource::Id;
 
@@ -26,12 +27,13 @@ const SHOWN_ACTIONS: usize = 5;
 pub(crate) fn message(report: &FeedbackReport) -> Option<crate::record::Message> {
     let submission = report.submission.as_ref()?;
     let feedback = &submission.feedback;
-    let lines = lines(
+    let mut lines = lines(
         &feedback.text,
         &feedback.selections,
         &feedback.interactions,
         feedback.timings.as_ref(),
     );
+    lines.extend(feedback.recording.as_ref().map(recording));
     let body = lines
         .iter()
         .map(|line| ClipBlock {
@@ -165,6 +167,21 @@ fn pick(index: usize, selection: &ReviewedSelection) -> Vec<String> {
             .map(|text| crate::i18n::t_args("chat-feedback-text", &[("text", text.into())])),
     );
     lines
+}
+
+/// What the report's recording holds: whose record, over which time, in how
+/// many steps.
+fn recording(recording: &RecordingRef) -> String {
+    let at = |ms: i64| ui::format::time_of(&ui::format::UnixSecs(ms.div_euclid(1000)));
+    crate::i18n::t_args(
+        "chat-feedback-recording",
+        &[
+            ("app", recording.app_name.clone().into()),
+            ("from", at(recording.from_ms).into()),
+            ("to", at(recording.to_ms).into()),
+            ("steps", recording.steps.into()),
+        ],
+    )
 }
 
 /// The reporter's last actions, newest last.

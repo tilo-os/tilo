@@ -2,16 +2,20 @@
 
 use tilo_rich_text::RichText;
 use ui::tilo_actions::ActorKind;
+use ui::tilo_reference::ResourceAt;
 use ui::tilo_resource::{self, ActionCx, Collection, Counter, Id, Model, Refusal, Set, resource};
 
 use crate::model::issue::{
     AgentRequest, Imported, Issue, Link, MAX_MESSAGE_CHARS, Message, MessageKind, Status,
 };
 use crate::model::run::{
-    Budget, Confirmation, ConfirmationState, ModelChoice, Question, Run, RunOutcome, RunPhase,
+    Area, Budget, Confirmation, ConfirmationState, ModelChoice, PausedRun, Question, Run,
+    RunOutcome, RunPhase,
 };
+use crate::model::tracker_area::{Kind, Person, TrackerArea};
 
-/// A workspace's issues.
+/// A workspace's issues, the projects and areas above them, and who is
+/// involved in each.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Tracker {
     /// Issues
@@ -20,6 +24,14 @@ pub struct Tracker {
     /// parent. Each issue is a storage unit of its own.
     #[model(unit)]
     pub issues: Collection<Issue>,
+    /// Projects
+    ///
+    /// The projects and areas above the issues, each an ordinary resource
+    /// of its own. Nothing else is kept here on their behalf: what a
+    /// project holds is the issues that work towards it and the links those
+    /// carry.
+    #[model(unit)]
+    pub areas: Collection<TrackerArea>,
     /// The highest number given so far. Increments merge, so a number given
     /// after a merge is past every issue either side made.
     #[model(readonly)]
@@ -86,6 +98,32 @@ impl Tracker {
         self.issues.get_mut(issue).ok_or_else(no_issue)
     }
 
+    fn no_area() -> Refusal {
+        Refusal::new("This project no longer exists")
+    }
+
+    fn area_mut(&mut self, area: &Id) -> Result<&mut TrackerArea, Refusal> {
+        self.areas.get_mut(area).ok_or_else(Self::no_area)
+    }
+
+    /// The project or area named `area`, when it is one of the tracker's.
+    #[must_use]
+    pub fn area(&self, area: &Id) -> Option<&TrackerArea> {
+        self.areas.get(area)
+    }
+
+    /// The issues that work towards `area`, in board order: the tasks the
+    /// project holds. Each works towards it through its own
+    /// [`area`](Issue::area), so it reads in the project and in its own
+    /// list alike.
+    pub fn in_area<'a>(&'a self, area: &'a Id) -> impl Iterator<Item = (&'a Id, &'a Issue)> {
+        self.issues.iter().filter(move |(_, issue)| {
+            issue.area.as_ref().is_some_and(|named| {
+                named.kind == crate::model::KIND && named.resource == area.as_str()
+            })
+        })
+    }
+
     fn next_number(&mut self) -> u64 {
         self.numbers.add(1);
         u64::try_from(self.numbers.get()).unwrap_or_default()
@@ -146,12 +184,27 @@ fn own_run<'a>(cx: &ActionCx, issue: &'a mut Issue) -> Result<&'a mut Run, Refus
     Ok(run)
 }
 
+/// Refuse a step of a run a person paused: it takes none until they let it
+/// go on.
+fn at_boundary(run: &Run) -> Result<(), Refusal> {
+    if run.paused.is_some() {
+        return Err(Refusal::new("The run is paused: no step until it goes on"));
+    }
+    Ok(())
+}
+
 fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
     let id = cx.id();
     issue.comments.push(id, message);
 }
 
-#[resource(kind = "tasks.tracker", label = "Tasks", search = crate::model::search::entries)]
+#[resource(
+    kind = "tasks.tracker",
+    label = "Tasks",
+    params = tracker,
+    search = crate::model::search::entries,
+    effects = crate::note::TasksEffect
+)]
 impl Tracker {
     /// Create an issue.
     ///
@@ -187,11 +240,113 @@ impl Tracker {
         Ok(())
     }
 
+    /// Create a project or an area: the resource above the issues written
+    /// for it. It starts with nobody involved and holds nothing of its own
+    /// yet; tasks join it by working towards it.
+    ///
+    /// # Errors
+    /// Refuses a blank name, a name too long, or an id already taken.
+    #[action(writes = areas)]
+    pub fn create_area(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Its name")] name: String,
+        #[param("Whether it is a project with an end or an area that goes on")] kind: Option<Kind>,
+    ) -> Result<(), Refusal> {
+        let id = cx.id();
+        if self.areas.contains(&id) {
+            return Err(Refusal::new("That project exists already"));
+        }
+        let area = TrackerArea {
+            id: id.clone(),
+            name: name.trim().to_owned(),
+            kind: kind.unwrap_or_default(),
+            ..TrackerArea::default()
+        };
+        TrackerArea::valid(&area)?;
+        self.areas.push(id, area);
+        Ok(())
+    }
+
+    /// Rename the project or area `area`.
+    ///
+    /// # Errors
+    /// Refuses a project that no longer exists, or a blank name.
+    #[action(item = areas, writes = areas)]
+    pub fn rename_area(&mut self, area: &Id, name: String) -> Result<(), Refusal> {
+        let target = self.area_mut(area)?;
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(Refusal::new("A project has a name"));
+        }
+        if trimmed.chars().count() > crate::model::tracker_area::MAX_NAME_CHARS {
+            return Err(Refusal::new("A project's name fits on a line"));
+        }
+        trimmed.clone_into(&mut target.name);
+        Ok(())
+    }
+
+    /// Say whether the project or area `area` reaches an end or goes on: a
+    /// project with a goal, or an area that is a standing responsibility.
+    ///
+    /// # Errors
+    /// Refuses a project that no longer exists.
+    #[action(item = areas, writes = areas)]
+    pub fn set_kind(
+        &mut self,
+        area: &Id,
+        #[param("Project or area")] kind: Kind,
+    ) -> Result<(), Refusal> {
+        self.area_mut(area)?.kind = kind;
+        Ok(())
+    }
+
+    /// Say who is involved in the project or area `area`, and what they do
+    /// there. Naming someone grants them nothing: who may read the project
+    /// is the sharing it was given, never a list of people.
+    ///
+    /// # Errors
+    /// Refuses a project that no longer exists, or someone named by nothing.
+    #[action(item = areas, writes = areas)]
+    pub fn involve(
+        &mut self,
+        cx: &mut ActionCx,
+        area: &Id,
+        #[param("The person's name, as the workspace reads it")] name: String,
+        #[param("What they do here, in their own words")] role: Option<String>,
+    ) -> Result<(), Refusal> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Refusal::new("Name the person involved"));
+        }
+        let id = cx.id();
+        let target = self.area_mut(area)?;
+        target.people.push(
+            id,
+            Person {
+                name: name.to_owned(),
+                role: role.unwrap_or_default().trim().to_owned(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Take someone out of the list of people involved in `area`. They keep
+    /// their access to it: that is the project's sharing, not this list.
+    ///
+    /// # Errors
+    /// Refuses a project that no longer exists.
+    #[action(item = areas, writes = areas)]
+    pub fn remove_person(&mut self, area: &Id, person: &Id) -> Result<(), Refusal> {
+        self.area_mut(area)?.people.remove(person);
+        Ok(())
+    }
+
     /// Move an issue under another one, or to the top level.
     ///
     /// # Errors
     /// Refuses moving an issue under itself or one of its own sub-issues.
-    #[action(writes = issues)]
+    #[action(item = issues, writes = issues)]
     pub fn move_under(&mut self, issue: &Id, parent: Option<Id>) -> Result<(), Refusal> {
         self.check_parent(parent.as_ref())?;
         if let Some(parent) = &parent
@@ -210,7 +365,7 @@ impl Tracker {
     /// # Errors
     /// Refuses while an agent's run of the issue is going, or an assignee
     /// that is neither `person:<id>` nor `agent:<id>`.
-    #[action(writes = issues)]
+    #[action(item = issues, writes = issues)]
     pub fn assign(
         &mut self,
         issue: &Id,
@@ -235,7 +390,7 @@ impl Tracker {
     /// # Errors
     /// Refuses while a run of the issue is going, or a choice that names no
     /// provider or model.
-    #[action(writes = issues)]
+    #[action(item = issues, writes = issues)]
     pub fn choose_model(&mut self, issue: &Id, model: Option<ModelChoice>) -> Result<(), Refusal> {
         if model
             .as_ref()
@@ -281,6 +436,7 @@ impl Tracker {
             assignee: Some(agent.clone()),
             model: ask.model.clone(),
             subject: ask.subject,
+            quick: ask.quick,
             author: starter.clone(),
             created_ms: now,
             run: Some(Run {
@@ -289,9 +445,11 @@ impl Tracker {
                 starter,
                 phase: RunPhase::Approved,
                 model: ask.model,
+                device: None,
                 started_ms: now,
                 updated_ms: now,
                 confirmation: None,
+                paused: None,
             }),
             ..Issue::default()
         };
@@ -303,7 +461,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses a blank label, or an issue at its 32 labels.
-    #[action(writes = issues)]
+    #[action(item = issues, writes = issues)]
     pub fn add_label(&mut self, issue: &Id, label: String) -> Result<(), Refusal> {
         let label = label.trim();
         if label.is_empty() {
@@ -318,7 +476,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses an issue that no longer exists.
-    #[action(writes = issues)]
+    #[action(item = issues, writes = issues)]
     pub fn place(
         &mut self,
         issue: &Id,
@@ -344,7 +502,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses an empty message.
-    #[action(field = "comments", writes = issues)]
+    #[action(item = issues, field = "comments", writes = issues)]
     pub fn comment(&mut self, cx: &mut ActionCx, issue: &Id, text: String) -> Result<(), Refusal> {
         let text = message_text(&text)?;
         let author = author(cx)?;
@@ -369,7 +527,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses a link that names no resource.
-    #[action(writes = issues)]
+    #[action(item = issues, writes = issues)]
     pub fn link(
         &mut self,
         cx: &mut ActionCx,
@@ -398,11 +556,38 @@ impl Tracker {
         Ok(())
     }
 
+    /// Link a note
+    ///
+    /// Link an issue to an existing note in Notes, picked by its title.
+    ///
+    /// # Errors
+    /// Refuses a reference that names no note.
+    #[action(item = issues, writes = issues)]
+    pub fn link_note(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The note", resource = "notes.notebook.pages")] note: ResourceAt,
+    ) -> Result<(), Refusal> {
+        if note.app != crate::NOTES || note.reference.kind != crate::note::NOTE_KIND {
+            return Err(Refusal::new("That is not a note"));
+        }
+        self.link(
+            cx,
+            issue,
+            note.app,
+            note.reference.kind,
+            note.reference.id,
+            note.reference.label,
+            note.record,
+        )
+    }
+
     /// Delete an issue. Its sub-issues move up to its parent.
     ///
     /// # Errors
     /// Refuses an issue that no longer exists.
-    #[action(destructive, writes = issues)]
+    #[action(item = issues, destructive, writes = issues)]
     pub fn delete(&mut self, issue: &Id) -> Result<(), Refusal> {
         let removed = self.issues.remove(issue).ok_or_else(no_issue)?;
         let orphans: Vec<Id> = self
@@ -423,7 +608,7 @@ impl Tracker {
     /// # Errors
     /// Refuses an issue with no agent assigned, one whose run is going, or
     /// an invoker who is not a person.
-    #[action(audience = "people", writes = issues)]
+    #[action(item = issues, audience = "people", writes = issues)]
     pub fn approve_run(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
         let starter = person(cx)?;
         let now = cx.now_ms();
@@ -446,12 +631,84 @@ impl Tracker {
             agent: ui::tilo_resource::Atom(agent),
             starter,
             model,
+            device: None,
             phase: RunPhase::Approved,
             started_ms: now,
             updated_ms: now,
             confirmation: None,
+            paused: None,
         });
         target.status = Status::InProgress;
+        Ok(())
+    }
+
+    /// Pause the issue's run: it takes no new step until a person lets it
+    /// go on. The step it was in, and the message boundary it reached, are
+    /// recorded so that resuming continues from there. What it already
+    /// changed stays.
+    ///
+    /// # Errors
+    /// Refuses an issue with no run going, or an invoker who is not a
+    /// person.
+    #[action(item = issues, audience = "people", writes = issues)]
+    pub fn pause_run(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
+        person(cx)?;
+        let now = cx.now_ms();
+        // The boundary is the messages to this run that exist when the
+        // person pauses it: it goes on after them and no further, so taking
+        // one in again never repeats a step it already planned on.
+        let target = self.issue_mut(issue)?;
+        let (epoch, phase) = target
+            .run
+            .as_ref()
+            .filter(|run| run.phase.active())
+            .map(|run| (run.epoch, run.phase))
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        if target.run.as_ref().is_some_and(|run| run.paused.is_some()) {
+            return Err(Refusal::new("The run is paused already"));
+        }
+        let through = target
+            .comments
+            .values()
+            .filter(|message| message.kind == MessageKind::ToRun && message.run == epoch)
+            .count();
+        let paused = PausedRun::of(phase, u64::try_from(through).unwrap_or(u64::MAX), now)
+            .ok_or_else(|| Refusal::new("This step is not one a pause can hold"))?;
+        let run = target
+            .run
+            .as_mut()
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        // Only the boundary is written: the run stays in the step it was in,
+        // so a step its agent reports meanwhile merges rather than being
+        // overwritten by a step a person never moved it out of.
+        run.paused = Some(paused);
+        Ok(())
+    }
+
+    /// Let the issue's paused run go on from where it stopped.
+    ///
+    /// # Errors
+    /// Refuses an issue whose run is not paused, or an invoker who is not a
+    /// person.
+    #[action(item = issues, audience = "people", writes = issues)]
+    pub fn resume_run(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
+        person(cx)?;
+        let now = cx.now_ms();
+        let target = self.issue_mut(issue)?;
+        let run = target
+            .run
+            .as_mut()
+            .filter(|run| run.phase.active())
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        let paused = run
+            .paused
+            .take()
+            .ok_or_else(|| Refusal::new("No run of this issue is paused"))?;
+        let phase = paused
+            .phase()
+            .ok_or_else(|| Refusal::new("The run does not name the step it stopped in"))?;
+        run.phase = phase;
+        run.updated_ms = now;
         Ok(())
     }
 
@@ -459,7 +716,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses an issue with no run going.
-    #[action(audience = "people", writes = issues)]
+    #[action(item = issues, audience = "people", writes = issues)]
     pub fn stop_run(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
         person(cx)?;
         let now = cx.now_ms();
@@ -469,6 +726,44 @@ impl Tracker {
             .as_mut()
             .filter(|run| run.phase.active())
             .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        run.phase = RunPhase::Stopped;
+        run.paused = None;
+        run.updated_ms = now;
+        target.status = Status::Todo;
+        Ok(())
+    }
+
+    /// End a run that stopped showing a step longer than `after_ms` ago,
+    /// as idle: what it did stays, and the issue is left to be picked up
+    /// again.
+    ///
+    /// Any change of the run moves when it last showed one, so a run that
+    /// keeps reporting its step is never ended this way, and a paused one
+    /// waits as long as its person leaves it.
+    ///
+    /// # Errors
+    /// Refuses a run that is not going, or one that showed a step more
+    /// recently than `after_ms`.
+    #[action(item = issues, housekeeping, writes = issues)]
+    pub fn end_idle_run(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("How long the run may go without a step, in milliseconds")] after_ms: i64,
+    ) -> Result<(), Refusal> {
+        if after_ms <= 0 {
+            return Err(Refusal::new("An idle run waits at least a moment"));
+        }
+        let now = cx.now_ms();
+        let target = self.issue_mut(issue)?;
+        let run = target
+            .run
+            .as_mut()
+            .filter(|run| run.phase.active() && run.paused.is_none())
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        if now.saturating_sub(run.updated_ms) < after_ms {
+            return Err(Refusal::new("The run showed a step that recently"));
+        }
         run.phase = RunPhase::Stopped;
         run.updated_ms = now;
         target.status = Status::Todo;
@@ -480,7 +775,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses while a run is going, or ceilings out of range.
-    #[action(audience = "people", writes = issues)]
+    #[action(item = issues, audience = "people", writes = issues)]
     pub fn set_execution_budget(
         &mut self,
         cx: &mut ActionCx,
@@ -511,12 +806,56 @@ impl Tracker {
         Ok(())
     }
 
-    /// Send a message to the issue's run: its agent reads it at its next
-    /// step.
+    /// Plan the issue: the goal it works towards, how urgent it is and what
+    /// its work may cost. Each argument is optional, and the one given is the
+    /// one written; the others stay as they were.
     ///
     /// # Errors
-    /// Refuses an empty message, or an issue with no run going.
-    #[action(field = "comments", writes = issues)]
+    /// Refuses a goal that is not a resource, an urgency outside 1 to 4, or
+    /// a budget of nothing.
+    #[action(item = issues, audience = "people", writes = issues)]
+    pub fn plan(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The resource it works towards: resource, app, kind and label")] area: Option<Area>,
+        #[param("How urgent it is, 1 (most urgent) to 4")] priority: Option<u8>,
+        #[param("The most its work may cost, in the workspace's units")] cost_budget: Option<u64>,
+        #[param("When it is wanted, in milliseconds since the epoch")] due_ms: Option<i64>,
+    ) -> Result<(), Refusal> {
+        person(cx)?;
+        let target = self.issue_mut(issue)?;
+        if let Some(area) = area {
+            if !area.names_a_resource() {
+                return Err(Refusal::new("A goal is a resource of the workspace"));
+            }
+            target.area = Some(area);
+        }
+        if let Some(priority) = priority {
+            if !(1..=4).contains(&priority) {
+                return Err(Refusal::new("A priority is 1 (most urgent) to 4"));
+            }
+            target.priority = Some(priority);
+        }
+        if let Some(cost_budget) = cost_budget {
+            if cost_budget == 0 {
+                return Err(Refusal::new("A cost budget is more than nothing"));
+            }
+            target.cost_budget = Some(cost_budget);
+        }
+        if let Some(due_ms) = due_ms {
+            target.due_ms = Some(due_ms);
+        }
+        Ok(())
+    }
+
+    /// Send a message to the issue's run: its agent reads it at its next
+    /// step. Without a run going, the message joins the thread instead, so
+    /// it stays with the issue and every collaborator reads it there.
+    ///
+    /// # Errors
+    /// Refuses an empty message.
+    #[action(item = issues, field = "comments", writes = issues)]
     pub fn send_message(
         &mut self,
         cx: &mut ActionCx,
@@ -528,10 +867,10 @@ impl Tracker {
         let agent = by_agent(cx);
         let at_ms = cx.now_ms();
         let target = self.issue_mut(issue)?;
-        let epoch = target
-            .active_run()
-            .map(|run| run.epoch)
-            .ok_or_else(|| Refusal::new("No run of this issue is going to read it"))?;
+        let (kind, run, incorporated) = match target.active_run() {
+            Some(run) => (MessageKind::ToRun, run.epoch, false),
+            None => (MessageKind::Comment, 0, true),
+        };
         push_message(
             target,
             cx,
@@ -540,9 +879,9 @@ impl Tracker {
                 by_agent: agent,
                 at_ms,
                 text,
-                kind: MessageKind::ToRun,
-                run: epoch,
-                incorporated: false,
+                kind,
+                run,
+                incorporated,
             },
         );
         Ok(())
@@ -553,7 +892,7 @@ impl Tracker {
     /// # Errors
     /// Refuses anyone but the run's agent, an ended run, or a phase a run
     /// does not report.
-    #[action(audience = "agents", writes = issues)]
+    #[action(item = issues, audience = "agents", writes = issues)]
     pub fn report_run(
         &mut self,
         cx: &mut ActionCx,
@@ -571,6 +910,7 @@ impl Tracker {
         let author = author(cx)?;
         let target = self.issue_mut(issue)?;
         let run = own_run(cx, target)?;
+        at_boundary(run)?;
         run.phase = phase;
         run.updated_ms = at_ms;
         let epoch = run.epoch;
@@ -598,7 +938,7 @@ impl Tracker {
     /// # Errors
     /// Refuses anyone but the run's agent, or more messages than the run
     /// has.
-    #[action(audience = "agents", writes = issues)]
+    #[action(item = issues, audience = "agents", writes = issues)]
     pub fn incorporate(
         &mut self,
         cx: &mut ActionCx,
@@ -629,7 +969,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses anyone but the run's agent, or a run already waiting.
-    #[action(audience = "agents", writes = issues)]
+    #[action(item = issues, audience = "agents", writes = issues)]
     pub fn ask_confirmation(
         &mut self,
         cx: &mut ActionCx,
@@ -639,6 +979,7 @@ impl Tracker {
         let now = cx.now_ms();
         let target = self.issue_mut(issue)?;
         let run = own_run(cx, target)?;
+        at_boundary(run)?;
         if run.phase == RunPhase::Waiting {
             return Err(Refusal::new("The run waits for an answer already"));
         }
@@ -662,7 +1003,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses when the run asks nothing, or an invoker who is not a person.
-    #[action(audience = "people", writes = issues)]
+    #[action(item = issues, audience = "people", writes = issues)]
     pub fn answer_confirmation(
         &mut self,
         cx: &mut ActionCx,
@@ -702,7 +1043,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses anyone but the run's agent, or another question.
-    #[action(audience = "agents", writes = issues)]
+    #[action(item = issues, audience = "agents", writes = issues)]
     pub fn settle_confirmation(
         &mut self,
         cx: &mut ActionCx,
@@ -724,7 +1065,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses anyone but the run's agent, or an ended run.
-    #[action(audience = "agents", writes = issues)]
+    #[action(item = issues, audience = "agents", writes = issues)]
     pub fn finish_run(
         &mut self,
         cx: &mut ActionCx,
@@ -737,14 +1078,20 @@ impl Tracker {
         let author = author(cx)?;
         let target = self.issue_mut(issue)?;
         let run = own_run(cx, target)?;
+        at_boundary(run)?;
         run.phase = match outcome {
             RunOutcome::Done => RunPhase::Done,
             RunOutcome::Failed => RunPhase::Failed,
             RunOutcome::Stopped => RunPhase::Stopped,
         };
+        run.paused = None;
         run.updated_ms = at_ms;
         let epoch = run.epoch;
+        let quick = target.quick;
         target.status = match outcome {
+            // A quick question ends when it is answered: there is nothing
+            // for a person to review in what the agent said back.
+            RunOutcome::Done if quick => Status::Done,
             RunOutcome::Done => Status::InReview,
             RunOutcome::Failed | RunOutcome::Stopped => Status::Todo,
         };
@@ -763,6 +1110,49 @@ impl Tracker {
                 },
             );
         }
+        Ok(())
+    }
+
+    /// Record the device the run is working on, as its agent says, and whose
+    /// device that is: a device a run is moved to is handed over from this
+    /// one, and the record keeps the last on each.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, an ended run, or a device
+    /// named by nothing.
+    #[action(item = issues, audience = "agents", writes = issues)]
+    pub fn run_on_device(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The device it runs on")] device: String,
+    ) -> Result<(), Refusal> {
+        let device = device.trim();
+        if device.is_empty() {
+            return Err(Refusal::new("Name the device it runs on"));
+        }
+        let target = self.issue_mut(issue)?;
+        let run = own_run(cx, target)?;
+        run.device = Some(device.to_owned());
+        Ok(())
+    }
+
+    /// Record what the run has spent so far, in the workspace's units: what
+    /// its person reads of the cost, and what its budget is measured
+    /// against.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, or an ended run.
+    #[action(item = issues, audience = "agents", writes = issues)]
+    pub fn record_spend(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("What its runs have spent so far, in the workspace's units")] spent: u64,
+    ) -> Result<(), Refusal> {
+        let target = self.issue_mut(issue)?;
+        own_run(cx, target)?;
+        target.spend = Some(spent);
         Ok(())
     }
 

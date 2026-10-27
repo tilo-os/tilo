@@ -78,9 +78,8 @@ impl NotesOutline {
         let pick = Rc::clone(&chosen);
         Self {
             list: NavList::new(Vec::new())
-                .with_id("notes.outline")
                 .with_accessible_name(ui::i18n!("notes-outline"))
-                .on_select(move |id| *pick.borrow_mut() = Some(id)),
+                .on_view("notes.outline", move |id| *pick.borrow_mut() = Some(id)),
             headings: Vec::new(),
             chosen,
             structure_dirty: false,
@@ -89,7 +88,9 @@ impl NotesOutline {
     }
 
     /// Follow the open note's heading blocks. The list is rebuilt only when
-    /// the headings (or their words) change, so a selection and scroll stay.
+    /// the headings (or their words) change, so a selection and scroll stay;
+    /// the window's layout only when their number does, which sets the
+    /// outline's height, so typing in a heading re-lays no layout tree.
     pub(crate) fn follow(&mut self, panel: &MainPanel) {
         let headings: Vec<Heading> = panel
             .editor()
@@ -120,8 +121,8 @@ impl NotesOutline {
                 .empty_caption(ui::i18n!("notes-outline-empty")),
             ]
         });
+        self.structure_dirty |= headings.len() != self.headings.len();
         self.headings = headings;
-        self.structure_dirty = true;
     }
 
     /// Whether the note has headings worth showing.

@@ -151,13 +151,21 @@ impl WindowMenuAction {
     }
 }
 
+/// Whether a window is maximized in its strip and whether it is shown full
+/// screen: the two read independently, as the rows name what each toggles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowExtent {
+    pub maximized: bool,
+    pub full_screen: bool,
+}
+
 /// What is true of the window the menu is for: it decides which rows the
 /// menu has and how they read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowMenuFacts {
     pub tab_count: usize,
-    pub maximized: bool,
-    pub full_screen: bool,
+    /// How much of the output the window takes.
+    pub extent: WindowExtent,
     pub strips: Vec<(StripId, String)>,
     /// The other workspaces the window could move to, by name.
     pub workspaces: Vec<(WorkspaceId, String)>,
@@ -275,7 +283,8 @@ fn places<'a>(
     }
 }
 
-/// Move to strip and Move to workspace, each a nested menu of places.
+/// Move to strip, Move to workspace and Move to display, each a nested menu
+/// of places.
 fn move_rows(facts: &WindowMenuFacts) -> Vec<WindowMenuRow> {
     vec![
         places(
@@ -353,7 +362,8 @@ fn width_row() -> WindowMenuRow {
 /// shortcuts `config` binds:
 ///
 /// 1. Full screen and Maximize (or Exit full screen and Restore);
-/// 2. Move to strip and Move to workspace, each a nested menu of places;
+/// 2. Move to strip, Move to workspace and Move to display, each a nested
+///    menu of places, and Width;
 /// 3. New tab, Rename tab for a host window's tab, and for a tabbed window
 ///    Split right and Move to new group;
 /// 4. Close tab, for a tabbed window, then Close window;
@@ -361,14 +371,6 @@ fn width_row() -> WindowMenuRow {
 ///
 /// A window of one tab is offered Close window only: its tab is the window.
 pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec<WindowMenuRow> {
-    let entry = |action, label: String, icon, shortcut| {
-        WindowMenuRow::Entry(WindowMenuEntry {
-            action,
-            label,
-            icon: Some(icon),
-            shortcut,
-        })
-    };
     let tabbed = facts.tab_count >= 2;
     let mut rows = Vec::new();
     if facts.attention {
@@ -380,33 +382,7 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
         ));
         rows.push(WindowMenuRow::Separator);
     }
-    rows.extend([
-        entry(
-            WindowMenuAction::FullScreen,
-            t(if facts.full_screen {
-                "shell-window-menu-exit-full-screen"
-            } else {
-                "shell-window-menu-full-screen"
-            }),
-            Icon::Fullscreen,
-            bound(config, ShortcutAction::ToggleFullscreen),
-        ),
-        entry(
-            WindowMenuAction::Maximize,
-            t(if facts.maximized {
-                "shell-window-menu-restore"
-            } else {
-                "shell-window-menu-maximize"
-            }),
-            if facts.maximized {
-                Icon::Minimize2
-            } else {
-                Icon::Maximize2
-            },
-            bound(config, ShortcutAction::ToggleMaximize),
-        ),
-        WindowMenuRow::Separator,
-    ]);
+    rows.extend(extent_rows(facts.extent, config));
     rows.extend(move_rows(facts));
     rows.push(width_row());
     rows.extend([
@@ -467,6 +443,53 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
     rows.push(WindowMenuRow::Separator);
     rows.push(tell_agent_row());
     rows
+}
+
+/// One command row of the menu.
+fn entry(
+    action: WindowMenuAction,
+    label: String,
+    icon: Icon,
+    shortcut: Option<Shortcut>,
+) -> WindowMenuRow {
+    WindowMenuRow::Entry(WindowMenuEntry {
+        action,
+        label,
+        icon: Some(icon),
+        shortcut,
+    })
+}
+
+/// Full screen and Maximize, each reading as what it would undo, and the
+/// separator after them.
+fn extent_rows(extent: WindowExtent, config: &ShortcutConfig) -> [WindowMenuRow; 3] {
+    [
+        entry(
+            WindowMenuAction::FullScreen,
+            t(if extent.full_screen {
+                "shell-window-menu-exit-full-screen"
+            } else {
+                "shell-window-menu-full-screen"
+            }),
+            Icon::Fullscreen,
+            bound(config, ShortcutAction::ToggleFullscreen),
+        ),
+        entry(
+            WindowMenuAction::Maximize,
+            t(if extent.maximized {
+                "shell-window-menu-restore"
+            } else {
+                "shell-window-menu-maximize"
+            }),
+            if extent.maximized {
+                Icon::Minimize2
+            } else {
+                Icon::Maximize2
+            },
+            bound(config, ShortcutAction::ToggleMaximize),
+        ),
+        WindowMenuRow::Separator,
+    ]
 }
 
 /// "Tell an agent…": the row every menu the desktop opens ends with.
@@ -550,8 +573,7 @@ mod tests {
     fn facts(tab_count: usize) -> WindowMenuFacts {
         WindowMenuFacts {
             tab_count,
-            maximized: false,
-            full_screen: false,
+            extent: WindowExtent::default(),
             strips: vec![(StripId(2), "Research".into())],
             workspaces: vec![(WorkspaceId(9), "Studio".into())],
             renamable: false,
@@ -619,7 +641,7 @@ mod tests {
         let labels = width
             .actions()
             .into_iter()
-            .map(|action| action.semantic_key())
+            .map(super::WindowMenuAction::semantic_key)
             .collect::<Vec<_>>();
         assert_eq!(
             labels,
@@ -790,8 +812,10 @@ mod tests {
         );
 
         let state = WindowMenuFacts {
-            maximized: true,
-            full_screen: true,
+            extent: WindowExtent {
+                maximized: true,
+                full_screen: true,
+            },
             ..facts(1)
         };
         let rows = window_menu_rows(&state, &config);

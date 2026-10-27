@@ -46,6 +46,67 @@ pub(crate) fn open_link(opener: &Opener, href: &str) -> Result<(), String> {
     opener.open(&app, record, &address.into_ref(String::new()))
 }
 
+/// Another resource's published action, as an effect calls it
+/// ([`EffectCx::call`](super::EffectCx::call)): the resource a reference
+/// names, in the app that keeps it, and the action's arguments. The host
+/// decides it as the effect's caller, as it decides every action.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Call {
+    app: String,
+    record: Option<String>,
+    reference: ResourceRef,
+    action: String,
+    arguments: Result<serde_json::Map<String, serde_json::Value>, String>,
+}
+
+impl Call {
+    /// `action` of the resource `reference` names, which `app` keeps in
+    /// `record` (`None`: the app's own record of the workspace), with no
+    /// arguments yet.
+    #[must_use]
+    pub fn on(app: &str, record: Option<&str>, reference: &ResourceRef, action: &str) -> Self {
+        Self {
+            app: app.to_owned(),
+            record: record.map(str::to_owned),
+            reference: reference.clone(),
+            action: action.to_owned(),
+            arguments: Ok(serde_json::Map::new()),
+        }
+    }
+
+    /// The call with `arguments`, a struct or map of the action's
+    /// parameters by name.
+    #[must_use]
+    pub fn with(mut self, arguments: impl serde::Serialize) -> Self {
+        self.arguments = match serde_json::to_value(arguments) {
+            Ok(serde_json::Value::Object(arguments)) => Ok(arguments),
+            Ok(_) => Err("an action's arguments are named".to_owned()),
+            Err(error) => Err(error.to_string()),
+        };
+        self
+    }
+
+    /// The action this calls.
+    #[must_use]
+    pub fn action(&self) -> &str {
+        &self.action
+    }
+
+    /// Where the call goes in this window's workspace, and what it carries.
+    ///
+    /// # Errors
+    /// Arguments that are not named, or a window in no workspace.
+    pub(crate) fn request(
+        &self,
+    ) -> Result<(tilo_actions::remote::RemoteActionTarget, InvokeArgument), String> {
+        let arguments = self.arguments.clone()?;
+        let target =
+            self.reference
+                .action_target(&room()?, &self.app, self.record.as_deref(), &self.action);
+        Ok((target, InvokeArgument::Json(arguments)))
+    }
+}
+
 /// The action a refused open is told as.
 pub(crate) const OPEN: &str = tilo_actions::remote::APPLICATION_OPEN_ACTION;
 
@@ -128,6 +189,29 @@ impl Opener {
             .get_or_insert_with(RemoteActions::current)
             .invoke(target, argument, None);
         opening.calls.push((action, call));
+    }
+
+    /// Ask the host to invoke `target` with `argument` as a request of its
+    /// own (never told as this view's refusal), continuing `parent`, the
+    /// invocation the host delivered here for someone: the host decides it
+    /// as that invocation's caller. Without one it is the app's own request.
+    pub(crate) fn call(
+        &self,
+        parent: Option<tilo_actions::InvocationId>,
+        target: tilo_actions::remote::RemoteActionTarget,
+        argument: InvokeArgument,
+    ) -> InvocationCall {
+        self.0
+            .borrow_mut()
+            .door
+            .get_or_insert_with(RemoteActions::current)
+            .invoke_continuing(
+                parent,
+                tilo_actions::InvocationId::new(),
+                target,
+                argument,
+                None,
+            )
     }
 
     /// Follow the result of the action at `target` on this view's door,

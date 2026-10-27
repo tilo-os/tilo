@@ -30,7 +30,7 @@ impl tracing::Subscriber for KeyboardReadBridgeProbe {
 
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witness() {
-    use std::{cell::RefCell, os::fd::IntoRawFd, os::unix::fs::PermissionsExt as _};
+    use std::{os::fd::IntoRawFd, os::unix::fs::PermissionsExt as _};
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
     use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     use ui::portable_storage::{PortableStorage, StorageKey};
@@ -117,9 +117,9 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 reveal: None,
             };
             let principal = principal_id_for_root(env.cert.user_public_key);
-            let permissions = Rc::new(RefCell::new(
+            let permissions = ui::permissions::SharedPermissions::new(
                 ui::permissions::PermissionContext::permissive(),
-            ));
+            );
             let context = HostContext::prepare(
                 definition,
                 HostContextInputs {

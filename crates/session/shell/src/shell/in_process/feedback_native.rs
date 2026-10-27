@@ -10,9 +10,7 @@ use std::time::{Duration, Instant};
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination, FeedbackQuery};
 use tilo_actions::remote::{Pending, PendingPoll, RemoteActionMessage};
 use tilo_app::feedback::{Error, Submission};
-use tilo_desktop::feedback::transport::{
-    Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
-};
+use tilo_desktop::feedback::transport::{Enrollment, Identity, SignedReceipt, Startup, Transport};
 use tilo_user_identity::DeviceCert;
 
 /// The host owns a model service, not its app's rendering or teardown details.
@@ -225,10 +223,15 @@ impl Delivery {
             .current()
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         if !self.installed {
+            let recorder = window_recorder(
+                Arc::clone(&self.connection.borrow().network),
+                admission.destination.room.clone(),
+                apps.declared_capture_protected(),
+            );
             let startup = Startup::new(
                 admission.clone(),
                 Box::new(Session(self.connection.clone())),
-                Box::new(NoCapture),
+                Box::new(recorder),
             )
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
             apps.install_feedback_startup(&admission.reporter, startup)?;
@@ -270,6 +273,43 @@ impl Delivery {
         Ok(())
     }
 }
+/// Records the window a report is about from what its workspace committed,
+/// keeping the recording where the destination `room`'s Chat content lives.
+fn window_recorder(
+    network: Arc<ShellNetwork>,
+    room: String,
+    declared: super::DeclaredProtected,
+) -> tilo_desktop::feedback::recorder::WindowRecorder {
+    tilo_desktop::feedback::recorder::WindowRecorder {
+        documents: Box::new(move |workspace, app, record| {
+            let workspace = crate::shell::state::RoomId::parse(workspace)?;
+            network
+                .native_owner()
+                .ok()?
+                .with_current(workspace, |view| Ok(view.peer().document(app, record)))
+                .ok()
+                .flatten()
+        }),
+        // What the app declares: here when it is mounted in the session,
+        // asked over its shell-ui connection when it runs on its own.
+        protected: Box::new(move |app| {
+            declared.borrow().contains(app)
+                || crate::shell::foreign::store().app_asked_capture_protection(app)
+        }),
+        keep: Box::new(move |bytes| {
+            crate::shell::broker_services::with_session_blobs(|client| {
+                client
+                    .scope(&room, tilo_app::feedback::destination::PACKAGE)?
+                    .put(bytes, "application/octet-stream")
+            })
+            .map(|kept| kept.hash)
+            .map_err(|error| error.to_string())
+        }),
+        now_ms: Box::new(tilo_clock::unix_now_ms_i64),
+        pictures: Box::new(tilo_desktop::feedback::transport::NoCapture),
+    }
+}
+
 fn publisher(apps: &mut InProcessApps, admission: &Enrollment) -> Result<ui::App, LaunchError> {
     let definition = chat::definition();
     let connector = apps.broker.as_ref().ok_or(LaunchError::BindingMismatch)?(
@@ -330,7 +370,9 @@ fn publisher_on(
                     views,
                     device_id: apps.device_id.clone(),
                     instance_id: 1,
-                    permissions: Rc::new(RefCell::new(admission.permissions.clone())),
+                    permissions: ui::permissions::SharedPermissions::new(
+                        admission.permissions.clone(),
+                    ),
                     author: apps.author.clone(),
                     action_context: tilo_actions::ActionContext::default(),
                 },

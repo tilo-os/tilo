@@ -18,10 +18,22 @@
 use tilo_reference::link::{Link, Scope, WebEntries, WebEntry};
 
 use super::hosted_sites::{self, HostHttp, HostedRoom, JoinProgress, SiteError, SiteJoinState};
-use super::site_join::SiteJoin;
+use super::site_join::{Arriving, SiteJoin};
 use super::{RoomId, ShellNetwork};
 use crate::network::invite::enrollment_driver::Via;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
+
+/// A workspace link's invitation, as the join field read it.
+struct InvitationLink<'a> {
+    /// The origin of the room's host, where it is redeemed.
+    origin: &'a str,
+    room: RoomId,
+    invitation: &'a str,
+    /// The app the link opens, when it names one.
+    app: Option<&'a str>,
+    /// The site the link is under.
+    entry: &'a url::Url,
+}
 
 /// How long opening a link waits for the workspace it joins to be held.
 const LINK_JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
@@ -42,6 +54,10 @@ pub(crate) enum JoinText {
         origin: String,
         room: RoomId,
         invitation: String,
+        /// The app the link opens, when it names one.
+        app: Option<String>,
+        /// The site the link is under, whose entry may name the room's host.
+        entry: url::Url,
     },
 }
 
@@ -93,6 +109,8 @@ pub(crate) fn classify(text: &str) -> Result<JoinText, SiteError> {
                 origin: host.as_str().to_owned(),
                 room,
                 invitation: invitation.expose().to_owned(),
+                app: link.target.app.map(|app| app.as_str().to_owned()),
+                entry,
             });
         }
         return Ok(JoinText::Site {
@@ -175,7 +193,15 @@ impl ShellNetwork {
                 origin,
                 room,
                 invitation,
-            } => self.accept_invitation_link(&origin, room, &invitation),
+                app,
+                entry,
+            } => self.accept_invitation_link(&InvitationLink {
+                origin: &origin,
+                room,
+                invitation: &invitation,
+                app: app.as_deref(),
+                entry: &entry,
+            }),
         }
     }
 
@@ -205,9 +231,17 @@ impl ShellNetwork {
                 origin,
                 room,
                 invitation,
+                app,
+                entry,
             } => {
                 if let PeerSyncResponse::EnrollmentPending { id } =
-                    self.accept_invitation_link(&origin, room, &invitation)?
+                    self.accept_invitation_link(&InvitationLink {
+                        origin: &origin,
+                        room,
+                        invitation: &invitation,
+                        app: app.as_deref(),
+                        entry: &entry,
+                    })?
                 {
                     self.finish_when_enrolled(room, id, true)?;
                 }
@@ -237,14 +271,19 @@ impl ShellNetwork {
         }
     }
 
-    /// Redeem `invitation` to `room` at the host at `origin` over HTTPS, into
-    /// a new workspace named as the host names the room.
+    /// Redeem `link`'s invitation to its room at the host at its origin over
+    /// HTTPS, into a new workspace named as the host names the room.
     fn accept_invitation_link(
         &self,
-        origin: &str,
-        room: RoomId,
-        invitation: &str,
+        link: &InvitationLink<'_>,
     ) -> Result<PeerSyncResponse, String> {
+        let &InvitationLink {
+            origin,
+            room,
+            invitation,
+            app,
+            entry,
+        } = link;
         let tree = self
             .replica
             .lock()
@@ -293,6 +332,15 @@ impl ShellNetwork {
                 app: None,
             },
         )?;
+        self.expect_arrival(
+            room,
+            &Arriving {
+                invitation: app,
+                hosts: &[host],
+                by: Some(entry),
+                ..Arriving::default()
+            },
+        );
         // The workspace is the room from the start, saying Joining… until
         // its replica installs; a join that fails leaves it, saying why.
         let local = tree
@@ -347,7 +395,22 @@ mod tests {
                 origin: "https://rooms.example".into(),
                 room,
                 invitation: "abc".into(),
+                app: None,
+                entry: url::Url::parse("https://app.example/").unwrap(),
             })
+        );
+        assert_eq!(
+            classify(&format!(
+                "https://tilo.coffee/#/@eu1.tilo.coffee/w/{room}/so.tilo.chat?invite=abc"
+            )),
+            Ok(JoinText::InvitationLink {
+                origin: "https://eu1.tilo.coffee".into(),
+                room,
+                invitation: "abc".into(),
+                app: Some("so.tilo.chat".into()),
+                entry: url::Url::parse("https://tilo.coffee/").unwrap(),
+            }),
+            "the app an invitation link names is where its person arrives"
         );
         assert_eq!(
             classify("dGhpcy1pcy1hLXRva2Vu"),

@@ -11,6 +11,7 @@ mod capture;
 mod composer;
 pub mod model_review;
 mod outbox;
+pub mod recording;
 pub mod report;
 mod review;
 #[cfg(test)]
@@ -18,10 +19,12 @@ mod test_store;
 
 pub use capture::{CapturePermit, MaskedScreenshot, PixelRect, SurfaceCapture};
 pub use composer::{
-    Composer, Consent, Control, FeedbackHost, ModelCheck, PickedReport, ReportWords, Subject,
+    Composer, Consent, Control, FeedbackHost, ModelCheck, PickedReport, ReportWords, ShownRecord,
+    Subject,
 };
 pub use durable_store::{DurableStore, MemoryStore, StorageKey};
 pub use outbox::{DeliveryState, Outbox};
+pub use recording::{Recorded, RecordingRef, RecordingScope};
 pub use report::{
     Area, CropCapture, CropRef, FrameTimings, Hidden, Interaction, ModelPass, Outcome, Part, Pick,
     PickedText, Redaction, ReportDraft, ReportReview, Reveal, ReviewedSelection, ReviewedText,
@@ -108,6 +111,10 @@ pub struct ReviewedFeedback {
     /// slow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timings: Option<FrameTimings>,
+    /// A stretch of the history of the record the report's window shows,
+    /// included only when the person chose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<RecordingRef>,
 }
 
 /// Content-addressed masked PNG; raw surface bytes never enter the outbox.
@@ -172,6 +179,9 @@ impl Submission {
         }
         if size > 48_000 {
             return Err(Error::Invalid("context size"));
+        }
+        if let Some(recording) = &self.feedback.recording {
+            recording.validate()?;
         }
         if let Some(screenshot) = &self.feedback.screenshot
             && (screenshot.hash.len() != 64

@@ -313,7 +313,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Who did it, as one line and as presence names them: "You",
-    /// "ada via task 'Prepare Q3 financials'", "Morning · Shortcut".
+    /// "Ada via task 'Prepare Q3 financials'", "Morning · Shortcut".
     ///
     /// Anyone but the reader acted as a task, so the task names them: the
     /// person under whose authority it was done, or the Shortcut that ran.

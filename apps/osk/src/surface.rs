@@ -43,6 +43,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "large",
     "emoji",
     "composing",
+    "parked",
 ];
 
 /// The on-screen keyboard over its preferences.
@@ -346,6 +347,9 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
         }
         match scenario {
             Some("emoji") => self.keyboard.open_emoji_panel(),
+            // A parked keyboard: the strip that brings the keys back, and the
+            // screen under it already the app's again.
+            Some("parked") => self.keyboard.set_parked(true),
             Some("terminal-ctrl") => {
                 self.keyboard.set_purpose(InputPurpose::Terminal);
                 self.tap_tool("ctrl");

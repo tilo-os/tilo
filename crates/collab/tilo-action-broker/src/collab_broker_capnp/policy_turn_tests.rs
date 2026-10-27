@@ -186,18 +186,25 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_betwee
     tilo_test_env::in_own_process(
         module_path!(),
         "an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_between",
-        an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation,
+        || {
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            let start = tilo_clock::unix_now();
+            let _held = tilo_clock::testing::hold_wall_everywhere(
+                process,
+                std::time::UNIX_EPOCH
+                    .checked_add(Duration::from_secs(start))
+                    .unwrap(),
+            );
+            an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(process, start);
+        },
     );
 }
 
 #[cfg(target_os = "linux")]
-fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation() {
-    let start = tilo_clock::unix_now();
-    tilo_clock::freeze_wall(
-        std::time::UNIX_EPOCH
-            .checked_add(Duration::from_secs(start))
-            .unwrap(),
-    );
+fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
+    process: tilo_clock::testing::OwnProcess,
+    start: u64,
+) {
     let directory = tempfile::tempdir().expect("temporary socket directory");
     super::tests::secure_socket_parent(directory.path()).expect("private socket directory");
     let socket = directory.path().join("policy.sock");
@@ -257,7 +264,8 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation() {
     // The grant ends, and the policy clock announces it: one re-check, at
     // the expiry, which registers the next one.
     let before_expiry = owner.checks().len();
-    tilo_clock::freeze_wall(
+    let _held = tilo_clock::testing::hold_wall_everywhere(
+        process,
         std::time::UNIX_EPOCH
             .checked_add(Duration::from_secs(expiry))
             .unwrap(),

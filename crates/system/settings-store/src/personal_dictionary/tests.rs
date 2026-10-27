@@ -43,7 +43,7 @@ fn add_edit_remove_reset_and_restart_use_one_persisted_dictionary() {
         .unwrap();
     assert!(osk.snapshot().unwrap().words.is_empty());
     let added = service
-        .edit(&osk, removed.revision, Edit::Add(word("ada", None)))
+        .edit(&osk, removed.revision, Edit::Add(word("Ada", None)))
         .unwrap();
     service.edit(&osk, added.revision, Edit::Reset).unwrap();
     assert!(reader.snapshot().unwrap().words.is_empty());

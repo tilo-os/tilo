@@ -22,7 +22,7 @@ struct Group {
 }
 
 /// Every Notes shortcut, in the order a person meets the tasks: real key
-/// chords only, each listed once. Keys are spelled by [`spell`].
+/// chords only, each listed once. Keys are spelled by [`ui::spell_shortcut`].
 const GROUPS: &[Group] = &[
     Group {
         label: "notes-help-group-notes",
@@ -87,40 +87,6 @@ const GROUPS: &[Group] = &[
     },
 ];
 
-/// A row's keys as this platform spells them. `{cmd:K}` is the command key
-/// with K (Ctrl+K, or the Command key on a Mac), `{cmd+shift:Enter}` adds
-/// Shift, `{alt:Up}` is Alt with Up and `{F2}` is a key on its own, each in
-/// the active keyboard's legends; everything else is shown as written.
-fn spell(template: &str) -> String {
-    let conventions = ui::PlatformConventions::default();
-    let mut out = String::new();
-    let mut rest = template;
-    while let Some((before, after)) = rest.split_once('{') {
-        out.push_str(before);
-        let Some((spec, tail)) = after.split_once('}') else {
-            out.push('{');
-            rest = after;
-            break;
-        };
-        let (modifiers, key) = spec.split_once(':').unwrap_or(("", spec));
-        let mut shortcut = if modifiers.contains("cmd") {
-            ui::Shortcut::command(key)
-        } else {
-            ui::Shortcut::key(key)
-        };
-        if modifiers.contains("shift") {
-            shortcut = shortcut.shift();
-        }
-        if modifiers.contains("alt") {
-            shortcut = shortcut.alt();
-        }
-        out.push_str(&shortcut.label(conventions));
-        rest = tail;
-    }
-    out.push_str(rest);
-    out
-}
-
 /// One group of the reference: its title over its shortcut rows, the keys
 /// in the column every group shares.
 fn group(group: &Group, keys: &PropertyColumn) -> Element {
@@ -128,8 +94,11 @@ fn group(group: &Group, keys: &PropertyColumn) -> Element {
         .rows
         .iter()
         .map(|(label, keys)| {
-            Property::new(ui::i18n::I18nManager::lookup(label, None), spell(keys))
-                .with_kind(TextKind::Identifier)
+            Property::new(
+                ui::i18n::I18nManager::lookup(label, None),
+                ui::spell_shortcut(keys),
+            )
+            .with_kind(TextKind::Identifier)
         })
         .collect();
     Box::new(
@@ -247,26 +216,26 @@ mod tests {
     #[test]
     fn keys_are_spelled_in_this_platforms_conventions() {
         let command = ui::Shortcut::command("K").label(ui::PlatformConventions::default());
-        assert_eq!(spell("{cmd:K}"), command);
+        assert_eq!(ui::spell_shortcut("{cmd:K}"), command);
         assert_eq!(
-            spell("**text** or {cmd:B}"),
+            ui::spell_shortcut("**text** or {cmd:B}"),
             format!(
                 "**text** or {}",
                 ui::Shortcut::command("B").label(ui::PlatformConventions::default())
             )
         );
-        assert!(spell("{cmd+shift:C}").contains('C'));
+        assert!(ui::spell_shortcut("{cmd+shift:C}").contains('C'));
         assert_eq!(
-            spell("{alt:Up}"),
+            ui::spell_shortcut("{alt:Up}"),
             ui::Shortcut::key("Up")
                 .alt()
                 .label(ui::PlatformConventions::default())
         );
-        assert_eq!(spell("{F2}"), "F2");
-        assert_eq!(spell("[["), "[[");
+        assert_eq!(ui::spell_shortcut("{F2}"), "F2");
+        assert_eq!(ui::spell_shortcut("[["), "[[");
         for entry in GROUPS {
             for (_, keys) in entry.rows {
-                let spelled = spell(keys);
+                let spelled = ui::spell_shortcut(keys);
                 assert!(!spelled.contains('{'), "unspelled keys: {spelled}");
                 assert!(
                     !spelled.contains(['←', '→', '↑', '↓', '↵']),

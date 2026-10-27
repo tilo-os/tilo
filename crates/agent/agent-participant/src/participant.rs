@@ -98,7 +98,9 @@ const MOST_SNAPSHOTS_CHARS: usize = 9_000;
 
 /// An agent granted at most this many apps is given every one's
 /// operations in full ([`PlanContext::reference`]); one granted more, only
-/// those of the apps open, previewed or named.
+/// those of the apps open, previewed or named. In
+/// [`crate::profile::Catalog::Relevant`] every granted app is referenced,
+/// and the planner describes those the request is about.
 const MOST_REFERENCED_APPS: usize = 4;
 
 /// A task whose steps are done, waiting to be reported until what it
@@ -309,6 +311,9 @@ pub struct AgentParticipant {
     room_pictures: crate::vision::RoomPictures,
     /// Whether its planner's model is shown pictures ([`Planner::sees`]).
     sight: crate::vision::Sight,
+    /// How much of what its apps can do its plans are told
+    /// ([`Planner::catalog`]).
+    catalog: crate::profile::Catalog,
     /// Whether each item of a task's checklist is done by an agent of its
     /// own ([`crate::profile::DECOMPOSE_ENV`]).
     mode: decompose::Mode,
@@ -363,6 +368,7 @@ impl AgentParticipant {
         }
         let checks_work = planner.checks_work();
         let sight = crate::vision::Sight::from(planner.sees());
+        let catalog = planner.catalog();
         // Its planner's profile, or a setting naming this agent.
         let itemised = planner.decomposes()
             || crate::profile::named_on(
@@ -446,6 +452,7 @@ impl AgentParticipant {
             answered: actions::Answered::default(),
             room_pictures,
             sight,
+            catalog,
             mode: if itemised {
                 decompose::Mode::Itemised
             } else {
@@ -1132,6 +1139,7 @@ impl AgentParticipant {
                 by_model: false,
                 obligations: crate::planner::Obligations::default(),
                 role,
+                catalog: None,
             });
             return;
         }
@@ -1152,6 +1160,7 @@ impl AgentParticipant {
                 by_model: false,
                 obligations: crate::planner::Obligations::default(),
                 role,
+                catalog: None,
             });
         }
     }
@@ -1211,6 +1220,7 @@ impl AgentParticipant {
             by_model,
             obligations,
             role: _,
+            catalog: _,
         } = planned;
         if !self.control.is_running(&task) {
             return;
@@ -1346,6 +1356,7 @@ impl AgentParticipant {
             declared: &planned.obligations,
             shown,
             role: planned.role.as_ref(),
+            catalog: planned.catalog.as_ref(),
         });
     }
 

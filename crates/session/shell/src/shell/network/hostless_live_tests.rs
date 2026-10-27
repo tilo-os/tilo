@@ -33,7 +33,7 @@ fn a_wave_crosses_a_room_with_no_workspace_host() {
         room,
         &OWNER.to_string(),
         &host_net.keypair.public().to_string(),
-        "ada",
+        "Ada",
     ));
 
     // The guest joined the room and knows its people from its document.

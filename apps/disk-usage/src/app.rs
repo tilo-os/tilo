@@ -30,6 +30,22 @@ fn owner() -> ui::attention::Owner {
     ui::attention::Owner::new(OWNER_APP, OWNER_NAME).with_icon(Icon::HardDrive)
 }
 
+/// A measurement under way, for a capture: the band says what it is
+/// doing and offers Stop, exactly as a live one does.
+pub(crate) fn sample_job(folder: &str) {
+    if ui::jobs::is_active() {
+        return;
+    }
+    let job = ui::jobs::start(
+        ui::jobs::Spec::new(format!("Measuring {folder}"))
+            .subject(ui::jobs::Subject::new(owner(), folder.to_owned()))
+            .unit(ui::jobs::Unit::Bytes)
+            .phase("Reading")
+            .stoppable(|| {}),
+    );
+    job.seen(41_200_000_000);
+}
+
 /// How a scan reports the bytes it has seen to its job: the registry takes
 /// the count, and the effect's own progress wakes the app to draw it.
 fn reporter(job: &ui::jobs::Running) -> impl Fn(u64, u64) + Send + Sync + 'static {
@@ -435,18 +451,13 @@ impl DiskUsageApp {
                 analyze(&path)
             }
             Request::Analyze(path) => analyze(&path),
-            Request::Back => self.back_effect(),
+            Request::Back => DiskUsageEffect::Back,
         };
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(&effect);
         }
     }
 
-    /// Back, as an effect: the door publishes it, so an agent can go back
-    /// the way the button does.
-    fn back_effect(&self) -> DiskUsageEffect {
-        DiskUsageEffect::Back
-    }
     /// Measure `path` as a job: the people's window keeps working, the band
     /// says what it has seen and offers Stop, and the job survives this page
     /// being left.
@@ -474,7 +485,7 @@ impl DiskUsageApp {
                     move || cancellation.cancel()
                 }),
         );
-        let worker = cancellation.clone();
+        let worker = cancellation;
         let reporting = reporter(&job);
         cx.thread(
             move |progress| {
@@ -543,22 +554,6 @@ impl DiskUsageApp {
         }
     }
 
-    /// A measurement under way, for a capture: the band says what it is
-    /// doing and offers Stop, exactly as a live one does.
-    pub(crate) fn sample_job(&mut self, folder: &str) {
-        if ui::jobs::is_active() {
-            return;
-        }
-        let job = ui::jobs::start(
-            ui::jobs::Spec::new(format!("Measuring {folder}"))
-                .subject(ui::jobs::Subject::new(owner(), folder.to_owned()))
-                .unit(ui::jobs::Unit::Bytes)
-                .phase("Reading")
-                .stoppable(|| {}),
-        );
-        job.seen(41_200_000_000);
-    }
-
     /// What wants a person, from the window's bar.
     pub(crate) fn open_needs(&mut self) {
         if matches!(self.view, View::Needs) {
@@ -583,7 +578,7 @@ impl DiskUsageApp {
     }
 
     /// Carry out what the person pressed on the jobs band or the stack.
-    fn answer_presses(&mut self) {
+    fn answer_presses(&self) {
         for press in self.jobs.take() {
             if let Some(subject) = ui::jobs::apply(press)
                 && let Some(target) = subject.target

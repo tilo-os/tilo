@@ -230,6 +230,11 @@ const HOME_PEER_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 /// identity root.
 const PENDING_DECOMMISSIONS: &str = "pending-home-peer-decommissions.json";
 
+/// The wall clock the relay-status thread judges the heartbeat by: the
+/// process's, unless a test hands it one that reads fresh however long the
+/// thread takes to look.
+type StatusClock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
+
 /// What a shown Device mesh pane follows: the relay's status, read on a
 /// thread of its own, and the files the pane shows.
 ///
@@ -250,6 +255,11 @@ impl MeshFollow {
     /// started (the pane then reads on its timer). Must be called on the
     /// UI thread, in the window's wake scope.
     fn start(config: &RelayConfig, files: &[PathBuf]) -> Option<Self> {
+        Self::start_at(config, files, Arc::new(ui::time::wall))
+    }
+
+    /// [`Self::start`] reading the wall clock `now` reports.
+    fn start_at(config: &RelayConfig, files: &[PathBuf], now: StatusClock) -> Option<Self> {
         let status = Arc::new(Mutex::new(None));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (poke, events) = std::sync::mpsc::channel();
@@ -261,7 +271,7 @@ impl MeshFollow {
                 poke.clone(),
             );
             let wake = ui::WakeHandle::new();
-            Box::new(move || follow_relay(&config, &latest, &stop, poke, &events, &wake))
+            Box::new(move || follow_relay(&config, &latest, &stop, poke, &events, &wake, &*now))
         };
         crate::device_read::thread("settings-relay-status", follow).ok()?;
         Some(Self {
@@ -306,6 +316,7 @@ fn follow_relay(
     poke: std::sync::mpsc::Sender<()>,
     events: &std::sync::mpsc::Receiver<()>,
     wake: &ui::WakeHandle,
+    now: &(dyn Fn() -> SystemTime + Send + Sync),
 ) {
     use std::sync::mpsc::RecvTimeoutError;
     let heartbeat = [
@@ -319,7 +330,7 @@ fn follow_relay(
     });
     let mut watch = crate::watch::Watched::calling(&heartbeat, &on_change);
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
-        let status = RelayRuntimeStatus::read(config, ui::time::wall());
+        let status = RelayRuntimeStatus::read(config, now());
         if latest
             .lock()
             .is_ok_and(|mut latest| latest.replace(status) != Some(status))
@@ -562,6 +573,11 @@ impl DeviceMeshArea {
     /// Whether the read [`Self::start_read`] started has ended.
     pub(crate) fn read_finished(&self) -> bool {
         self.read.is_finished()
+    }
+
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
     }
 
     /// Take in finished background commands, if the model exists.
@@ -2074,6 +2090,14 @@ mod tests {
     use tilo_relay_protocol::WorkspaceBinding;
     use ui::widget::DisclosureRow;
 
+    /// `at` as milliseconds after the epoch, as the held clock reports it.
+    fn millis_since_epoch(at: SystemTime) -> u64 {
+        at.duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| {
+                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+            })
+    }
+
     fn test_ids(widget: &dyn Widget) -> Vec<String> {
         fn walk(widget: &dyn Widget, ids: &mut Vec<String>) {
             if let Some(id) = widget.test_id() {
@@ -2125,6 +2149,17 @@ mod tests {
     /// status rather than for every heartbeat or on a timer.
     #[test]
     fn the_relay_status_follows_its_heartbeat_and_its_lapse() {
+        // The thread judges the heartbeat by a clock this test moves: the
+        // heartbeat reads fresh however long the thread takes to look at
+        // it, and lapses at once when the test says so.
+        let held = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let clock = {
+            let held = Arc::clone(&held);
+            Arc::new(move || {
+                SystemTime::UNIX_EPOCH
+                    + Duration::from_millis(held.load(std::sync::atomic::Ordering::Acquire))
+            }) as StatusClock
+        };
         let dir = tempfile::tempdir().unwrap();
         let state_root = dir.path().join("tilo-relay");
         std::fs::create_dir_all(&state_root).unwrap();
@@ -2134,19 +2169,12 @@ mod tests {
             device_role: DeviceRole::Hybrid,
             ..RelayConfig::default()
         };
-        let follow = MeshFollow::start(&config, &[]).expect("the status thread starts");
+        let follow = MeshFollow::start_at(&config, &[], clock).expect("the status thread starts");
         tilo_test_env::wait_until("the first read", || {
             follow.status() == Some(RelayRuntimeStatus::Offline)
         });
-        // The wall clock stands before the heartbeat, so it reads fresh
-        // however long the thread takes to look at it.
-        ui::time::freeze_wall(ui::time::wall());
         let metrics = tilo_relay_protocol::metrics::MetricsSnapshot::default();
         tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
-        tilo_test_env::wait_until("the heartbeat to show the relay online", || {
-            follow.status() == Some(RelayRuntimeStatus::Online)
-        });
-        // Then past its freshness, for the thread's next look.
         let written = std::fs::metadata(
             config
                 .state_root
@@ -2154,7 +2182,20 @@ mod tests {
         )
         .and_then(|metadata| metadata.modified())
         .unwrap();
-        ui::time::freeze_wall(written + STATUS_FRESHNESS + Duration::from_secs(1));
+        // The clock stands at the heartbeat's own time, so it reads fresh
+        // however long the thread takes to look at it.
+        held.store(
+            millis_since_epoch(written),
+            std::sync::atomic::Ordering::Release,
+        );
+        tilo_test_env::wait_until("the heartbeat to show the relay online", || {
+            follow.status() == Some(RelayRuntimeStatus::Online)
+        });
+        // Then past its freshness, for the thread's next look.
+        held.store(
+            millis_since_epoch(written + STATUS_FRESHNESS + Duration::from_secs(1)),
+            std::sync::atomic::Ordering::Release,
+        );
         tilo_test_env::wait_until("the lapsed heartbeat to show it offline", || {
             follow.status() == Some(RelayRuntimeStatus::Offline)
         });

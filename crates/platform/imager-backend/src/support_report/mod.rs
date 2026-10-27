@@ -269,6 +269,20 @@ pub enum EvidenceFact {
     Suspend {
         states: Vec<String>,
     },
+    /// The architecture this observation ran on.
+    Architecture {
+        name: String,
+    },
+    /// Hardware-accelerated virtualization this observation could open.
+    Virtualization {
+        names: Vec<String>,
+    },
+    /// The board profile the running image was built for, when it carries one.
+    Board {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        devicetree: Option<String>,
+    },
 }
 
 /// A fact together with what it can establish.
@@ -343,6 +357,27 @@ pub enum SupportReason {
     LegacyBoot,
     /// The startup mode could not be read.
     StartupUnknown,
+    /// The image was built for this architecture, which its boot chain needs.
+    StartsHere {
+        architecture: String,
+        /// The board profile the image carries, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        board: Option<String>,
+        /// The device tree of that board profile, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        devicetree: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secure_boot: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tpm: Option<String>,
+    },
+    /// The image was built for a different architecture than this computer.
+    OtherArchitecture {
+        architecture: String,
+        running: String,
+    },
+    /// A board profile needs its own device tree and the image has none.
+    BoardWithoutDevicetree { board: String, architecture: String },
     /// Input devices were found.
     InputDevices { count: usize },
     /// Pointing devices were found without a built-in keyboard.
@@ -445,11 +480,19 @@ impl ComponentSupport {
                         && vendor.as_deref().is_none_or(bounded)
                         && product.as_deref().is_none_or(bounded)
                 }
-                EvidenceFact::Display { name, .. } => bounded(name),
+                EvidenceFact::Display { name, .. } | EvidenceFact::Architecture { name } => {
+                    bounded(name)
+                }
                 EvidenceFact::Kernel { version } => bounded(version),
                 EvidenceFact::Acpi { tables } => *tables <= 1_000_000,
                 EvidenceFact::Suspend { states } => {
                     states.len() <= 16 && states.iter().all(|state| bounded(state))
+                }
+                EvidenceFact::Virtualization { names } => {
+                    !names.is_empty() && names.len() <= 16 && names.iter().all(|name| bounded(name))
+                }
+                EvidenceFact::Board { id, devicetree } => {
+                    bounded(id) && devicetree.as_deref().is_none_or(bounded)
                 }
             };
             if !valid {
@@ -487,6 +530,26 @@ impl ComponentSupport {
                     && capacity.is_none_or(|capacity| capacity <= 100)
             }
             SupportReason::Uefi { tpm, .. } => tpm.as_deref().is_none_or(bounded),
+            SupportReason::StartsHere {
+                architecture,
+                board,
+                devicetree,
+                tpm,
+                ..
+            } => {
+                bounded(architecture)
+                    && board.as_deref().is_none_or(bounded)
+                    && devicetree.as_deref().is_none_or(bounded)
+                    && tpm.as_deref().is_none_or(bounded)
+            }
+            SupportReason::OtherArchitecture {
+                architecture,
+                running,
+            } => bounded(architecture) && bounded(running) && architecture != running,
+            SupportReason::BoardWithoutDevicetree {
+                board,
+                architecture,
+            } => bounded(board) && bounded(architecture),
             SupportReason::InputDevices { count } => *count <= 1024,
             SupportReason::NotDetected
             | SupportReason::DisplayDisconnected
@@ -731,6 +794,19 @@ struct RawReport {
     tpm: Option<String>,
     disks: Vec<RawDisk>,
     inputs: Vec<String>,
+    /// Hardware-accelerated virtualization the kernel offered this process.
+    virtualization: Vec<String>,
+    /// The board profile the running image carries, if it carries one.
+    board: Option<RawBoard>,
+}
+
+/// The image's own record of the board it was built for, written by the image
+/// builder at `/usr/lib/tilo/hardware-profile.json`.
+#[derive(Clone, Debug)]
+struct RawBoard {
+    id: String,
+    architecture: Option<String>,
+    devicetree: Option<String>,
 }
 
 #[derive(Clone, Debug)]

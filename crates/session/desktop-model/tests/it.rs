@@ -5,8 +5,6 @@
 
 #[path = "active_group.rs"]
 pub mod active_group;
-#[path = "admitted_projection.rs"]
-pub mod admitted_projection;
 #[path = "agent_membership.rs"]
 pub mod agent_membership;
 #[path = "apps.rs"]
@@ -27,7 +25,5 @@ pub mod peer_window_merge;
 pub mod portable_state;
 #[path = "projection.rs"]
 pub mod projection;
-#[path = "room_schema.rs"]
-pub mod room_schema;
 #[path = "topology.rs"]
 pub mod topology;

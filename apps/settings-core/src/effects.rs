@@ -235,8 +235,41 @@ pub fn answer(
     effect: SettingsEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if let Some(waiting) = after_area_read(app, &effect, cx) {
+        return Ok(waiting);
+    }
     let family = effect.0.family();
     (family.answer)(app, effect.0.into_any(), cx)
+}
+
+/// When `effect` is answered on the model of an area whose read of the
+/// device has not ended (an agent or the palette reached it before the
+/// window's warm-up did), start that read if need be and answer once it
+/// has ended: building the model now would wait for the device on the UI
+/// thread. Only an effect declared to answer later can; one declared to
+/// answer at once is answered on the model as it is read now.
+fn after_area_read(
+    app: &SettingsApp,
+    effect: &SettingsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> Option<ui::framework::Effected> {
+    let id = effect.id();
+    let read = crate::area::registry()
+        .live_areas
+        .iter()
+        .filter(|area| !(area.is_open)(app))
+        .filter_map(|area| area.background.as_ref())
+        .find(|read| {
+            (read.answers)().iter().any(|decl| {
+                decl.id == id && matches!(decl.answers, tilo_resource::Answers::Later { .. })
+            })
+        })?;
+    (read.start)(app);
+    let wait = (read.wait)(app)?;
+    let effect = effect.clone();
+    Some(crate::device_read::job(cx, wait, move |app, (), cx| {
+        answer(app, effect, cx)
+    }))
 }
 
 effect_family!(NavigationEffect => answer_navigation);
@@ -247,7 +280,6 @@ pub const PART: crate::area::Part = crate::area::Part {
     panes: &[],
     families: &[(10, NavigationEffect::FAMILY)],
     live_areas: &[],
-    sections: &[],
     settings: &[],
 };
 
@@ -278,6 +310,13 @@ pub struct BackgroundRead {
     pub start: fn(&SettingsApp) -> bool,
     /// Whether the started read has ended.
     pub finished: fn(&SettingsApp) -> bool,
+    /// What waits off the UI thread for the started read to end
+    /// ([`crate::device_read::DeviceRead::wait`]).
+    pub wait: fn(&SettingsApp) -> Option<crate::device_read::Wait>,
+    /// The effects answered on the area's model: one that arrives before
+    /// the read has ended is answered once it has, rather than waiting for
+    /// it on the UI thread.
+    pub answers: fn() -> Vec<EffectDecl>,
 }
 
 /// When the areas of a window read. A window that reaches the device opens
@@ -447,22 +486,32 @@ pub fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
     rows
 }
 
-/// The live row `id`, published or not: an address an agent kept or a
-/// search hit names reads the area it belongs to.
+/// The live row `id` among the areas read: an address an agent kept or a
+/// search hit names. A row of an area not read yet is not known until its
+/// read lands ([`row_pending`]); asking never reads it here.
 pub fn row(app: &SettingsApp, id: &str) -> Option<ui::framework::LiveRow> {
-    fn find(rows: Vec<ui::framework::LiveRow>, id: &str) -> Option<ui::framework::LiveRow> {
-        rows.into_iter().find(|row| row.id() == id)
+    rows(app).into_iter().find(|row| row.id() == id)
+}
+
+/// Whether row `id`, which no area read so far shows, may be one of an area
+/// not read yet: that area's read is started, and the agent addressing the
+/// row is answered once it lands.
+pub fn row_pending(app: &SettingsApp, id: &str) -> bool {
+    let _ = id;
+    let mut pending = false;
+    for area in crate::area::registry().live_areas.iter().copied() {
+        if app.publishes_area(area) {
+            continue;
+        }
+        pending = true;
+        if let Some(read) = &area.background {
+            (read.start)(app);
+        }
     }
-    // The areas that have read are asked first, so a published row never
-    // reads another area.
-    find(rows(app), id).or_else(|| {
-        crate::area::registry()
-            .live_areas
-            .iter()
-            .copied()
-            .filter(|area| !app.publishes_area(area))
-            .find_map(|area| find((area.rows)(app), id))
-    })
+    if pending {
+        app.read_areas_now();
+    }
+    pending
 }
 
 /// The effects that differ from their declaration on this device now.
@@ -479,7 +528,7 @@ pub fn statuses(app: &SettingsApp) -> Vec<ui::framework::EffectStatus> {
 pub const fn effect<E, A: serde::Serialize>(
     effect: ActionRef<E, A>,
 ) -> ActionRef<SettingsEffect, A> {
-    ActionRef::new(effect.id, effect.params)
+    ActionRef::new(effect.id, effect.params, *effect.kind())
 }
 
 /// The live row of `category`'s pane.

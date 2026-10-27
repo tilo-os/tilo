@@ -74,7 +74,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AgentModelsArea> 
     app.areas().find()
 }
 
-pub use provider_settings_ui::AgentProviders;
+pub use crate::prefs::AgentProviders;
 
 /// Local models on this device and the person's model providers.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -832,6 +832,11 @@ impl AgentModelsArea {
         self.read.is_finished()
     }
 
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
+    }
+
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
     /// its first frame ([`crate::panes::LIVE_AREAS`]).
@@ -948,6 +953,8 @@ pub struct AgentModelsModel {
     vertex_fields: Mutex<HashMap<String, VertexFields>>,
     vertex_keys: HashMap<String, Result<bool, String>>,
     vertex_reads: Rereads<HashMap<String, Result<bool, String>>>,
+    /// Grants being forgotten on a worker, and whether a failure is shown.
+    forgetting: Vec<(bool, crate::device_read::Landing)>,
     custodian: account_custody::Custodian,
     opener: Arc<dyn BrowserOpener>,
     /// Who a Hugging Face sign-in belongs to is asked here.
@@ -1015,6 +1022,7 @@ impl AgentModelsModel {
             vertex_fields: Mutex::new(HashMap::new()),
             vertex_keys: HashMap::new(),
             vertex_reads: Rereads::default(),
+            forgetting: Vec::new(),
             custodian: account_custody::Custodian::live(),
             opener: Arc::new(PortalOpener),
             hub_userinfo: account_custody::hugging_face::USERINFO_ENDPOINT.into(),
@@ -1042,6 +1050,7 @@ impl AgentModelsModel {
             .collect();
         let custodian = self.custodian.clone();
         if let Some(keys) = self.vertex_reads.ask(move || {
+            crate::device_read::off_ui_thread();
             ids.into_iter()
                 .map(|id| {
                     let result = custodian
@@ -1068,8 +1077,51 @@ impl AgentModelsModel {
             self.vertex_keys = keys;
             self.changed = true;
         }
+        self.take_forgotten();
         if self.vertex_reads.due_again() {
             self.read_vertex_keys();
+        }
+    }
+
+    /// Forget the grant of provider `profile` on a worker: opening the vault
+    /// asks the Secret Service. A failure is shown when `report`.
+    fn forget_grant(&mut self, profile: &str, report: bool) {
+        let custodian = self.custodian.clone();
+        let grant = agent_vertex::grant_id(profile);
+        self.forgetting.push((
+            report,
+            crate::device_read::Landing::start(move || -> Result<(), String> {
+                crate::device_read::off_ui_thread();
+                custodian
+                    .forget_oauth(&grant)
+                    .map_err(|error| error.to_string())
+            }),
+        ));
+    }
+
+    /// Take in the grants forgotten since the last poll, and read the
+    /// sign-ins again once any was.
+    fn take_forgotten(&mut self) {
+        let mut forgot = false;
+        let mut failed = None;
+        self.forgetting.retain(|(report, forgetting)| {
+            match forgetting.poll::<Result<(), String>>() {
+                crate::device_read::Landed::Pending => return true,
+                crate::device_read::Landed::Done(Err(error)) if *report => failed = Some(error),
+                crate::device_read::Landed::Done(_) | crate::device_read::Landed::Lost => {}
+            }
+            forgot = true;
+            false
+        });
+        if let Some(error) = failed {
+            self.notice = Some(t_args(
+                "agent-sign-in-forget-err",
+                &[("error", error.into())],
+            ));
+        }
+        if forgot {
+            self.read_vertex_keys();
+            self.changed = true;
         }
     }
 
@@ -1112,9 +1164,7 @@ impl AgentModelsModel {
             setup.cancel();
             if !setup.existing {
                 // Nothing may have been sealed yet; there is nothing to report.
-                let _ = self
-                    .custodian
-                    .forget_oauth(&agent_vertex::grant_id(&setup.profile_id));
+                self.forget_grant(&setup.profile_id, false);
             }
         }
         self.changed = true;
@@ -1332,14 +1382,7 @@ impl AgentModelsModel {
         {
             self.cancel_vertex();
         }
-        self.custodian
-            .forget_oauth(&agent_vertex::grant_id(provider))
-            .map_err(|error| {
-                t_args(
-                    "agent-sign-in-forget-err",
-                    &[("error", error.to_string().into())],
-                )
-            })?;
+        self.forget_grant(provider, true);
         self.vertex_fields.lock_recover().remove(provider);
         Ok(())
     }
@@ -1388,7 +1431,14 @@ impl AgentModelsModel {
                 false,
             ),
         };
-        if !existing && !agent_vertex::signed_in(&self.custodian, &id) {
+        // A provider being added is chosen for only once its sign-in
+        // sealed the grant: asking custody again would open the vault here.
+        if !existing
+            && !self
+                .vertex
+                .as_ref()
+                .is_some_and(|setup| setup.profile_id == id && setup.choosing())
+        {
             return Err(t("agent-vertex-sign-in-first"));
         }
         Ok((id, existing))
@@ -2366,12 +2416,7 @@ impl PaneModel for AgentModelsModel {
             if expected.is_some() {
                 self.vertex_saved(&id);
             } else {
-                if let Err(error) = self.custodian.forget_oauth(&agent_vertex::grant_id(&id)) {
-                    self.notice = Some(t_args(
-                        "agent-sign-in-forget-err",
-                        &[("error", error.to_string().into())],
-                    ));
-                }
+                self.forget_grant(&id, true);
                 if self
                     .vertex
                     .as_ref()
@@ -2425,6 +2470,7 @@ impl PaneModel for AgentModelsModel {
             || self.is_busy()
             || self.snapshot_reads.running()
             || self.vertex_reads.running()
+            || !self.forgetting.is_empty()
             || self.vertex.as_ref().is_some_and(VertexSetup::waiting)
             || self.hub.signing_in()
     }

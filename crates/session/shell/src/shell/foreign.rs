@@ -3418,6 +3418,17 @@ impl ForeignFrameStore {
             .fetch_add(1, Ordering::Release);
     }
 
+    /// Whether `app_id`, running in its own process, asked over its
+    /// shell-ui connection for its windows to be withheld: how such an app
+    /// states its declaration (`ComponentBehaviour::capture_protected`).
+    pub fn app_asked_capture_protection(&self, app_id: &str) -> bool {
+        self.capture_protection
+            .lock_recover()
+            .apps
+            .values()
+            .any(|app| app == app_id)
+    }
+
     /// Whether a capture must draw surface `id`, owned by `app_id`, as a
     /// placeholder.
     pub fn is_capture_protected(&self, id: SurfaceId, app_id: &str) -> bool {
@@ -4153,6 +4164,28 @@ impl ForeignFrameStore {
         guard.get(&id).and_then(|e| e.pinned.or(e.placement))
     }
 
+    /// The largest size the client allows itself, in logical pixels, when it
+    /// stated one: the on-screen keyboard parked to a strip says how tall the
+    /// surface it lives on may be.
+    pub fn declared_max_extent(&self, id: SurfaceId) -> Option<(f64, f64)> {
+        self.with_entry(id, |entry| {
+            (entry.max_size.0 > 0 && entry.max_size.1 > 0)
+                .then(|| (f64::from(entry.max_size.0), f64::from(entry.max_size.1)))
+        })
+    }
+
+    /// Where the surface's window is actually drawn inside its tile: the
+    /// whole tile, unless the client kept itself smaller, in which case it
+    /// sits centred in it. Input belongs to the window, not the empty part of
+    /// the tile it was given.
+    pub fn drawn_rect(&self, id: SurfaceId, tile: Rect) -> Rect {
+        let Some((width, height)) = self.frame_size(id) else {
+            return tile;
+        };
+        self.with_entry(id, |entry| entry.frame_rect(tile, width, height))
+            .unwrap_or(tile)
+    }
+
     /// Size of the tab rectangle in physical pixels.
     #[allow(
         clippy::cast_possible_truncation,
@@ -4847,14 +4880,7 @@ impl ForeignSurfaceWidget {
         }
         let tile = self.rect;
         let surface = self.surface_id;
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &tile,
-        );
-        crate::shell::live_embeds::paint_over(surface, scene, transform, |rect| {
+        crate::shell::live_embeds::paint_over(surface, scene, transform, tile, |rect| {
             let store = store();
             match (
                 store.tile_point(surface, tile, (rect.x0, rect.y0)),
@@ -4864,7 +4890,6 @@ impl ForeignSurfaceWidget {
                 _ => Rect::ZERO,
             }
         });
-        scene.pop_layer();
     }
 
     fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {

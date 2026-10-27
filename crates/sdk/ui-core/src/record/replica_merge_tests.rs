@@ -167,3 +167,56 @@ fn a_change_from_another_replica_wakes_the_windows_reading_the_store() {
         "a closed window is not woken"
     );
 }
+
+/// The room's hosts saying they sent all they hold of a record wakes the
+/// windows reading the store, and holds until something of it arrives.
+#[test]
+fn the_room_answering_for_a_record_wakes_its_readers_until_it_arrives() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
+    let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+    store
+        .reserve_record(&want)
+        .unwrap()
+        .initialize(|doc| {
+            put_text(doc, "body", "mine");
+            Ok(())
+        })
+        .unwrap();
+    let mut window = crate::WakeScope::new();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&woken);
+    window
+        .bind(move |event| {
+            if event.requires_sync() {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .unwrap();
+    store.wake_on_arrival(window.handle());
+    let kept = store.kept_revision();
+
+    assert!(!store.room_answered(&want.id));
+    store.note_room_answered(want.id.clone());
+    assert!(store.room_answered(&want.id));
+    assert_eq!(woken.load(Ordering::SeqCst), 1);
+    assert_ne!(
+        store.kept_revision(),
+        kept,
+        "what follows the store looks again"
+    );
+
+    let mut peer = store.read(&want.id, |doc| doc.clone().fork()).unwrap();
+    let before = peer.get_heads();
+    put_text(&mut peer, "body", "theirs");
+    peer.commit();
+    store
+        .merge_replica(
+            &want,
+            collab_types::DocumentMutation::Incremental(peer.save_after(&before)),
+        )
+        .unwrap();
+    assert!(!store.room_answered(&want.id), "something of it arrived");
+}

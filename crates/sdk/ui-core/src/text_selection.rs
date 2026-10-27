@@ -20,7 +20,7 @@
 
 use std::ops::Range;
 
-use crate::clipboard::{ClipboardCopy, ClipboardTarget, CopyContent};
+use crate::clipboard::{ClipboardCopy, ClipboardTarget, CopyContent, ReservedCopy};
 use crate::text_break::grapheme_indices;
 
 /// Which shaped run owns a caret at a shared logical byte boundary.
@@ -364,6 +364,22 @@ pub fn clipboard_paste_rich() -> Option<crate::clipboard::RichTextOffer> {
 /// editor-local copy.
 pub fn try_clipboard_copy(text: &str) -> ClipboardCopy {
     clipboard().copy(CopyContent::SharedText(text))
+}
+
+/// Claim the Ctrl+C clipboard for text that is not known yet, such as a link
+/// the person's click asks a host for, and copy it once it is handed over
+/// ([`ReservedCopy::fill`]), as [`try_clipboard_copy`] would. Call it inside
+/// the click: a browser copies only there, and lets a copy claimed there be
+/// filled later. Elsewhere the text is copied when it arrives. Dropping the
+/// reservation copies nothing.
+pub fn reserve_clipboard_copy() -> ReservedCopy {
+    let clipboard = clipboard();
+    clipboard.reserve_text().unwrap_or_else(|| {
+        ReservedCopy::new(move |text| match text {
+            Some(text) => clipboard.copy(CopyContent::SharedText(text)),
+            None => ClipboardCopy::settled(false),
+        })
+    })
 }
 
 /// Copy a secret — a password, a one-time code, a recovery key, an enrolment

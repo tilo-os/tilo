@@ -89,10 +89,11 @@ pub const XWAYLAND_TARGET: &str = "tilo::xwayland";
 /// that changes nothing must still say why, in the log a device keeps.
 pub const REPAIR_TARGET: &str = "tilo::repair";
 
-/// The `tracing` target of where a person's touch went: each finger
-/// contact's route as it begins (raw to a client or widget, or turned into
-/// pointer input) and each launchpad card that activated. One line per
-/// contact, so a tap that did nothing says in the device's log where it went.
+/// The `tracing` target of where a person's input went: each input device
+/// the compositor opened or lost, each finger contact's route as it begins
+/// (raw to a client or widget, or turned into pointer input) and each
+/// launchpad card that activated. One line per device and per contact, so a
+/// key or tap that did nothing says in the device's log where it went.
 pub const INPUT_ROUTE_TARGET: &str = "tilo::input_route";
 
 /// Targets the session log keeps at `info` whatever the base filter: rare
@@ -715,6 +716,37 @@ pub fn summary_line(app: &str) -> Option<String> {
         .map(|event| (event.name.clone(), event.ns))
         .collect::<Vec<_>>();
     Some(format_summary(app, &events))
+}
+
+/// What the process holds now and the most it has held, as a log line:
+/// `FIRST-FRAME-MEMORY rss_kib=<kib> peak_kib=<kib>`. `None` where the
+/// system does not say (only Linux's `/proc/self/status` is read).
+pub fn memory_line() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let kib = |field: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(field))
+                .and_then(|value| {
+                    value
+                        .trim()
+                        .trim_end_matches("kB")
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or(0)
+        };
+        Some(format!(
+            "FIRST-FRAME-MEMORY rss_kib={} peak_kib={}",
+            kib("VmRSS:"),
+            kib("VmHWM:")
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
 }
 
 /// Every mark recorded so far, in order, with its nanoseconds since the

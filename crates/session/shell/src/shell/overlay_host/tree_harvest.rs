@@ -1567,9 +1567,10 @@ fn expanded_group(
     if held.is_some_and(maximized) {
         return held;
     }
-    let workspace = tree.desktop.active_workspace()?;
-    let strip = tree.desktop.active_strip.get(&workspace.id).copied()?;
+    // The selection the desktop shows, including its fallbacks for a strip
+    // or group nobody recorded: a maximize saved there is presented too.
+    let strip = tree.desktop.active_strip_id()?;
     tree.desktop
-        .active_group_for(strip)
+        .resolve_active_group(strip, |_| false)
         .filter(|group| maximized(*group))
 }

@@ -192,12 +192,12 @@ mod tests {
         {
             let passwd = "root:x:0:0:root:/root:/bin/bash\n\
                           greetd:x:977:977::/var/lib/greetd:/usr/sbin/nologin\n\
-                          tester:x:1000:1000:ada Quick,,,:/home/tester:/bin/bash\n";
+                          tester:x:1000:1000:Ada Quick,,,:/home/tester:/bin/bash\n";
             assert_eq!(
                 select_login_user(passwd, "UID_MIN 1000\nUID_MAX 60000\n", Some(SHELLS)),
                 Some(LoginUser {
                     username: "tester".into(),
-                    display_name: "ada Quick".into(),
+                    display_name: "Ada Quick".into(),
                 })
             );
         }

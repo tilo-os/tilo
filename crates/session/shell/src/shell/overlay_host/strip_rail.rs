@@ -189,6 +189,69 @@ impl ShellOverlayHost {
         Rect::new(x0, y0, x0 + width, y0)
     }
 
+    /// The window a search scoped to an app stands over: the window in
+    /// front on the strip in front, below its bar, as much of it as is on the display. `None`
+    /// while search is not scoped to an app or no window holds focus.
+    pub(super) fn searched_window(&self) -> Option<Rect> {
+        let focused = {
+            let state = self.chrome.as_ref()?.borrow();
+            if state.search_scope != crate::shell::chrome_state::SearchScope::ActiveApp {
+                return None;
+            }
+            let tree = state.tree();
+            let strip = tree
+                .desktop
+                .active_strip
+                .get(&tree.desktop.active)
+                .copied()?;
+            tree.desktop.active_group.get(&strip).copied()?
+        };
+        let area = self.overlay_area();
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: same stable boxed-row contract as the other
+            // `group_row_ptrs` accessors; this is a read-only query.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.groups
+                .iter()
+                .find(|group| group.id == focused)
+                .map(|group| {
+                    let window = group.get_rect();
+                    let bar = group.bar_rect();
+                    let top = if bar.area() > 0.0 { bar.y1 } else { window.y0 };
+                    Rect::new(
+                        window.x0,
+                        top.clamp(window.y0, window.y1),
+                        window.x1,
+                        window.y1,
+                    )
+                    .intersect(area)
+                })
+                .filter(|window| window.area() > 0.0)
+        })
+    }
+
+    /// Where the palette's card stands and the tallest its list may grow.
+    /// Scoped to an app, it stands in that app's window under its bar, as
+    /// the app's own palette does (`ui::action_palette::placement`), and
+    /// its list stays inside the window; otherwise it is the desktop's
+    /// card on the focused display ([`Self::palette_frame`]).
+    pub(super) fn palette_place(&self, theme: &Theme) -> (Rect, f64) {
+        let area = self.overlay_area();
+        let list_max = (area.height() * PALETTE_LIST_SHARE)
+            .min(PALETTE_LIST_MAX * f64::from(theme.text_scale))
+            .max(160.0);
+        if let Some(window) = self.searched_window() {
+            let (origin, width) = ui::action_palette::placement(window, theme);
+            let frame = Rect::new(origin.x, origin.y, origin.x + width, origin.y);
+            // The card's field and band, and the window's own inset under
+            // it: the list takes what is left of the window.
+            let inset = f64::from(theme.tokens.spacing.s2);
+            let fits = (window.y1 - origin.y - self.palette.chrome_height() - inset).max(160.0);
+            return (frame, list_max.min(fits));
+        }
+        (self.palette_frame(theme.text_scale), list_max)
+    }
+
     /// The command palette's laid-out card, for integration tests.
     pub fn palette_rect_for_tests(&self) -> Rect {
         self.palette.get_rect()

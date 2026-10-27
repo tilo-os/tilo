@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::tests::{ProbeRow, lay_out};
+use super::tests::{HugeList, ProbeRow, lay_out};
 use super::*;
 
 #[test]
@@ -141,4 +141,36 @@ fn a_row_the_model_says_changed_is_mounted_again_in_place_and_alone() {
         "only the changed row is built again"
     );
     assert!(list.mounted.iter().any(|row| row.key == 3));
+}
+
+#[test]
+fn hundred_million_row_lists_mount_and_request_only_the_window() {
+    {
+        let builds = Rc::new(Cell::new(0_usize));
+        let captured = Rc::clone(&builds);
+        let presses = Rc::new(Cell::new(0));
+        let mut list = VirtualList::new(HugeList { count: 100_000_000 }, 20.0, move |_, _, key| {
+            captured.set(captured.get().saturating_add(1));
+            Box::new(ProbeRow::new(
+                format!("row {key}"),
+                20.0,
+                false,
+                Rc::clone(&presses),
+            ))
+        })
+        .with_viewport_height(100.0);
+        list.set_scroll_offset(50_000_000.0 * 20.0);
+        let _ = lay_out(&mut list, 300.0);
+
+        assert_eq!(list.model().len(), 100_000_000);
+        assert!(list.mounted_len() <= 10);
+        assert_eq!(builds.get(), list.mounted_len());
+        assert!(list.visible_range().len() <= 10);
+        let top = list.scrollbar_thumb().expect("overflow has a scrollbar");
+        list.set_scroll_offset(list.max_scroll_offset());
+        let bottom = list.scrollbar_thumb().expect("scrollbar remains visible");
+        assert!(bottom.y0 > top.y0);
+        let track = crate::widget::scrollbar::vertical_track(list.rect, list.gutter);
+        assert!((bottom.y1 - track.y1).abs() < 0.001);
+    }
 }

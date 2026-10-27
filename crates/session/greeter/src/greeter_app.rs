@@ -998,7 +998,7 @@ impl GreeterApp {
             username: username.to_string(),
             display_name: display_name.to_string(),
         };
-        let personal = personal.then(|| person("ada", "ada Example"));
+        let personal = personal.then(|| person("ada", "Ada Example"));
         // A fixed personal account has a known enrollment result. The
         // multi-account fixture exposes the action only as a route: its
         // enrollment is resolved for the username entered before PAM starts.
@@ -1043,7 +1043,7 @@ impl GreeterApp {
             AuthScenario::Accounts => {
                 app.users = vec![
                     person("ada", "Ada Lovelace"),
-                    person("ada", "ada Example"),
+                    person("ada", "Ada Example"),
                     person("grace", "Grace Hopper"),
                 ];
             }
@@ -2634,7 +2634,7 @@ mod tests {
     fn quick_user() -> LoginUser {
         LoginUser {
             username: "tester".into(),
-            display_name: "ada Quick".into(),
+            display_name: "Ada Quick".into(),
         }
     }
 
@@ -3666,7 +3666,7 @@ mod tests {
             let card = card_of(&app);
             assert_eq!(
                 accessible_name_for(card.as_ref(), "greeter.welcome").as_deref(),
-                Some("ada Quick"),
+                Some("Ada Quick"),
                 "the person, not the product, gets the headline"
             );
             assert_eq!(
@@ -3720,7 +3720,7 @@ mod tests {
         {
             let app = GreeterApp::for_shot(AuthScenario::Personal);
             let said = spoken(card_of(&app).as_ref());
-            let person = said.iter().position(|s| s == "ada Example");
+            let person = said.iter().position(|s| s == "Ada Example");
             let passcode = said.iter().position(|s| s == "Password");
             assert!(person.is_some() && person < passcode, "{said:?}");
         }

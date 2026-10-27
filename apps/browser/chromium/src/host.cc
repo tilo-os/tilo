@@ -24,6 +24,7 @@
 #include "devtools_bridge.h"
 #include "extension_tabs.h"
 #include "page_clipboard.h"
+#include "text_composition_script.h"
 #if defined(OS_MAC)
 #include "credentials_mac.h"
 #endif
@@ -67,6 +68,9 @@ namespace {
 constexpr int kOffscreenFrameRate = 60;
 constexpr size_t kMaxMediaFrames = 64;
 constexpr size_t kMaxAudioPackets = 16;
+// The widest picture the page op paints, matching the app's own bound: a
+// wider request is a malformed command, never a larger answer.
+constexpr int CAPTURE_MAX_WIDTH = 1600;
 // Bounded, opt-in startup geometry evidence; never includes page content.
 void TraceGeometry(const char* stage,int tab,int width=0,int height=0,double scale=0) {
   static const bool enabled=[] {const char* value=std::getenv("TILO_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
@@ -578,6 +582,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // Publish the lifecycle invalidation before terminal outcomes: a consumer
     // may admit recovery immediately after observing its owned completion.
     Event("renderer_terminated");
+    // The page action that was running has no document left to answer from.
+    if(page_automation_)page_automation_->RendererGone();
     if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),"Renderer terminated");
     for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),browser_->GetMainFrame()->GetURL(),"Renderer terminated");
     pending_navigation_.clear();navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;navigation_aborting_=false;bootstrap_settled_=true;
@@ -708,36 +714,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         [this] { if(native_closing_)return;StringEvent("error","message","Private composition observer registration failed");CloseHost(); },
         "tilo-private-text-input");
     composition_scripts_->Attach();
-    composition_scripts_->Configure(R"JS(globalThis.__tiloTextComposition = (() => {
-      let trusted = false, synthetic = false, unknown = false;
-      let root = null;
-      // An initial about:blank iframe can retain its Window when it navigates.
-      // Observe the native load on that Window, then bind its current Document.
-      // A late context or a document.open-removed listener remains unknown.
-      const observer = new MutationObserver(records => {
-        for (const record of records) {
-          for (const node of record.removedNodes) if (node === root) unknown = true;
-        }
-        if (root !== document.documentElement) unknown = true;
-        if (unknown) { root = null; observer.disconnect(); }
-      });
-      const loaded = event => {
-        if (!event.isTrusted || unknown || !['http:', 'https:'].includes(location.protocol)) return;
-        root = document.documentElement;
-        if (!root) return;
-        observer.observe(document, {childList: true});
-        removeEventListener('DOMContentLoaded', loaded);
-      };
-      addEventListener('DOMContentLoaded', loaded);
-      addEventListener('compositionstart', event => {
-        if (event.isTrusted) trusted = true; else synthetic = true;
-      }, true);
-      addEventListener('compositionend', event => {
-        // Page-generated end events cannot clear actual native composition.
-        if (event.isTrusted) trusted = false; else synthetic = false;
-      }, true);
-      return Object.freeze({active: () => unknown || !root || root !== document.documentElement || trusted || synthetic});
-    })())JS");
+    composition_scripts_->Configure(tilo::kTextComposition);
     navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
         [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);},
@@ -1257,6 +1234,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(action=="console" || action=="network") agent_log_->Request(d);
       else { agent_log_->Activate();page_automation_->Request(d); }
     }
+    else if(op=="page_cancel") {if(page_automation_)page_automation_->Cancel();}
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
@@ -2540,10 +2518,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="fill_files" && action!="press" && action!="submit" &&
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" &&
        action!="reader" && action!="pointer" && action!="hover" && action!="drag" && action!="path" &&
-       action!="scroll" && action!="pointer_rest")return false;
+       action!="scroll" && action!="pointer_rest" && action!="capture")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
       action=="console" || action=="network" || action=="reader" || action=="pointer" || action=="hover" ||
-      action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest";
+      action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest" || action=="capture";
     if(action=="pointer") {
       if(!type("steps",VTYPE_LIST) || !type("button",VTYPE_STRING))return false;
       const auto button=d->GetString("button").ToString();
@@ -2570,6 +2548,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
        d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;
     if((action=="console" || action=="network") && (!number("since") || Number(d,"since")<0))return false;
+    // A picture is painted at most as wide as the app asks and no wider
+    // than the engine's own bound; a wider one is refused, not cut.
+    if(action=="capture" && d->HasKey("max_width") &&
+       (!type("max_width",VTYPE_INT) || d->GetInt("max_width")<1 || d->GetInt("max_width")>CAPTURE_MAX_WIDTH))return false;
     if(action=="fill" && (!type("text",VTYPE_STRING) || d->GetString("text").length()>65536))return false;
     if(action=="select") {
       if(!type("values",VTYPE_LIST))return false;auto values=d->GetList("values");
@@ -2663,6 +2645,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id")return false;
     return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0;
   }
+  // An agent stops a page action it no longer waits for: the tab is freed
+  // rather than held by a request whose caller is gone.
+  if(op=="page_cancel") {CefDictionaryValue::KeyList keys;d->GetKeys(keys);return no_payload();}
   if(op=="popups") return type("enabled",VTYPE_BOOL);
   if(op=="page_clipboard") return no_payload();
   if(op=="clipboard_contents") {

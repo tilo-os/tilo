@@ -61,7 +61,7 @@ impl<P: Resource> Shared<P> {
     /// Follow the record when it moved, reading only what changed. Whether
     /// it did.
     fn refresh(&self) -> bool {
-        let moved = match self.record.read(|doc| self.live.sync(doc)) {
+        let mut moved = match self.record.read(|doc| self.live.sync(doc)) {
             Some(Ok(moved)) => moved,
             Some(Err(error)) => {
                 unreadable_person_record(P::KIND, &error);
@@ -69,13 +69,16 @@ impl<P: Resource> Shared<P> {
             }
             None => false,
         };
-        if !moved
-            && self.live.unreadable().is_none()
-            && let Some(Err(error)) = self.record.read(|doc| self.live.reread(doc))
-        {
+        if !moved && self.live.unreadable().is_none() {
             // The record is small and read whole, so a change it cannot
-            // read is noticed here rather than by whoever publishes it.
-            unreadable_person_record(P::KIND, &error);
+            // read is noticed here rather than by whoever publishes it. The
+            // reader reads it again only when the document moved since it
+            // last read it whole; what that read found is the state too.
+            match self.record.read(|doc| self.live.reread(doc)) {
+                Some(Ok(reread)) => moved = reread,
+                Some(Err(error)) => unreadable_person_record(P::KIND, &error),
+                None => {}
+            }
         }
         // Views of the record follow it whole: it is small.
         let _ = self.live.take_change();

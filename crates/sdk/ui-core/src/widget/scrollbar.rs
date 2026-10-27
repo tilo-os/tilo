@@ -489,7 +489,12 @@ impl Scrollbar {
     /// so their bars sit where a `Scrollable`'s do.
     #[must_use]
     pub fn track_in(&self, lane: Rect, theme: &Theme) -> Rect {
-        let thumb = f64::from(theme.tokens.metrics.scroll_thumb);
+        self.track_of_thickness(lane, f64::from(theme.tokens.metrics.scroll_thumb))
+    }
+
+    /// [`Self::track_in`] for a thumb `thumb` thick.
+    #[must_use]
+    pub fn track_of_thickness(&self, lane: Rect, thumb: f64) -> Rect {
         let across = if self.vertical {
             lane.width()
         } else {

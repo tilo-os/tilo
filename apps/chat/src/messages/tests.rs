@@ -306,22 +306,23 @@ impl TwoDevices {
 
 /// The first post of a room starts part 0 on the poster's device. It reaches
 /// a guest whose window already holds the chain by being kept in the
-/// guest's store. The guest's window opens it as its head at its next look:
-/// not in a sync, which reads the store (opening a part takes its writer),
-/// but in the settle after it, so the sync of the frame that follows shows
-/// the post.
+/// guest's store, which whatever kept it tells the store
+/// ([`ui::record::RecordStore::note_kept`]). Nothing looks on a clock: until
+/// told, the window opens nothing, however long it waits.
 #[test]
-fn the_first_post_reaches_a_window_open_before_it() {
+fn a_kept_part_waits_for_word_of_its_arrival_not_a_clock() {
     let devices = TwoDevices::new();
-    let seen = devices.guest.revision();
+    let seen = devices.guest_syncs();
     devices.first_post_reaches_the_guest();
-    let later = ui::time::now() + std::time::Duration::from_secs(2);
+    let later = ui::time::now() + std::time::Duration::from_secs(60);
     ui::time::testing::with_monotonic_time(later, || {
-        assert_eq!(devices.guest_syncs(), seen, "a sync opens nothing");
-        assert_ne!(devices.guest.revision(), seen, "the settle opens the part");
-        assert_eq!(devices.guest.head(), Some(0));
-        assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
+        assert_eq!(devices.guest_syncs(), seen);
+        assert_eq!(devices.guest.revision(), seen, "no clock looks for it");
+        assert_eq!(devices.guest.head(), None);
     });
+    devices.guest_store.note_kept();
+    assert_eq!(devices.guest.head(), Some(0));
+    assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
 }
 
 /// A store told that a record arrived ([`ui::record::RecordStore::note_kept`],

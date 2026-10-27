@@ -136,9 +136,10 @@ const REVEAL_WAIT: ui::time::Duration = ui::time::Duration::from_secs(20);
 impl Mount {
     /// Show, in each window the session opened on a record, the resource
     /// its open named, through the resource's own `open` as the person
-    /// would: a note in a notebook rather than the notebook. A window still
-    /// coming up (its app's code arriving, its record syncing) is tried
-    /// again on the next frame.
+    /// would: a note in a notebook rather than the notebook. Any other
+    /// action a window asked of an app's resource is invoked in its window
+    /// the same way. A window still coming up (its app's code arriving, its
+    /// record syncing) is tried again on the next frame.
     pub(super) fn reveal_opened(&mut self) {
         let Some(desktop) = &self.desktop else {
             return;
@@ -151,7 +152,13 @@ impl Mount {
                 .take_reveals()
                 .into_iter()
                 .filter(|reveal| {
-                    crate::desktop::Shared::narrower(&reveal.app, &reveal.record, &reveal.resource)
+                    // An open of the app's own resource is its window.
+                    reveal.action != tilo_actions::remote::APPLICATION_OPEN_ACTION
+                        || crate::desktop::Shared::narrower(
+                            &reveal.app,
+                            &reveal.record,
+                            &reveal.resource,
+                        )
                 })
                 .map(|reveal| (reveal, now.checked_add(REVEAL_WAIT).unwrap_or(now))),
         );
@@ -166,12 +173,9 @@ impl Mount {
             };
             let address = ui::bound_dispatch::BoundActionAddress {
                 instance_id: tab,
-                address: tilo_actions::ActionAddress::new(
-                    &reveal.resource,
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
-                ),
+                address: tilo_actions::ActionAddress::new(&reveal.resource, &reveal.action),
             };
-            match frame.invoke_bound_action(&address, &serde_json::Map::new()) {
+            match frame.invoke_bound_action(&address, &reveal.arguments) {
                 Ok(_) => false,
                 Err(error) => {
                     if *until <= now {

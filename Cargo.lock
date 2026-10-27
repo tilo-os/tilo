@@ -324,6 +324,7 @@ dependencies = [
  "tilo-automation",
  "tilo-identity-client",
  "tilo-model-client",
+ "tilo-selector",
  "tilo-test-env",
  "tilo-user-identity",
  "tracing",
@@ -2078,7 +2079,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-document",
- "tilo-emoji-catalogue",
  "tilo-emoji-engine",
  "tilo-files",
  "tilo-model-client",
@@ -2300,6 +2300,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-app",
+ "tilo-clock",
  "tilo-history",
  "tilo-test-env",
  "tilo-timezone-engine",
@@ -7417,6 +7418,7 @@ dependencies = [
  "bounded-command",
  "calendar",
  "console-control",
+ "imager-backend",
  "install-profile-model",
  "libc",
  "os-actions",
@@ -10049,6 +10051,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-surface",
  "tilo-doc",
+ "tilo-doc-codecs",
  "tilo-document",
  "tilo-emoji-engine",
  "tilo-files",
@@ -10061,6 +10064,7 @@ dependencies = [
  "url",
  "uuid",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]
@@ -11007,6 +11011,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bounded-command",
+ "futures-util",
  "getrandom 0.4.3",
  "libc",
  "rand_core 0.10.0",
@@ -14699,6 +14704,8 @@ dependencies = [
 name = "settings-sections"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
+ "desktop-policy",
  "serde",
  "serde_json",
  "settings-store",
@@ -15047,6 +15054,7 @@ dependencies = [
  "tilo-media",
  "tilo-messaging",
  "tilo-messaging-protocol",
+ "tilo-model-client",
  "tilo-moq",
  "tilo-net",
  "tilo-net-answers",
@@ -16648,6 +16656,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content-types",
  "tilo-lock",
+ "tilo-selector",
  "tilo-test-env",
  "unicode-normalization",
  "uuid",
@@ -16791,9 +16800,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ai-bench"
+version = "0.1.0"
+dependencies = [
+ "regex-lite",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "test-http",
+ "tilo-actions",
+ "tilo-net",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
+ "durable-store",
  "registry-types",
  "serde",
  "serde_json",
@@ -17406,6 +17432,7 @@ dependencies = [
  "tilo-clock",
  "tilo-control",
  "tilo-paths",
+ "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
@@ -18051,6 +18078,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-automerge-fork",
  "tilo-feedback-review",
  "tilo-resource",
  "workspace-hack",
@@ -20125,6 +20153,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-selector"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-session-record"
 version = "0.1.0"
 dependencies = [
@@ -20292,7 +20328,11 @@ dependencies = [
 name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "serde_json",
  "tempfile",
+ "tilo-automerge",
+ "tilo-automerge-fork",
  "tilo-lock",
  "workspace-hack",
 ]
@@ -20397,6 +20437,7 @@ dependencies = [
  "cosmic-text",
  "durable-store",
  "ed25519-dalek 3.0.0",
+ "emoji",
  "fluent",
  "fnv",
  "form_urlencoded",
@@ -22404,8 +22445,10 @@ dependencies = [
  "durable-store",
  "ed25519-dalek 3.0.0",
  "env-tools",
+ "fs-protocol",
  "getrandom 0.4.3",
  "hex",
+ "host-fs",
  "landlock",
  "legacy-vm",
  "libc",
@@ -24686,6 +24729,7 @@ dependencies = [
  "url",
  "usvg",
  "uuid",
+ "wasm-encoder",
  "wasmi",
  "wasmi_collections",
  "wasmi_core",
@@ -25873,6 +25917,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-agent-models",
  "tilo-agent-participant",
+ "tilo-ai-bench",
  "tilo-app",
  "tilo-app-cli",
  "tilo-app-package",
@@ -26031,6 +26076,7 @@ dependencies = [
  "tilo-secret-vault",
  "tilo-secrets",
  "tilo-segment",
+ "tilo-selector",
  "tilo-session-record",
  "tilo-sibling-unlock",
  "tilo-sort",

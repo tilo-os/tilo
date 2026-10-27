@@ -341,7 +341,7 @@ fn visible(peer: &mut Peer, other: &mut Peer, text: &str) {
             .wait_until(tilo_test_env::hang_bound(), |h| {
                 peer.apps.pump_messaging_records();
                 other.apps.pump_messaging_records();
-                h.a11y_nodes().iter().any(|(_, n)| n.label() == Some(text))
+                h.a11y_nodes().iter().any(|(_, n)| speaks(n.label(), text))
             })
     );
 }

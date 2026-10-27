@@ -140,6 +140,8 @@ pub(crate) fn row(provider: &str, resource: &str, label: &str, action: &str) -> 
             resource_kind: "notes.page".into(),
             resource_label: label.into(),
             action_label: action.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind: OperationKind::View,

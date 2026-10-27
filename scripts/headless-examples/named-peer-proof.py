@@ -64,7 +64,7 @@ ACTIONS = "actions"
 # What ada calls bob when he invites him. The whole point of the
 # run is that this string, and nothing derived from a peer id, is what
 # ends up on screen.
-INVITED_AS = "bob"
+INVITED_AS = "Bob"
 
 failures: list[str] = []
 gaps: list[str] = []
@@ -542,7 +542,7 @@ def main() -> int:
         step("and bob puts his caret in it")
         bob.click_at(600.0, 380.0)
         time.sleep(1.5)
-        bob.type_text(" bob was here.")
+        bob.type_text(" Bob was here.")
         time.sleep(4.0)
         bob.snapshot(os.path.join(shots, "02-bob-typed.png"))
 

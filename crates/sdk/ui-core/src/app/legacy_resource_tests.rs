@@ -531,9 +531,9 @@ fn component_bare_address(lazy: bool, duplicate: bool) {
             probe_definition(),
             721,
             &LaunchTarget::New,
-            std::rc::Rc::new(std::cell::RefCell::new(
+            crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
         )
         .unwrap();
     context

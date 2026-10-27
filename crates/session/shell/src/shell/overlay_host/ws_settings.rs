@@ -579,6 +579,26 @@ impl tilo_desktop::workspace_settings::AppDirectory for SettingsDirectory {
     fn resources(&self) -> Vec<(String, String)> {
         crate::shell::search::app_content_index::session().resources(&self.room)
     }
+
+    fn titled_resources(&self) -> Vec<tilo_desktop::workspace_settings::TitledResource> {
+        crate::shell::search::app_content_index::session()
+            .titled(&self.room)
+            .into_iter()
+            .map(
+                |(app, resource, title)| tilo_desktop::workspace_settings::TitledResource {
+                    kind: tilo_resource::items::item_kind(&resource).unwrap_or_else(|| {
+                        resource
+                            .split_once('/')
+                            .map_or(resource.as_str(), |(kind, _)| kind)
+                            .to_owned()
+                    }),
+                    app,
+                    resource,
+                    title,
+                },
+            )
+            .collect()
+    }
 }
 
 /// The models of `config` the person may choose for `agent`, and the one it

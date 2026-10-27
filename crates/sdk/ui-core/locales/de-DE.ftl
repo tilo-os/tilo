@@ -228,6 +228,7 @@ history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernt
 history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
+history-sync-reconnecting = Verbinde. Änderungen werden synchronisiert, sobald die Verbindung steht.
 arriving-loading = Wird geladen
 arriving-from = Von { $source }
 arriving-received-of = { $received } von { $total }
@@ -516,6 +517,8 @@ format-weekday-name = { $weekday ->
     }
 # A day this year in a list: "Jun 30".
 format-month-day = { $day }. { $month }
+# A day this year and a time of day: "30. Juni 14:05".
+format-month-day-time = { $day }. { $month } { $time }
 # A day in another year in a list: "Jun 30, 2025".
 format-month-day-year = { $day }. { $month } { $year }
 # The "Long" date style: "30 Jun 2026".
@@ -983,6 +986,8 @@ conversation-delivery-delivered = Zugestellt
 conversation-delivery-read = Gelesen
 conversation-delivery-failed = Nicht gesendet
 conversation-delivery-uncertain = Status unklar
+conversation-new-messages = Neue Nachrichten
+conversation-earlier-unavailable = Frühere Nachrichten sind auf den Hosts dieses Geräts nicht verfügbar
 conversation-attachment-open = Öffnen
 conversation-attachment-open-full-size = In voller Größe öffnen
 conversation-attachment-save = Speichern
@@ -1039,3 +1044,4 @@ attention-deferred-one = { $count } beiseitegelegt
 attention-deferred = { $count } beiseitegelegt
 attention-pill-one = { $count } wartet
 attention-pill = { $count } warten
+action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.

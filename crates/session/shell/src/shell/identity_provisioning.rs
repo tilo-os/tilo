@@ -1270,7 +1270,10 @@ mod tests {
         fn invite_redeems_through_independent_tls_endpoint_once() {
             // The invite's minute must not lapse while a loaded run gets to
             // its redemption: hold the wall clock that every check here reads.
-            tilo_clock::freeze_wall(tilo_clock::wall());
+            tilo_clock::testing::with_wall(tilo_clock::wall(), invite_redeems_body);
+        }
+
+        fn invite_redeems_body() {
             let tmp = tempfile::tempdir().expect("tempdir");
             let authority = pairing_channel_at(tmp.path().join("pairing-authority")).unwrap();
             let invite_root = tmp.path().join("invite-redemption-authority");
@@ -1384,7 +1387,10 @@ mod tests {
         fn signed_invite_redeems_after_broker_restart_with_the_same_pin() {
             // The invite's minute must not lapse while a loaded run gets to
             // its redemption: hold the wall clock that every check here reads.
-            tilo_clock::freeze_wall(tilo_clock::wall());
+            tilo_clock::testing::with_wall(tilo_clock::wall(), signed_invite_redeems_body);
+        }
+
+        fn signed_invite_redeems_body() {
             let tmp = tempfile::tempdir().expect("tempdir");
             let authority = pairing_channel_at(tmp.path().join("pairing")).unwrap();
             let tls_dir = tmp.path().join("tls");

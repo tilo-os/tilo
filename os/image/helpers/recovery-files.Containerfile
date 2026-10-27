@@ -45,6 +45,7 @@ COPY \
     os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-tilo-boot-entries.conf \
     os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-tilo-update-policy.conf \
     os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/30-tilo-background-resources.conf \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/60-tilo-os-image-gc.conf \
     /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-composefs.conf \
     /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-composefs.conf

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The local model catalog's release steps, as t's checks run them (t.toml, "Local model
-# catalog"; docs/publishing-on-t.md). Building, signing and publishing are separate checks: only
-# `sign` and `review` hold the catalog's signing seed, only `publish` the package token.
+# The local model catalog's steps, as t's checks run them (t.toml, "Local model catalog";
+# docs/publishing-on-t.md). Building, signing and publishing are separate checks: only `sign` and
+# `review` hold the catalog's signing seed, only `publish` and `publish-runtimes` a package token.
 #
 #   compiler OUT        build tilo-model-catalog without credentials, into OUT/
 #   sign COMPILER OUT   fetch the reviewed artifacts, sign the catalog with
@@ -10,12 +10,23 @@
 #   publish SIGNED      upload the speech artifacts, the runtime archives and SIGNED's catalog and
 #                       keys to their immutable package URLs with REGISTRY_TOKEN, then read them
 #                       back anonymously
-#   review COMPILER OUT sign dist/local-models/catalog-source.json for review, to become the
-#                       checked-in catalog
+#   review COMPILER OUT sign dist/local-models/catalog-source.json with the runtimes this tree
+#                       builds for review: OUT/source.json and OUT/catalog.json become the
+#                       checked-in source and catalog
+#   dev ARCH COMPILER OUT
+#                       sign the same source with the runtimes for ARCH and a throwaway key into
+#                       OUT/catalog.json and keys.json, the catalog ARCH's dev images carry in
+#                       place of the release's
+#   publish-runtimes ARCH
+#                       upload the runtime archives this tree builds for ARCH to their immutable
+#                       package URLs with TILO_PACKAGES_TOKEN, so the dev catalog's runtimes
+#                       download
 #
-# The runtimes' archives come from the local-model-runtime checks, under $runtimes_out/<id>/.
+# The runtimes' archives and entries come from the local-model-runtime checks, under
+# $runtimes_out/<id>/.
 #
-# `sign`, `publish` and `review` run only in trusted runs of stable or a release tag (T_REF).
+# `sign`, `publish` and `review` run only in trusted runs of stable or a release tag (T_REF),
+# `publish-runtimes` only in main's; `dev` holds nothing and runs anywhere.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -25,6 +36,7 @@ cd "$repo_root"
 extensions=os/usr/share/tilo/system-extensions
 package_base=https://code.tilo.so/api/packages/tilo/generic/tilo-local-model-catalog
 runtimes_out=/target/local-model-runtimes
+dev_key_id=tilo-local-model-dev
 
 release_only() {
   [[ $(channel) == release ]] || die "the model catalog is signed and published from stable or a release tag, not ${T_REF}"
@@ -34,6 +46,19 @@ release_only() {
 # The models of the catalog's source alone, as the speech preparer reads it, into $1.
 models_source() {
   jq '.runtimes = [] | .recommendation = ""' dist/local-models/catalog-source.json > "$1"
+}
+
+# The catalog's source with the runtimes this tree builds (for architecture $2 alone, if given),
+# as their builds wrote their entries, into $1: what review signs and dev images carry.
+built_source() {
+  local id entries=()
+  for id in $(bash tools/release/local-model-runtime.sh ids); do
+    [[ -z ${2:-} || $id == *-"$2" ]] || continue
+    [[ -f $runtimes_out/$id/runtime.json ]] || die "no build of runtime $id: the check needs local-model-runtime-$id"
+    entries+=("$runtimes_out/$id/runtime.json")
+  done
+  jq --slurpfile runtimes <(jq -s . "${entries[@]}") '.runtimes = $runtimes[0]' \
+    dist/local-models/catalog-source.json > "$1"
 }
 
 # Point $1/source.json's runtimes at their archives as their builds left them, after checking
@@ -51,59 +76,51 @@ stage_runtimes() {
   mv "$dir/source.staged.json" "$dir/source.json"
 }
 
-# The reviewed catalog's source and its artifacts, fetched and checked against their receipts,
-# in $1 (source.json and artifacts/).
+# The catalog source $2 and its artifacts, fetched and checked against their receipts, in $1
+# (source.json and artifacts/).
 stage() {
-  local dir=$1
+  local dir=$1 source=$2
   mkdir -p "$dir/artifacts"
-  cp dist/local-models/catalog-source.json "$dir/source.json"
-  if [[ $(jq '.models | length' "$dir/source.json") == 4 ]]; then
-    models_source "$dir/models-source.json"
-    python3 -I tools/release/prepare_speech_catalog.py "$dir/staged" --source "$dir/models-source.json"
-    cp "$dir/staged/artifacts/"* "$dir/artifacts/"
-  else
-    jq -e '.production == true and .runtimes == [] and .recommendation == ""
-      and (.models | length) == 1 and .models[0].id == "u2net-subject"
-      and .models[0].artifact.file == "artifacts/u2net.onnx"' "$dir/source.json" >/dev/null
-    curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
-      --output "$dir/artifacts/u2net.onnx" "$(jq -er '.models[0].artifact.url' "$dir/source.json")"
-    curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
-      --output "$dir/artifacts/LICENSE" "$(jq -er '.models[0].license_url' "$dir/source.json")"
-    (cd "$dir/artifacts" && sha256sum -c "$repo_root/dist/local-models/u2net-subject/model-files.sha256")
-    [[ $(stat --format=%s "$dir/artifacts/u2net.onnx") == 175997641 ]]
-    [[ $(stat --format=%s "$dir/artifacts/LICENSE") == 11357 ]]
-  fi
+  cp "$source" "$dir/source.json"
+  models_source "$dir/models-source.json"
+  python3 -I tools/release/prepare_speech_catalog.py "$dir/staged" --source "$dir/models-source.json"
+  cp "$dir/staged/artifacts/"* "$dir/artifacts/"
   stage_runtimes "$dir"
 }
 
-# Upload FILE to the immutable package URL unless it holds those bytes already, then read it
-# back anonymously. A different object at the URL is a conflict, never overwritten.
+# Upload FILE to the immutable package URL with TOKEN unless it holds those bytes already, then
+# read it back anonymously. A different object at the URL is a conflict, never overwritten.
 publish_file() {
-  local file=$1 url=$2 sha
+  local file=$1 url=$2 token=$3 sha
   sha=$(sha256sum "$file" | cut -d' ' -f1)
   if curl --fail --silent --head --proto '=https' --output /dev/null "$url"; then
     [[ $(curl --fail --silent --show-error --proto '=https' "$url" | sha256sum | cut -d' ' -f1) == "$sha" ]] \
       || die "$url holds other bytes"
   else
     # The token goes through curl's configuration on stdin, never its arguments.
-    printf 'header = "Authorization: token %s"\n' "$REGISTRY_TOKEN" \
+    printf 'header = "Authorization: token %s"\n' "$token" \
       | curl --fail --silent --show-error --proto '=https' --config - --upload-file "$file" "$url"
   fi
   [[ $(curl --fail --silent --show-error --proto '=https' "$url" | sha256sum | cut -d' ' -f1) == "$sha" ]] \
     || die "$url does not read back as published"
 }
 
-# Sign $2 (a source.json beside its artifacts) with the seed into $3/catalog.json and keys.json.
+# Sign $2 (a source.json beside its artifacts) with the seed $4 into $3/catalog.json and keys.json.
 sign_source() {
-  local compiler=$1 source=$2 out=$3 key
-  : "${TILO_MODEL_CATALOG_SIGNING_KEY:?the catalog signing seed is not set: the check needs secrets = [\"TILO_MODEL_CATALOG_SIGNING_KEY\"]}"
+  local compiler=$1 source=$2 out=$3 seed=$4 key
   mkdir -p "$out"
   key=$(mktemp "$scratch/model-catalog-key.XXXXXX")
   trap 'rm -f "$key"' RETURN
-  (umask 077 && printf '%s\n' "$TILO_MODEL_CATALOG_SIGNING_KEY" > "$key")
-  unset TILO_MODEL_CATALOG_SIGNING_KEY
+  (umask 077 && printf '%s\n' "$seed" > "$key")
   "$compiler" --source "$source" --signing-key "$key" \
     --catalog-out "$out/catalog.json" --trust-out "$out/keys.json"
+}
+
+# The release seed, taken out of the environment.
+release_seed() {
+  : "${TILO_MODEL_CATALOG_SIGNING_KEY:?the catalog signing seed is not set: the check needs secrets = [\"TILO_MODEL_CATALOG_SIGNING_KEY\"]}"
+  seed=$TILO_MODEL_CATALOG_SIGNING_KEY
+  unset TILO_MODEL_CATALOG_SIGNING_KEY
 }
 
 command=${1:-}
@@ -117,9 +134,10 @@ case $command in
   sign)
     compiler=${1:?usage: local-model-catalog.sh sign COMPILER OUT} out=${2:?}
     release_only
+    release_seed
     work=$(mktemp -d "$scratch/model-catalog.XXXXXX")
-    stage "$work"
-    sign_source "$compiler" "$work/source.json" "$out"
+    stage "$work" dist/local-models/catalog-source.json
+    sign_source "$compiler" "$work/source.json" "$out" "$seed"
     rm -rf "$work"
     # The catalog an OS image carries is the checked-in one: signing must reproduce it exactly.
     cmp "$out/catalog.json" "$extensions/local-model-catalog.json"
@@ -134,36 +152,64 @@ case $command in
     cmp "$signed/keys.json" "$extensions/local-model-keys.json"
     work=$(mktemp -d "$scratch/model-catalog.XXXXXX")
     trap 'rm -rf "$work"' EXIT
-    if [[ $(jq '.models | length' dist/local-models/catalog-source.json) == 4 ]]; then
-      models_source "$work/models-source.json"
-      python3 -I tools/release/prepare_speech_catalog.py "$work/staged" --source "$work/models-source.json"
-      PACKAGE_TOKEN=$REGISTRY_TOKEN python3 -I tools/release/publish_speech_artifacts.py "$work/staged"
-    fi
+    models_source "$work/models-source.json"
+    python3 -I tools/release/prepare_speech_catalog.py "$work/staged" --source "$work/models-source.json"
+    PACKAGE_TOKEN=$REGISTRY_TOKEN python3 -I tools/release/publish_speech_artifacts.py "$work/staged"
     cp dist/local-models/catalog-source.json "$work/source.json"
     stage_runtimes "$work"
     while IFS=$'\t' read -r file url; do
-      publish_file "$file" "$url"
+      publish_file "$file" "$url" "$REGISTRY_TOKEN"
     done < <(jq -r '.runtimes[] | [.artifact.file, .artifact.url] | @tsv' "$work/source.json")
     version=$(sha256sum "$signed/catalog.json" | cut -d' ' -f1)
     base=$package_base/$version
     for file in catalog.json keys.json; do
-      publish_file "$signed/$file" "$base/$file"
+      publish_file "$signed/$file" "$base/$file" "$REGISTRY_TOKEN"
     done
     printf 'Published the reviewed catalog %s/catalog.json from %s\n' "$base" "$T_COMMIT"
     ;;
   review)
     compiler=${1:?usage: local-model-catalog.sh review COMPILER OUT} out=${2:?}
     release_only
+    release_seed
+    mkdir -p "$out"
+    built_source "$out/source.json"
     work=$(mktemp -d "$scratch/model-catalog-review.XXXXXX")
-    stage "$work"
-    sign_source "$compiler" "$work/source.json" "$out"
-    cp dist/local-models/catalog-source.json "$out/source.json"
+    stage "$work" "$out/source.json"
+    sign_source "$compiler" "$work/source.json" "$out" "$seed"
     rm -rf "$work"
     cmp "$out/keys.json" "$extensions/local-model-keys.json"
     (cd "$out" && sha256sum catalog.json keys.json source.json > review.sha256)
     printf 'Signed the catalog source for review: t outputs review-model-catalog\n'
     ;;
+  dev)
+    arch=${1:?usage: local-model-catalog.sh dev ARCH COMPILER OUT} compiler=${2:?} out=${3:?}
+    work=$(mktemp -d "$scratch/model-catalog-dev.XXXXXX")
+    built_source "$work/built.json" "$arch"
+    jq --arg key "$dev_key_id" '.key_id = $key' "$work/built.json" > "$work/dev.json"
+    stage "$work" "$work/dev.json"
+    # A dev image carries this catalog and the key that verifies it, both covered by the image's
+    # own signature: the development key vouches for them, so the catalog key is throwaway.
+    sign_source "$compiler" "$work/source.json" "$out" "$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+    rm -rf "$work"
+    jq -e --arg key "$dev_key_id" '.key_id == $key and (.payload.runtimes | length) > 0' \
+      "$out/catalog.json" >/dev/null || die 'the dev catalog names no runtime'
+    printf 'Signed the %s dev catalog with %s runtimes\n' "$arch" "$(jq '.payload.runtimes | length' "$out/catalog.json")"
+    ;;
+  publish-runtimes)
+    arch=${1:?usage: local-model-catalog.sh publish-runtimes ARCH}
+    [[ $(channel) == dev ]] || die "the runtimes dev images name are published from main, not ${T_REF}"
+    require_commit
+    : "${TILO_PACKAGES_TOKEN:?the package token is not set: the check needs secrets = [\"TILO_PACKAGES_TOKEN\"]}"
+    work=$(mktemp -d "$scratch/model-runtimes.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    built_source "$work/source.json" "$arch"
+    stage_runtimes "$work"
+    while IFS=$'\t' read -r file url; do
+      publish_file "$file" "$url" "$TILO_PACKAGES_TOKEN"
+      printf 'published %s\n' "$url"
+    done < <(jq -r '.runtimes[] | [.artifact.file, .artifact.url] | @tsv' "$work/source.json")
+    ;;
   *)
-    die "usage: local-model-catalog.sh compiler|sign|publish|review ..."
+    die "usage: local-model-catalog.sh compiler|sign|publish|review|dev|publish-runtimes ..."
     ;;
 esac

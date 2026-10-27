@@ -26,7 +26,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::automerge::AutoCommit;
-use ui::permissions::{PermissionContext, UserId};
+use ui::permissions::{SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
@@ -124,6 +124,9 @@ pub(crate) fn catalogue() -> Vec<Application> {
 pub(crate) struct Inputs {
     pub feedback: Option<tilo_desktop::feedback::transport::Startup>,
     pub owners: RecordOwners,
+    /// The store [`Self::owners`] keep records in: the profile's, where the
+    /// person's own records are kept too ([`crate::person_records`]).
+    pub store: Rc<dyn durable_store::DurableStore>,
     pub views: Rc<InstanceViewStore>,
     pub device: String,
     /// Seeds this desktop's share of the id space: the certified device
@@ -132,7 +135,7 @@ pub(crate) struct Inputs {
     pub salt: String,
     pub room: String,
     pub author: String,
-    pub permissions: Rc<RefCell<PermissionContext>>,
+    pub permissions: SharedPermissions,
     pub models: ui::models::Models,
     /// What a report's review calls [`Self::models`].
     pub model_name: String,
@@ -335,6 +338,9 @@ pub(crate) struct Shared {
     /// Record ids of tabs whose application is not loaded yet: the record's
     /// kind comes with the application, so they are bound once it is.
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
+    /// The content, by hash, each tab opened with its app is to open: what
+    /// another window handed over (a capture, a recording).
+    opened_content: Rc<RefCell<HashMap<TabId, String>>>,
     /// Who made each strip and opened each window, by strip or tab id.
     pub authors: Authors,
     /// The workspace renamed since the mount last looked, for a notice when
@@ -388,6 +394,9 @@ pub(crate) struct Shared {
     /// Node applications the person asked to open, by id, for the page to
     /// ask the node.
     node_app_requests: Rc<RefCell<Vec<String>>>,
+    /// Actions of apps the person chose in the desktop's own chrome (a
+    /// launchpad card), for the desktop's session to deliver as theirs.
+    app_actions: Rc<RefCell<Vec<tilo_desktop::launchpad::LaunchpadAppAction>>>,
     /// Pages a host streams as display lists (`tilo-paint`), by window key:
     /// drawn here by the toolkit instead of decoded as video.
     paint_pages: Rc<RefCell<HashMap<String, Arc<tilo_browser_peer::remote_page::RemotePage>>>>,
@@ -721,6 +730,18 @@ impl Shared {
         std::mem::take(&mut *self.node_app_requests.borrow_mut())
     }
 
+    /// Have the desktop's session deliver `action` to its app as the
+    /// person's, opening the app first, on the next frame.
+    pub fn ask_app_action(&self, action: tilo_desktop::launchpad::LaunchpadAppAction) {
+        self.app_actions.borrow_mut().push(action);
+        self.wake();
+    }
+
+    /// The app actions asked since the last call.
+    pub fn take_app_actions(&self) -> Vec<tilo_desktop::launchpad::LaunchpadAppAction> {
+        std::mem::take(&mut *self.app_actions.borrow_mut())
+    }
+
     /// The applications this desktop opens: the bundle's, then the node's.
     pub fn catalogue(&self) -> Vec<Application> {
         catalogue()
@@ -824,6 +845,28 @@ impl Shared {
             .iter()
             .map(|(tab, checkout)| (*tab, checkout.clone()))
             .collect()
+    }
+
+    /// The record `tab` shows in this desktop's room, as a report about
+    /// its window names it: what a recording of the window records.
+    pub fn shown_record(
+        &self,
+        tree: &DesktopTree,
+        tab: TabId,
+    ) -> Option<tilo_desktop::feedback::ShownRecord> {
+        if self.window_capture_protected(tree, tab) {
+            return None;
+        }
+        let workspace = crate::replication::room_uuid(self.room_actions.peer?)?;
+        let (_, record) = self.live_record_of(tree, tab)?;
+        Some(tilo_desktop::feedback::ShownRecord { workspace, record })
+    }
+
+    /// Whether the app window `tab` shows declares itself withheld from what
+    /// leaves the device.
+    pub fn window_capture_protected(&self, tree: &DesktopTree, tab: TabId) -> bool {
+        self.live_record_of(tree, tab)
+            .is_some_and(|(app, _)| crate::capture_declarations::declared(&app))
     }
 
     /// The record `tab` shows as the room's live layer names it: its
@@ -1074,7 +1117,7 @@ impl Tiles {
             views: Rc::clone(&self.inputs.views),
             device_id: self.inputs.device.clone(),
             instance_id: instance,
-            permissions: Rc::clone(&self.inputs.permissions),
+            permissions: self.inputs.permissions.clone(),
             author: UserId(self.inputs.author.clone()),
             action_context: tilo_actions::ActionContext::default(),
         };
@@ -1085,12 +1128,20 @@ impl Tiles {
         .map_err(|error| error.to_string())?;
         context.provide_models(self.inputs.models.clone());
         context.provide_content(crate::page_content());
+        // What another window handed this one to open, from the page's
+        // content, where that window keeps it.
+        let handed = self.shared.opened_content.borrow_mut().remove(&instance);
+        if let Some(hash) = handed {
+            let (file, _) = crate::content_open::opened_file(&hash, &crate::page_content())?;
+            context.provide_open_file(file);
+        }
         context.provide_workspace_records(crate::workspace_records::in_page(
             &self.inputs.owners,
             &self.shared.stores,
             &self.inputs.room,
             self.inputs.author.clone(),
         ));
+        crate::person_records::provide(&mut context, &self.inputs.store)?;
         // Only registered control panels receive the administration capability.
         if crate::host_services::provider_admin_app(definition.app_id()) {
             crate::host_services::provide_provider_admin(
@@ -1113,12 +1164,14 @@ impl Tiles {
             || definition.instantiate(context, target, restore),
         )
         .map_err(|error| error.to_string())?;
-        crate::page_content::own_loaders(
-            &self.shared.image_owners,
-            first_loader..self.shared.images.borrow().len(),
-            definition.app_id(),
-            &component.record().id,
-        );
+        crate::capture_declarations::note(definition.app_id(), component.capture_protected());
+        if let Some(content) = component.content() {
+            crate::page_content::own_loaders(
+                &self.shared.image_owners,
+                first_loader..self.shared.images.borrow().len(),
+                &content,
+            );
+        }
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
         let notify = Arc::clone(&self.notify);
@@ -1414,11 +1467,22 @@ impl TileSource for Tiles {
             self.shared.peer_windows.borrow_mut().insert(id, window);
             return Some(tab);
         }
-        let (app, record) = match tilo_desktop_surface::session::launched_record(app) {
-            Some((app, record)) => (app, Some(record)),
-            None => (app, None),
+        let (app, record, content) = if let Some((app, hash)) =
+            tilo_desktop_surface::session::launched_content(app)
+        {
+            (app, None, Some(hash))
+        } else if let Some((app, record)) = tilo_desktop_surface::session::launched_record(app) {
+            (app, Some(record), None)
+        } else {
+            (app, None, None)
         };
         let title = known_application(app)?;
+        if let Some(hash) = content {
+            self.shared
+                .opened_content
+                .borrow_mut()
+                .insert(id, hash.to_owned());
+        }
         if let Some(record) = record {
             // The window opens on the record a shared link or window named.
             self.shared

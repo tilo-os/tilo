@@ -505,7 +505,7 @@ impl Core {
         // Copying is presentation; the use it records is a verb, so it
         // replicates and undoes like any change.
         if let Some(body) = self.library.get(id).map(|s| s.body.clone()) {
-            self.copy_text(body, id);
+            self.copy_text(&body, id);
         }
     }
 
@@ -514,12 +514,12 @@ impl Core {
     /// API key does not sit in the clipboard history for the rest of the day.
     /// The copy's outcome is watched: a clipboard that refuses is said, not
     /// confirmed.
-    fn copy_text(&mut self, text: String, id: &SnippetId) {
-        let secret = looks_like_a_credential(&text);
+    fn copy_text(&mut self, text: &str, id: &SnippetId) {
+        let secret = looks_like_a_credential(text);
         let copy = if secret {
-            ui::try_clipboard_copy_secret(&text, std::time::Duration::from_secs(45))
+            ui::try_clipboard_copy_secret(text, std::time::Duration::from_secs(45))
         } else {
-            ui::try_clipboard_copy(&text)
+            ui::try_clipboard_copy(text)
         };
         let copied = self.copy.watch(copy);
         // The use is the person taking the snippet, which happened whether
@@ -690,7 +690,7 @@ impl Core {
             }
             ExpandOutcome::Cancel => {}
             ExpandOutcome::Copy(text, id) => {
-                self.copy_text(text, &id);
+                self.copy_text(&text, &id);
             }
         }
     }
@@ -752,9 +752,8 @@ fn sidebar(core: &Shared, requests: &Requests) -> NavList {
     let requests = Rc::clone(requests);
     let core = Rc::clone(core);
     NavList::new(Vec::new())
-        .with_id("snippets.sidebar")
         .with_accessible_name(tr("snippets-library"))
-        .on_select(move |id| {
+        .on_view("snippets.sidebar", move |id| {
             if let Some(selection) = selection_of(&id) {
                 requests.borrow_mut().push(Action::Select(selection));
             }

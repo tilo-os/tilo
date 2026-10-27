@@ -29,8 +29,8 @@ use crate::shell::search::providers::store_catalogue::{
     StoreCatalogueTestSource, StoreCatalogueTestState,
 };
 use crate::shell::search::providers::{
-    ActionsProvider, ApplicationsProvider, ContinueProvider, FilesProvider, SessionActionPolicy,
-    SessionActionsProvider, SettingsPagesProvider, WebProvider,
+    ActionsProvider, AppContentProvider, ApplicationsProvider, AskAgentProvider, ContinueProvider,
+    FilesProvider, SessionActionPolicy, SessionActionsProvider, SettingsPagesProvider, WebProvider,
 };
 use crate::shell::search::providers::{HostApplicationsProvider, StoreCatalogueProvider};
 use crate::shell::search::{
@@ -239,12 +239,63 @@ impl Palette {
         self
     }
 
+    /// The palette over what `app` published in the workspace in front, as
+    /// its window publishes it to the session's index of apps' content.
+    fn with_app_content(
+        mut self,
+        app: &str,
+        entries: Vec<ui::search::index_publication::IndexEntry>,
+    ) -> Self {
+        use ui::search::index_publication::{IndexState, Publisher};
+        let room = self
+            .chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("a workspace in front")
+            .room()
+            .to_string();
+        let index = Arc::new(crate::shell::search::app_content_index::AppContentIndex::in_memory());
+        let state = IndexState {
+            generation: 1,
+            secrets_unlocked: None,
+        };
+        for delta in Publisher::default().publish(state, entries) {
+            let bytes = delta.encode().expect("a delta encodes");
+            index
+                .publish(&room, app, "tab:0001", &bytes)
+                .expect("the index takes the delta");
+        }
+        self.registry
+            .register(Rc::new(AppContentProvider::without_broker(index)));
+        self
+    }
+
     /// The palette with the web as a provider too, on a device whose apps
     /// are not installed through the launcher, so the web serves every
     /// service.
     fn with_web(mut self) -> Self {
         self.registry
             .register(Rc::new(WebProvider::with_installed(|_| None)));
+        self
+    }
+
+    /// The palette in a workspace whose agent has a model and takes any
+    /// query.
+    fn with_agent(mut self) -> Self {
+        use tilo_action_broker::test_support::{Grants as _, KindSet};
+        self.chrome
+            .borrow()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("the palette's workspace")
+            .admit_agent("tide", KindSet::READ);
+        self.registry
+            .register(Rc::new(AskAgentProvider::with_models(|_| {
+                Some(agent_provider_config::EndpointLocation::Hosted)
+            })));
         self
     }
 
@@ -583,7 +634,18 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
 
 #[test]
 fn the_palette_finds_what_people_type() {
-    let palette = Palette::new();
+    leads_with_what_people_type(&Palette::new());
+}
+
+/// What a person names stays first, where Enter runs it, with an agent
+/// ready to take any query and the web beside it: a typo, initials or
+/// another of a thing's names is a direct match.
+#[test]
+fn what_people_type_still_leads_with_an_agent_and_the_web_beside_it() {
+    leads_with_what_people_type(&Palette::new().with_web().with_agent());
+}
+
+fn leads_with_what_people_type(palette: &Palette) {
     let mut failures = Vec::new();
     let mut report = String::new();
     for (query, expect) in table() {
@@ -625,6 +687,227 @@ fn the_palette_finds_what_people_type() {
         "{} of {} queries did not lead with the expected row:\n{report}",
         failures.len(),
         table().len()
+    );
+}
+
+// At least a hundred, covering verbs, nouns and abbreviations.
+const _: () = assert!(ACTION_PHRASINGS.len() >= 100);
+
+/// The words people use for the common system actions: verbs, nouns and
+/// abbreviations, each with the action it means. A word that is also an app's or
+/// a settings page's own name (Themes, Sound) finds that first, and its
+/// group leads the palette; the action follows in its own group. The words come from each
+/// action's declaration, not from search; an action that loses them drops
+/// out of its top three here.
+const ACTION_PHRASINGS: &[(&str, &str, &str)] = &[
+    // Power and the session.
+    ("shut down", SESSION, "shut-down"),
+    ("shutdown", SESSION, "shut-down"),
+    ("power off", SESSION, "shut-down"),
+    ("turn off", SESSION, "shut-down"),
+    ("switch off", SESSION, "shut-down"),
+    ("halt", SESSION, "shut-down"),
+    ("lock", SESSION, "lock"),
+    ("lock screen", SESSION, "lock"),
+    ("lock computer", SESSION, "lock"),
+    ("sleep", SESSION, "suspend"),
+    ("suspend", SESSION, "suspend"),
+    ("standby", SESSION, "suspend"),
+    ("hibernate", SESSION, "suspend"),
+    ("restart", SESSION, "restart"),
+    ("reboot", SESSION, "restart"),
+    ("log out", SESSION, "logout"),
+    ("logout", SESSION, "logout"),
+    ("sign out", SESSION, "logout"),
+    ("sign off", SESSION, "logout"),
+    ("switch user", SESSION, "switch-user"),
+    ("change user", SESSION, "switch-user"),
+    // The network.
+    ("wifi", ACTION, "quick-settings.wifi.toggle"),
+    ("wi-fi", ACTION, "quick-settings.wifi.toggle"),
+    ("wlan", ACTION, "quick-settings.wifi.toggle"),
+    ("wireless", ACTION, "quick-settings.wifi.toggle"),
+    ("wireless network", ACTION, "quick-settings.wifi.toggle"),
+    ("internet", ACTION, "quick-settings.wifi.toggle"),
+    ("wifi networks", ACTION, "quick-settings.network"),
+    ("connect to wifi", ACTION, "quick-settings.network"),
+    ("hotspot", ACTION, "quick-settings.network"),
+    ("bluetooth", ACTION, "quick-settings.bluetooth.toggle"),
+    ("headphones", ACTION, "quick-settings.bluetooth.toggle"),
+    ("pair headphones", ACTION, "quick-settings.bluetooth"),
+    (
+        "airplane mode",
+        ACTION,
+        "quick-settings.airplane-mode.toggle",
+    ),
+    ("flight mode", ACTION, "quick-settings.airplane-mode.toggle"),
+    ("offline", ACTION, "quick-settings.airplane-mode.toggle"),
+    ("vpn", ACTION, "quick-settings.vpn.set-enabled"),
+    ("wireguard", ACTION, "quick-settings.vpn.set-enabled"),
+    ("tunnel", ACTION, "quick-settings.vpn.set-enabled"),
+    // The display.
+    ("brightness", ACTION, "quick-settings.brightness.set"),
+    ("backlight", ACTION, "quick-settings.brightness.set"),
+    ("screen brightness", ACTION, "quick-settings.brightness.set"),
+    ("brighter", ACTION, "quick-settings.brightness.up"),
+    ("dimmer", ACTION, "quick-settings.brightness.down"),
+    ("darker", ACTION, "quick-settings.brightness.down"),
+    ("dark mode", ACTION, "appearance.theme.dark"),
+    ("night mode", ACTION, "appearance.theme.dark"),
+    ("night", ACTION, "appearance.theme.dark"),
+    ("dark theme", ACTION, "appearance.theme.dark"),
+    ("light mode", ACTION, "appearance.theme.light"),
+    ("day mode", ACTION, "appearance.theme.light"),
+    ("mirror screen", ACTION, "display.layout.mirror"),
+    ("extend desktop", ACTION, "display.layout.extend"),
+    ("second monitor", ACTION, "display.layout.extend"),
+    ("dual monitor", ACTION, "display.layout.extend"),
+    ("laptop screen only", ACTION, "display.layout.builtin-only"),
+    (
+        "external monitor only",
+        ACTION,
+        "display.layout.external-only",
+    ),
+    ("cast", ACTION, "projection.open"),
+    ("screen mirroring", ACTION, "projection.open"),
+    ("projector", ACTION, "projection.open"),
+    ("hdmi", ACTION, "projection.open"),
+    // The sound.
+    ("volume", ACTION, "quick-settings.volume.set"),
+    ("loudness", ACTION, "quick-settings.volume.set"),
+    ("speaker", ACTION, "quick-settings.volume.set"),
+    ("louder", ACTION, "quick-settings.volume.up"),
+    ("volume up", ACTION, "quick-settings.volume.up"),
+    ("turn up", ACTION, "quick-settings.volume.up"),
+    ("quieter", ACTION, "quick-settings.volume.down"),
+    ("volume down", ACTION, "quick-settings.volume.down"),
+    ("mute", ACTION, "quick-settings.volume.mute"),
+    ("unmute", ACTION, "quick-settings.volume.mute"),
+    ("audio output", ACTION, "quick-settings.devices"),
+    // Capturing the screen.
+    ("screenshot", ACTION, "capture.open"),
+    ("capture", ACTION, "capture.open"),
+    ("print screen", ACTION, "capture.open"),
+    ("screen capture", ACTION, "capture.open"),
+    ("snipping tool", ACTION, "capture.open"),
+    ("record screen", ACTION, "capture.open"),
+    ("screencast", ACTION, "capture.open"),
+    // Input.
+    ("emoji", ACTION, "emoji.picker"),
+    ("smiley", ACTION, "emoji.picker"),
+    ("emoticon", ACTION, "emoji.picker"),
+    ("dictation", ACTION, "dictation.toggle"),
+    ("voice typing", ACTION, "dictation.toggle"),
+    ("speech to text", ACTION, "dictation.toggle"),
+    ("keyboard language", ACTION, "input.source.next"),
+    ("switch layout", ACTION, "input.source.next"),
+    // Notifications.
+    ("do not disturb", ACTION, "notifications.dnd.toggle"),
+    ("dnd", ACTION, "notifications.dnd.toggle"),
+    ("focus mode", ACTION, "notifications.dnd.toggle"),
+    ("quiet", ACTION, "notifications.dnd.toggle"),
+    ("notifications", ACTION, "notifications.open"),
+    ("notification center", ACTION, "notifications.open"),
+    ("alerts", ACTION, "notifications.open"),
+    // Workspaces.
+    ("new workspace", ACTION, "workspace.create"),
+    ("add workspace", ACTION, "workspace.create"),
+    ("rename workspace", ACTION, "workspace.rename"),
+    ("delete workspace", ACTION, "workspace.delete"),
+    ("next workspace", ACTION, "workspace.next"),
+    ("previous workspace", ACTION, "workspace.previous"),
+    ("overview", ACTION, "overview.toggle"),
+    ("mission control", ACTION, "overview.toggle"),
+    ("expose", ACTION, "overview.toggle"),
+    ("show all workspaces", ACTION, "overview.toggle"),
+    ("workspace settings", ACTION, "settings.open"),
+    ("what changed", ACTION, "room.activity.open"),
+    ("timeline", ACTION, "room.activity.open"),
+    // Windows and tabs.
+    ("close window", ACTION, "tab.close"),
+    ("quit", ACTION, "tab.close"),
+    ("reopen closed tab", ACTION, "tab.reopen"),
+    ("undo close", ACTION, "tab.reopen"),
+    ("split screen", ACTION, "tab.split-right"),
+    ("side by side", ACTION, "tab.split-right"),
+    ("maximize", ACTION, "group.maximize"),
+    ("fill screen", ACTION, "group.maximize"),
+    ("fullscreen", ACTION, "group.fullscreen"),
+    ("full screen", ACTION, "group.fullscreen"),
+    ("unmaximize", ACTION, "group.restore"),
+    ("alt tab", ACTION, "window.focus-next"),
+    ("next window", ACTION, "window.focus-next"),
+    ("previous window", ACTION, "window.focus-previous"),
+    ("move to monitor", ACTION, "group.move-to-display-next"),
+    ("wider", ACTION, "group.wider"),
+    ("narrower", ACTION, "group.narrower"),
+    ("rename tab", ACTION, "tab.rename"),
+    ("duplicate tab", ACTION, "tab.duplicate"),
+    ("new strip", ACTION, "strip.create"),
+    // Help, the panel and the rest.
+    ("keyboard shortcuts", ACTION, "shortcut-help.toggle"),
+    ("hotkeys", ACTION, "shortcut-help.toggle"),
+    ("cheat sheet", ACTION, "shortcut-help.toggle"),
+    ("tutorial", ACTION, "desktop-tour.open"),
+    ("getting started", ACTION, "desktop-tour.open"),
+    ("clipboard", ACTION, "quick-settings.clipboard"),
+    ("paste history", ACTION, "quick-settings.clipboard"),
+    ("control center", ACTION, "quick-settings.open"),
+    ("quick settings", ACTION, "quick-settings.open"),
+    ("power profile", ACTION, "quick-settings.power-profile.set"),
+    ("battery saver", ACTION, "quick-settings.power-profile.set"),
+    (
+        "performance mode",
+        ACTION,
+        "quick-settings.power-profile.set",
+    ),
+    ("switch language", ACTION, "appearance.language"),
+    ("locale", ACTION, "appearance.language"),
+    ("feedback", ACTION, "feedback.open"),
+    ("report bug", ACTION, "feedback.open"),
+    ("uninstall", ACTION, "app.uninstall"),
+    // Settings, by the names other systems give it.
+    ("settings", APP, "so.tilo.settings"),
+    ("preferences", APP, "so.tilo.settings"),
+    ("options", APP, "so.tilo.settings"),
+    ("control panel", APP, "so.tilo.settings"),
+];
+
+/// Each common phrasing ranks the action it means among the first three
+/// rows, whatever else the palette finds for the same words.
+#[test]
+fn every_common_phrasing_finds_its_action_in_the_top_three() {
+    let palette = Palette::new();
+    let phrasings = ACTION_PHRASINGS;
+    let mut failures = 0;
+    let mut report = String::new();
+    for (query, provider, id) in phrasings {
+        let rows = palette.ask(query);
+        let top: Vec<String> = rows
+            .iter()
+            .take(3)
+            .map(|row| format!("{}/{} ({})", row.provider_id, row.id, row.score))
+            .collect();
+        let passed = rows
+            .iter()
+            .take(3)
+            .any(|row| row.provider_id == *provider && row.id == *id);
+        let _ = writeln!(
+            report,
+            "{} {query:<22} -> {provider}/{id:<38} got {}",
+            if passed { "ok  " } else { "FAIL" },
+            top.join(", ")
+        );
+        if !passed {
+            failures += 1;
+        }
+    }
+    println!("{report}");
+    assert_eq!(
+        failures,
+        0,
+        "{failures} of {} phrasings did not rank their action in the top three:\n{report}",
+        phrasings.len()
     );
 }
 
@@ -1120,6 +1403,81 @@ fn a_query_only_a_flatpak_matches_still_finds_its_store_page() {
         assert_eq!(
             rows.first().map(|row| row.id.as_str()),
             Some("flathub:org.musicbrainz.Picard"),
+            "{:?}",
+            titles(&rows)
+        );
+    }
+}
+
+/// One of Tube's rows as its window publishes it: found by `text` (the
+/// query a row answers), ordered among Tube's own rows by `boost`, steps of
+/// 101 below the row that searches as Tube boosts them.
+fn tube_entry(
+    anchor: &str,
+    title: &str,
+    text: &str,
+    boost: i32,
+) -> ui::search::index_publication::IndexEntry {
+    use ui::search::index_publication::{IndexEntry, IndexWeight};
+    IndexEntry {
+        key: anchor.into(),
+        resource: anchor.into(),
+        action: None,
+        title: title.into(),
+        subtitle: None,
+        group: Some("YouTube".into()),
+        icon: None,
+        boost,
+        fields: vec![(text.into(), IndexWeight::Body)],
+        secret: false,
+    }
+}
+
+/// Typing "lofi" with Tube open: its row that searches `YouTube` leads, so
+/// Enter searches, though the videos `YouTube` suggests begin with the word
+/// and the row only contains it; the videos follow in `YouTube`'s order.
+/// The app's boosts order its own rows, whatever their titles say.
+#[test]
+fn an_apps_boosts_order_its_rows_over_their_titles_lexical_fit() {
+    let palette = Palette::new().with_app_content(
+        "so.tilo.tube",
+        vec![
+            tube_entry("tube.video:b", "lofi beats to sleep to", "lofi", 798),
+            tube_entry(
+                "tube.video:a",
+                "lofi hip hop radio 📚 beats to relax/study to",
+                "lofi",
+                899,
+            ),
+            tube_entry(
+                "tube.search:lofi",
+                "Search YouTube for “lofi”",
+                "lofi",
+                1000,
+            ),
+            tube_entry("tube.video:c", "chill lofi mix", "lofi", 697),
+        ],
+    );
+    for rows in [palette.ask("lofi"), palette.shown("lofi")] {
+        let tube: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.kind == ResourceKind::Record)
+            .map(|row| row.title.as_str())
+            .collect();
+        assert_eq!(
+            tube,
+            [
+                "Search YouTube for “lofi”",
+                "lofi hip hop radio 📚 beats to relax/study to",
+                "lofi beats to sleep to",
+                "chill lofi mix",
+            ],
+            "{:?}",
+            titles(&rows)
+        );
+        assert_eq!(
+            rows.first().map(|row| row.title.as_str()),
+            Some("Search YouTube for “lofi”"),
             "{:?}",
             titles(&rows)
         );

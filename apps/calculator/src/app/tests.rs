@@ -345,7 +345,11 @@ fn power_input_focused_calculator_enables_browser_text_editor() {
         .ime_cursor_rect()
         .expect("text entry must enable the browser editor and platform IME");
     assert!(caret.height() > 0.0 && app.area.contains(caret.center()));
-    assert_eq!(app.ime_content(), Some(ui::ime::InputContent::TEXT));
+    // The keypad types it, so no soft keyboard covers the keys.
+    assert_eq!(
+        app.ime_content(),
+        Some(ui::ime::InputContent::TEXT.own_keys())
+    );
     app.set_focus(false);
     assert!(app.ime_cursor_rect().is_none());
     assert_eq!(app.ime_content(), None);
@@ -626,7 +630,11 @@ fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
     app.declare_window_toolbar();
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
     let views = toolbar.views.as_ref().expect("the modes switch in the bar");
-    assert_eq!(views.choices.len(), 3);
+    assert_eq!(
+        views.choices.len(),
+        Mode::all().len(),
+        "every page the app has"
+    );
     assert_eq!(views.chosen, "calculator.mode:1");
     assert_eq!(toolbar.sidebar, Some(true), "the formulas are the sidebar");
     let menu: Vec<&str> = toolbar
@@ -1217,4 +1225,117 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
             "the clicked stable row is tombstoned rather than a neighbouring index"
         );
     }
+}
+
+#[test]
+fn the_keypad_types_the_expression_without_a_soft_keyboard() {
+    use ui::Widget as _;
+    let own_keys = |app: &CalculatorApp| app.ime_content().map(|content| content.hints.own_keys);
+    let mut app = CalculatorApp::new();
+    app.set_focus(true);
+    assert_eq!(own_keys(&app), Some(true));
+    app.set_mode(Mode::Graph2d);
+    assert_eq!(
+        own_keys(&app),
+        Some(false),
+        "formulas are typed on the keyboard"
+    );
+}
+
+/// A phone-sized window showing `mode`, driven through the toolkit's touch
+/// translation.
+fn touch_harness(mode: Mode) -> ui::headless::FrameHarness {
+    let mut app = CalculatorApp::new();
+    app.set_mode(mode);
+    ui::headless::FrameHarness::for_root(ui::State::new(), app, (412, 800), ui::Theme::dark())
+}
+
+#[test]
+fn a_finger_drag_pans_the_plane_without_zooming() {
+    let mut h = touch_harness(Mode::Graph2d);
+    let before = h.root::<CalculatorApp>().model.view2d;
+    h.swipe_at((300.0, 500.0), (100.0, 600.0));
+    let panned = h.root::<CalculatorApp>().model.view2d;
+    assert!(panned.cx > before.cx, "{before:?} → {panned:?}");
+    assert!(panned.cy > before.cy, "{before:?} → {panned:?}");
+    assert_eq!(panned.scale, before.scale, "a drag is not a zoom");
+}
+
+#[test]
+fn a_finger_drag_orbits_the_surface_and_a_pinch_zooms_it() {
+    use winit::event::TouchPhase;
+    let mut h = touch_harness(Mode::Graph3d);
+    let before = h.root::<CalculatorApp>().model.view3d;
+    h.swipe_at((300.0, 500.0), (100.0, 420.0));
+    let orbited = h.root::<CalculatorApp>().model.view3d;
+    assert!(orbited.yaw < before.yaw, "{before:?} → {orbited:?}");
+    assert!(orbited.pitch < before.pitch, "{before:?} → {orbited:?}");
+    assert_eq!(orbited.zoom, before.zoom, "a drag is not a zoom");
+
+    h.touch(0, TouchPhase::Started, 180.0, 500.0);
+    h.touch(1, TouchPhase::Started, 230.0, 500.0);
+    for step in 1..=4 {
+        let spread = 12.0 * f64::from(step);
+        h.touch(0, TouchPhase::Moved, 180.0 - spread, 500.0);
+        h.touch(1, TouchPhase::Moved, 230.0 + spread, 500.0);
+    }
+    h.touch(0, TouchPhase::Ended, 132.0, 500.0);
+    h.touch(1, TouchPhase::Ended, 278.0, 500.0);
+    let pinched = h.root::<CalculatorApp>().model.view3d;
+    assert!(pinched.zoom > orbited.zoom, "{orbited:?} → {pinched:?}");
+}
+
+#[test]
+fn orbiting_round_and_round_keeps_the_yaw_within_one_turn() {
+    let mut h = touch_harness(Mode::Graph3d);
+    for _ in 0..12 {
+        h.swipe_at((380.0, 500.0), (20.0, 500.0));
+    }
+    let yaw = h.root::<CalculatorApp>().model.view3d.yaw;
+    assert!(
+        yaw.abs() <= std::f64::consts::PI,
+        "yaw {yaw} ran past half a turn"
+    );
+}
+
+/// The conversion page is a page of this window: the bar switches to it, it
+/// answers the question the audit asked (`40 °C` in `°F`), and every control
+/// it paints is reachable by address.
+#[test]
+fn the_conversion_page_answers_in_units_and_says_why_money_cannot() {
+    let mut app = hosted();
+    press_bar(&mut app, "calculator.mode:3");
+    assert_eq!(
+        app.with_widget(|app: &mut CalculatorApp| app.mode_for_test()),
+        Some(Mode::Convert)
+    );
+    assert_eq!(
+        app.with_widget(|page: &mut CalculatorApp| { page.convert_page().dimension().label() }),
+        Some("Length"),
+        "the page opens on lengths"
+    );
+
+    // Money is a chip that says what it cannot do, in the person's words.
+    click(&mut app, "calculator.convert:currency");
+    assert!(
+        app.with_widget(|page: &mut CalculatorApp| page.convert_page().currency_note_shown())
+            == Some(true),
+        "the currency chip shows why it cannot convert money"
+    );
+
+    // 40 °C in °F, by pressing the chips and typing the amount, as a person
+    // would.
+    click(&mut app, "calculator.convert:quantity:temperature");
+    app.harness().type_text("40");
+    app.settle();
+    assert_eq!(
+        app.with_widget(|page: &mut CalculatorApp| page.convert_page().result_text()),
+        Some(Some("104 °F".to_owned())),
+        "the answer the audit asked for"
+    );
+    press_bar(&mut app, "calculator.mode:0");
+    assert_eq!(
+        app.with_widget(|app: &mut CalculatorApp| app.mode_for_test()),
+        Some(Mode::Calc)
+    );
 }

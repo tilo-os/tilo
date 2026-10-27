@@ -16,6 +16,8 @@ mod blocked_read;
 mod idle_reads;
 #[path = "mounted_code/read_recovery.rs"]
 mod read_recovery;
+#[path = "mounted_code/workspace_emoji.rs"]
+mod workspace_emoji;
 
 // The mounted UI stays on the caller thread while Iroh and persistence can
 // progress independently, as on ShellNetwork's two-worker runtime.
@@ -77,6 +79,8 @@ pub(super) enum Journey {
     ActiveReads {
         lines: usize,
     },
+    /// Both windows add to the workspace's emoji, Chat's record.
+    WorkspaceEmoji,
 }
 
 pub(super) struct Context<'a> {
@@ -390,6 +394,8 @@ async fn finish_journey(
         .await;
     } else if let Journey::ActiveReads { lines } = context.journey {
         active_reads::run(first, &mut mounted[0], lines).await;
+    } else if matches!(context.journey, Journey::WorkspaceEmoji) {
+        workspace_emoji::run(context, authority, owner, refreshes, mounted).await;
     } else {
         edit_and_converge(context, authority, owner, refreshes, mounted).await;
     }
@@ -730,32 +736,43 @@ async fn drive(
                 report_snapshots(authority, source, mounted, stage_started.elapsed());
                 break;
             }
-            tokio::select! {
-                result = refreshes.outcomes.recv() => {
-                    result.expect("the actual refresh owner must remain live").unwrap();
-                }
-                Some(tilo_relay::Inbound::Delta { author, data }) = context.publisher.recv() => {
-                    // An edit arrives as several deltas. The governor takes
-                    // every one already here and re-signs its checkpoint once
-                    // for them: a checkpoint per delta queued more relay
-                    // writes than a loaded runner's disk completes.
-                    let mut admitted = govern_member_delta(authority, source, author, &data);
-                    while let Some(Some(tilo_relay::Inbound::Delta { author, data })) =
-                        context.publisher.recv().now_or_never()
-                    {
-                        admitted |= govern_member_delta(authority, source, author, &data);
-                    }
-                    if admitted {
-                        let mut state = authority.lock().unwrap();
-                        let state = state.as_mut().unwrap();
-                        state.commit_changes().unwrap();
-                        super::refresh::publish_changes(state, context.publisher);
-                    }
-                }
-                () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
-            }
+            govern_round(context, authority, source, refreshes).await;
         }
     }).await;
+}
+
+/// One round of the room's governor: a refresh answered, the members'
+/// deltas taken in and published, or a short wait for either.
+async fn govern_round(
+    context: &Context<'_>,
+    authority: &ActualAuthority,
+    source: &NativeWorkspaceOwner,
+    refreshes: &mut RefreshConsumer,
+) {
+    tokio::select! {
+        result = refreshes.outcomes.recv() => {
+            result.expect("the actual refresh owner must remain live").unwrap();
+        }
+        Some(tilo_relay::Inbound::Delta { author, data }) = context.publisher.recv() => {
+            // An edit arrives as several deltas. The governor takes
+            // every one already here and re-signs its checkpoint once
+            // for them: a checkpoint per delta queued more relay
+            // writes than a loaded runner's disk completes.
+            let mut admitted = govern_member_delta(authority, source, author, &data);
+            while let Some(Some(tilo_relay::Inbound::Delta { author, data })) =
+                context.publisher.recv().now_or_never()
+            {
+                admitted |= govern_member_delta(authority, source, author, &data);
+            }
+            if admitted {
+                let mut state = authority.lock().unwrap();
+                let state = state.as_mut().unwrap();
+                state.commit_changes().unwrap();
+                super::refresh::publish_changes(state, context.publisher);
+            }
+        }
+        () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+    }
 }
 
 /// Admit a member's delta of the mounted app into the governor; `false` for
@@ -774,7 +791,8 @@ fn govern_member_delta(
         .unwrap()
         .governor()
         .device_public_key;
-    if !matches!(&message, NeighbourMsg::AppDocument { app_id, .. } if app_id == APP)
+    if !matches!(&message, NeighbourMsg::AppDocument { app_id, record_id, .. }
+        if app_id == APP || collab_types::workspace_record(app_id, record_id).is_some())
         || author == governor
     {
         return false;

@@ -57,6 +57,34 @@ fn refused(reason: impl Into<String>) -> ActionError {
     ActionError::Refused(reason.into())
 }
 
+/// Opening the app a report's `recording` recorded with the recording, read
+/// from this chat's content: the app replays it in a window of its own.
+#[must_use]
+pub fn replay_launch(
+    recording: &ui::feedback::RecordingRef,
+) -> tilo_actions::remote::ApplicationLaunch {
+    tilo_actions::remote::ApplicationLaunch::with_content(
+        recording.app.clone(),
+        recording.hash.to_ascii_lowercase(),
+    )
+}
+
+/// The published action that replays a report's `recording`.
+#[must_use]
+pub fn replay_spec(recording: &ui::feedback::RecordingRef) -> tilo_actions::ActionSpec {
+    replay_launch(recording).spec(
+        REPLAY_ACTION,
+        &crate::i18n::t("chat-feedback-replay"),
+        &crate::i18n::t_args(
+            "chat-feedback-replay-description",
+            &[("app", recording.app_name.clone().into())],
+        ),
+    )
+}
+
+/// The report item's action that replays its recording.
+pub const REPLAY_ACTION: &str = "replay-recording";
+
 /// The id of the message a report is posted as.
 #[must_use]
 pub fn message_id(report: &str) -> String {
@@ -568,6 +596,141 @@ mod tests {
         assert!(
             receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
                 .is_err()
+        );
+    }
+
+    /// The record the reporter's window showed: a chat whose channels they
+    /// were reorganising, and the changes they made to it, oldest first.
+    fn reorganised() -> (Doc, usize) {
+        let mut shown = crate::testing::demo_chat();
+        let before = shown.get_changes(&[]).len();
+        for name in ["plans", "ideas"] {
+            apply_as(
+                &mut shown,
+                "visitor:one",
+                Chat::CREATE_CHANNEL.with(chat::CreateChannel {
+                    name: name.into(),
+                    category: None,
+                    kind: None,
+                    topic: Some(format!("Where {name} go")),
+                }),
+            )
+            .unwrap();
+        }
+        let general = crate::testing::channels(&shown)
+            .into_iter()
+            .find(|channel| channel.name == "plans")
+            .unwrap();
+        apply_as(
+            &mut shown,
+            "visitor:one",
+            Chat::RENAME_CHANNEL.with(chat::RenameChannel {
+                channel: Id::from_raw(general.id),
+                name: "roadmap".into(),
+            }),
+        )
+        .unwrap();
+        let made = shown.get_changes(&[]).len().saturating_sub(before);
+        (shown, made)
+    }
+
+    #[test]
+    fn a_report_with_a_recording_replays_for_another_member_to_the_states_the_reporter_saw() {
+        use ui::feedback::recording::{self, LIMITS};
+        let (mut shown, made) = reorganised();
+        assert!(made >= 3);
+        let heads = shown.get_heads();
+        let limits = ui::tilo_resource::recording::Limits {
+            steps: made,
+            ..LIMITS
+        };
+        let cut = ui::tilo_resource::recording::record(&shown, 0, &heads, &limits).unwrap();
+        let recorded =
+            ui::feedback::Recorded::new("so.tilo.chat", "Chat", "chat.workspace", &cut).unwrap();
+        let (mut destination, mut submission) = seeded();
+        submission.feedback.recording = Some(recorded.reference().clone());
+        apply_as(&mut destination, "visitor:one", action(&submission)).unwrap();
+
+        // Another member: their replica of the destination's chat, and the
+        // recording's bytes as the record's route hands them over.
+        let mut member = Doc::new();
+        member.merge_incoming(&mut destination.fork()).unwrap();
+        let filed = report(&member, &submission.id).unwrap().unwrap();
+        let reference = filed.submission.feedback.recording.unwrap();
+        assert_eq!(reference, *recorded.reference());
+        let line = messages(&member, &submission.destination.channel)
+            .into_iter()
+            .find(|message| message.id == message_id(&submission.id))
+            .unwrap()
+            .text;
+        assert!(line.contains("Recording of Chat"), "{line}");
+        let replay = recording::open(&reference, recorded.bytes()).unwrap();
+        assert_eq!(replay.step_count(), made);
+
+        let read_at = |doc: &Doc, heads: &[automerge::ChangeHash]| {
+            crate::projection::read(&doc.clone().fork_at(heads).unwrap())
+        };
+        let start = shown
+            .get_change_by_hash(&cut.steps[0].original)
+            .unwrap()
+            .deps()
+            .to_vec();
+        assert_eq!(
+            read_at(replay.doc(), &replay.heads_at(0).unwrap()),
+            read_at(&shown, &start),
+            "the replay starts where the window started"
+        );
+        for (step, original) in cut.steps.iter().enumerate() {
+            assert_eq!(
+                read_at(replay.doc(), &replay.heads_at(step + 1).unwrap()),
+                read_at(&shown, &[original.original]),
+                "step {step} replays to the state the reporter saw"
+            );
+        }
+        let end = read_at(replay.doc(), &replay.heads_at(made).unwrap());
+        assert!(
+            end.channels
+                .iter()
+                .any(|(_, channel)| channel.name == "roadmap")
+        );
+        let mut forged = reference;
+        forged.hash = "00".repeat(32);
+        assert!(
+            recording::open(&forged, recorded.bytes()).is_err(),
+            "bytes that are not the report's recording are refused"
+        );
+    }
+
+    #[test]
+    fn a_reports_recording_replays_through_the_launch_that_opens_content_in_its_app() {
+        let reference = ui::feedback::RecordingRef {
+            hash: "AB".repeat(32),
+            app: "so.tilo.notes".into(),
+            app_name: "Notes".into(),
+            kind: "notes.note".into(),
+            from_ms: 1_000,
+            to_ms: 2_000,
+            steps: 2,
+            bytes: 64,
+        };
+        let launch = replay_launch(&reference);
+        assert_eq!(
+            launch,
+            tilo_actions::remote::ApplicationLaunch::with_content("so.tilo.notes", "ab".repeat(32))
+        );
+        assert!(launch.valid());
+        let spec = replay_spec(&reference);
+        assert_eq!(spec.id, REPLAY_ACTION);
+        assert_eq!(
+            spec.operation_type.as_deref(),
+            Some(tilo_actions::remote::ApplicationLaunch::TYPE)
+        );
+        assert!(
+            spec.contract
+                .tags
+                .iter()
+                .any(|tag| tag == tilo_actions::OWN_DEVICE_SCOPE),
+            "replaying opens a window of the person's own, reaching no one else"
         );
     }
 

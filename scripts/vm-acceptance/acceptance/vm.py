@@ -194,8 +194,9 @@ class TiloVm:
         try:
             self.run("shot", "-o", str(path), timeout=90)
         except VmError:
-            # A software-rendered session under load can miss the 15 s snapshot deadline once.
-            time.sleep(2)
+            # A software-rendered session under load can miss the 15 s snapshot deadline once:
+            # take it again once the compositor answers its control socket.
+            self.wait_answering(30)
             self.run("shot", "-o", str(path), timeout=90)
         return path
 
@@ -213,15 +214,39 @@ class TiloVm:
         `requested_restarts`, so the session-restart guard knows this ending was asked for."""
         self.requested_restarts = getattr(self, "requested_restarts", 0) + 1
         self.run("slot", "restart", self.slot, timeout=300, slot=False)
+        self.wait_answering(timeout)
 
+    def wait_answering(self, timeout: float = 60) -> dict:
+        """The state dump, once the slot's compositor answers its control socket with at
+        least one display."""
         def answering():
             try:
-                return self.state()
+                st = self.state()
             except VmError:
                 return None
+            outputs = (st.get("workspace_tree") or {}).get("outputs") or {}
+            return st if outputs.get("displays") else None
 
-        if wait_until(answering, timeout, interval=1.0) is None:
-            raise VmError(f"the restarted session's control socket did not answer within {timeout:.0f}s")
+        st = wait_until(answering, timeout, interval=0.5)
+        if st is None:
+            raise VmError(f"the session's control socket did not answer with a display within {timeout:.0f}s")
+        return st
+
+    def wait_catalogue(self, timeout: float = 60) -> None:
+        """Once the session answers, until its app catalogue lists Terminal, which every
+        image carries: a fresh session publishes the catalogue a few seconds after it
+        starts."""
+        self.wait_answering(timeout)
+
+        def listed():
+            try:
+                return any(a["provider"] == "applications" and a["id"] == "so.tilo.terminal"
+                           for a in self.actions("Terminal"))
+            except VmError:
+                return False
+
+        if wait_until(listed, timeout, interval=0.5) is None:
+            raise VmError(f"the session listed no applications within {timeout:.0f}s")
 
     def exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
         """Run a POSIX sh script as the slot's user, in its session's view."""

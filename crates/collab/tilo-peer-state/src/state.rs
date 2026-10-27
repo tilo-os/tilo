@@ -51,7 +51,6 @@ mod agent_runs;
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
-mod topology_namespace;
 mod workspace_effects;
 mod workspace_membership;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
@@ -1733,7 +1732,6 @@ impl StatePeer {
                     standing: room::Standing::Member { person, foreign },
                 },
                 authority: room::AuthorityPin::Device(&pinned),
-                contents: room::ContentOwnership::Registry,
                 caps_now: now_secs(now),
             },
             room_changes,
@@ -2267,6 +2265,14 @@ impl StatePeer {
                 },
             );
         }
+        // A member's write of the shared desktop is decided by what each of
+        // its changes did ([`Self::check_shared_desktop`]).
+        let desktop_before = (source != self.core.authority.device_public_key
+            && tilo_desktop_model::shared_record::guard::is_shared_desktop(
+                &route.app,
+                &route.record,
+            ))
+        .then(|| candidate.doc.base_heads());
         let changed = match document::merge_committed_with_status(&mut candidate.doc, &mutation)
             .map_err(|e| format!("{e:?}"))?
         {
@@ -2294,6 +2300,9 @@ impl StatePeer {
         };
         if local_app && !candidate.doc.get_missing_deps(&[]).is_empty() {
             return Err("local publication has unresolved document dependencies".into());
+        }
+        if let Some(before) = &desktop_before {
+            self.check_shared_desktop(&candidate.doc, before, &member, authorization_time)?;
         }
         if let Some(room) = self.core.room_doc.as_deref()
             && let Some(policy) = room::media::parse(room).map_err(err)?
@@ -2329,6 +2338,40 @@ impl StatePeer {
             },
         ))
     }
+    /// A member's write of the room's shared desktop closes, moves or
+    /// renames only what its writer made, or what the room lets them
+    /// moderate ([`tilo_desktop_model::shared_record::guard`]): decided on
+    /// the changes `doc` holds beyond `before`, against the policy this peer
+    /// holds.
+    fn check_shared_desktop(
+        &self,
+        doc: &AutoCommit,
+        before: &[automerge::ChangeHash],
+        member: &MemberAuthority,
+        now: SystemTime,
+    ) -> Result<(), AdmissionError> {
+        use tilo_desktop_model::ownership::act_node;
+        let members = self
+            .core
+            .room_doc
+            .as_deref()
+            .and_then(tilo_desktop_model::projection::room_members);
+        let room = &self.core.room;
+        let allows = |act: &tilo_desktop_model::ownership::Touched| {
+            member.allows(&act_node(room, act), ActionKind::Undoable, now)
+        };
+        tilo_desktop_model::shared_record::guard::judge(
+            doc,
+            before,
+            &tilo_desktop_model::shared_record::guard::Writer {
+                person: &member.person,
+                members: members.as_ref(),
+                allows: &allows,
+            },
+        )
+        .map_err(|refusal| format!("document change forbidden: {refusal}").into())
+    }
+
     /// Keep a sealed write this replica holds no key for: its author, role,
     /// route, signature and sequence were checked above (`validated` is the
     /// record's channel with its sequence), and the ciphertext itself
@@ -3648,25 +3691,19 @@ pub(crate) fn delete_member_joined(doc: &mut AutoCommit, person: &str) -> Result
 }
 
 /// A new workspace governed by `authority`: its governance
-/// ([`seed_room`]), named `name`, with a desktop whose topology namespace
-/// `salt` (a device's id salt, never 0) the governing device owns, and no
-/// app records.
+/// ([`seed_room`]), named `name`, with no windows and no app records.
 ///
 /// # Errors
 ///
-/// Returns an error if `room` is not a UUID, `salt` is 0 or the document
-/// cannot be built.
+/// Returns an error if `room` is not a UUID or the document cannot be
+/// built.
 pub fn workspace_seed(
     room: &str,
     authority: &DeviceCert,
     roster: &[DeviceCert],
     name: &str,
-    salt: u16,
 ) -> Result<SeedState, String> {
     use tilo_automerge::ApplyIncoming as _;
-    if salt == 0 {
-        return Err("salt 0 names no topology namespace".into());
-    }
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
         authority.device_public_key.to_vec(),
     ));
@@ -3677,17 +3714,6 @@ pub fn workspace_seed(
         .map_err(err)?;
     doc.apply_incoming(changes).map_err(err)?;
     doc.put(ROOT, "name", name).map_err(err)?;
-    doc.put_object(ROOT, "contents", ObjType::Map)
-        .map_err(err)?;
-    let owners = doc
-        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
-        .map_err(err)?;
-    doc.put(
-        owners,
-        format!("{salt:04x}"),
-        hex::encode(authority.device_public_key),
-    )
-    .map_err(err)?;
     doc.put(ROOT, "desktop_counter_v1", 1_u64).map_err(err)?;
     doc.commit();
     Ok(SeedState {

@@ -70,6 +70,13 @@ impl PdfApp {
             .content
             .read(&hash)
             .ok_or_else(|| format!("content `{hash}` is not in this room's store"))?;
+        // A Word file sent under a PDF's name: say what opens it, rather than
+        // that this reader does not.
+        if tilo_content::document_format(&bytes).is_none_or(|format| format.extension != "pdf")
+            && let Some(what) = tilo_content::opened_by(&bytes)
+        {
+            return Err(format!("content `{hash}` is not a PDF: {what}"));
+        }
         // The portable engine is memory-safe and runs in process, as an
         // agent's confined window needs.
         let document = tilo_pdf::Engine::portable()
@@ -197,6 +204,50 @@ mod tests {
         assert!(app.effect(&import(&text, None)).is_err());
         assert!(app.effect(&import(&"ab".repeat(32), None)).is_err());
         assert!(app.effect(&import("report.pdf", None)).is_err());
+        app.settle();
+        assert!(app.state().pinned_source().is_none());
+    }
+
+    /// A Word file whose package holds only its main part, stored.
+    fn word_file() -> Vec<u8> {
+        let (name, body) = (b"word/document.xml", b"<w:document/>");
+        let mut file = b"PK\x03\x04\x14\0\0\0\0\0\0\0\0\0\0\0\0\0".to_vec();
+        file.extend([13, 0, 0, 0, 13, 0, 0, 0, 17, 0, 0, 0]);
+        file.extend(name);
+        file.extend(body);
+        let directory = file.len();
+        file.extend(b"PK\x01\x02\x14\0\x14\0\0\0\0\0\0\0\0\0\0\0\0\0");
+        file.extend([
+            13, 0, 0, 0, 13, 0, 0, 0, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        file.extend([0, 0, 0, 0]);
+        file.extend(name);
+        let size = file.len().saturating_sub(directory);
+        file.extend(b"PK\x05\x06\0\0\0\0\x01\0\x01\0");
+        file.extend(u32::try_from(size).expect("small").to_le_bytes());
+        file.extend(u32::try_from(directory).expect("small").to_le_bytes());
+        file.extend([0, 0]);
+        file
+    }
+
+    /// A Word file sent under a PDF's name is refused with what it is and
+    /// the action that opens it, and nothing is pinned.
+    #[serial(pdfium)]
+    #[test]
+    fn a_word_file_is_refused_naming_what_opens_it() {
+        let mut app = TestApp::<PdfViewerShell>::new().expect("the reader opens");
+        let docx = app.content().put(&word_file()).expect("stored");
+        let refused = app
+            .effect(&import(&docx, Some("payslips.pdf")))
+            .expect_err("a Word file is no PDF")
+            .to_string();
+        assert!(
+            refused.contains(
+                "is not a PDF: this is a Word document; use word-processor import-docx-content \
+                 or read-content"
+            ),
+            "{refused}"
+        );
         app.settle();
         assert!(app.state().pinned_source().is_none());
     }

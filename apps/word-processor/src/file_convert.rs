@@ -67,7 +67,6 @@ fn not_a_pdf(path: &Path) -> Result<(), String> {
 /// or its format refuses it.
 pub fn read_file(file: &str, from: Option<usize>) -> Result<serde_json::Value, String> {
     let path = absolute(file)?;
-    not_a_pdf(&path)?;
     let bytes = read_bounded(&path)?;
     if let Some(format) = picture_format(&bytes) {
         return Err(format!(
@@ -76,7 +75,8 @@ pub fn read_file(file: &str, from: Option<usize>) -> Result<serde_json::Value, S
             format.mime
         ));
     }
-    let (format, text) = as_text(&path, &bytes)?;
+    let ext = read_as(&path, &bytes)?;
+    let (format, text) = as_text(&path, &ext, &bytes)?;
     Ok(page(&path, format, &text, from.unwrap_or(0)))
 }
 
@@ -97,15 +97,46 @@ pub fn read_content(
     if let Some(format) = picture_format(&bytes) {
         return Ok(picture(name.trim(), hash, format, &bytes));
     }
-    not_a_pdf(path)?;
     if bytes.len() > convert::MAX_DOCUMENT_BYTES {
         return Err(format!(
             "{name} is larger than {}",
             ui::format::memory(convert::MAX_DOCUMENT_BYTES as u64)
         ));
     }
-    let (format, text) = as_text(path, &bytes)?;
+    let ext = read_as(path, &bytes)?;
+    let (format, text) = as_text(path, &ext, &bytes)?;
     Ok(page(path, format, &text, from.unwrap_or(0)))
+}
+
+/// The extension `bytes` are read as: the format they hold, whatever
+/// `path` is called (content travels under any name, "Sofia details" for a
+/// Word file); the name's only when they are text, whose kinds (Markdown,
+/// plain) only a name tells apart.
+///
+/// # Errors
+///
+/// A PDF, or a document Writer does not read, named with what opens it.
+fn read_as(path: &Path, bytes: &[u8]) -> Result<String, String> {
+    match tilo_content::document_format(bytes) {
+        Some(format) if format.extension == "pdf" => Err(format!(
+            "{} is a PDF: pdf-viewer import-pdf-content opens it, and Files' `read-text` reads a \
+             PDF file's text",
+            path.display()
+        )),
+        Some(format) if convert::reading(format.extension) == convert::Reading::Document => {
+            Ok(format.extension.to_owned())
+        }
+        Some(_) => Err(format!(
+            "{} is not a text document: {}",
+            path.display(),
+            tilo_content::opened_by(bytes).unwrap_or_default()
+        )),
+        // Text that a name calls a document is read as the text it is.
+        None => Ok(match extension(path).as_str() {
+            "docx" | "odt" | "rtf" => "txt".to_owned(),
+            ext => ext.to_owned(),
+        }),
+    }
 }
 
 /// The raster picture format `bytes` start with: a scan or a photo, which
@@ -135,15 +166,14 @@ fn picture(
     })
 }
 
-/// What `bytes` of the file `path` names say, and whether as Markdown or
-/// as text.
-fn as_text(path: &Path, bytes: &[u8]) -> Result<(&'static str, String), String> {
-    let ext = extension(path);
-    let format = match convert::reading(&ext) {
+/// What `bytes` of the file `path` names, read as extension `ext`, say,
+/// and whether as Markdown or as text.
+fn as_text(path: &Path, ext: &str, bytes: &[u8]) -> Result<(&'static str, String), String> {
+    let format = match convert::reading(ext) {
         convert::Reading::Markdown | convert::Reading::Document => "markdown",
         convert::Reading::Text => "text",
     };
-    let text = convert::markdown_of(&ext, bytes)
+    let text = convert::markdown_of(ext, bytes)
         .map_err(|error| format!("{} cannot be read as text: {error}", path.display()))?;
     Ok((format, text))
 }
@@ -260,8 +290,8 @@ mod tests {
         assert!(read_file(&root.path().join("x.pdf").display().to_string(), None).is_err());
     }
 
-    /// A document kept as content (an attachment) reads as its name's
-    /// format says, as a file does.
+    /// A document kept as content (an attachment) reads as Markdown, as a
+    /// file does, by the format its bytes hold whatever its name says.
     #[test]
     fn a_document_kept_as_content_reads_as_markdown() {
         let root = tempfile::tempdir().unwrap();
@@ -280,12 +310,41 @@ mod tests {
             read["text"].as_str().unwrap().contains("# Dear reader"),
             "{read}"
         );
-        assert!(read_content(&store, (&address, "Letter.pdf"), None).is_err());
+        for name in ["Sofia details", "Letter.pdf", "Letter.md"] {
+            let read = read_content(&store, (&address, name), None).unwrap();
+            assert_eq!(read["format"], "markdown", "{name}: {read}");
+            assert!(
+                read["text"].as_str().unwrap().contains("# Dear reader"),
+                "{name}: {read}"
+            );
+        }
         assert!(read_content(&store, ("Letter.docx", "Letter.docx"), None).is_err());
         let gone = format!("tilo.content:{}", "0".repeat(64));
         assert_eq!(
             read_content(&store, (&gone, "Letter.docx"), None).unwrap_err(),
             "Letter.docx is not on this device"
+        );
+    }
+
+    /// Content that is no text document says what it is and what opens it;
+    /// text reads as text, whatever document its name claims.
+    #[test]
+    fn content_writer_does_not_read_names_what_does() {
+        let store = tilo_content::ContentStore::memory();
+        let pdf = format!(
+            "tilo.content:{}",
+            store.put(b"%PDF-1.7\n%\xe2\xe3").unwrap()
+        );
+        let refused = read_content(&store, (&pdf, "Sofia details.docx"), None).unwrap_err();
+        assert!(
+            refused.contains("is a PDF: pdf-viewer import-pdf-content opens it"),
+            "{refused}"
+        );
+        let text = format!("tilo.content:{}", store.put(b"Plain notes").unwrap());
+        let read = read_content(&store, (&text, "notes.docx"), None).unwrap();
+        assert_eq!(
+            (read["format"].as_str(), read["text"].as_str()),
+            (Some("text"), Some("Plain notes"))
         );
     }
 

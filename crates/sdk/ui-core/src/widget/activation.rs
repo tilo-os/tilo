@@ -92,6 +92,16 @@ impl NativeControl {
         self.resource.clone()
     }
 
+    /// The handler back, to publish it under another id.
+    pub(crate) fn into_handler(self) -> Box<dyn FnMut()> {
+        self.handler
+    }
+
+    /// Run the handler, as an `invoke` addressed to the control does.
+    pub(crate) fn run(&mut self) {
+        (self.handler)();
+    }
+
     /// Run the handler for an `invoke` addressed to control `id`.
     pub(crate) fn start(
         &mut self,
@@ -471,6 +481,16 @@ impl PaintedTargets {
     #[must_use]
     pub fn focused(&self) -> Option<&str> {
         self.focused.as_deref()
+    }
+
+    /// The target under the pointer, if any.
+    pub fn hovered(&self) -> Option<&str> {
+        self.hovered.as_deref()
+    }
+
+    /// The target a pointer press is held on, if any.
+    pub fn pressed(&self) -> Option<&str> {
+        self.pressed.as_deref()
     }
 
     /// Move keyboard focus to target `id`.

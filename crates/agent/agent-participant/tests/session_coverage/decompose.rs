@@ -1020,3 +1020,93 @@ async fn past_check(
         .unwrap();
     room.next_request(sent, what).await
 }
+
+/// The model of the request `body`.
+fn model_of(body: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(body).unwrap();
+    request["model"].as_str().unwrap_or_default().to_owned()
+}
+
+/// With an item model, the coordinator's list and check go to the agent's
+/// own model and every item's agent's turns to the item model: two
+/// endpoints, each answering only its own turns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinated_task_plans_its_items_with_the_item_model() {
+    let (own_url, to_own, own) = answered_model_endpoint();
+    let (item_url, to_items, items) = answered_model_endpoint();
+    let endpoint = |url: &str, model: &str| {
+        Box::new(tilo_agent_participant::OpenAiModel::new(
+            url,
+            model,
+            tilo_agent_participant::ApiKey::None,
+            tilo_test_env::hang_bound(),
+            tilo_model_gateway::openai::Target::Standard,
+        ))
+    };
+    let planner =
+        tilo_agent_participant::ModelPlanner::new(endpoint(&own_url, "canned-coordinator"))
+            .with_item_model(endpoint(&item_url, "canned-items"));
+    let mut room = Box::pin(RelayRoom::planned_by(
+        Box::new(planner),
+        &[CHAT],
+        tilo_content::ContentStore::memory(),
+    ))
+    .await;
+    room.ana.0.decompose(true);
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    let task = room
+        .ana
+        .1
+        .message("In Chat, post Alpha ready and Bravo ready")
+        .unwrap();
+    let list = room.next_request(&to_own, "the coordinator's list").await;
+    assert_eq!(model_of(&list), "canned-coordinator");
+    assert!(last_turn(&list).contains("List the request's items"));
+    own.send(plan_call(
+        "c1",
+        &serde_json::json!({"steps": [], "obligations": [
+            {"text": "post Alpha ready", "apps": ["chat"]},
+            {"text": "post Bravo ready", "apps": ["chat"]}]}),
+    ))
+    .unwrap();
+
+    for (number, word) in [(1, "Alpha"), (2, "Bravo")] {
+        let body = room.next_request(&to_items, "an item's agent").await;
+        assert_eq!(model_of(&body), "canned-items");
+        assert!(
+            last_turn(&body).contains(&format!(
+                "you are the agent of item {number} only: post {word} ready"
+            )),
+            "{}",
+            last_turn(&body)
+        );
+        assert!(
+            to_own.try_recv().is_err(),
+            "an item's turn went to the coordinator"
+        );
+        let post = offered(&body, "post");
+        items
+            .send(plan_call(
+                &format!("i{number}"),
+                &serde_json::json!({"steps": posts(&post, &[(&format!("{word} ready"), None)])}),
+            ))
+            .unwrap();
+    }
+
+    let check = room.next_request(&to_own, "the coordinator's check").await;
+    assert_eq!(model_of(&check), "canned-coordinator");
+    assert!(last_turn(&check).contains("Every item has ended"));
+    own.send(plan_call(
+        "c2",
+        &serde_json::json!({"steps": [], "reply": "All posted."}),
+    ))
+    .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    let held = chat_parts_text(&room.ana.0, &ours);
+    for word in ["Alpha", "Bravo"] {
+        assert!(held.contains(&format!("{word} ready")), "{held}");
+    }
+    room.pump_for(Duration::from_millis(300)).await;
+    assert!(to_own.try_recv().is_err() && to_items.try_recv().is_err());
+    Box::pin(room.close()).await;
+}

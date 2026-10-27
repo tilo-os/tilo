@@ -58,7 +58,11 @@ fn draw_frame_content_with(
     let motions_at = crate::motion::frame_now();
     app.restore_physical_configuration();
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
+    #[cfg(test)]
+    let availability_probe = crate::profiling::frame_probe::span("draw.availability");
     app.refresh_control_action_availability();
+    #[cfg(test)]
+    drop(availability_probe);
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(
             crate::profiling::Pass::ResourceAvailability,
@@ -654,16 +658,46 @@ fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOn
 /// `None` means taffy layout computation failed and the caller must abandon
 /// the frame; otherwise `(relayout_branch, compute_us, apply_us)` for the
 /// perf log line.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one bounded solve/recompose/focus/mount lifecycle keeps ownership and final-frame ordering explicit"
-)]
 #[cfg(feature = "native")]
 fn run_layout_pass(
     app: &mut App,
     root_node: NodeId,
     width: u32,
     height: u32,
+    scale_factor: f32,
+    structure_rebuilt: bool,
+    native_host: Option<&crate::widget::NativeViewHost<'_>>,
+) -> Option<(bool, u128, u128)> {
+    // What a motion noted as it was laid out (one that advances in its
+    // layout) is laid out in the next frame: it is this window's, not a
+    // host's around it (an app hosted in a tile is laid out as its host
+    // paints), whose own notes stand.
+    let outer = crate::widget::take_layout_moved();
+    let result = lay_out_window(
+        app,
+        root_node,
+        (width, height),
+        scale_factor,
+        structure_rebuilt,
+        native_host,
+    );
+    app.layout.layout_dirty |= crate::widget::take_layout_moved();
+    if outer {
+        crate::widget::note_layout_moved();
+    }
+    result
+}
+
+/// [`run_layout_pass`] of the window's own widgets.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded solve/recompose/focus/mount lifecycle keeps ownership and final-frame ordering explicit"
+)]
+#[cfg(feature = "native")]
+fn lay_out_window(
+    app: &mut App,
+    root_node: NodeId,
+    (width, height): (u32, u32),
     scale_factor: f32,
     structure_rebuilt: bool,
     native_host: Option<&crate::widget::NativeViewHost<'_>>,
@@ -687,7 +721,11 @@ fn run_layout_pass(
         app.layout_close_dialog(logical);
         return Some((true, 0, 0));
     }
+    #[cfg(test)]
+    let history_probe = crate::profiling::frame_probe::span("layout.history");
     app.refresh_framework_history(logical.0);
+    #[cfg(test)]
+    drop(history_probe);
     let viewport_changed = app.layout.last_layout_logical != Some(logical);
     if app.history_chrome_enabled {
         if (app.history_viewport_width >= 900.0) != (logical.0 >= 900.0) {
@@ -698,6 +736,9 @@ fn run_layout_pass(
         app.document_history.sync(&app.state.doc, &app.state.root);
     }
     if !app.layout.layout_dirty && !viewport_changed {
+        // A sync that moved nothing (a worker's answer, a timer) can still
+        // have changed what the app publishes.
+        owe_changed_action_surface(app, false);
         return Some((false, 0, 0));
     }
     // Bounds, and what the widgets lay out, may move.
@@ -943,7 +984,7 @@ fn run_layout_pass(
     // as input. Published once the retained control tree has settled, and
     // after the frame is handed to the render thread
     // (`App::publish_owed_action_surface`): no frame waits on it.
-    app.actions.action_surface_owed = true;
+    owe_changed_action_surface(app, structure_rebuilt || recomposed || remounted);
     let geometry_changed = recomposed
         || remounted
         || viewport_changed
@@ -951,6 +992,21 @@ fn run_layout_pass(
             before != crate::pointer_replay::widget_geometry(app.root_widget.as_ref())
         });
     Some((geometry_changed, t_compute_us, t_apply_us))
+}
+
+/// Owe a publication of what the app offers when it may have changed since
+/// it was last published: the widget tree was `rebuilt`, or the model,
+/// permissions or route it is derived from moved on
+/// ([`App::publication_current`]). A frame that only moved, resized or
+/// repainted the widgets it had (a glide, a pane gliding open, a spinner)
+/// owes nothing. The frame pays it once it is handed to the render thread
+/// (`App::publish_owed_action_surface`); the publisher diffs the surface and
+/// checks broker connectivity.
+#[cfg(feature = "native")]
+fn owe_changed_action_surface(app: &mut App, rebuilt: bool) {
+    if rebuilt || !(app.publication_current() || !app.collaboration.manager.is_connected()) {
+        app.actions.action_surface_owed = true;
+    }
 }
 
 impl App {
@@ -1116,6 +1172,10 @@ mod semantic_tree_app_tests;
 #[cfg(test)]
 #[path = "damage_lifecycle_tests.rs"]
 mod damage_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "animation_frame_tests.rs"]
+mod animation_frame_tests;
 
 #[cfg(test)]
 #[path = "wake_integration_tests.rs"]

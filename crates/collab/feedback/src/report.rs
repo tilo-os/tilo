@@ -826,6 +826,7 @@ impl ReportDraft {
             selections,
             interactions: self.interactions.clone(),
             timings: self.slow.then(|| self.timings.clone()).flatten(),
+            recording: None,
         };
         Ok(ReportReview {
             feedback,

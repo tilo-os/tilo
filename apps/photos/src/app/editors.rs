@@ -13,7 +13,7 @@ use ui::surface;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Id;
-use ui::widget::{Button, ButtonFace, ButtonRole, ScrollMetrics, TextInput, Widget};
+use ui::widget::{Button, ButtonFace, ButtonRole, ScrollRegion, TextInput, Widget};
 use ui::widget::{SegmentedFace, ToggleGroup};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
@@ -232,7 +232,7 @@ impl PhotosApp {
         self.metadata_longitude_input.set_focus(false);
         self.metadata_editor_section = MetadataEditorSection::Organize;
         self.metadata_editor_focus = 0;
-        self.metadata_editor_scroll = 0.0;
+        self.editor_scroll.set_offset(vello::kurbo::Vec2::ZERO);
         self.metadata_editor_reveal_focus = true;
         self.album_editor = false;
         // The sheet owns the full privacy explanation. Keeping a duplicate
@@ -437,7 +437,7 @@ impl PhotosApp {
 
     pub(super) fn set_metadata_editor_section(&mut self, section: MetadataEditorSection) {
         self.metadata_editor_section = section;
-        self.metadata_editor_scroll = 0.0;
+        self.editor_scroll.set_offset(vello::kurbo::Vec2::ZERO);
         self.set_metadata_editor_focus(0);
     }
 
@@ -883,22 +883,25 @@ impl PhotosApp {
                 _ => {}
             }
         }
-        // A wheel over the sheet scrolls its field list (clamped at paint,
-        // where the content height is known).
-        if let winit::event::WindowEvent::MouseWheel { delta, .. } = event
-            && self.metadata_editor_body.contains(self.pointer)
+        // A wheel over the field list is the scroll region's: it moves the
+        // list, fades its edges and glides on as every scroller does.
+        if let winit::event::WindowEvent::MouseWheel { .. } = event
+            && self.editor_scroll_viewport.contains(self.pointer)
         {
-            let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 40.0,
-                // Physical pixels, like every pointer position this app
-                // converts; without the division a 2× display scrolls twice
-                // the trackpad distance.
-                winit::event::MouseScrollDelta::PixelDelta(position) => {
-                    position.y / ctx.scale_factor
-                }
-            };
-            self.metadata_editor_scroll = (self.metadata_editor_scroll - dy).max(0.0);
-            *ctx.handled = true;
+            let mut handled = false;
+            let changed = self.editor_scroll.handle_window_event(
+                event,
+                ctx.scale_factor,
+                ctx.modifiers.state(),
+                &mut handled,
+                &self.layout_theme,
+            );
+            if handled {
+                *ctx.handled = true;
+            }
+            if changed {
+                self.editor_scroll_landed();
+            }
             return true;
         }
         // A press outside the field list's visible region belongs to the
@@ -909,7 +912,7 @@ impl PhotosApp {
                 state: winit::event::ElementState::Pressed,
                 ..
             }
-        ) && !self.metadata_editor_body.contains(self.pointer);
+        ) && !self.editor_scroll_viewport.contains(self.pointer);
         for input in [
             &mut self.metadata_folder_input,
             &mut self.metadata_people_input,
@@ -993,41 +996,95 @@ impl PhotosApp {
         let rhythm = &local.tokens.spacing.rhythm;
         let control_h = ui::widget::ControlSize::Regular.height(&local);
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, &local);
-        let body = frame.body;
-        let mut y = body.y0;
-        ctx.text_role(
-            &tr("photos-people-name"),
-            ui::TextRole::Label,
-            local.text_dim,
-            Point::new(body.x0, y),
-            None,
+        // Edit album's body is the same scroll region the details sheet's
+        // field list uses: the name, its guidance and the count fill the
+        // sheet from the header down to the footer, and scroll under its
+        // edge fade when the sheet is short.
+        // Down to the footer's own rows, as the details sheet's list runs.
+        let body = Rect::new(
+            frame.body.x0,
+            frame.body.y0,
+            frame.body.x1,
+            frame.footer.y0.max(frame.body.y0),
         );
-        y += Self::line_of(&local, ui::TextRole::Label) + f64::from(rhythm.tight);
-        self.album_name_input
-            .apply_layout_external(Rect::new(body.x0, y, body.x1, y + control_h));
-        self.album_name_input
-            .draw(ctx.scene, transform, ctx.text, &local, presence);
-        y += control_h + f64::from(rhythm.group);
+        self.editor_scroll.set_viewport(body, &local);
+        let region = self.editor_scroll.content_rect();
+        self.editor_scroll_viewport = region;
+        let label_h = Self::line_of(&local, ui::TextRole::Label);
         let guidance = tr("photos-album-editor-hint");
         let guidance_h = ctx
-            .measure_role(&guidance, ui::TextRole::Body, Some(body.width() as f32))
+            .measure_role(&guidance, ui::TextRole::Body, Some(region.width() as f32))
             .height;
-        ctx.text_role(
-            &guidance,
-            ui::TextRole::Body,
-            local.text_dim,
-            Point::new(body.x0, y),
-            Some(body.width() as f32),
+        let content_h = label_h
+            + f64::from(rhythm.tight)
+            + control_h
+            + f64::from(rhythm.group)
+            + guidance_h
+            + f64::from(rhythm.related)
+            + Self::line_of(&local, ui::TextRole::Caption);
+        self.editor_scroll
+            .set_content_size(region.width(), content_h);
+        // The rows in content coordinates, as the list rests against them,
+        // so the region lands the offset between them when the sheet is
+        // short.
+        let guidance_band = Rect::new(
+            region.x0,
+            label_h + f64::from(rhythm.tight) + control_h + f64::from(rhythm.group),
+            region.x1,
+            label_h + f64::from(rhythm.tight) + control_h + f64::from(rhythm.group) + guidance_h,
         );
-        y += guidance_h + f64::from(rhythm.related);
-        ctx.text_role(
-            &tr_count("photos-album-members", self.album_editor_members.len()),
-            ui::TextRole::Caption,
-            local.text_dim,
-            Point::new(body.x0, y),
-            None,
+        let count_band = Rect::new(
+            region.x0,
+            guidance_band.y1 + f64::from(rhythm.related),
+            region.x1,
+            content_h,
         );
-
+        self.editor_field_bands = vec![guidance_band, count_band];
+        self.editor_scroll_landed();
+        // The rows stand where the region shows them: its origin less the
+        // offset, in window coordinates, as the details sheet's fields do.
+        let shown = self.editor_scroll.offset();
+        let top = region.y0 - shown.y;
+        let name = Rect::new(
+            region.x0,
+            top + label_h + f64::from(rhythm.tight),
+            region.x1,
+            top + label_h + f64::from(rhythm.tight) + control_h,
+        );
+        let guidance_at = guidance_band - vello::kurbo::Vec2::new(0.0, shown.y);
+        let count_at = count_band - vello::kurbo::Vec2::new(0.0, shown.y);
+        let album_scroll = std::mem::replace(
+            &mut self.editor_scroll,
+            ScrollRegion::vertical().with_edge_fade(),
+        );
+        album_scroll.paint(scene, transform, &local, |scene, _content| {
+            PaintCtx::new(scene, transform, text_renderer, &local).text_role(
+                &tr("photos-people-name"),
+                ui::TextRole::Label,
+                local.text_dim,
+                Point::new(region.x0, top),
+                None,
+            );
+            self.album_name_input.apply_layout_external(name);
+            self.album_name_input
+                .draw(scene, transform, text_renderer, &local, presence);
+            PaintCtx::new(scene, transform, text_renderer, &local).text_role(
+                &guidance,
+                ui::TextRole::Body,
+                local.text_dim,
+                Point::new(guidance_at.x0, guidance_at.y0),
+                Some(region.width() as f32),
+            );
+            PaintCtx::new(scene, transform, text_renderer, &local).text_role(
+                &tr_count("photos-album-members", self.album_editor_members.len()),
+                ui::TextRole::Caption,
+                local.text_dim,
+                Point::new(count_at.x0, count_at.y0),
+                None,
+            );
+        });
+        self.editor_scroll = album_scroll;
+        let ctx = PaintCtx::new(scene, transform, text_renderer, &local);
         // Footer: delete leading, cancel and save trailing.
         let footer = frame.footer;
         let gap = f64::from(rhythm.related);
@@ -1106,8 +1163,6 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        use vello::peniko::Fill;
-
         for input in [
             &mut self.metadata_folder_input,
             &mut self.metadata_people_input,
@@ -1182,51 +1237,131 @@ impl PhotosApp {
                 .zip(segments.iter().copied()),
         );
 
-        let fields_top = strip.y1 + sibling;
-        let region = Rect::new(body.x0, fields_top, body.x1, body.y1.max(fields_top));
-        self.metadata_editor_body = region;
+        // The field list is a scroll region filling the sheet from the tabs
+        // down to the footer, so the last field is reachable and no empty
+        // sheet is left below an edge the list was cut at. The footer's own
+        // rows are in `frame.footer`, below the body the frame reserves for
+        // it, so the list ends where they start.
+        let start = Rect::new(
+            body.x0,
+            strip.y1 + sibling,
+            body.x1,
+            frame.footer.y0.max(strip.y1 + sibling),
+        );
+        self.editor_scroll.set_viewport(start, &local);
+        let region = self.editor_scroll.content_rect();
+        self.editor_scroll_viewport = region;
         let row_h = label_h + tight + control_h + sibling;
-        // The map gives up height first, so in a short window the
-        // coordinates under it stay in view; it never shrinks below a
-        // target the pointer can still pick from.
-        let preferred_map =
-            (region.width() * 0.5).min(f64::from(local.tokens.metrics.panel_width_utility) * 0.6);
-        let least_map = 2.0 * f64::from(local.tokens.metrics.min_pointer_target);
-        let map_h = preferred_map
-            .min(region.height() - 3.0 * row_h - sibling)
-            .max(least_map.min(preferred_map));
+        let content = MetadataFieldList::new(region, row_h, sibling);
         let time_and_place = self.metadata_editor_section == MetadataEditorSection::TimeAndPlace;
-        let content_h = if time_and_place {
-            3.0 * row_h + map_h + sibling
+        // The map gives up height first, so in a short window the
+        // coordinates under it stay in view; it never shrinks below a target
+        // the pointer can still pick from.
+        let least_map = 2.0 * f64::from(local.tokens.metrics.min_pointer_target);
+        let map_h = if time_and_place {
+            content.map_h(&local, least_map)
         } else {
-            3.0 * row_h
+            0.0
         };
-        if std::mem::take(&mut self.metadata_editor_reveal_focus) {
-            let focused_row_top = match (time_and_place, self.metadata_editor_focus) {
-                (false, focus @ 0..=2) | (true, focus @ 0..=1) => Some(focus as f64 * row_h),
-                (true, 2 | 3) => Some(2.0 * row_h + map_h + sibling),
-                _ => None,
+        // Its whole height is known before a field is placed, so the region
+        // clamps the offset against it and can land it between two fields.
+        let reveal = self
+            .metadata_editor_reveal_focus
+            .then_some(self.metadata_editor_focus);
+        self.editor_scroll_bands(&content, map_h, reveal);
+        self.metadata_editor_reveal_focus = false;
+        // The rows stand where the list shows them: the region's origin,
+        // less the offset. A field is laid out in window coordinates (hover,
+        // press and caret hit-testing read them), so the rows are placed
+        // there and drawn with the window's own transform, while the clip
+        // and the edge fades come from the region.
+        let shown = self.editor_scroll.offset();
+        let place = MetadataFieldPlacement {
+            region,
+            fields_y: region.y0 - shown.y,
+            map_y: region.y0 + 2.0 * row_h - shown.y,
+            map_h,
+            row_h,
+            sibling,
+            label_h,
+            control_h,
+            tight,
+            related,
+        };
+        // The region borrows no part of the app while it paints, so the
+        // fields it holds can reach the app's own inputs.
+        let scroll = std::mem::replace(
+            &mut self.editor_scroll,
+            ScrollRegion::vertical().with_edge_fade(),
+        );
+        scroll.paint(scene, transform, &local, |scene, _content| {
+            self.draw_metadata_fields(
+                scene,
+                transform,
+                text_renderer,
+                &local,
+                presence,
+                &place,
+                &mut hits,
+            );
+        });
+        self.editor_scroll = scroll;
+        // Footer: cancel and save, trailing.
+        let footer = frame.footer;
+        let footer_focus = if self.metadata_editor_section == MetadataEditorSection::Organize {
+            (3, 4)
+        } else {
+            (4, 5)
+        };
+        let mut x1 = footer.x1;
+        let changed = self.metadata_draft_changed();
+        for (hit, focused) in [
+            (
+                MetadataEditorHit::Save,
+                self.metadata_editor_focus == footer_focus.1,
+            ),
+            (
+                MetadataEditorHit::Cancel,
+                self.metadata_editor_focus == footer_focus.0,
+            ),
+        ] {
+            let label = if hit == MetadataEditorHit::Save {
+                tr("photos-save-changes")
+            } else {
+                tr("photos-cancel")
             };
-            if let Some(top) = focused_row_top {
-                let bottom = top + row_h - sibling;
-                if top < self.metadata_editor_scroll {
-                    self.metadata_editor_scroll = top;
-                } else if bottom > self.metadata_editor_scroll + region.height() {
-                    self.metadata_editor_scroll = bottom - region.height();
+            let width = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(text_renderer, &local);
+            let rect = Rect::new(x1 - width, footer.y0, x1, footer.y1);
+            x1 = rect.x0 - related;
+            if let Some((_, button)) = self
+                .metadata_editor_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                if hit == MetadataEditorHit::Save {
+                    button.set_enabled(changed);
                 }
+                button.set_focus(focused);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, &local, presence);
             }
         }
-        self.metadata_editor_scroll = self
-            .metadata_editor_scroll
-            .clamp(0.0, (content_h - region.height()).max(0.0));
-        let fields_y = fields_top - self.metadata_editor_scroll;
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &region,
-        );
+        self.metadata_editor_hits = hits;
+    }
+
+    /// The field list's rows, in the content coordinates its scroll region
+    /// paints with: every field's band, the map's, and the pair of
+    /// coordinates under it.
+    fn draw_metadata_fields(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        local: &Theme,
+        presence: &PresenceCtx,
+        place: &MetadataFieldPlacement,
+        hits: &mut Vec<(MetadataEditorHit, Rect)>,
+    ) {
         // One field: its label, and the input under it. A field a batch edit
         // can clear for every photo carries that as a toggle in its trailing
         // accessory; `clear` is whether it is on.
@@ -1236,12 +1371,12 @@ impl PhotosApp {
                      label: &str,
                      clear: Option<bool>,
                      rect: Rect| {
-            PaintCtx::new(scene, transform, text_renderer, &local).text_role_in_band(
+            PaintCtx::new(scene, transform, text_renderer, local).text_role_in_band(
                 label,
                 ui::TextRole::Label,
                 local.text_dim,
                 rect.x0,
-                Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + label_h),
+                Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + place.label_h),
                 None,
             );
             if let Some(forced) = clear {
@@ -1249,16 +1384,16 @@ impl PhotosApp {
             }
             input.apply_layout_external(Rect::new(
                 rect.x0,
-                rect.y0 + label_h + tight,
+                rect.y0 + place.label_h + place.tight,
                 rect.x1,
-                rect.y0 + label_h + tight + control_h,
+                rect.y0 + place.label_h + place.tight + place.control_h,
             ));
-            input.draw(scene, transform, text_renderer, &local, presence);
+            input.draw(scene, transform, text_renderer, local, presence);
         };
-
+        let region = place.region;
         let column = |index: f64| {
-            let y = fields_y + index * row_h;
-            Rect::new(region.x0, y, region.x1, y + row_h - sibling)
+            let y = place.fields_y + index * place.row_h;
+            Rect::new(region.x0, y, region.x1, y + place.row_h - place.sibling)
         };
         match self.metadata_editor_section {
             MetadataEditorSection::Organize => {
@@ -1301,99 +1436,83 @@ impl PhotosApp {
                 );
                 // A pick surface for the location: the offline map, with the
                 // drafted position marked.
-                let map_y = fields_y + 2.0 * row_h;
-                let map = Rect::new(region.x0, map_y, region.x1, map_y + map_h);
+                let map = Rect::new(region.x0, place.map_y, region.x1, place.map_y + place.map_h);
                 self.metadata_location_map_bounds = map;
-                self.paint_location_map(scene, transform, &local, map);
+                self.paint_location_map(scene, transform, local, map);
                 hits.push((MetadataEditorHit::PlaceOnMap, map.intersect(region)));
-                let y = map.y1 + sibling;
-                let half = (region.width() - related) / 2.0;
+                let y = map.y1 + place.sibling;
+                let half = (region.width() - place.related) / 2.0;
+                let (latitude, longitude) = (tr("photos-latitude"), tr("photos-longitude"));
                 for (label, input, x) in [
+                    (&latitude, &mut self.metadata_latitude_input, region.x0),
                     (
-                        tr("photos-latitude"),
-                        &mut self.metadata_latitude_input,
-                        region.x0,
-                    ),
-                    (
-                        tr("photos-longitude"),
+                        &longitude,
                         &mut self.metadata_longitude_input,
-                        region.x0 + half + related,
+                        region.x0 + half + place.related,
                     ),
                 ] {
                     field(
                         scene,
                         text_renderer,
                         input,
-                        &label,
+                        label,
                         None,
-                        Rect::new(x, y, x + half, y + row_h - sibling),
+                        Rect::new(x, y, x + half, y + place.row_h - place.sibling),
                     );
                 }
             }
         }
-        // Fields cut by the list's edge fade out there, as a scrolling
-        // list's do, instead of leaving a sliver of a label. The sheet's
-        // material may show its backdrop, so the fields are masked rather
-        // than painted over with a ground colour.
-        let max_scroll = (content_h - region.height()).max(0.0);
-        for (edge, shown) in [
-            (Edge::Top, self.metadata_editor_scroll > 0.0),
-            (Edge::Bottom, self.metadata_editor_scroll < max_scroll),
-        ] {
-            if shown {
-                fade_out_at(scene, transform, region, edge, &local);
-            }
-        }
-        scene.pop_layer();
-        let metrics = ScrollMetrics::new(content_h, region.height(), self.metadata_editor_scroll);
-        if metrics.overflows() {
-            let gutter = f64::from(local.tokens.metrics.scrollbar_gutter);
-            let track = Rect::new(region.x1, region.y0, region.x1 + gutter, region.y1);
-            ui::widget::scrollbar::Scrollbar::vertical()
-                .draw(scene, transform, track, metrics, &local, false);
-        }
+    }
 
-        // Footer: cancel and save, trailing.
-        let footer = frame.footer;
-        let footer_focus = if self.metadata_editor_section == MetadataEditorSection::Organize {
-            (3, 4)
-        } else {
-            (4, 5)
+    /// Where each field's band stands in the field list's content, and the
+    /// list's height with the map at `map_h`.
+    fn editor_field_bands(&self, content: &MetadataFieldList, map_h: f64) -> (Vec<Rect>, f64) {
+        let region = content.region;
+        let row_h = content.row_h;
+        let band = |index: f64| {
+            let y = index * row_h;
+            Rect::new(region.x0, y, region.x1, y + row_h)
         };
-        let mut x1 = footer.x1;
-        let changed = self.metadata_draft_changed();
-        for (hit, focused) in [
-            (
-                MetadataEditorHit::Save,
-                self.metadata_editor_focus == footer_focus.1,
-            ),
-            (
-                MetadataEditorHit::Cancel,
-                self.metadata_editor_focus == footer_focus.0,
-            ),
-        ] {
-            let label = if hit == MetadataEditorHit::Save {
-                tr("photos-save-changes")
-            } else {
-                tr("photos-cancel")
-            };
-            let width = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(text_renderer, &local);
-            let rect = Rect::new(x1 - width, footer.y0, x1, footer.y1);
-            x1 = rect.x0 - related;
-            if let Some((_, button)) = self
-                .metadata_editor_buttons
-                .iter_mut()
-                .find(|(candidate, _)| *candidate == hit)
-            {
-                if hit == MetadataEditorHit::Save {
-                    button.set_enabled(changed);
-                }
-                button.set_focus(focused);
-                button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, &local, presence);
-            }
+        if self.metadata_editor_section == MetadataEditorSection::Organize {
+            let rows = (0..3_u32).map(|index| band(f64::from(index))).collect();
+            return (rows, content.height(0.0));
         }
-        self.metadata_editor_hits = hits;
+        let map = Rect::new(region.x0, 2.0 * row_h, region.x1, 2.0 * row_h + map_h);
+        let y = map.y1 + content.sibling;
+        let coordinates = Rect::new(region.x0, y, region.x1, y + row_h);
+        (
+            vec![band(0.0), band(1.0), map, coordinates],
+            content.height(map_h),
+        )
+    }
+
+    /// Lay the list out as the frame will draw it, remember the bands its
+    /// fields stand in, then move the offset to where the list rests and,
+    /// when focus moved this frame, reveal the focused field: the region
+    /// clamps it, so the list never ends past its last field.
+    fn editor_scroll_bands(
+        &mut self,
+        content: &MetadataFieldList,
+        map_h: f64,
+        focus: Option<usize>,
+    ) {
+        let (bands, height) = self.editor_field_bands(content, map_h);
+        self.editor_scroll
+            .set_content_size(content.region.width(), height);
+        self.editor_field_bands = bands;
+        self.editor_scroll_landed();
+        if let Some(band) = focus
+            .and_then(|index| self.editor_field_bands.get(index))
+            .copied()
+        {
+            self.editor_scroll.scroll_into_view(band);
+            self.editor_scroll_landed();
+        }
+    }
+
+    /// Put the field list where it rests between two fields.
+    fn editor_scroll_landed(&mut self) {
+        self.editor_scroll.land_between(&self.editor_field_bands);
     }
 
     /// The location pick surface: the offline land silhouettes on the
@@ -1574,56 +1693,56 @@ impl MetadataEditorHit {
     }
 }
 
-/// An edge of the details sheet's field list that fields scroll past.
-#[derive(Clone, Copy)]
-enum Edge {
-    Top,
-    Bottom,
+/// Where the field list stands this frame: the region it shows in, and the
+/// content coordinates its rows start from.
+struct MetadataFieldPlacement {
+    region: Rect,
+    fields_y: f64,
+    map_y: f64,
+    map_h: f64,
+    row_h: f64,
+    sibling: f64,
+    label_h: f64,
+    control_h: f64,
+    tight: f64,
+    related: f64,
 }
 
-/// Fade what is already drawn in `region` out toward `edge`, over the
-/// toolkit's content fade reach: a mask on the drawn fields, so it holds on
-/// a translucent sheet as on an opaque one. Only the mask's alpha counts;
-/// its colour is the sheet's ground.
-fn fade_out_at(scene: &mut Scene, transform: Affine, region: Rect, edge: Edge, theme: &Theme) {
-    use vello::peniko::{BlendMode, ColorStop, Compose, Fill, Gradient, Mix};
-    const STOPS: usize = 7;
-    let band = surface::content_edge_fade_band(
-        region,
-        match edge {
-            Edge::Top => surface::ContentEdge::Top,
-            Edge::Bottom => surface::ContentEdge::Bottom,
-        },
-    );
-    if band.height() <= 0.0 {
-        return;
-    }
-    let (clear, kept) = match edge {
-        Edge::Top => ((band.x0, band.y0), (band.x0, band.y1)),
-        Edge::Bottom => ((band.x0, band.y1), (band.x0, band.y0)),
-    };
-    let stops: [ColorStop; STOPS] = std::array::from_fn(|i| {
-        #[allow(clippy::cast_precision_loss, reason = "i < STOPS, a single digit")]
-        let t = i as f32 / (STOPS - 1) as f32;
-        ColorStop {
-            offset: t,
-            color: theme
-                .tokens
-                .colors
-                .surfaces
-                .content
-                .with_alpha(1.0 - ui::overlay::scrim::fade_alpha(f64::from(t), 1.0))
-                .into(),
+/// The field list's shape in the sheet: the region it scrolls in, one
+/// field's pitch and the space between a field and the next.
+struct MetadataFieldList {
+    region: Rect,
+    row_h: f64,
+    sibling: f64,
+}
+
+impl MetadataFieldList {
+    fn new(region: Rect, row_h: f64, sibling: f64) -> Self {
+        Self {
+            region,
+            row_h,
+            sibling,
         }
-    });
-    scene.push_layer(
-        Fill::NonZero,
-        BlendMode::new(Mix::Normal, Compose::DestIn),
-        1.0,
-        transform,
-        &band,
-    );
-    let mask = Gradient::new_linear(clear, kept).with_stops(stops.as_slice());
-    scene.fill(Fill::NonZero, transform, &mask, None, &band);
-    scene.pop_layer();
+    }
+
+    /// How tall the map may stand: half the list's width, at most most of a
+    /// utility panel's.
+    fn preferred_map_h(&self, theme: &Theme) -> f64 {
+        (self.region.width() * 0.5).min(f64::from(theme.tokens.metrics.panel_width_utility) * 0.6)
+    }
+
+    /// The map gives up height first, so in a short window the coordinates
+    /// under it stay in view. It never shrinks below `least`, a target the
+    /// pointer can still pick from, unless even that leaves the fields no
+    /// room.
+    fn map_h(&self, theme: &Theme, least: f64) -> f64 {
+        let preferred = self.preferred_map_h(theme);
+        let room = self.region.height() - 3.0 * self.row_h - self.sibling;
+        preferred.min(room).max(least.min(preferred))
+    }
+
+    /// The whole list's height, the map (`0` for Organize) included.
+    fn height(&self, map_h: f64) -> f64 {
+        3.0 * self.row_h + map_h + self.sibling
+    }
 }

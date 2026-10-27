@@ -21,7 +21,7 @@ use super::{Action, LiveSession, PendingConfirmation, RemoteApp, TiloSession, ow
 impl RemoteApp {
     pub(super) fn request_connect(&mut self, id: ConnectionId) {
         let Some(connection) = self.workspace.get(id) else {
-            self.notify("That saved connection no longer exists.");
+            Self::notify("That saved connection no longer exists.");
             return;
         };
         if !connection_readiness(connection).can_connect() {
@@ -37,7 +37,7 @@ impl RemoteApp {
 
     pub(super) fn request_delete(&mut self, id: ConnectionId) {
         let Some(connection) = self.workspace.get(id) else {
-            self.notify("That saved connection no longer exists.");
+            Self::notify("That saved connection no longer exists.");
             return;
         };
         self.pending_confirmation = Some(PendingConfirmation::Delete {
@@ -63,7 +63,9 @@ impl RemoteApp {
         let target = Self::confirmation_target(connection);
         let Some(crate::ssh::HostKeyIssue::FirstContact { observed }) = self.ssh_host_key_issue(id)
         else {
-            self.notify("No new SSH host key is waiting for trust. Forget a changed key before you review it again.");
+            Self::notify(
+                "No new SSH host key is waiting for trust. Forget a changed key before you review it again.",
+            );
             return;
         };
         self.pending_confirmation = Some(PendingConfirmation::TrustSshHostKey {
@@ -83,7 +85,9 @@ impl RemoteApp {
             self.ssh_host_key_issue(id),
             Some(crate::ssh::HostKeyIssue::Changed { .. })
         ) {
-            self.notify("Only a changed SSH host key can be forgotten. Reconnect to check this machine again.");
+            Self::notify(
+                "Only a changed SSH host key can be forgotten. Reconnect to check this machine again.",
+            );
             return;
         }
         self.pending_confirmation = Some(PendingConfirmation::ForgetSshHostKey { id, target });
@@ -176,11 +180,13 @@ impl RemoteApp {
         };
         let id = pending.id();
         let Some(connection) = self.workspace.get(id).cloned() else {
-            self.notify("The saved connection was removed before you confirmed.");
+            Self::notify("The saved connection was removed before you confirmed.");
             return;
         };
         if Self::confirmation_target(&connection) != pending.target() {
-            self.notify("This connection changed while you were asked. Review it, then try again.");
+            Self::notify(
+                "This connection changed while you were asked. Review it, then try again.",
+            );
             return;
         }
         match pending {
@@ -195,7 +201,9 @@ impl RemoteApp {
                 let current = self.ssh_host_key_issue(id);
                 if !matches!(current, Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
                 {
-                    self.notify("The SSH host key changed before it was trusted. Review it again.");
+                    Self::notify(
+                        "The SSH host key changed before it was trusted. Review it again.",
+                    );
                     return;
                 }
                 match crate::ssh::trust_host_key(
@@ -205,7 +213,7 @@ impl RemoteApp {
                     &observed,
                 ) {
                     Ok(()) => self.open_session(id),
-                    Err(error) => self.notify(format!("Couldn't save the SSH key: {error}")),
+                    Err(error) => Self::notify(format!("Couldn't save the SSH key: {error}")),
                 }
             }
             PendingConfirmation::ForgetSshHostKey { .. } => {
@@ -213,7 +221,9 @@ impl RemoteApp {
                     self.ssh_host_key_issue(id),
                     Some(crate::ssh::HostKeyIssue::Changed { .. })
                 ) {
-                    self.notify("The SSH host key is no longer the one you chose to forget. Reconnect to review it again.");
+                    Self::notify(
+                        "The SSH host key is no longer the one you chose to forget. Reconnect to review it again.",
+                    );
                     return;
                 }
                 match crate::ssh::forget_host_key(
@@ -222,11 +232,13 @@ impl RemoteApp {
                     connection.port,
                 ) {
                     Ok(true) => {
-                        self.notify("Forgot the saved SSH key. Reconnect to check the new one before you trust it.");
+                        Self::notify(
+                            "Forgot the saved SSH key. Reconnect to check the new one before you trust it.",
+                        );
                         self.disconnect_session();
                     }
-                    Ok(false) => self.notify("This device had no saved SSH key for the machine."),
-                    Err(error) => self.notify(format!("Couldn't forget the SSH key: {error}")),
+                    Ok(false) => Self::notify("This device had no saved SSH key for the machine."),
+                    Err(error) => Self::notify(format!("Couldn't forget the SSH key: {error}")),
                 }
             }
         }

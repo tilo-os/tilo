@@ -53,6 +53,7 @@ impl Header {
 /// A formula row is a math field between its visibility and delete targets,
 /// so the panel needs about this much before it is a row rather than a
 /// stack of buttons; below docked width plus the plot's it floats instead.
+// ratchet-allow(pixel_const): the width a formula row fits in, measured from its content, not spacing
 const PANEL_MIN_WIDTH: f64 = 340.0; // allow-breakpoint: the narrowest the panel may be, not a breakpoint
 
 /// A collapsible side panel: its geometry and its remembered state, both

@@ -282,6 +282,103 @@ pub fn foreign_acts(
     touched
 }
 
+/// What a change of a room document's layout, from `before` to `after`,
+/// did that `writer` (a person id) did not make and that is not
+/// [`released`]: everything [`foreign_acts`] names, and also a window of
+/// someone else's whose title or content it changed (a rename), and a strip
+/// or window it added in someone else's name (an attribution). A room
+/// admits a change when the room lets its writer do each of these
+/// ([`act_node`]).
+#[must_use]
+pub fn layout_acts(
+    before: Option<&impl automerge::ReadDoc>,
+    after: &impl automerge::ReadDoc,
+    writer: &str,
+    members: Option<&BTreeSet<String>>,
+) -> Vec<Touched> {
+    let before = before
+        .and_then(|doc| crate::shared_record::read(doc, None))
+        .unwrap_or_default();
+    let after = crate::shared_record::read(after, None).unwrap_or_default();
+    let mut touched = foreign_acts(&before, &after, writer, members);
+    let foreign =
+        |id: u64| !made_by(&before.authors, id, writer) && !released(&before.authors, id, members);
+    let tabs = |desktop: &SharedDesktop| -> HashMap<TabId, crate::layout::Tab> {
+        desktop
+            .tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|s| &s.window_groups)
+            .flat_map(|g| &g.tabs)
+            .map(|tab| (tab.id, tab.clone()))
+            .collect()
+    };
+    let was = tabs(&before);
+    let mut renamed: Vec<u64> = tabs(&after)
+        .into_iter()
+        .filter(|(id, tab)| {
+            foreign(*id)
+                && was.get(id).is_some_and(|earlier| {
+                    serde_json::to_value(earlier).ok() != serde_json::to_value(tab).ok()
+                })
+        })
+        .map(|(id, _)| id)
+        .collect();
+    renamed.compact_sort();
+    for id in renamed {
+        touched.push(Touched {
+            id,
+            act: Act::Rename,
+            owner: before.authors.get(&id).cloned(),
+        });
+    }
+    let held = index(&before.tree);
+    let mut claimed: Vec<(u64, String)> = after
+        .authors
+        .iter()
+        .filter(|(id, author)| {
+            !held.tabs.contains_key(*id)
+                && !held.strips.contains_key(&StripId(**id))
+                && author.as_str() != writer
+        })
+        .map(|(id, author)| (*id, author.clone()))
+        .collect();
+    claimed.compact_sort();
+    for (id, author) in claimed {
+        touched.push(Touched {
+            id,
+            act: Act::Attribute,
+            owner: Some(author),
+        });
+    }
+    touched
+}
+
+/// The windows of `before` still in `after` that `after` binds to another
+/// record than the one they showed: a record route is a window's identity,
+/// so nobody rebinds it, not even its maker.
+#[must_use]
+pub fn rebound_windows(
+    before: Option<&impl automerge::ReadDoc>,
+    after: &impl automerge::ReadDoc,
+) -> Vec<TabId> {
+    let Some(before) = before.and_then(|doc| crate::shared_record::read(doc, None)) else {
+        return Vec::new();
+    };
+    let after = crate::shared_record::read(after, None).unwrap_or_default();
+    let shown = index(&after.tree);
+    let now: HashMap<TabId, &String> = after.records.iter().map(|(t, r)| (*t, r)).collect();
+    let mut rebound: Vec<TabId> = before
+        .records
+        .iter()
+        .filter(|(tab, record)| shown.tabs.contains_key(tab) && now.get(tab) != Some(&record))
+        .map(|(tab, _)| *tab)
+        .collect();
+    rebound.compact_sort();
+    rebound
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

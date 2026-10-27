@@ -610,6 +610,7 @@ impl BotRunner {
                     trigger: RunTrigger::Fired(trigger),
                     inputs,
                     caused_by: cause,
+                    parent: None,
                 },
             ))
         })

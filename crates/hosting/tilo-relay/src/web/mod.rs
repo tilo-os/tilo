@@ -343,10 +343,8 @@ impl Relay {
         let live = LiveRelay::new(Arc::new(live::Authority(grants.clone())));
         let legacy =
             legacy::LegacyWindows::new(live.clone(), context.relay.identity.cert.device_public_key);
-        let _ = context.relay.live_bridge.set(Arc::new(Bridge {
-            live: live.clone(),
-            legacy: legacy.clone(),
-        }));
+        let bridge = Bridge::of(self, &live, &legacy);
+        let _ = context.relay.live_bridge.set(bridge);
         let tasks_bridge = bridge_browser_presence(&live, &grants, &context);
         let tasks_legacy = tokio::spawn(maintain_legacy(
             legacy.clone(),
@@ -488,6 +486,24 @@ impl Relay {
 struct Bridge {
     live: LiveRelay,
     legacy: Arc<legacy::LegacyWindows>,
+    /// The rooms whose voice carrier this listener serves.
+    calls: Option<crate::rooms::WeakRooms>,
+}
+
+impl Bridge {
+    /// What `relay`'s sessions hand the browser plane serving `live` and
+    /// `legacy`, and the calls of its rooms.
+    fn of(
+        relay: &Relay,
+        live: &LiveRelay,
+        legacy: &Arc<legacy::LegacyWindows>,
+    ) -> crate::peer::LiveBridge {
+        Arc::new(Self {
+            live: live.clone(),
+            legacy: legacy.clone(),
+            calls: relay.rooms().map(crate::rooms::Rooms::downgrade),
+        })
+    }
 }
 
 impl crate::peer::BrowserBridge for Bridge {
@@ -510,6 +526,10 @@ impl crate::peer::BrowserBridge for Bridge {
     fn presence(&self, workspace_id: u64, from: [u8; 32], user: [u8; 32], payload: &[u8]) {
         self.legacy
             .observe_presence(workspace_id, from, user, payload);
+    }
+
+    fn calls(&self) -> Option<crate::rooms::Rooms> {
+        self.calls.as_ref()?.upgrade()
     }
 }
 

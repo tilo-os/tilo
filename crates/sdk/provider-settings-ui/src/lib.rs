@@ -11,7 +11,6 @@ use agent_provider_config::{
     AgentModel, EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig,
     ProviderProfile, ProviderProtocol,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use ui::framework::{ActionControl, LiveRow};
@@ -27,48 +26,6 @@ mod app_tests;
 pub mod i18n;
 pub mod widgets;
 pub use app::{ProviderSettingsApp, definition};
-/// The person's agent providers, as their settings hold them: the hosted
-/// ones roam with the person, those on this device or its network stay.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
-)]
-#[serde(from = "StoredProviders", into = "StoredProviders")]
-pub struct AgentProviders {
-    #[model(readonly)]
-    pub config: ProviderConfig,
-}
-
-/// [`AgentProviders`] as the settings section stores them.
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct StoredProviders {
-    config: ProviderConfig,
-    hosted: agent_provider_config::HostedProfiles,
-}
-
-impl From<StoredProviders> for AgentProviders {
-    fn from(stored: StoredProviders) -> Self {
-        Self {
-            config: ProviderConfig::from_stored(stored.config, stored.hosted),
-        }
-    }
-}
-
-impl From<AgentProviders> for StoredProviders {
-    fn from(providers: AgentProviders) -> Self {
-        let (config, hosted) = providers.config.stored();
-        Self { config, hosted }
-    }
-}
-
-impl ui::storage::SettingsSchema for AgentProviders {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
-}
-
-#[ui::tilo_resource::resource(kind = "settings.agent-providers", label = "Agent model providers")]
-impl AgentProviders {}
-
 pub trait PanelBindings: Clone + 'static {
     fn offline_metadata(&self) -> bool {
         false
@@ -506,7 +463,10 @@ impl<H: PanelBindings> ProviderPanel<H> {
     fn sections_with_sign_in(&self, include_sign_in: bool) -> Vec<SettingsSection> {
         let mut sections = Vec::new();
         if let Some(notice) = &self.notice {
-            sections.push(section(&t("agent-service-title"), rows(vec![note(notice)])));
+            // A result is about a provider, so it is filed under the providers
+            // rather than under the local model service it has nothing to do
+            // with.
+            sections.push(section(&t("agent-notice-title"), rows(vec![note(notice)])));
         }
         sections.push(self.hosted_profiles_with_sign_in(include_sign_in));
         if let Some(agents) = self.agent_models_card() {
@@ -598,6 +558,10 @@ impl<H: PanelBindings> ProviderPanel<H> {
         self.keys = read.keys;
         let mut value = None;
         let mut listing_failed = None;
+        // Which provider the answer is about, as the profile names it: the
+        // notice says whose result it is instead of leaving one line to
+        // stand for every provider.
+        let mut listing_for = None;
         if let Some((provider, listed)) = read.listed {
             value = listed
                 .as_ref()
@@ -605,8 +569,16 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 .and_then(|models| serde_json::to_value(models).ok());
             let listed = listed.map_err(|error| listing_error(&error));
             listing_failed = listed.as_ref().err().cloned();
+            listing_for = Some(
+                self.provider_config()
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == provider)
+                    .map_or_else(|| provider.clone(), |profile| profile.label.clone()),
+            );
             self.listed_models.insert(provider, listed);
         }
+        let listing_failure = listing_failed.clone();
         let outcome = read.outcome.map_err(|error| {
             if let Some(message) = listing_failed {
                 return message;
@@ -631,17 +603,25 @@ impl<H: PanelBindings> ProviderPanel<H> {
         if let Some(acknowledgement) = self.limits_ack.take().filter(|_| read.acknowledged) {
             self.acknowledge_limits(&acknowledgement);
         }
-        self.notice = Some(match (&outcome, &value) {
-            (Ok(()), Some(serde_json::Value::Array(models))) => {
-                t_args("agent-test-connected", &[("count", models.len().into())])
-            }
-            (Ok(()), _) => t(if self.admin_reply.is_some() {
-                "agent-provider-saved"
-            } else {
-                "agent-provider-ready"
-            }),
-            (Err(error), _) => error.clone(),
-        });
+        // Only what the person asked for and cannot read anywhere else is a
+        // notice: a provider's own card shows its test result, and a change
+        // that took is already the state the panel shows. One line speaking
+        // for every provider, or announcing a save, says nothing they can act
+        // on.
+        self.notice = match (&outcome, &value) {
+            (Ok(()), Some(serde_json::Value::Array(models))) if !models.is_empty() => Some(t_args(
+                "agent-test-connected",
+                &[
+                    ("provider", listing_for.unwrap_or_default().into()),
+                    ("count", models.len().into()),
+                ],
+            )),
+            (Ok(()), _) => None,
+            // The provider's own card says its test failed, beside the
+            // provider it is about.
+            (Err(_), _) if listing_failure.is_some() => None,
+            (Err(error), _) => Some(error.clone()),
+        };
         if let Some(reply) = self.admin_reply.take() {
             reply.finish(outcome.map(|()| ui::tilo_actions::ActionOutput {
                 value,

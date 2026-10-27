@@ -12,7 +12,7 @@
 
 use ui::a11y::{AccessNode, AccessState, Action, Politeness, Role};
 
-use super::{ChromeNotifications, ShellOverlayHost, t};
+use super::{ChromeNotifications, ShellOverlayHost, fullscreen_hint, t};
 use crate::shell::quick_settings::WifiPasswordPrompt;
 
 const WIFI_PASSWORD_PREFIX: &str = "wifi-password:";
@@ -177,6 +177,12 @@ impl ShellOverlayHost {
         });
         if let Some(ack) = self.current_acknowledgement(ui::time::now()) {
             nodes.push(ack.accessibility());
+        }
+        if self
+            .fullscreen_hint_accessibility(ui::time::now())
+            .is_some()
+        {
+            nodes.push(fullscreen_hint::hint_node());
         }
         if let Some((name, narration)) = pad_map {
             nodes.push(

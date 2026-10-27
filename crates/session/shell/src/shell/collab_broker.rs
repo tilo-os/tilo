@@ -1614,11 +1614,11 @@ mod tests {
     fn peer_names_are_announced_once_per_app_and_revert_when_revoked() {
         fn a_named_peer_is_announced_and_then_left_alone() {
             assert_eq!(
-                super::roster_announcement(None, Some("bob"), PEER),
-                Some("bob".to_string()),
+                super::roster_announcement(None, Some("Bob"), PEER),
+                Some("Bob".to_string()),
             );
             assert_eq!(
-                super::roster_announcement(Some("bob"), Some("bob"), PEER),
+                super::roster_announcement(Some("Bob"), Some("Bob"), PEER),
                 None
             );
         }
@@ -1629,7 +1629,7 @@ mod tests {
 
         fn a_revoked_name_reverts_the_peer_to_its_id() {
             assert_eq!(
-                super::roster_announcement(Some("bob"), None, PEER),
+                super::roster_announcement(Some("Bob"), None, PEER),
                 Some(PEER.to_string()),
             );
             assert_eq!(super::roster_announcement(Some(PEER), None, PEER), None);
@@ -1658,7 +1658,7 @@ mod tests {
 
             let room = |_c: &str| {
                 let mut m = PeerLabels::new();
-                m.insert(HANDLE, "bob".to_string());
+                m.insert(HANDLE, "Bob".to_string());
                 m
             };
             let mut labels = HashMap::new();
@@ -1679,7 +1679,7 @@ mod tests {
             say();
             assert_eq!(
                 heard.lock().unwrap().clone(),
-                vec!["bob".to_string()],
+                vec!["Bob".to_string()],
                 "a name that has not changed is not re-broadcast per frame",
             );
 
@@ -1687,7 +1687,7 @@ mod tests {
             say();
             assert_eq!(
                 heard.lock().unwrap().clone(),
-                vec!["bob".to_string(), "bob".to_string()],
+                vec!["Bob".to_string(), "Bob".to_string()],
                 "the app that just connected was not in the audience for the \
                  first announcement, so the name has to be said again",
             );
@@ -1721,7 +1721,7 @@ mod tests {
 
             let room = |_c: &str| {
                 let mut m = PeerLabels::new();
-                m.insert(HANDLE, "bob".to_string());
+                m.insert(HANDLE, "Bob".to_string());
                 m
             };
             let mut labels = HashMap::new();
@@ -1762,7 +1762,7 @@ mod tests {
             let announcements = seen.lock().unwrap().clone();
             assert_eq!(
                 announcements,
-                vec![(format!("peer@{HANDLE}"), "bob".to_string())],
+                vec![(format!("peer@{HANDLE}"), "Bob".to_string())],
                 "the room's name is announced exactly once, against the id \
                  both frames arrived under",
             );

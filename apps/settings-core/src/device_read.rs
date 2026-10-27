@@ -58,7 +58,16 @@ impl<T: Send + 'static> DeviceRead<T> {
         let value = self.read.take()?.downcast::<T>().ok()?;
         Some(*value)
     }
+
+    /// What waits, off the UI thread, for the started read to end, after
+    /// which [`Self::take`] answers at once. `None` when no read runs.
+    pub fn wait(&self) -> Option<Wait> {
+        self.read.wait()
+    }
 }
+
+/// Waiting for a [`DeviceRead`] to end; run only off the UI thread.
+pub type Wait = Box<dyn FnOnce() + Send>;
 
 /// [`DeviceRead`] for a result of any type: the reading, compiled once.
 #[derive(Default)]
@@ -81,11 +90,17 @@ impl ErasedRead {
         true
     }
 
+    /// While a frame is laid out on this thread, a read still on its way
+    /// is not finished, however it stands: the next frame takes it in
+    /// ([`crate::channel::Receiver::try_recv`]).
     fn is_finished(&self) -> bool {
         let mut pending = self.pending.borrow_mut();
         let Some(receiver) = pending.as_ref() else {
             return true;
         };
+        if ui::motion::frame_laying_out() {
+            return false;
+        }
         match receiver.try_recv() {
             Ok(value) => {
                 *self.done.borrow_mut() = Some(value);
@@ -98,6 +113,24 @@ impl ErasedRead {
                 true
             }
         }
+    }
+
+    /// The running read's result is relayed through the waiter, so the
+    /// read is still on its way to the area until the waiter has it.
+    fn wait(&self) -> Option<Wait> {
+        let mut pending = self.pending.borrow_mut();
+        let running = pending.take()?;
+        let (sender, relayed) = std::sync::mpsc::channel();
+        *pending = Some(relayed);
+        let wake = ui::WakeHandle::new();
+        Some(Box::new(move || {
+            off_ui_thread();
+            if let Ok(value) = running.recv() {
+                wake.wake();
+                let _ = sender.send(value);
+                wake.wake();
+            }
+        }))
     }
 
     fn take(&self) -> Option<Erased> {
@@ -346,8 +379,13 @@ impl Landing {
         }
     }
 
-    /// [`Self::poll`], its result left erased.
+    /// [`Self::poll`], its result left erased. Still running while a frame
+    /// is laid out on this thread: what lands then is taken in by the next
+    /// frame ([`crate::channel::Receiver::try_recv`]).
     pub fn poll_erased(&self) -> Landed<Erased> {
+        if ui::motion::frame_laying_out() {
+            return Landed::Pending;
+        }
         match self.0.try_recv() {
             Ok(value) => Landed::Done(value),
             Err(TryRecvError::Empty) => Landed::Pending,

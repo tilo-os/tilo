@@ -5,7 +5,7 @@
 # Every package comes from Fedora 44's release repository alone, installed into
 # empty roots. That repository is frozen at the release, so with the base pinned
 # by digest and the source pinned by hash the image is the same whenever it is
-# built. Mesa's Vulkan drivers reach AMD, Intel and Arm Mali GPUs; the Vulkan
+# built. The roots keep no package database, whose install times would differ. Mesa's Vulkan drivers reach AMD, Intel and Arm Mali GPUs; the Vulkan
 # build also carries every CPU backend, and runs on the processor where no GPU
 # answers.
 ARG BASE
@@ -26,7 +26,7 @@ RUN set -eu; \
         --repo=fedora --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
         install $packages; \
       dnf5 --installroot="/$root" --use-host-config --releasever=44 clean all; \
-      rm -rf "/$root/var/cache" "/$root/var/log" "/$root/var/lib/dnf"; \
+      rm -rf "/$root/var/cache" "/$root/var/log" "/$root/var/lib/dnf" "/$root/usr/lib/sysimage"; \
     done
 
 FROM scratch AS build

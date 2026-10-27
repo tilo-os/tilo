@@ -282,9 +282,9 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
             views,
             device_id: "D".into(),
             instance_id: 81,
-            permissions: Rc::new(RefCell::new(
+            permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
             author: crate::permissions::UserId("fixture-user".into()),
             action_context: tilo_actions::ActionContext::default(),
         },

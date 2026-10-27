@@ -9,7 +9,14 @@ extern crate runtime_dylib;
 
 fn main() -> ExitCode {
     match thumbnail::batch::run_from_args(std::env::args().skip(1)) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(failed) => {
+            // Every other input still made its thumbnail, so the job
+            // succeeds; each failure names the content, not a position.
+            for failure in failed {
+                eprintln!("thumbnail-batch: {failure}");
+            }
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             // The worker returns the tail of stderr to the requester.
             eprintln!("thumbnail-batch: {error}");

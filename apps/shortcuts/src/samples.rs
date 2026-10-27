@@ -14,7 +14,7 @@ use ui::tilo_actions::{
     InputSpec, OperationKind, ParamType, ResultSpec,
 };
 
-use crate::door::{DoorState, Drafting, RunRecord, RunStatus};
+use crate::door::{DoorState, Drafting, Refined, RunRecord, RunStatus};
 use crate::drafting::Drafted;
 use crate::model::Workbench;
 use crate::view;
@@ -63,6 +63,8 @@ fn row(
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action_label.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::default(),
             kind: OperationKind::Document,
@@ -162,7 +164,7 @@ fn morning_digest() -> Value {
         "steps": [
             {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
              "resource": {"fixed": "notes.folder:inbox"}},
-            {"id": "ai", "step": "ai", "transform": "summarise",
+            {"id": "ai", "step": "ai", "prompt": "Write a short digest of these titles",
              "input": {"template": "{{step.list/titles}}"}},
             {"id": "send", "step": "invoke", "action": {"app": MAIL, "kind": "mail.outbox", "action": "send"},
              "resource": {"fixed": "mail.outbox"},
@@ -179,7 +181,7 @@ fn weekly_summary() -> Value {
         "steps": [
             {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
              "resource": {"fixed": "notes.folder:inbox"}},
-            {"id": "ai", "step": "ai", "transform": "summarise",
+            {"id": "ai", "step": "ai", "prompt": "Write a short digest of these titles",
              "input": {"template": "{{step.list/titles}}"}},
             {"id": "send", "step": "invoke", "action": {"app": MAIL, "kind": "mail.outbox", "action": "send"},
              "resource": {"fixed": "mail.outbox"},
@@ -234,10 +236,36 @@ fn drafted() -> Option<Drafting> {
         ]
     });
     let shortcut = serde_json::from_value(shortcut).ok()?;
-    Some(Drafting::Ready(Box::new(Drafted {
-        shortcut,
-        problems: Vec::new(),
+    Some(Drafting::Ready(Box::new(Refined {
+        drafted: Drafted {
+            shortcut,
+            problems: Vec::new(),
+        },
+        changes: Vec::new(),
     })))
+}
+
+/// Repeated work the app noticed: the same two steps, three times in a row.
+fn proposal() -> crate::proposal::Proposal {
+    crate::proposal::Proposal {
+        steps: vec![
+            occurrence("list", "List notes in Inbox"),
+            occurrence("create", "New note"),
+        ],
+        times: 3,
+        resources: Vec::new(),
+    }
+}
+
+/// One action the person took, as a catalogue names it.
+fn occurrence(action: &str, label: &str) -> crate::proposal::Occurrence {
+    crate::proposal::Occurrence {
+        app: NOTES.into(),
+        kind: "notes.folder".into(),
+        action: action.into(),
+        resource: Some("notes.folder:inbox".into()),
+        label: Some(label.into()),
+    }
 }
 
 /// A shortcut with a repeat and a condition.
@@ -262,7 +290,7 @@ fn tidy_notes() -> Value {
              ]},
             {"id": "if", "step": "if", "cond": {"truthy": {"input": "keyword"}},
              "then": [
-                {"id": "ai", "step": "ai", "transform": "summarise",
+                {"id": "ai", "step": "ai", "prompt": "Summarise this",
                  "input": {"input": "keyword"}}
              ],
              "else": []}
@@ -322,14 +350,20 @@ pub fn stage(
                         3,
                         "morning-digest",
                         "Morning digest",
-                        RunStatus::Completed(Some(json!("Three new notes, one needs a reply"))),
+                        RunStatus::Completed {
+                            value: Some(json!("Three new notes, one needs a reply")),
+                            degraded: None,
+                        },
                         "10:31",
                     ),
                     run(
                         2,
                         "quick-note",
                         "Quick note",
-                        RunStatus::Completed(None),
+                        RunStatus::Completed {
+                            value: None,
+                            degraded: None,
+                        },
                         "09:58",
                     ),
                     run(
@@ -347,6 +381,8 @@ pub fn stage(
             } else {
                 None
             },
+            proposal: (scenario == Some("repeat")).then(proposal),
+            feedback: String::new(),
         });
         let draft = |name: &str| {
             live.with(|workbench| {

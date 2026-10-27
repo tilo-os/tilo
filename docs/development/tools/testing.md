@@ -21,7 +21,7 @@ t log --help
 | Find relevant opt-in checks too                                    | `t suggest`                                       |
 | Discover every available check                                     | `t suggest --all`                                 |
 | Run one native package's tests                                     | `t test test/tilo-fs`                             |
-| Run shell tests (x86_64 only)                                      | `t test test-x86_64/shell`                        |
+| Run shell tests on each architecture                               | `t test test-x86_64/shell test-aarch64/shell`     |
 | Check/lint a package, including its browser target when applicable | `t test check/tilo-ui` or `t test clippy/tilo-ui` |
 | Inspect a failing check                                            | `t log <check>`                                   |
 | Rerun your last failures                                           | `t test`                                          |

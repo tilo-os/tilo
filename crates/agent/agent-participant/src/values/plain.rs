@@ -3,7 +3,8 @@
 //! business days`, `289 - 50`, `4 x 38.50`, `sum of 120, 80 and 45`, `15%
 //! of 200`. The host computes it before the step runs, as it computes
 //! `{{= … }}`, so a model that would not reach for that syntax still never
-//! counts days or subtracts figures itself.
+//! counts days or subtracts figures itself. An expression written without
+//! its braces (`workday(2026-10-14, 10)`) computes in the same places.
 //!
 //! Strict on purpose: a date is ISO, a written month (`14 October 2026`)
 //! or numbers only one order reads as a date; `03/04/2026` could be either,
@@ -13,7 +14,7 @@
 use chrono::NaiveDate;
 
 use super::dates;
-use super::expr::{Value, lenient_number};
+use super::expr::{self, Value, lenient_number};
 
 /// The forms a date argument takes, for a refusal to show.
 const DATE_FORMS: &str = "write the date as ISO (2026-10-14), or as arithmetic the host \
@@ -234,12 +235,16 @@ pub(crate) fn typed(text: &str, wants: Wants) -> Result<Option<serde_json::Value
     if trimmed.is_empty() {
         return Ok(None);
     }
+    // An expression without its `{{= … }}` computes as one would.
+    let call = expr::bare(trimmed)
+        .transpose()
+        .map_err(|why| format!("`{trimmed}`: {why}"))?;
     match wants {
         Wants::Number { whole } => {
             if lenient_number(trimmed).is_some() {
                 return Ok(None);
             }
-            let Value::Number(number) = evaluate(trimmed)? else {
+            let Value::Number(number) = call.map_or_else(|| evaluate(trimmed), Ok)? else {
                 return Err(format!("`{trimmed}` is not a number: {NUMBER_FORMS}"));
             };
             if whole && number.fract() != 0.0 {
@@ -255,6 +260,12 @@ pub(crate) fn typed(text: &str, wants: Wants) -> Result<Option<serde_json::Value
             // would drop what follows a space.
             if dates::parse(trimmed).is_some() && dates::instant(trimmed).is_some() {
                 return Ok(None);
+            }
+            if let Some(call) = call {
+                let Value::Date(day) = call else {
+                    return Err(format!("`{trimmed}` is not a date: {DATE_FORMS}"));
+                };
+                return Ok(Some(serde_json::Value::String(dates::iso(day))));
             }
             let tokens = tokens(trimmed, Reading::Lenient)?;
             let Some((day, clock)) = date_form(&tokens) else {
@@ -298,6 +309,14 @@ pub(crate) fn untyped(text: &str) -> Option<serde_json::Value> {
     let trimmed = text.trim();
     if !trimmed.contains(|c: char| c.is_ascii_digit()) || lenient_number(trimmed).is_some() {
         return None;
+    }
+    if let Some(call) = expr::bare(trimmed) {
+        return match call.ok()? {
+            // What depends on the day it runs stays as written, as below.
+            _ if trimmed.to_lowercase().contains("today") => None,
+            value @ (Value::Number(_) | Value::Date(_)) => Some(value.to_json()),
+            _ => None,
+        };
     }
     let tokens = tokens(trimmed, Reading::Strict).ok()?;
     if tokens

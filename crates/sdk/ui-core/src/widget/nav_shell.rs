@@ -105,6 +105,7 @@ use crate::widget::{
 
 mod back;
 mod band;
+mod bar_resources;
 mod header_parts;
 mod inspector;
 pub(crate) mod memory;
@@ -682,11 +683,6 @@ impl Inputs {
     fn slots_in_bar(&self) -> bool {
         self.toolbar_in_bar || self.shell_bar
     }
-
-    /// The window bar shows the sidebar toggle, the app's or the shell's.
-    fn toggle_in_window_bar(&self) -> bool {
-        self.toggle_in_bar || self.shell_bar
-    }
 }
 
 /// The shell's geometry for one size, in coordinates local to the shell.
@@ -1142,8 +1138,10 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
     // The bar's toggle reaches a sidebar screen; Back drills only past the
     // first screen after it (a list, the empty state), else past the first.
-    let first =
-        usize::from(inputs.toggle_in_window_bar() && stack.first() == Some(&NavPane::Sidebar));
+    // A shell that declares the bar's slots has no toggle there of its own
+    // (only an app that asks for one does, [`NavShell::with_window_toolbar`]),
+    // so Back is what reaches the sidebar's screen.
+    let first = usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
     let drills = stack.len().saturating_sub(first) > 1;
 
     // 5. The header row. A column's header stands in it only where the
@@ -1429,13 +1427,16 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         None
     };
     if let Some(column) = back_column
-        && (inputs.slots_in_bar() || inputs.toggle_in_bar)
+        && inputs.slots_in_bar()
     {
         // Back is the window bar's, beside its toggle ([`NavShell::window_toolbar`]).
         g.back_column = Some(column);
     } else if let Some(column) = back_column
         && (push_back || g.header(column) != Rect::ZERO)
     {
+        // The bar declares none of the shell's slots (an app keeps its own),
+        // so Back is a chevron the shell draws, beside the toggle if the bar
+        // carries it.
         let slot = usize::from(g.toggle_column == Some(column) && g.toggle.width() > 0.0);
         // The page moves; navigation belongs to the window. Back must stay
         // operable even before the incoming screen enters the viewport.
@@ -2523,18 +2524,34 @@ impl NavShell {
 
     /// Show or hide the sidebar, remembering the choice for this window size
     /// class. In [`NavMode::Push`] narrow, the sidebar is a screen: showing
-    /// it goes back to it.
+    /// it goes back to it, and hiding it goes on to the screen the person
+    /// left for it.
     pub fn toggle_sidebar(&mut self) {
         if !self.has_sidebar() {
             return;
         }
         if self.geometry.sidebar == SidebarPlacement::Screen {
-            self.show(NavPane::Sidebar);
+            let pane = if self.front_pane() == NavPane::Sidebar {
+                self.screen_behind_sidebar()
+            } else {
+                NavPane::Sidebar
+            };
+            self.show(pane);
             return;
         }
         let layout = layout_of(self.geometry.sidebar);
         self.inputs.borrow_mut().sidebar.toggle(layout);
         self.after_flap_change();
+    }
+
+    /// The screen a hidden sidebar screen leaves in front: the one the
+    /// person last worked in, else the one the sidebar leads to.
+    fn screen_behind_sidebar(&self) -> NavPane {
+        let stack = &self.geometry.stack;
+        self.active_hint
+            .filter(|pane| *pane != NavPane::Sidebar && stack.contains(pane))
+            .or_else(|| stack.iter().copied().find(|pane| *pane != NavPane::Sidebar))
+            .unwrap_or(NavPane::Content)
     }
 
     /// A toggle a key asked for: it lands at once (motion follows the
@@ -2709,6 +2726,13 @@ impl NavShell {
         if let Some(binding) = self.pane_binding.as_mut() {
             binding.publish(&pane);
         }
+        // A sidebar that is a screen shows or hides with the screen in
+        // front: its toggle and the window bar's slots say so now, not at
+        // the next layout, so an app that builds its slots from the shell's
+        // ([`WindowBarLink::slots`]) while the sidebar covers it reads them
+        // current.
+        self.update_toggle_names();
+        self.publish_open_states();
         self.animating = true;
         self.structure_dirty = true;
         self.invalidate();
@@ -2721,6 +2745,18 @@ impl NavShell {
         };
         let can = (back.can_go_back)();
         self.set_can_go_back(can);
+    }
+
+    /// The parts a frame paints: laid out, and on screen inside the shell.
+    /// A part a push screen holds beside the window (the content behind a
+    /// sidebar that is a screen of its own) is culled when the shell draws,
+    /// so what it would show next waits until it is back on screen: asked
+    /// for, it would keep the window drawing frames that never paint it.
+    fn painted_parts(&self) -> impl Iterator<Item = &dyn Widget> {
+        self.host_parts
+            .iter()
+            .filter_map(|part| self.part(*part))
+            .filter(|part| part.paint_bounds().intersect(self.rect).area() > 0.0)
     }
 
     /// Snap every animation to its end (deterministic shots and tests).
@@ -3990,7 +4026,11 @@ impl Widget for NavShell {
     // what continues on another device, what a diagnostic input reads) is
     // the content it frames.
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+        // The shell itself, for a harness that reads its sidebar through a
+        // root that stands in for it (a framework app's view).
+        if request.wants::<Self>() {
+            request.provide::<Self>(self);
+        } else if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
@@ -4071,7 +4111,12 @@ impl Widget for NavShell {
         changed |= self.follow_navigation();
         changed |= self.notice.expire();
         self.publish_notice();
-        changed || self.animating
+        // A slide moves the columns, which the layout places; it changes no
+        // model, so the frame neither syncs nor republishes for it.
+        if self.animating || self.settling {
+            crate::widget::note_layout_moved();
+        }
+        changed
     }
 
     fn build_layout(
@@ -4481,10 +4526,7 @@ impl Widget for NavShell {
         self.animating
             || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
-            || self
-                .host_parts
-                .iter()
-                .any(|part| self.part(*part).is_some_and(Widget::needs_animation_frame))
+            || self.painted_parts().any(Widget::needs_animation_frame)
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -4503,10 +4545,7 @@ impl Widget for NavShell {
             || self.animating
             || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
-            || self
-                .host_parts
-                .iter()
-                .any(|part| self.part(*part).is_some_and(Widget::needs_redraw))
+            || self.painted_parts().any(Widget::needs_redraw)
     }
 
     fn mark_drawn(&mut self) {
@@ -4643,80 +4682,6 @@ impl crate::widget::controls::ActionControls for NavShell {
             pending |= crate::widget::controls::has_pending_control_invocation(child);
         });
         pending
-    }
-}
-
-/// A header button the shell hands to the window's bar is not among the
-/// shell's laid-out children, yet a press on it in the bar runs it: it
-/// publishes its action, and the operation the press starts reaches it.
-impl crate::resources::PublishesResources for NavShell {
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = Vec::new();
-        for part in self.bar_parts() {
-            if let Some(widget) = self.part(part) {
-                crate::widget::collect_widget_resources(widget, doc, &mut resources);
-            }
-        }
-        resources
-    }
-}
-
-impl crate::widget::ResourceOperations for NavShell {
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = crate::widget::resource_operation::subtree_handlers(
-            self,
-            crate::widget::resource_operation::local_resource_operation_handlers(self),
-        );
-        for part in self.bar_parts() {
-            if let Some(widget) = self.part(part) {
-                handlers
-                    .extend(crate::widget::resource_operation::resource_operation_handlers(widget));
-            }
-        }
-        handlers
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) =
-            crate::widget::resource_operation::start_by_default(self, op, doc, path)?
-        {
-            return Ok(Some(started));
-        }
-        let parts = self.bar_parts();
-        crate::widget::resource_operation::start_in(self.parts_mut(&parts), op, doc, path)
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if let Some(update) = crate::widget::resource_operation::poll_by_default(
-            self,
-            invocation,
-            cancellation_requested,
-            doc,
-            path,
-        ) {
-            return Some(update);
-        }
-        let parts = self.bar_parts();
-        self.parts_mut(&parts).into_iter().find_map(|widget| {
-            crate::widget::resource_operation::poll_resource_operation(
-                widget,
-                invocation,
-                cancellation_requested,
-                doc,
-                path,
-            )
-        })
     }
 }
 

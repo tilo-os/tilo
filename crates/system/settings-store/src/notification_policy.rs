@@ -48,20 +48,30 @@ crate::read_through_json_value!(AppNotificationRule);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct FocusSchedule {
+    /// Hold notifications back during the scheduled hours.
     #[serde(default)]
     pub enabled: bool,
-    /// Minutes after local midnight, clamped to a valid day on load.
+    /// When focus starts, in minutes after local midnight.
     #[serde(default = "default_focus_start")]
+    #[cfg_attr(feature = "model", model(range = 0..=MINUTE_OF_DAY_MAX))]
     pub start_minute: u16,
+    /// When focus ends, in minutes after local midnight.
     #[serde(default = "default_focus_end")]
+    #[cfg_attr(feature = "model", model(range = 0..=MINUTE_OF_DAY_MAX))]
     pub end_minute: u16,
-    /// Monday is bit zero; zero means every day for backwards-compatible
-    /// hand-written settings.
+    /// The days focus applies, Monday as bit zero; zero means every day for
+    /// backwards-compatible hand-written settings.
     #[serde(default)]
+    #[cfg_attr(feature = "model", model(range = 0..=0b111_1111))]
     pub weekdays: u8,
+    /// Priority apps and people still come through during focus.
     #[serde(default = "default_true")]
     pub allow_priority: bool,
 }
+
+/// The last minute of a day.
+#[cfg(feature = "model")]
+const MINUTE_OF_DAY_MAX: u16 = 24 * 60 - 1;
 
 crate::read_through_json_value!(FocusSchedule);
 

@@ -14,6 +14,8 @@ use std::{
     process::{Child, Command},
 };
 
+pub mod adapter_tools;
+pub mod adapters;
 mod apps;
 pub mod cli;
 pub mod computer;

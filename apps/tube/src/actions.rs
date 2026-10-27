@@ -29,6 +29,15 @@ pub enum TubeEffect {
     /// Show or hide navigation.
     #[effect(view)]
     ToggleSidebar,
+    /// Filter search results.
+    ///
+    /// The first type chosen narrows the results to it; choosing a type
+    /// again shows or hides it beside the others.
+    #[effect(view)]
+    FilterSearch {
+        #[param("The result type", choices = ["video", "playlist", "creator"])]
+        kind: String,
+    },
     /// Open video.
     #[effect(kind = "read")]
     OpenVideo {

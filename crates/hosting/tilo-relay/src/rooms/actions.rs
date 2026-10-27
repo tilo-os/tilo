@@ -656,6 +656,8 @@ impl Verb {
                 resource_kind: publisher.kind.into(),
                 resource_label: label.into(),
                 action_label: self.label.into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: ExecutionLocus::ServerPreferred,
                 kind: OperationKind::Effect,
@@ -1260,7 +1262,7 @@ impl Rooms {
     /// answer members with. Answers how many bytes are in, or that the
     /// whole file is.
     fn upload_app_piece(&self, call: GovernanceCall<'_>) -> Result<Value, ActionHostError> {
-        let args = call.args;
+        let GovernanceCall { room, args, .. } = call;
         let file = args.required_text("file")?;
         let offset = args
             .integer("offset")?
@@ -1274,7 +1276,7 @@ impl Rooms {
             return Err(invalid("a piece is at most 256 KiB"));
         }
         match self
-            .upload_app_file(call.room, file, offset, total, &data)
+            .upload_app_file(room, file, offset, total, &data)
             .map_err(|error| refused(&error))?
         {
             super::app_files::Uploaded::Partial(received) => Ok(json!({ "received": received })),
@@ -1471,6 +1473,7 @@ fn membership_command(
 }
 
 /// One governance invocation, as its room method takes it.
+#[derive(Clone, Copy)]
 struct GovernanceCall<'a> {
     room: &'a str,
     device: &'a DeviceCert,

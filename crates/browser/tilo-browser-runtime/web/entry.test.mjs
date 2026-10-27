@@ -523,11 +523,12 @@ test('once admitted, the page names its host’s fetch proxy for the apps', asyn
 test('the home workspace sends reports to the channel its entry names, without holding the page', async () => {
   const asked = [];
   let settle;
-  const peer = {room: 'r1', configureFeedback: destination => {
+  const peer = {origin: 'https://lounge.example', room: 'r1', configureFeedback: destination => {
     asked.push(destination);
     return new Promise((_, reject) => { settle = reject; });
   }};
-  configureFeedback(peer, {feedback: {channel: 'c_feedback'}});
+  const home = {host: {origin: 'https://lounge.example'}, feedback: {channel: 'c_feedback'}};
+  configureFeedback(peer, home, 'r1');
   assert.deepEqual(asked, [{room: 'r1', provider: 'record:so.tilo.chat:', channel: 'c_feedback'}]);
   const warn = console.warn;
   console.warn = () => {};
@@ -535,8 +536,23 @@ test('the home workspace sends reports to the channel its entry names, without h
   await new Promise(resolve => setTimeout(resolve, 0));
   console.warn = warn;
   configureFeedback(peer, {});
-  configureFeedback({configureFeedback: peer.configureFeedback}, {feedback: {channel: 'c_feedback'}});
+  configureFeedback({configureFeedback: peer.configureFeedback}, home);
   assert.equal(asked.length, 1, 'no channel, or no room, asks nothing');
+  // Another room on the home's host, or a room elsewhere, has no such channel.
+  configureFeedback({...peer, room: 'second'}, home, null);
+  configureFeedback({...peer, origin: 'https://team.example'}, home, 'r1');
+  assert.equal(asked.length, 1, 'only the home workspace asks');
+});
+
+test('a second room on the home’s host goes by no name or count of the home’s', async () => {
+  const {listedAt} = await import('./workspaces.mjs');
+  const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}};
+  const none = {getItem: () => null};
+  assert.equal(listedAt([home], {kind: 'room', host: 'https://lounge.example', room: 'r1'}, 'r1', none), home);
+  assert.equal(listedAt([home], {kind: 'room', host: 'https://lounge.example', room: 'second'}, null, none), null);
+  assert.equal(listedAt([home], {kind: 'room', host: 'https://lounge.example', room: null}, null, none), home);
+  assert.equal(listedAt([{...home, room: 'r1'}], {kind: 'room', host: 'https://lounge.example', room: 'r1'}, null, none).name, 'Lounge');
+  assert.equal(listedAt([home], {kind: 'own'}, null, none), null);
 });
 
 test('the address names the app in front, and the view a link opened, as a link to it would', () => {

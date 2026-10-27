@@ -5,8 +5,9 @@
 //! the places list's toggle, back and forward; the folder as the location, its levels as a breadcrumb
 //! with drawn chevrons (a click on one goes there) and its path editable,
 //! with the folders and files the typed path completes to listed under the
-//! field; and the actions, Up, the view and New folder in the row and the
-//! rest of the View options in the bar's overflow menu. Outside a Tilo
+//! field; and the actions, the view and New folder (and Sort in a grid)
+//! in the row, and Up, New file, the terminal and hidden files in the
+//! bar's overflow menu. Outside a Tilo
 //! session the header stays in the window, as before.
 
 use std::path::PathBuf;
@@ -190,14 +191,20 @@ impl FileExplorerWidget {
     /// hidden files.
     fn bar_actions(&self, recent: bool) -> Vec<ToolbarAction> {
         let archive = crate::archive::location(&self.current_path).is_some();
-        let mut actions = vec![
-            action(
+        // Up is in the menu: the location's levels and Back already go
+        // up, so the row keeps its room for the view and what to make.
+        let up = ToolbarAction {
+            menu: true,
+            ..action(
                 UP,
                 "arrow-up",
                 t("files-up"),
                 self.current_path.parent().is_some() && !recent,
                 false,
-            ),
+            )
+        };
+        let mut actions = vec![
+            up,
             match self.view_mode {
                 ViewMode::List => action(VIEW, "layout-grid", t("files-show-as-grid"), true, false),
                 ViewMode::Grid => action(VIEW, "list", t("files-show-as-list"), true, false),
@@ -258,6 +265,13 @@ impl FileExplorerWidget {
             true,
             self.show_hidden,
         ));
+        // The row keeps the view and what the folder makes (and sorting a
+        // grid); the rest is a press away in More.
+        for action in &mut actions {
+            if matches!(action.id.as_str(), NEW_FILE | TERMINAL | HIDDEN) {
+                action.menu = true;
+            }
+        }
         actions
     }
 

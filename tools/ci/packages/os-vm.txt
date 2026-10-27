@@ -1,0 +1,25 @@
+# What the OS checks that install, boot and publish a dev disk under KVM need beside the
+# OS assembler image (tools/ci/publish/os-dev-disk.sh, os-dev-gate.sh, os-acceptance.sh,
+# os-dev-publish.sh, tools/ci/os-vm.sh); the emulator and firmware are qemu-<arch>.txt.
+# One list for all of them, so they share one setup layer per architecture.
+podman
+skopeo
+fuse-overlayfs
+e2fsprogs
+util-linux
+python3
+dosfstools
+btrfs-progs
+systemd-container
+binutils
+socat
+qemu-img
+ipxe-roms-qemu
+sshpass
+openssh-clients
+jq
+curl
+cryptsetup
+mtools
+zstd
+procps-ng

@@ -1314,9 +1314,9 @@ impl RoutedPrimary {
                 views,
                 device_id: "D".into(),
                 instance_id: 70,
-                permissions: std::rc::Rc::new(std::cell::RefCell::new(
+                permissions: crate::permissions::SharedPermissions::new(
                     crate::permissions::PermissionContext::permissive(),
-                )),
+                ),
                 author: crate::permissions::UserId("primary-author".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -5165,9 +5165,9 @@ fn component_control_root(
             host_person: crate::permissions::UserId("component-control-author".into()),
             records: records.clone(),
             checkout,
-            permissions: std::rc::Rc::new(std::cell::RefCell::new(
+            permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
             author: crate::permissions::UserId("component-control-author".into()),
             operation_context: tilo_actions::ActionContext::default(),
             writes_as_author: false,

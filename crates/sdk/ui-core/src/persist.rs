@@ -370,6 +370,15 @@ pub fn open_in(
 /// The debounce window the native store applies to [`open()`]'s writes.
 pub const DEBOUNCE: Duration = DEFAULT_DEBOUNCE;
 
+/// The native store over the profile directory `root`, writing what it is
+/// offered `debounce` after the last edit, on a thread of its own: a window
+/// writes after [`DEBOUNCE`]. A test observing frames while edits wait for
+/// their write holds every write past what it observes with a longer one.
+#[must_use]
+pub fn native_store(root: &Path, debounce: Duration) -> Rc<dyn DurableStore> {
+    Rc::new(app_state::FsStore::with_debounce(root, debounce))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

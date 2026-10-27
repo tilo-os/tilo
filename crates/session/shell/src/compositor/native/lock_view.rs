@@ -33,6 +33,7 @@ impl LockClock {
         lock: &'a LockController,
         notification_count: usize,
         now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
+        media_focus: Option<crate::shell::quick_settings::now_playing::Transport>,
         keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
         alert: Option<&'a str>,
     ) -> LockView<'a> {
@@ -46,6 +47,7 @@ impl LockClock {
             notification_count,
             verifying: lock.is_verifying(),
             now_playing,
+            media_focus,
         }
     }
 }

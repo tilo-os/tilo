@@ -27,8 +27,8 @@ use ui::widget::{
 use crate::i18n;
 use crate::model::PolicyField;
 use crate::model::{
-    Catalog, DestKind, Destination, Filter, Health, Retention, Schedule, SnapFile, SnapStatus,
-    SnapType, Snapshot, Source, SourceKind,
+    Catalog, DestKind, Destination, Filter, Health, MAX_KEPT, Retention, RetentionPolicy, Schedule,
+    SnapFile, SnapStatus, SnapType, Snapshot, Source, SourceKind,
 };
 
 /// A place in the sidebar, and the page the content shows for it.
@@ -117,11 +117,21 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    fn title(self) -> &'static str {
+    /// What the job is, in the jobs band's words.
+    pub fn title(self) -> &'static str {
         match self {
             JobKind::Backup => "Backing up",
             JobKind::Verify => "Verifying",
             JobKind::Restore => "Restoring",
+        }
+    }
+
+    /// What it is doing first, before any file has been read.
+    pub fn phase(self) -> &'static str {
+        match self {
+            JobKind::Backup => "Preparing files",
+            JobKind::Verify => "Reading the snapshot",
+            JobKind::Restore => "Restoring files",
         }
     }
 }
@@ -367,9 +377,8 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
         NavSection::untitled("policy", vec![policy]),
     ])
     .selected(&page.nav_id())
-    .with_id("backups-places")
     .with_accessible_name("Backups")
-    .on_select(move |id| {
+    .on_view("backups-places", move |id| {
         if let Some(page) = Page::from_nav_id(&id) {
             intents.push(Intent::Navigate(page));
         }
@@ -465,7 +474,11 @@ pub fn content(
                 "This destination is no longer set up",
             ))),
         },
-        Page::Retention => page.push(Box::new(retention_page(retention))),
+        Page::Retention => page.push(Box::new(retention_page(
+            retention,
+            model.catalog,
+            model.now,
+        ))),
     };
     Box::new(
         Scrollable::new_vertical()
@@ -485,9 +498,10 @@ fn failure_banner(title: &str, message: &str, intents: &Intents) -> Element {
     ))
 }
 
-/// A running backup, verification or restore. Traversal totals are unknown
-/// until the tree has been walked, so the bar is indeterminate: it shows
-/// work without inventing a percentage.
+/// A running backup, verification or restore. The line moves as files are
+/// counted, and the window's jobs band carries the percentage and the Stop;
+/// this bar says work is happening rather than naming a fraction it is not
+/// allowed to rebuild the page for.
 fn progress(job: &Job) -> Section {
     let line = Rc::clone(&job.line);
     Section::new(vec![
@@ -507,7 +521,7 @@ fn progress(job: &Job) -> Section {
                         .dimmed(),
                 )),
         ),
-        Box::new(ProgressBar::indeterminate()),
+        Box::new(ProgressBar::indeterminate().with_label(job.kind.title())),
     ])
 }
 
@@ -770,7 +784,7 @@ fn snapshot_row(
         .secondary(secondary)
         .meta(clock(snapshot.taken))
         .selected(model.selected == Some(snapshot.id.as_str()))
-        .on_activate(move || intents.push(Intent::SelectSnapshot(id.clone())));
+        .on_view(move || intents.push(Intent::SelectSnapshot(id.clone())));
     if let Some(source) = source {
         row = row.icon(source_icon(source.kind));
     }
@@ -794,8 +808,14 @@ fn snapshot_row(
     }
 }
 
-/// How many snapshots each class keeps.
-fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
+/// How many snapshots each class keeps, and what the counts on screen would
+/// remove: lowering a count deletes snapshots at the next backup, so the page
+/// names them before that happens.
+fn retention_page(
+    states: &[LocalState<f64>; 4],
+    catalog: &Catalog,
+    now: NaiveDateTime,
+) -> Container {
     let mut keep = FormSection::new("Snapshots to keep").grouped();
     for (field, state) in PolicyField::ALL.iter().zip(states) {
         keep = keep.field(Field::new(
@@ -807,24 +827,73 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
         ));
     }
     let counts = states.clone();
-    let total = Text::dynamic(move || {
-        let total: f64 = counts.iter().map(|state| state.with(|v| *v)).sum();
-        let total = total.max(0.0).round() as u64;
-        i18n::counted("backups-retention-total", total, "")
+    let total = Text::dynamic({
+        let counts = counts.clone();
+        move || {
+            let total: f64 = counts.iter().map(|state| state.with(|v| *v)).sum();
+            let total = total.max(0.0).round() as u64;
+            i18n::counted("backups-retention-total", total, "")
+        }
     })
     .with_role(TextRole::Body)
     .dimmed();
+    // What these counts would drop, by the same rule the pruner uses.
+    let stored: Vec<(String, u64, NaiveDateTime)> = catalog
+        .snapshots
+        .iter()
+        .map(|snapshot| {
+            let seconds = snapshot.taken.and_utc().timestamp().max(0);
+            (
+                snapshot.id.clone(),
+                u64::try_from(seconds).unwrap_or_default(),
+                snapshot.taken,
+            )
+        })
+        .collect();
+    let consequence = Text::dynamic(move || {
+        let policy = RetentionPolicy {
+            hourly: count_of(&counts[0]),
+            daily: count_of(&counts[1]),
+            weekly: count_of(&counts[2]),
+            monthly: count_of(&counts[3]),
+        };
+        let identified: Vec<(String, u64)> = stored
+            .iter()
+            .map(|(id, seconds, _)| (id.clone(), *seconds))
+            .collect();
+        let kept = crate::engine::retained_of(&identified, &policy);
+        let doomed: Vec<String> = stored
+            .iter()
+            .filter(|(id, _, _)| !kept.contains(id))
+            .map(|(_, _, taken)| when(*taken, now))
+            .collect();
+        i18n::removal(doomed.len() as u64, &doomed.join(", "))
+    })
+    .with_role(TextRole::Body);
     let form = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
         .push(Box::new(keep))
-        .push(Box::new(total));
+        .push(Box::new(total))
+        .push(Box::new(consequence));
     // A form is bounded to the readable measure, on the page's leading
     // edge, so each count sits near its label.
     Container::new()
         .with_no_padding()
         .readable()
         .with_child(Box::new(form))
+}
+
+/// One count as the policy holds it.
+fn count_of(state: &LocalState<f64>) -> u32 {
+    let count = state.with(|value| *value).max(0.0).round();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a field bounded to 0..=999 is a small whole count"
+    )]
+    let count = count as u32;
+    count.min(MAX_KEPT)
 }
 
 /// The inspector: everything known about the selected snapshot, and what

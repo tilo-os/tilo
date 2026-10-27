@@ -672,6 +672,9 @@ pub enum MoveTabError {
     AlreadyMoving,
     /// Nobody is at this desktop to agree to what crosses.
     NobodyToConfirm,
+    /// The window is the person's own (Personal Settings) and stays in
+    /// their personal workspace.
+    Personal,
 }
 
 impl MoveTabError {
@@ -686,6 +689,7 @@ impl MoveTabError {
             MoveTabError::NotPermitted => "window-move-not-permitted",
             MoveTabError::AlreadyMoving => "window-move-already-moving",
             MoveTabError::NobodyToConfirm => "window-move-nobody-to-confirm",
+            MoveTabError::Personal => "window-move-personal",
         })
     }
 }

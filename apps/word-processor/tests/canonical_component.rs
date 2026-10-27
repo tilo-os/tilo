@@ -3,7 +3,7 @@ fn harness() -> (
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
-    use std::{cell::RefCell, rc::Rc};
+    use std::rc::Rc;
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
     };
@@ -13,10 +13,9 @@ fn harness() -> (
         .open(definition.app_id(), "room")
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "room").unwrap());
-    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-        "author",
-        ui::permissions::Role::Owner,
-    )));
+    let permissions = ui::permissions::SharedPermissions::new(
+        ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner),
+    );
     let context = HostContext::prepare(
         definition,
         HostContextInputs {

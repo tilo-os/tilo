@@ -461,6 +461,8 @@ mod tests {
             resource_kind: "files.app".into(),
             resource_label: "Files".into(),
             action_label: name.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),

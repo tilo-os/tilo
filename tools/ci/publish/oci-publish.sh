@@ -76,7 +76,6 @@ require_commit
 verify_key=$repo_root/keys/cosign.pub
 [[ $run_channel == release ]] || verify_key=$repo_root/keys/cosign-dev.pub
 digest=$(cat "$out/digest")
-[[ $(built_digest "$out") == "$digest" ]] || die 'the image is not the build'
 registry=${repository%%/*}
 auth=$scratch/registry-auth.json
 # Where the image goes: the registry, or with TILO_PUBLISH_DRY_RUN a local OCI layout.
@@ -165,7 +164,12 @@ for tag; do
 done
 set -- "${tags[@]}"
 first=$(fill "$1")
-copy "$(built_image "$out")" "$(target "$first")"
+# From a layout: skopeo reads its blobs where they are (lib.sh built_layout).
+built_layout "$out"
+trap '[[ -z $layout_unpacked ]] || rm -rf -- "$layout_unpacked"' EXIT
+[[ $(index_digest "$layout/index.json" < "$layout/index.json") == "$digest" ]] || die 'the image is not the build'
+copy "oci:$layout" "$(target "$first")"
+[[ -z $layout_unpacked ]] || rm -rf -- "$layout_unpacked"
 pushed=$(skopeo inspect --raw --authfile "$auth" "$(pushed)" | sha256sum | cut -d' ' -f1)
 [[ sha256:$pushed == "$digest" ]] || die "the registry holds sha256:$pushed, not $digest"
 if [[ -s $out/signature && -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then

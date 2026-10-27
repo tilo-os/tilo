@@ -23,7 +23,6 @@ pub enum Feature {
 }
 
 pub(crate) const WEB_SCHEDULE: &str = "A closed web page cannot show notifications.";
-pub(crate) const WEB_ACTIVATE: &str = "A click on a web notification only focuses the page.";
 pub(crate) const MAC_PRIORITY: &str = "macOS decides who breaks through Focus.";
 pub(crate) const WEB_PRIORITY: &str = "Browsers decide who breaks through Do Not Disturb.";
 
@@ -34,9 +33,8 @@ impl tilo_platform_caps::Feature for Feature {
     fn targets(self) -> [Availability; 3] {
         use Availability::{Available, Prompt, Unsupported};
         match self {
-            Self::Show => [Available, Prompt, Prompt],
+            Self::Show | Self::Activate => [Available, Prompt, Prompt],
             Self::Schedule => [Available, Prompt, Unsupported(WEB_SCHEDULE)],
-            Self::Activate => [Available, Prompt, Unsupported(WEB_ACTIVATE)],
             Self::PriorityContacts => [
                 Available,
                 Unsupported(MAC_PRIORITY),

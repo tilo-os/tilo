@@ -164,6 +164,8 @@ impl Broker {
             resource_kind: "note".into(),
             resource_label: title.into(),
             action_label: format!("Rename {title}"),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),

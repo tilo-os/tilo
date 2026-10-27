@@ -84,15 +84,27 @@ pub(crate) fn say(what: &str, error: &str) -> String {
     let sentence = I18nManager::lookup_plain(kind.key());
     I18nManager::format(
         "maps-failure",
-        &[("what", what.into()), ("reason", sentence.into())],
+        &[("what", t(what).into()), ("reason", sentence.into())],
     )
 }
 
-/// What a person was doing, for [`say`].
-pub(crate) const SEARCH: &str = "searching";
-pub(crate) const ROUTE: &str = "planning the route";
-pub(crate) const TRANSIT: &str = "looking up departures";
-pub(crate) const NEARBY: &str = "loading nearby places";
+/// What a person was doing, for [`say`]: the catalogue key of the phrase.
+pub(crate) const SEARCH: &str = "maps-what-search";
+pub(crate) const ROUTE: &str = "maps-what-route";
+pub(crate) const TRANSIT: &str = "maps-what-transit";
+pub(crate) const NEARBY: &str = "maps-what-nearby";
+
+/// Look up `key`, with the catalogue loaded on a thread no host loaded it on.
+pub(crate) fn t(key: &str) -> String {
+    crate::CATALOG.ensure();
+    I18nManager::lookup_plain(key)
+}
+
+/// Look up `key`, interpolating `args`.
+pub(crate) fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    crate::CATALOG.ensure();
+    I18nManager::format(key, args)
+}
 
 #[cfg(test)]
 mod tests {
@@ -123,16 +135,4 @@ mod tests {
         assert!(!said.contains("connection refused"), "{said}");
         assert!(said.contains("searching"), "{said}");
     }
-}
-
-/// Look up `key`, with the catalogue loaded on a thread no host loaded it on.
-pub(crate) fn t(key: &str) -> String {
-    crate::CATALOG.ensure();
-    I18nManager::lookup_plain(key)
-}
-
-/// Look up `key`, interpolating `args`.
-pub(crate) fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    crate::CATALOG.ensure();
-    I18nManager::format(key, args)
 }

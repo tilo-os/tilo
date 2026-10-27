@@ -329,6 +329,66 @@ pub fn application_fields<'a>(
     ]
 }
 
+/// What an app-published action is found by, as every search ranks it: its
+/// label names it, the other words its declaration gives name it as people
+/// say it ("mkdir" for New folder), and the resource it acts on narrows it.
+/// Its id and its resource's kind are names for code: an item's kind is the
+/// collection's field (`so.tilo.chat.messages`), so matching it would offer
+/// every action on every message for "messages".
+#[must_use]
+pub fn action_search_fields<'a>(
+    action_label: &'a str,
+    keywords: &'a [String],
+    resource_label: &'a str,
+) -> Vec<RankField<'a>> {
+    use super::FieldWeight;
+    let mut fields = vec![
+        (action_label, FieldWeight::TITLE),
+        (resource_label, FieldWeight::SUBTITLE),
+    ];
+    fields.extend(
+        keywords
+            .iter()
+            .map(|word| (word.as_str(), FieldWeight::KEYWORD)),
+    );
+    fields
+}
+
+/// How well `needle` names an action by its fields, on [`action_ranks`]:
+/// [`rank_fields`] for an action.
+#[must_use]
+pub fn rank_action_fields(needle: &str, fields: &[RankField<'_>]) -> Option<i32> {
+    super::ListIndex::default()
+        .with_ranks(action_ranks)
+        .ranks(needle, [fields.iter().copied()])
+        .into_iter()
+        .next()
+        .flatten()
+        .map(provider_score)
+}
+
+/// The actions of `actions` a search for `query` finds, best first, on
+/// [`action_search_fields`]: what an app's test asserts to pin the words
+/// people use for its actions ("mkdir") to the action they mean.
+#[must_use]
+pub fn actions_found_by<'a>(
+    query: &str,
+    actions: &'a [tilo_actions::ActionSpec],
+) -> Vec<&'a tilo_actions::ActionSpec> {
+    let mut found: Vec<(i32, &tilo_actions::ActionSpec)> = actions
+        .iter()
+        .filter_map(|action| {
+            let score = rank_action_fields(
+                query,
+                &action_search_fields(&action.label, &action.keywords, ""),
+            )?;
+            Some((score, action))
+        })
+        .collect();
+    found.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    found.into_iter().map(|(_, action)| action).collect()
+}
+
 /// An app's [`application_fields`] plus what else people call it: each of
 /// its `keywords` (aliases, synonyms, the products it stands in for, in
 /// every language its manifest gives), its names in other languages as the
@@ -382,6 +442,20 @@ pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> 
             MatchTier::Prefix => return MatchTier::Word.rank_in(super::FieldWeight::TITLE),
             _ => {}
         }
+    }
+    tier.rank_in(weight)
+}
+
+/// What a tier earns in an action's fields: the usual ranks, except that
+/// an action's keywords are the other words people use for it ("power off"
+/// for Shut down, "mkdir" for New folder), so a keyword typed whole ranks
+/// as the start of the action's title, as an app's other names rank as its
+/// name ([`application_ranks`]). A keyword only begun keeps a keyword's
+/// rank: "bat" is not yet "battery saver".
+#[must_use]
+pub fn action_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
+    if weight == super::FieldWeight::KEYWORD && tier == super::MatchTier::Exact {
+        return super::MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
     }
     tier.rank_in(weight)
 }
@@ -524,7 +598,7 @@ pub fn lexical_strength(
     };
     match match_tier(&needle, title) {
         Some(MatchTier::Exact) => 4.0,
-        Some(MatchTier::Prefix | MatchTier::PrefixWord) => 2.5,
+        Some(MatchTier::Prefix | MatchTier::PrefixWord) => TITLE_BEGUN_FIT,
         Some(MatchTier::WordPrefix | MatchTier::Word) => 1.5,
         Some(MatchTier::Contains) => 1.0,
         Some(MatchTier::Spanning | MatchTier::Typo) => 0.5,
@@ -566,11 +640,21 @@ pub fn merged_strength(
         } else {
             0.0
         };
-    lexical_strength(needle, kind, title, subtitle)
-        + score as f32 / top as f32
-        + application_intent
-        + proximity
+    let lexical = lexical_strength(needle, kind, title, subtitle);
+    // An action's provider gives its top score only to its title begun or
+    // to a word it is known by typed whole ([`action_ranks`]): "power off"
+    // names Shut down as well as "shut" does, though its title says neither.
+    let lexical =
+        if score >= top && !needle.trim().is_empty() && matches!(kind, ResourceKind::Action) {
+            lexical.max(TITLE_BEGUN_FIT)
+        } else {
+            lexical
+        };
+    lexical + score as f32 / top as f32 + application_intent + proximity
 }
+
+/// [`lexical_strength`] of a title the query begins.
+const TITLE_BEGUN_FIT: f32 = 2.5;
 
 /// Order merged hits: groups by how well their best member matched, then
 /// the fixed kind order, then strength within a group. Enter activates the

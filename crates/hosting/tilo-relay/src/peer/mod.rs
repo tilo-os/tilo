@@ -230,6 +230,13 @@ pub trait BrowserBridge: Send + Sync {
     fn live(&self, workspace_id: u64, from: [u8; 32], frame: &[u8]);
     /// The presence payload a subscribed device (`from`, of `user`) sent.
     fn presence(&self, workspace_id: u64, from: [u8; 32], user: [u8; 32], payload: &[u8]);
+    /// The rooms whose voice carrier the browser plane serves beside its
+    /// live carrier. They carry the calls of every room a device takes part
+    /// in here, whether this relay governs it or only carries it (a
+    /// person's own workspace, synced across their devices through it).
+    fn calls(&self) -> Option<crate::rooms::Rooms> {
+        None
+    }
 }
 
 /// Receives what sessions hand the browser plane, see [`BrowserBridge`].

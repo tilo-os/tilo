@@ -1954,6 +1954,17 @@ impl State {
         }
     }
 
+    /// The XKB sources the seat keymap was last compiled from, and the active
+    /// one, for the state dump: a settings change has reached the keyboard
+    /// once these match it.
+    pub fn seat_keyboard_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "sources": self.applied_keyboard.source_ids,
+            "active": self.applied_keyboard.active_index,
+            "options": self.applied_keyboard.options,
+        })
+    }
+
     /// Content-free focus metadata read from the live Wayland seat for the
     /// existing state-dump door. Never includes titles, text or held keys.
     pub fn seat_focus_json(&self) -> serde_json::Value {
@@ -7022,6 +7033,50 @@ fn logical_extent(px: f64, scale: f64) -> i32 {
     (px / scale).round().clamp(1.0, f64::from(i32::MAX)) as i32
 }
 
+impl State {
+    /// Give a new toplevel its tab in the workspace tree: in the room its
+    /// launch is attributed to, or in the focused one. Whether it was
+    /// adopted; a window for a room that is gone is closed and refused.
+    fn adopt_toplevel_tab(
+        &mut self,
+        surface: &ToplevelSurface,
+        surface_id: u64,
+        app_id: Option<String>,
+        attributed_room: Option<crate::shell::state::RoomId>,
+        package: Option<String>,
+    ) -> bool {
+        if let Some(room) = attributed_room {
+            let adopted = {
+                let mut tree = self.workspace_tree.write();
+                self.provisional_focus
+                    .insert(surface_id, tab_binding::FocusBefore::of(&tree));
+                let tab = tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room);
+                if let (Some(tab), Some(package)) = (tab, package) {
+                    tree.remember_package_launch(tab, package);
+                }
+                tab
+            };
+            if adopted.is_none() {
+                self.provisional_focus.remove(&surface_id);
+                tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
+                self.client_input.unregister_toplevel(surface_id);
+                self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
+                surface.send_close();
+                return false;
+            }
+        } else {
+            let mut tree = self.workspace_tree.write();
+            self.provisional_focus
+                .insert(surface_id, tab_binding::FocusBefore::of(&tree));
+            let tab = tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
+            if let Some(package) = package {
+                tree.remember_package_launch(tab, package);
+            }
+        }
+        true
+    }
+}
+
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -7115,36 +7170,12 @@ impl XdgShellHandler for State {
             // temporary tab or move the person's focus. Overlay authority
             // still waits for the exact OSK app-id.
             self.client_input.promote_to_overlay(surface_id);
-        } else if !floating && !presentation && !embed {
-            if let Some(room) = attributed_room {
-                let adopted = {
-                    let mut tree = self.workspace_tree.write();
-                    self.provisional_focus
-                        .insert(surface_id, tab_binding::FocusBefore::of(&tree));
-                    let tab =
-                        tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room);
-                    if let (Some(tab), Some(package)) = (tab, package) {
-                        tree.remember_package_launch(tab, package);
-                    }
-                    tab
-                };
-                if adopted.is_none() {
-                    self.provisional_focus.remove(&surface_id);
-                    tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
-                    self.client_input.unregister_toplevel(surface_id);
-                    self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
-                    surface.send_close();
-                    return;
-                }
-            } else {
-                let mut tree = self.workspace_tree.write();
-                self.provisional_focus
-                    .insert(surface_id, tab_binding::FocusBefore::of(&tree));
-                let tab = tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
-                if let Some(package) = package {
-                    tree.remember_package_launch(tab, package);
-                }
-            }
+        } else if !floating
+            && !presentation
+            && !embed
+            && !self.adopt_toplevel_tab(&surface, surface_id, app_id, attributed_room, package)
+        {
+            return;
         }
 
         tracing::info!(

@@ -58,7 +58,6 @@ use ui::widget::{
     Tone, Widget,
 };
 
-use crate::customize::CzField;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive,
@@ -67,7 +66,6 @@ use crate::model::{
 use crate::page::{self, Frame};
 use crate::resource::{Imager, ImagerEffect};
 use crate::write::{JobControl, WriteRequest, spawn_job};
-use crate::write_setup::SetupField;
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
     LiveRow, RunMode,
@@ -98,7 +96,6 @@ pub(crate) enum Command {
     Release(usize),
     CancelDownload,
     Recent(usize),
-    Target(usize),
     Rescan,
     Back,
     /// Go back to the step at this station of the stepper.
@@ -112,12 +109,8 @@ pub(crate) enum Command {
     Eject,
     /// The typed device-name confirmation changed.
     Confirm(String),
-    /// A guided-customization field changed (the value as the form shows it).
-    Profile(CzField, String),
-    /// A network or identity field on Confirm changed.
-    WriteSetup(SetupField, String),
-    /// Enrolling the new device as one of yours was switched.
-    Enroll(bool),
+    /// The owner SSH key on Confirm changed: kept on this machine as typed.
+    SshKey(String),
     PrepareMedium,
     RetryPreparedMedium,
     ReviewChangedPreparedFiles,
@@ -765,6 +758,19 @@ fn stepper_labels() -> [&'static str; 6] {
 // Composition
 // =========================================================================
 impl ImagerApp {
+    /// `control`, pressed as the published `effect`; unbound before the
+    /// framework attaches.
+    fn bind_effect<C: ui::framework::ActionControl<()>>(
+        &self,
+        control: C,
+        effect: &ImagerEffect,
+    ) -> C {
+        match &self.control_actions {
+            Some(actions) => actions.bind_effect_invocation(control, effect),
+            None => control,
+        }
+    }
+
     pub(crate) fn attach_control_actions(&mut self, actions: ui::framework::Actions<Imager>) {
         self.control_actions = Some(actions);
         self.dirty = true;
@@ -1110,7 +1116,7 @@ impl ImagerApp {
                             .meta(fmt_size(source.size))
                             .selected(self.recent_selected(index))
                             .checked(self.recent_selected(index))
-                            .on_activate(move || sink.borrow_mut().push(Command::Recent(index))),
+                            .on_effect(move || sink.borrow_mut().push(Command::Recent(index))),
                     ) as Box<dyn Widget>)
                 })
                 .collect();
@@ -1145,12 +1151,6 @@ impl ImagerApp {
         } else {
             format!("{}, {} channel", release.target_label(), release.channel)
         };
-        let sink = Rc::clone(&self.commands);
-        let command = if downloading {
-            Command::CancelDownload
-        } else {
-            Command::Release(index)
-        };
         let mut row = ListRow::new(
             format!("imager.release.{}", release.selection_id()),
             release.display_name(),
@@ -1164,8 +1164,14 @@ impl ImagerApp {
         .meta(fmt_size(release.size))
         .selected(self.release_selected(index))
         .checked(self.release_selected(index))
-        .on_activate(move || sink.borrow_mut().push(command.clone()))
         .with_enabled(self.release_download.is_none() || downloading);
+        // Pressed while downloading, the row stops the download.
+        row = if downloading {
+            self.bind_effect(row, &ImagerEffect::CancelDownload)
+        } else {
+            let sink = Rc::clone(&self.commands);
+            row.on_effect(move || sink.borrow_mut().push(Command::Release(index)))
+        };
         if downloading {
             let sink = Rc::clone(&self.commands);
             row = row.action(Icon::X, "Cancel download", move || {
@@ -1199,7 +1205,6 @@ impl ImagerApp {
         let rows = visible
             .into_iter()
             .map(|(index, drive)| {
-                let sink = Rc::clone(&self.commands);
                 let fits = required.is_some_and(|required| drive.fits(required));
                 // A drive that cannot be chosen says why, on its own row: a
                 // control that is off with no reason reads as a fault.
@@ -1213,16 +1218,20 @@ impl ImagerApp {
                     ),
                     None => format!("{}, {}", drive.dev_path(), drive.contents_summary()),
                 };
-                Box::new(
-                    ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
-                        .with_enabled(fits)
-                        .icon(drive.icon())
-                        .secondary(secondary)
-                        .meta(fmt_size(drive.size))
-                        .selected(self.selected == Some(index))
-                        .checked(self.selected == Some(index))
-                        .on_activate(move || sink.borrow_mut().push(Command::Target(index))),
-                ) as Box<dyn Widget>
+                let row = ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
+                    .with_enabled(fits)
+                    .icon(drive.icon())
+                    .secondary(secondary)
+                    .meta(fmt_size(drive.size))
+                    .selected(self.selected == Some(index))
+                    .checked(self.selected == Some(index));
+                let row = self.bind_effect(
+                    row,
+                    &ImagerEffect::ChooseDrive {
+                        drive: drive.name.clone(),
+                    },
+                );
+                Box::new(row) as Box<dyn Widget>
             })
             .collect();
         body.push(Box::new(Section::new(rows)))
@@ -1249,7 +1258,6 @@ impl ImagerApp {
         }
         body.push(page::form_block(crate::customize::form(
             &self.profile,
-            &self.commands,
             self.control_actions.as_ref(),
             self.shot_timezone_open,
         )))
@@ -1369,6 +1377,7 @@ impl ImagerApp {
                 &self.profile,
                 &self.wifi_psk,
                 &self.ssh_public_key,
+                self.control_actions.as_ref(),
                 &self.commands,
             )));
         }
@@ -3206,9 +3215,14 @@ impl ImagerApp {
                     self.select_source(&source)
                 }
             }
-            Command::Target(index) => self.select_target(index),
             Command::Rescan => {
                 self.do_rescan();
+            }
+            Command::SshKey(value) => {
+                if self.step == Step::Confirm && self.offers_write_setup() {
+                    self.ssh_public_key = value;
+                    self.dirty = true;
+                }
             }
             Command::Back => self.back(),
             Command::Station(index) => self.go_to_station(index),
@@ -3223,43 +3237,6 @@ impl ImagerApp {
             Command::Confirm(value) => {
                 if self.step == Step::Confirm {
                     self.confirm_text = value
-                }
-            }
-            Command::Profile(field, shown) => {
-                if self.step == Step::Customize && self.needs_manual_customization() {
-                    match crate::customize::profile_value(field, &shown) {
-                        Some(value) => match crate::customize::field_edit(field, value) {
-                            Some(edit) => self.submit(edit),
-                            None => self.fail(&format!("Choose a listed {}", field.label())),
-                        },
-                        None => self.fail(&format!("Choose a listed {}", field.label())),
-                    }
-                }
-            }
-            Command::WriteSetup(field, value) => {
-                if self.step == Step::Confirm && self.offers_write_setup() {
-                    match crate::write_setup::field_edit(field, value.clone()) {
-                        Some(edit) => self.submit(edit),
-                        None => {
-                            if let Some(dispatcher) = &self.dispatcher {
-                                match field {
-                                    SetupField::WifiPsk => {
-                                        dispatcher.effect(&ImagerEffect::SetWifiPsk { value });
-                                    }
-                                    SetupField::SshKey => {
-                                        self.ssh_public_key = value;
-                                        self.dirty = true;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Command::Enroll(on) => {
-                if self.step == Step::Confirm && self.offers_write_setup() {
-                    self.submit(Imager::paths().profile.enroll_local_identity.set(on));
                 }
             }
         }
@@ -4904,8 +4881,9 @@ mod tests {
     #[test]
     #[cfg(not(feature = "host-media-writer"))]
     fn clicking_through_the_wizard_refuses_a_fake_write_when_backend_is_disabled() {
+        // Driven, not captured: choosing a drive runs its published effect.
         let mut host =
-            ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("source")).unwrap();
+            ui::prelude::TestApp::<crate::resource::ImagerShell>::drive("source").unwrap();
         host.harness().click_named("imager.next").unwrap();
         assert_eq!(
             host.with_widget::<ImagerApp, _>(|a| a.step).unwrap(),

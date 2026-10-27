@@ -219,7 +219,7 @@ pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &I
     NavList::new(vec![NavSection::untitled("zones", zones)])
         .selected(&zone_id(selected))
         .with_accessible_name("Firewall zones")
-        .on_select(move |id| {
+        .on_view("firewall.zones", move |id| {
             if let Some(zone) = id.strip_prefix("zone:").and_then(ZoneKind::from_name) {
                 intents.push(Intent::SelectZone(zone));
             }
@@ -313,6 +313,35 @@ pub(crate) fn unavailable(detail: Option<&str>, intents: &Intents) -> Element {
     )
 }
 
+/// Where the read of dropped traffic stands, as the Blocked tab shows it.
+#[derive(Clone, Copy)]
+pub(crate) enum BlockedRead<'a> {
+    /// Not read yet in this window.
+    Unread,
+    /// Reading the system journal, whatever an earlier read found.
+    Reading,
+    /// The last read failed, and why.
+    Failed(&'a str),
+    /// What the last read found.
+    Read(&'a BlockedReport),
+}
+
+impl<'a> BlockedRead<'a> {
+    /// The state an in-flight read, the last error and the last report make.
+    pub(crate) fn of(
+        reading: bool,
+        error: Option<&'a str>,
+        report: Option<&'a BlockedReport>,
+    ) -> Self {
+        match (reading, error, report) {
+            (true, _, _) => Self::Reading,
+            (false, Some(error), _) => Self::Failed(error),
+            (false, None, Some(report)) => Self::Read(report),
+            (false, None, None) => Self::Unread,
+        }
+    }
+}
+
 /// Everything a zone's page shows, borrowed from the app.
 pub(crate) struct PageModel<'a> {
     pub config: &'a FirewallConfig,
@@ -327,9 +356,7 @@ pub(crate) struct PageModel<'a> {
     /// The add/edit-rule dialog is open.
     pub adding: bool,
     pub applying: bool,
-    pub blocked: Option<&'a BlockedReport>,
-    pub blocked_error: Option<&'a str>,
-    pub blocked_loading: bool,
+    pub blocked: BlockedRead<'a>,
     /// The content column is wide enough for the services' descriptions.
     pub wide: bool,
 }
@@ -788,29 +815,32 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
 
 /// What the kernel dropped, grouped by rule, with the window's shape.
 fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
-    if model.blocked_loading {
-        return Box::new(
-            Text::new("Reading dropped traffic from the system journal…")
-                .with_role(TextRole::Body)
-                .dimmed(),
-        );
-    }
-    if let Some(error) = model.blocked_error {
-        let retry = intents.clone();
-        return Box::new(
-            EmptyState::error("Dropped traffic couldn't be read", error)
-                .with_icon(Icon::Shield)
-                .with_action("Try again")
-                .with_action_id("firewall.blocked-retry")
-                .on_effect(move || retry.push(Intent::RefreshBlocked)),
-        );
-    }
-    let Some(report) = model.blocked else {
-        return Box::new(
-            Text::new("Open Blocked again to read the system journal.")
-                .with_role(TextRole::Body)
-                .dimmed(),
-        );
+    let report = match model.blocked {
+        BlockedRead::Reading => {
+            return Box::new(
+                Text::new("Reading dropped traffic from the system journal…")
+                    .with_role(TextRole::Body)
+                    .dimmed(),
+            );
+        }
+        BlockedRead::Failed(error) => {
+            let retry = intents.clone();
+            return Box::new(
+                EmptyState::error("Dropped traffic couldn't be read", error)
+                    .with_icon(Icon::Shield)
+                    .with_action("Try again")
+                    .with_action_id("firewall.blocked-retry")
+                    .on_effect(move || retry.push(Intent::RefreshBlocked)),
+            );
+        }
+        BlockedRead::Unread => {
+            return Box::new(
+                Text::new("Open Blocked again to read the system journal.")
+                    .with_role(TextRole::Body)
+                    .dimmed(),
+            );
+        }
+        BlockedRead::Read(report) => report,
     };
     let now = ui::time::wall();
     let dropped = Measured::known(

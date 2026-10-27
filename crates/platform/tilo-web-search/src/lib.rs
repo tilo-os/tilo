@@ -27,7 +27,7 @@ pub mod readable;
 mod search;
 pub mod urls;
 
-pub use engines::{Engine, EngineError, EngineResult};
+pub use engines::{Engine, EngineError, EngineResult, SafeMode};
 pub use fetch::{FetchError, FetchLimits, FetchedPage, fetch};
 pub use guard::{Refusal, check_address, check_url};
 pub use merge::SearchResult;

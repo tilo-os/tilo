@@ -19,6 +19,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{ModalDialog, Text, Widget};
 
+use crate::failure;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MapInfo {
     Attribution,
@@ -120,20 +122,17 @@ impl MapInfoSheet {
 fn dialog_for(info: MapInfo, close_requested: Rc<Cell<bool>>) -> ModalDialog<Text> {
     let (title, body) = match info {
         MapInfo::Attribution => (
-            "Attribution",
-            "Map data and map tiles © OpenStreetMap contributors.",
+            failure::t("maps-attribution"),
+            failure::t("maps-attribution-body"),
         ),
         MapInfo::Licenses => (
-            "Licenses",
-            "The map data is © OpenStreetMap contributors, available under \
-             the Open Database License (ODbL). The map tiles are \
-             OpenStreetMap Standard tiles, used under the OpenStreetMap \
-             Foundation's tile usage policy.",
+            failure::t("maps-licenses"),
+            failure::t("maps-licenses-body"),
         ),
     };
     let dismiss = Rc::clone(&close_requested);
-    ModalDialog::new(title, Text::new(body).with_role(TextRole::Body))
-        .primary_action("Done", move || close_requested.set(true))
+    ModalDialog::new(title, Text::new(&body).with_role(TextRole::Body))
+        .primary_action(failure::t("maps-done"), move || close_requested.set(true))
         .on_dismiss(move || dismiss.set(true))
         .with_max_width(440.0)
         .open(true)

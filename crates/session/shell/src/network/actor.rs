@@ -5,6 +5,7 @@
 
 pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
+mod opened_records;
 
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
@@ -20,7 +21,7 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
 mod nearby_transfer_tests;
 pub(crate) mod room_governance;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -327,6 +328,16 @@ pub enum NetCmd {
     NativeReplay {
         ws: WorkspaceId,
     },
+    /// Ask `ws`'s hosts for the on-demand record on `channel`
+    /// (`neighbour_wire::record_sync`: an on-demand record, or a part of a
+    /// chain behind its head), which they replay a joining device only once
+    /// it asks: a local app reads it. Its history arrives as the room's
+    /// other documents do, and its changes keep arriving; a host session
+    /// that starts later is asked too.
+    OpenRecord {
+        ws: WorkspaceId,
+        channel: [u8; 32],
+    },
     /// Publish one canonical live frame (presence, previews) on `ws`'s
     /// workspace hosts' live planes, where browsers and agents meet this
     /// device. Lossy.
@@ -537,6 +548,14 @@ pub enum NetEvent {
         device: PeerId,
         active: bool,
     },
+    /// A host of `ws` sent everything it retains of the on-demand
+    /// record on `channel` this device asked for ([`NetCmd::OpenRecord`]):
+    /// `frames` of it, which arrived before this as the room's documents do.
+    RecordOpened {
+        ws: WorkspaceId,
+        channel: [u8; 32],
+        frames: u32,
+    },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
@@ -587,6 +606,7 @@ impl NetEvent {
             Self::NotAdmitted { .. } => "NotAdmitted",
             Self::HostMember { .. } => "HostMember",
             Self::HostReady { .. } => "HostReady",
+            Self::RecordOpened { .. } => "RecordOpened",
             Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } => msg.kind(),
             Self::PersonalFabric { .. } => "PersonalFabric",
             Self::NearbyTransferProgress { .. } => "NearbyTransferProgress",
@@ -769,6 +789,12 @@ enum HostEvent {
     Member {
         device: [u8; 32],
         active: bool,
+    },
+    /// The host sent everything it retains of the on-demand record on
+    /// `channel`: `frames` of it.
+    RecordOpened {
+        channel: [u8; 32],
+        frames: u32,
     },
     Message {
         author: EndpointId,
@@ -1195,6 +1221,9 @@ struct ActorState {
     peers: HashMap<EndpointId, EndpointAddr>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    /// The on-demand records this device asked its rooms' hosts for
+    /// ([`NetCmd::OpenRecord`]), by room.
+    opened_records: HashMap<WorkspaceId, BTreeSet<[u8; 32]>>,
     action_broker: Option<(
         crate::shell::peer_actions::PeerActionQueue,
         uuid::Uuid,
@@ -1593,6 +1622,7 @@ impl ActorState {
             }
             Some(NetCmd::LeaveWorkspace { ws }) => {
                 self.native_routes.remove(ws);
+                self.opened_records.remove(&ws);
                 let subscriber = self.subscribers.get(&ws).cloned();
                 let leaving = self
                     .peers_seen
@@ -1679,6 +1709,7 @@ impl ActorState {
                     tracing::debug!(ws, %error, "joined room replay not asked: not connected");
                 }
             }
+            Some(NetCmd::OpenRecord { ws, channel }) => self.open_record(ws, channel),
             Some(NetCmd::PublishLive { ws, frame }) => {
                 for ((session_ws, _), runtime) in &self.host_sessions {
                     if *session_ws == ws {
@@ -3233,6 +3264,7 @@ impl ActorState {
                 if let Err(error) = session.live_join() {
                     tracing::warn!(ws, %error, "could not join the workspace host's live plane");
                 }
+                self.reopen_records(ws, &session);
                 let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
                 let pump = spawn_host_pump(
                     ws,
@@ -3318,21 +3350,31 @@ impl ActorState {
     /// [`InternalEvent::Host`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
-        self.tally.note(match &event {
-            HostEvent::Message { msg, .. } => msg.kind(),
-            HostEvent::NativeInput(_) => "HostNativeInput",
-            HostEvent::Ready => "HostReady",
-            HostEvent::Live { .. } => "HostLive",
-            HostEvent::Member { .. } => "HostMember",
-            HostEvent::Voice(_) => "HostVoice",
-            HostEvent::Closed => "HostClosed",
-        });
+        self.tally.note(host_event_kind(&event));
         let event = self.admit_native_governance(ws, event).await;
-        let mapped = match event {
+        if let Some(event) = self.map_host_event(ws, peer, event) {
+            self.publish_to_subscriber(ws, event).await;
+        }
+    }
+
+    /// What a host session's event means to this device: `None` when it
+    /// changes nothing here.
+    fn map_host_event(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        event: HostEvent,
+    ) -> Option<NetEvent> {
+        match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
+            HostEvent::RecordOpened { channel, frames } => Some(NetEvent::RecordOpened {
+                ws,
+                channel,
+                frames,
+            }),
             HostEvent::Voice(event) => {
                 let session = self
                     .host_sessions
@@ -3360,41 +3402,7 @@ impl ActorState {
                 fingerprint,
                 replayed,
                 msg,
-            } => {
-                if matches!(
-                    msg,
-                    NeighbourMsg::RemoteInput { .. } | NeighbourMsg::IdentityHello { .. }
-                ) {
-                    tracing::debug!(ws, author = %author, kind = ?std::mem::discriminant(&msg), "host session message");
-                }
-                // A remote-action retry is byte-identical on purpose; the
-                // receiving host deduplicates it by invocation id instead. A
-                // replay the host was asked for repeats what this device saw
-                // before on purpose too: the broker drops what it holds.
-                let new = match msg {
-                    NeighbourMsg::RemoteAction { .. } => true,
-                    NeighbourMsg::RemoteInput { .. } => mark_new_input(
-                        ws,
-                        peer,
-                        fingerprint,
-                        Instant::now(),
-                        &mut self.recent_input,
-                    ),
-                    _ => {
-                        mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
-                    }
-                };
-                if !new && !replayed {
-                    return;
-                }
-                Some(NetEvent::Msg {
-                    ws,
-                    peer: author,
-                    membership_epoch: None,
-                    replayed,
-                    msg,
-                })
-            }
+            } => self.host_message(ws, peer, author, fingerprint, replayed, msg),
             HostEvent::Closed => {
                 tracing::info!(ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
                 if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
@@ -3407,24 +3415,74 @@ impl ActorState {
                     membership_epoch: None,
                 })
             }
-        };
-        if let (Some(event), Some(tx)) = (mapped, self.subscribers.get(&ws)) {
-            let legacy = matches!(
-                &event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::RemoteInput { .. }
-                        | NeighbourMsg::SurfaceKeyframeRequest { .. }
-                        | NeighbourMsg::SurfaceStreamStart { .. }
-                        | NeighbourMsg::SurfaceFrame { .. }
-                        | NeighbourMsg::SurfaceStreamEnd { .. },
-                    ..
-                }
-            );
-            let _ = tx.send(event).await;
-            if legacy && let Some(wake) = &self.wake {
-                wake();
-            }
         }
+    }
+
+    /// Hand `event` to the room's subscriber and wake the loop for the
+    /// recorded streams, which are written out of band.
+    async fn publish_to_subscriber(&self, ws: WorkspaceId, event: NetEvent) {
+        let Some(tx) = self.subscribers.get(&ws) else {
+            return;
+        };
+        let legacy = matches!(
+            &event,
+            NetEvent::Msg {
+                msg: NeighbourMsg::RemoteInput { .. }
+                    | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                    | NeighbourMsg::SurfaceStreamStart { .. }
+                    | NeighbourMsg::SurfaceFrame { .. }
+                    | NeighbourMsg::SurfaceStreamEnd { .. },
+                ..
+            }
+        );
+        let _ = tx.send(event).await;
+        if legacy && let Some(wake) = &self.wake {
+            wake();
+        }
+    }
+
+    /// A message a host session delivered: `None` when it repeats one this
+    /// device already handled, unless the host was asked to replay it.
+    fn host_message(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        author: EndpointId,
+        fingerprint: [u8; 32],
+        replayed: bool,
+        msg: NeighbourMsg,
+    ) -> Option<NetEvent> {
+        if matches!(
+            msg,
+            NeighbourMsg::RemoteInput { .. } | NeighbourMsg::IdentityHello { .. }
+        ) {
+            tracing::debug!(ws, author = %author, kind = ?std::mem::discriminant(&msg), "host session message");
+        }
+        // A remote-action retry is byte-identical on purpose; the receiving
+        // host deduplicates it by invocation id instead. A replay the host
+        // was asked for repeats what this device saw before on purpose too:
+        // the broker drops what it holds.
+        let new = match msg {
+            NeighbourMsg::RemoteAction { .. } => true,
+            NeighbourMsg::RemoteInput { .. } => mark_new_input(
+                ws,
+                peer,
+                fingerprint,
+                Instant::now(),
+                &mut self.recent_input,
+            ),
+            _ => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
+        };
+        if !new && !replayed {
+            return None;
+        }
+        Some(NetEvent::Msg {
+            ws,
+            peer: author,
+            membership_epoch: None,
+            replayed,
+            msg,
+        })
     }
 
     /// Publish `msg` to the room's hosts and its gossip topic, pacing pointer
@@ -4163,6 +4221,7 @@ async fn run(
         peers: HashMap::new(),
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
+        opened_records: HashMap::new(),
         action_broker: None,
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
@@ -4536,6 +4595,20 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 /// delivers within [`INPUT_COPY`] (the same event over another route to this
 /// room) is dropped; one session delivers each event once, in order, so
 /// identical events over it (a doubled letter in one batch) are all new.
+/// The tally name of a host session's event.
+fn host_event_kind(event: &HostEvent) -> &'static str {
+    match event {
+        HostEvent::Message { msg, .. } => msg.kind(),
+        HostEvent::NativeInput(_) => "HostNativeInput",
+        HostEvent::Ready => "HostReady",
+        HostEvent::Live { .. } => "HostLive",
+        HostEvent::Member { .. } => "HostMember",
+        HostEvent::RecordOpened { .. } => "HostRecordOpened",
+        HostEvent::Voice(_) => "HostVoice",
+        HostEvent::Closed => "HostClosed",
+    }
+}
+
 fn mark_new_input(
     ws: WorkspaceId,
     host: EndpointId,
@@ -4972,8 +5045,9 @@ fn spawn_host_pump(
                 HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
                 HostInbound::Member { device, active } => HostEvent::Member { device, active },
                 HostInbound::Voice(event) => HostEvent::Voice(event),
-                // The shell opens no on-demand record yet.
-                HostInbound::RecordOpened { .. } => continue,
+                HostInbound::RecordOpened { channel, frames } => {
+                    HostEvent::RecordOpened { channel, frames }
+                }
                 HostInbound::RemoteAction { from, frame } => {
                     let Ok(author) = EndpointId::from_bytes(&from) else {
                         continue;
@@ -5078,6 +5152,7 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests {
+    mod open_record_tests;
     use super::*;
 
     #[tokio::test]

@@ -209,8 +209,16 @@ pub trait CollabTransport: Send {
         None
     }
 
-    /// Scope delivery capture waits to the App’s reconciled live document owners.
-    fn set_document_owner_routes(&mut self, _routes: Vec<RouteSpec>) {}
+    /// Scope delivery capture waits to the App’s reconciled live document
+    /// owners, for the App's current document generation.
+    fn set_document_owner_routes(&mut self, _routes: Vec<RouteSpec>, _document_generation: u64) {}
+
+    /// Whether the document owner invocation `id` (from the drained batch)
+    /// arrived for is still current. A job whose document was reopened or
+    /// replaced since must be refused, not run in the new document.
+    fn invocation_owner_current(&mut self, _id: u64) -> bool {
+        true
+    }
 
     /// Release native capture turns after the owner applies its drained batch.
     fn finish_event_batch(&mut self) {}
@@ -236,6 +244,12 @@ pub trait CollabTransport: Send {
     fn document_publishable(&self, channel: Option<&str>) -> bool {
         let _ = channel;
         true
+    }
+
+    /// Why the last join of `channel` failed, until a join of it succeeds.
+    fn route_join_failure(&self, channel: &str) -> Option<String> {
+        let _ = channel;
+        None
     }
 
     /// Independently sampled read phases, for bounded test diagnostics only.

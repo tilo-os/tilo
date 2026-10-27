@@ -53,6 +53,10 @@
 #                     layout; `env-runtime.sh dev` in os-image.sh): what the dev image ships when
 #                     its base ships no published runtime. A dev image with neither
 #                     fails to build (os/scripts/ensure-dev-env-runtime.sh)
+#   TILO_DEV_MODEL_CATALOG  a directory with a signed local model catalog and its keys
+#                     (catalog.json, keys.json; `local-model-catalog.sh dev`, t's
+#                     model-catalog-dev-<arch>): what the dev image carries in place of the base's
+#                     catalog. Without it the dev image keeps the base's
 #   TILO_DEV_RUST_LTO thin (default here) or off, for that compile
 #   TILO_DEV_CARGO_BUILD_JOBS  parallel jobs of that compile (default: a CPU per
 #                     job, as far as memory holds out at 4 GiB a thin-LTO job)
@@ -64,7 +68,7 @@ set -euo pipefail
 
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,59p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,66p' "$0"; exit 0 ;;
     *) printf 'build-dev-image: unknown arg: %s\n' "$a" >&2; exit 2 ;;
   esac
 done
@@ -244,6 +248,16 @@ else
   mkdir -p "$dev_env_runtime"
 fi
 
+# The local model catalog the dev image carries in place of its base's; an empty directory keeps
+# the base's.
+if [ -n "${TILO_DEV_MODEL_CATALOG:-}" ]; then
+  dev_model_catalog="$(realpath "$TILO_DEV_MODEL_CATALOG")"
+else
+  dev_model_catalog="$TILO_OUTPUT/no-model-catalog"
+  rm -rf "$dev_model_catalog"
+  mkdir -p "$dev_model_catalog"
+fi
+
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
 podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
@@ -254,7 +268,9 @@ podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev"
   --build-arg "TILO_BASE_CREATED=$base_created" \
   --build-context "compiled-dev=$(realpath "$TILO_COMPILED_DEV")" \
   --build-context "dev-env-runtime=$dev_env_runtime" \
+  --build-context "dev-model-catalog=$dev_model_catalog" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+  --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
   "${_extra_build_args[@]}" \
   --tag "$dev_image" \
   "$TILO_REPO"

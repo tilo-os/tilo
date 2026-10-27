@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Page reading and operation through the host's `page` op, in real Chromium."""
+import base64
 import http.server
 import json
 import os
@@ -58,6 +59,31 @@ AGENT = b'''<!doctype html><title>Agent</title>
 <form id="away" action="https://elsewhere.test/collect" method="get"><label>Query <input name="q"></label><button>Send away</button></form>
 <label>Pin <input name="pin" type="password"></label>
 '''
+
+
+NATIVE = b'''<!doctype html><title>Native inputs</title>
+<h1>Preferences</h1>
+<form action="/done" method="get">
+  <label>Favourite colour <input name="colour" type="color" value="#000000"></label>
+  <label>Proof <input name="proof" type="file"></label>
+  <label>Medium <input name="medium" type="color" value="#ff0000"></label>
+  <button>Save</button>
+</form>
+<p id="said"></p>
+<script>
+for (const field of document.querySelectorAll('input[type=color]'))
+  for (const name of ['input', 'change'])
+    field.addEventListener(name, e => document.getElementById('said').textContent =
+      e.target.name + ' ' + name + ' ' + e.target.value);
+</script>'''
+
+
+# More conditions than one read carries, so the read has to say what it left
+# out rather than stopping quietly at its cap.
+LONG = ('<!doctype html><title>The long list</title><h1>The long list</h1>' +
+        ''.join(f'<p id="c{number}">Condition {number}. You must tell us about any change '
+                f'within 30 days, as section {number} of the Act requires.</p>'
+                for number in range(1, 2001))).encode()
 
 
 CANVAS = b'''<!doctype html><title>Sign</title>
@@ -294,6 +320,10 @@ function render() {
 }
 rows.onscroll = render;
 render();
+// What the page was sent, as the page itself sees it: a test can ask which
+// key arrived instead of inferring it from what the key did.
+window.pressed = [];
+document.addEventListener('keydown', event => window.pressed.push(event.key));
 </script>'''
 
 
@@ -310,6 +340,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else NESTED if path == '/nested' else OUTER if path == '/outer' \
             else RICH if path == '/rich' \
             else SCROLL if path == '/scroll' \
+            else NATIVE if path == '/native' else LONG if path == '/long' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -742,6 +773,56 @@ class PageActions(unittest.TestCase):
         self.ok('click', element=self.ref(self.outline(), 'button "Submit signature"'))
         self.assertIn('text "Signature received"', self.outline())
 
+    def test_a_capture_paints_what_the_page_only_shows(self):
+        # A page can say something in pixels that no outline can carry: a
+        # chart, a scanned letter, a code drawn rather than written. The
+        # capture is the engine painting the page itself, so what comes back
+        # is what a person would see there.
+        self.h.navigate(self.url + '/canvas')
+        view = self.ok('capture')
+        picture = base64.b64decode(view['data']['capture'], validate=True)
+        self.assertEqual(view['data']['format'], 'png')
+        self.assertTrue(picture.startswith(b'\x89PNG\r\n\x1a\n'), view['data'])
+        # The viewport, as the window was told it: the picture is the whole
+        # of what is on screen, and no wider than any capture may be.
+        self.assertEqual((view['data']['x'], view['data']['y']), (0, 0))
+        self.assertEqual(view['data']['width'], 1000)
+        self.assertEqual(view['data']['height'], 800)
+
+        # An element's own box, in the page's coordinates: what the outline
+        # named, painted where it sits, not the whole screen around it.
+        canvas = self.ref(self.outline(), 'canvas "Signature pad"')
+        box = self.ok('capture', element=canvas)
+        self.assertEqual(box['data']['format'], 'png')
+        # The pad's own 500x150 canvas, with the border a person sees around
+        # it: the box is the element's, borders and all.
+        self.assertEqual(box['data']['width'], 502)
+        self.assertEqual(box['data']['height'], 152)
+        painted = base64.b64decode(box['data']['capture'], validate=True)
+        self.assertTrue(painted.startswith(b'\x89PNG\r\n\x1a\n'), box['data'])
+        self.assertIn('Signature pad', box['message'])
+
+        # A caller who asks for a narrower picture gets one: the page is
+        # scaled, never cut, and never widened.
+        narrow = self.ok('capture', element=canvas, max_width=200)
+        self.assertEqual(narrow['data']['width'], 200)
+        self.assertEqual(narrow['data']['height'], round(152 * 200 / 502))
+
+        # A ref the outline never printed names nothing to picture, and is
+        # refused before the page is asked to paint anything.
+        refused = self.page('capture', element='not-a-ref')
+        self.assertFalse(refused['ok'], refused)
+        self.assertEqual(refused['code'], 'invalid_request')
+        self.assertNotIn('capture', refused)
+
+        # A click that lands on the pad is drawn ink: the capture is of the
+        # page as it is now, not as it was loaded.
+        points = [[40, 60], [90, 40], [140, 100]]
+        self.ok('path', element=canvas, points=points)
+        ink = self.ok('capture', element=canvas)
+        self.assertNotEqual(ink['data']['capture'], box['data']['capture'],
+                            'a picture is painted when it is asked for')
+
     def test_console_and_network_reach_the_agent_and_not_the_page(self):
         self.h.navigate(self.url + '/agent')
         log = self.ref(self.outline(), 'button "Log"')
@@ -966,6 +1047,102 @@ class PageActions(unittest.TestCase):
             self.assertFalse(result['ok'], result)
         self.assertEqual(self.main_world('scrollY'), 0, 'the wheel moved the page')
 
+    def test_a_colour_input_is_read_as_a_colour_and_filled_with_one(self):
+        self.h.navigate(self.url + '/native')
+        outline = self.outline()
+        # A colour input is not a button: it holds one colour, and the outline
+        # names it so an agent knows what it is and what it holds.
+        self.assertRegex(outline, r'color "Favourite colour" \[ref=d\d+e\d+\] type=color value="#000000"')
+        self.assertNotIn('button "Favourite colour"', outline)
+        colour = self.ref(outline, 'color "Favourite colour"')
+        filled = self.ok('fill', element=colour, text='#1d70b8')
+        self.assertIn('#1d70b8', filled['message'], filled)
+        # The page hears it as the person choosing the colour: input then change.
+        self.assertEqual(self.main_world('document.querySelector("[name=colour]").value'), '#1d70b8')
+        self.assertEqual(self.main_world('document.getElementById("said").textContent'),
+                         'colour change #1d70b8')
+        self.assertIn('value="#1d70b8"', self.outline(), 'the outline shows the colour it now holds')
+        # Named colours and the shorthand are the same colour.
+        self.ok('fill', element=self.ref(self.outline(), 'color "Medium"'), text='navy')
+        self.assertEqual(self.main_world('document.querySelector("[name=medium]").value'), '#000080')
+        # The shorthand names the same colour, which an input holds in full.
+        self.ok('fill', element=colour, text='#abc')
+        self.assertEqual(self.main_world('document.querySelector("[name=colour]").value'), '#aabbcc')
+        wrong = self.page('fill', element=colour, text='reddish')
+        self.assertEqual((wrong['ok'], wrong['code']), (False, 'invalid_color'), wrong)
+        self.assertIn('#rrggbb', wrong['message'])
+        self.assertIn('#1d70b8', wrong['message'], 'the error shows what a colour looks like')
+
+    def test_an_action_never_opens_the_platform_colour_or_file_chooser(self):
+        self.h.navigate(self.url + '/native')
+        outline = self.outline()
+        colour = self.ref(outline, 'color "Favourite colour"')
+        proof = self.ref(outline, 'file "Proof"')
+        # A colour or file input opens a chooser the agent cannot see, so an
+        # action that would open one says which action does the job instead.
+        for action in ('click', 'press'):
+            fields = dict(element=colour) if action == 'click' else dict(element=colour, key='Enter',
+                                                                        ctrl=False, shift=False, alt=False, meta=False)
+            refused = self.page(action, **fields)
+            self.assertEqual((refused['ok'], refused['code']), (False, 'native_chooser'), refused)
+            self.assertIn('fill-page', refused['message'], refused)
+        # A file input's chooser is not the platform's to open either: the
+        # press finishes rather than waiting on a dialog no agent can answer,
+        # and fill-page-files is what puts files in the input.
+        clicked = self.page('press', element=proof, key='Enter',
+                            ctrl=False, shift=False, alt=False, meta=False)
+        self.assertTrue(clicked['ok'], clicked)
+
+    def test_a_key_is_named_in_any_letter_case(self):
+        self.h.navigate(self.url + '/scroll')
+        rows = self.ref(self.outline(), 'region "Invoices"')
+        self.ok('click', element=rows)
+        # The name the caller writes is the key the page is sent: the case is
+        # not part of the name, so END is End rather than an E, an N and a D.
+        NAMED = [('END', 'End'), ('End', 'End'), ('end', 'End'), ('ENd', 'End'),
+                 ('PAGEDOWN', 'PageDown'), ('pageup', 'PageUp'),
+                 ('arrowdown', 'ArrowDown'), ('ARROWUP', 'ArrowUp'),
+                 ('ESCAPE', 'Escape'), ('backspace', 'Backspace')]
+        for written, arrived in NAMED:
+            before = self.main_world('window.pressed.length')
+            self.ok('press', element=rows, key=written, ctrl=False, shift=False, alt=False, meta=False)
+            self.assertEqual(self.main_world(f'window.pressed[{before}]'), arrived,
+                             f'{written} arrives as {arrived}')
+        # A letter is still the letter it is written as, case and all.
+        for written, arrived in [('a', 'a'), ('A', 'A')]:
+            before = self.main_world('window.pressed.length')
+            self.ok('press', element=rows, key=written, ctrl=False, shift=False, alt=False, meta=False)
+            self.assertEqual(self.main_world(f'window.pressed[{before}]'), arrived, written)
+        # A key the browser has never heard of is named back, with the keys it
+        # could have meant, rather than sent as a key nothing answers.
+        unknown = self.page('press', element=rows, key='ENDD',
+                            ctrl=False, shift=False, alt=False, meta=False)
+        self.assertEqual((unknown['ok'], unknown['code']), (False, 'invalid_key'), unknown)
+        for near in ('ENDD', 'End', 'PageDown', 'Enter', 'any letter case'):
+            self.assertIn(near, unknown['message'], unknown)
+        # Nothing was sent for the key that does not exist.
+        self.assertEqual(self.main_world('window.pressed.length'), len(NAMED) + 2, unknown)
+
+    def test_a_long_page_says_how_much_it_left_out(self):
+        self.h.navigate(self.url + '/long')
+        read = self.ok('outline')
+        self.assertIn('Condition 1.', read['outline'])
+        # A read stops at its cap, and says so where the caller reads first: a
+        # reader that never saw those lines cannot act on what is in them.
+        self.assertIn('Condition 600.', read['outline'], 'the read carries its cap')
+        self.assertNotIn('Condition 2000.', read['outline'])
+        self.assertIn('stopped there', read['message'], read)
+        self.assertIn('100000 characters of outline', read['message'], read)
+        self.assertIn('the page goes on past them', read['message'], read)
+        self.assertIn('read-page-element-at', read['message'], read)
+        # The outline's own last line says the same, so a reader that only
+        # looks at the outline is not left believing it saw the whole page.
+        self.assertIn('the page goes on past them', read['outline'].splitlines()[-1], read['outline'][-400:])
+        # A page that fits is read whole, and says nothing about a cut.
+        self.h.navigate(self.url + '/native')
+        short = self.ok('outline')
+        self.assertNotIn('stopped there', short['message'], short)
+        self.assertNotIn('the page goes on', short['outline'])
 
 
 if __name__ == '__main__':

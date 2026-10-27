@@ -85,7 +85,7 @@ requirement = { cores = 1, memory = "1GiB" }
 # The container policy is generated from keys/ by tools/signing/release_trust.py;
 # the image recipes install what it names, and t's signing scripts sign the
 # repositories it verifies.
-inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/t_matrix.py"]
+inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/t_matrix.py"]
 suites = ["os/tests/test_container_signature_policy.py"]
 
 [[group]]
@@ -557,11 +557,13 @@ suites = [
   "scripts/vm-acceptance/test_session_guard.py",
   "scripts/vm-acceptance/test_skip.py",
   "scripts/vm-acceptance/test_window_guard.py",
+  "scripts/vm-acceptance/test_kept_windows.py",
   "scripts/vm-acceptance/test_ui.py",
   "scripts/vm-acceptance/test_vm_actions.py",
   "scripts/vm-acceptance/test_basics.py",
   "scripts/vm-acceptance/test_report.py",
   "scripts/vm-acceptance/test_clock.py",
+  "scripts/vm-acceptance/test_selected_groups.py",
 ]
 
 [[group]]
@@ -878,7 +880,19 @@ readers = [
 package = "tilolang-app"
 # The window's tests compile the built-in tilolang packages (source and ids lock).
 inputs = ["apps/tl/"]
-readers = ["apps/tilolang/src/packages.rs"]
+readers = ["apps/tilolang/tests/opening.rs", "apps/tilolang/tests/support.rs"]
+
+[[cargo]]
+package = "tilolang"
+# The multi-package tests resolve and compile the built-in packages.
+inputs = ["apps/tl/"]
+readers = ["crates/lang/tilolang/tests/it/multifile.rs"]
+
+[[cargo]]
+package = "tilolang-cli"
+# The build tests build and sign copies of the built-in packages.
+inputs = ["apps/tl/"]
+readers = ["crates/lang/tilolang-cli/tests/build.rs"]
 
 [[cargo]]
 package = "tilolang-runtime"
@@ -894,9 +908,14 @@ readers = [
 
 [[cargo]]
 package = "tilolang-tilo"
-# The collaboration tests compile the spec's counter package from its source.
-inputs = ["apps/tl/counter/app.tl"]
-readers = ["crates/platform/tilolang-tilo/tests/fixtures.rs"]
+# The collaboration tests compile the built-in packages from their sources.
+inputs = ["apps/tl/"]
+readers = [
+  "crates/platform/tilolang-tilo/tests/budgets.rs",
+  "crates/platform/tilolang-tilo/tests/fixtures.rs",
+  "crates/platform/tilolang-tilo/tests/outbox.rs",
+  "crates/platform/tilolang-tilo/tests/outcomes.rs",
+]
 
 [[cargo]]
 package = "mail"
@@ -1212,6 +1231,8 @@ readers = [
   # The SDK's current interfaces are the image's declaration from the same commit.
   "crates/dev/tilo-app-cli/src/interface_versions.rs",
   "crates/dev/tilo-app-cli/src/guide.rs",
+  # Messages' history is checked against the app's own surface (`apps/` above).
+  "crates/dev/tilo-app-cli/src/surface.rs",
   # Focused source lookup verifies the embedded shared-checklist test bytes.
   "crates/dev/tilo-app-cli/tests/json_output.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
@@ -1280,10 +1301,14 @@ inputs = [
   "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
   "crates/sdk/provider-settings-ui/src/fake_backend.rs",
   "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
+  # The Updates pane's tests read this image's own Windows support offer, so
+  # the sizes they disclose are the ones the image ships.
+  "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json",
 ]
 readers = [
   "apps/settings-rare/src/panes/accounts/cloud_import_acceptance.rs",
   "apps/settings-rare/src/panes/agent_models/admin_tests.rs",
+  "apps/settings-rare/src/panes/updates/tests.rs",
 ]
 
 [[cargo]]
@@ -2012,6 +2037,10 @@ reason = "needs a container engine and builds images in it; run by hand where a 
 [[unrequired]]
 suite = "tools/ci/test-vendored-crates.sh"
 reason = "compiles each patched vendored crate's own tests; the vendored check in t.toml runs it"
+
+[[unrequired]]
+suite = "tools/ci/nightly-workspace-test.sh"
+reason = "the nightly workspace-test checks' runner (t.toml); it runs the workspace's tests, it is not a suite of its own"
 
 [[unrequired]]
 suite = "tools/test-env.sh"

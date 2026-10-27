@@ -136,9 +136,9 @@ pre_push = true
 
 [[step]]
 name = "action-confirmation"
-label = "Undoable actions are never confirmed by typing; a typed phrase names what is lost"
+label = "Undoable actions are never confirmed by typing; a deletion Undo cannot take back is written down"
 run = "python3 tools/policy/check_action_confirmation.py"
-inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs"]
+inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs", "tools/policy/undoable-deletions.toml"]
 pre_push = true
 
 [[step]]
@@ -155,6 +155,13 @@ label = "Copy follows the house language and glossary"
 run = "python3 tools/policy/check_copy_language.py"
 inputs = ["**/locales/*.ftl", "apps/**/*.rs", "crates/**/*.rs", "tools/policy/copy_glossary.toml",
           "tools/policy/copy_save_exceptions.toml", "tools/policy/copy_language_baseline/**"]
+pre_push = true
+
+[[step]]
+name = "action-keywords"
+label = "The other words actions declare for search are plain words"
+run = "python3 tools/policy/check_action_keywords.py"
+inputs = ["**/locales/*.ftl", "apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs"]
 pre_push = true
 
 [[step]]

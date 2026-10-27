@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination};
 use tilo_actions::remote::{Caller, CallerPrincipal};
 use tilo_app::feedback::{
-    Error, FeedbackHost, MaskedScreenshot, Receipt, ReviewText, Submission, destination,
+    Error, FeedbackHost, MaskedScreenshot, Receipt, Recorded, RecordingScope, ReviewText, Subject,
+    Submission, destination,
 };
 use ui::permissions::{ActionKind, Actor, Answer, PermissionContext, Standing, TreePath};
 use ui::record::{RecordId, RecordStore};
@@ -422,6 +423,26 @@ pub trait Capture {
     /// # Errors
     /// Refuses masked content that has not durably committed locally.
     fn persist(&mut self, image: &MaskedScreenshot) -> Result<(), Error>;
+    /// What a recording of `subject`'s window would hold; `None` when the
+    /// adapter cannot record it.
+    fn recording_scope(&mut self, subject: &Subject) -> Option<RecordingScope> {
+        let _ = subject;
+        None
+    }
+    /// # Errors
+    /// Refuses a window the adapter cannot record.
+    fn record(&mut self, subject: &Subject) -> Result<Recorded, Error> {
+        let _ = subject;
+        Err(Error::Invalid("recording"))
+    }
+    /// Keep `recording` where the destination's readers fetch it.
+    ///
+    /// # Errors
+    /// Refuses bytes the device's content store did not keep.
+    fn persist_recording(&mut self, recording: &Recorded) -> Result<(), Error> {
+        let _ = recording;
+        Err(Error::Invalid("recording"))
+    }
 }
 
 /// Reads nothing from any surface: a report carries the person's text and,
@@ -564,14 +585,22 @@ impl CanonicalDestination {
         }
     }
 
-    /// Refuses a report whose screenshot the owner does not durably keep.
+    /// Refuses a report whose screenshot or recording the owner does not
+    /// durably keep.
     fn witness_content(&self, submission: &Submission) -> Result<(), Error> {
-        match &submission.feedback.screenshot {
-            Some(screenshot) if !self.source.keeps_content(&screenshot.hash)? => {
-                Err(Error::NotDurable)
+        let feedback = &submission.feedback;
+        let named = feedback
+            .screenshot
+            .as_ref()
+            .map(|screenshot| &screenshot.hash)
+            .into_iter()
+            .chain(feedback.recording.as_ref().map(|recording| &recording.hash));
+        for hash in named {
+            if !self.source.keeps_content(hash)? {
+                return Err(Error::NotDurable);
             }
-            _ => Ok(()),
         }
+        Ok(())
     }
 
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
@@ -761,6 +790,21 @@ impl FeedbackHost for Host {
     fn persist_screenshot(&mut self, image: &MaskedScreenshot) -> Result<(), Error> {
         self.current(None, false)?;
         self.capture.persist(image)?;
+        self.current(None, false)
+    }
+    fn recording_scope(&mut self, subject: &Subject) -> Option<RecordingScope> {
+        self.current(None, false).ok()?;
+        self.capture.recording_scope(subject)
+    }
+    fn record(&mut self, subject: &Subject) -> Result<Recorded, Error> {
+        self.current(None, false)?;
+        let recording = self.capture.record(subject)?;
+        self.current(None, false)?;
+        Ok(recording)
+    }
+    fn persist_recording(&mut self, recording: &Recorded) -> Result<(), Error> {
+        self.current(None, false)?;
+        self.capture.persist_recording(recording)?;
         self.current(None, false)
     }
     fn send(&mut self, submission: &Submission) -> Result<(), Error> {

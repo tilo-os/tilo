@@ -4,11 +4,10 @@ layout import, display arrangement and hotplug."""
 from __future__ import annotations
 
 import json
-import time
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError
+from ..vm import VmError, wait_until
 
 AREA = "basics"
 
@@ -66,7 +65,7 @@ def _qs_targets(ctx, words):
     ctx.close_overlays()
     ctx.vm.invoke("actions", "quick-settings.open")
     ctx.wait_state(lambda s: core.overlays(s)["quick_settings"], 5, "quick settings open")
-    time.sleep(0.8)
+    ctx.wait_still()
     names = [t["name"] for t in ctx.vm.targets()]
     return [n for n in names if any(w in n.lower() for w in words)]
 
@@ -148,14 +147,41 @@ def _settings(ctx) -> dict:
     return json.loads("\n".join(l for l in raw.splitlines() if not l.startswith("receipt:")) or "{}")
 
 
+def seat_keyboard(ctx) -> dict:
+    """The XKB sources the seat keymap is compiled from, as the state dump reports them."""
+    keyboard = (ctx.state().get("chrome") or {}).get("seat_keyboard")
+    if keyboard is None:
+        raise Unobservable("the state dump does not report the seat keyboard's XKB sources "
+                           "(chrome.seat_keyboard), so a layout change cannot be seen arriving")
+    return keyboard
+
+
+def write_input_settings(ctx, doc: dict, back_to: dict | None = None) -> None:
+    """Write `doc` as the session's settings and wait until the seat keymap is compiled
+    from it: from its `input.keyboard_layouts`, or, restoring, back to the `back_to`
+    snapshot of `seat_keyboard`."""
+    if back_to is None:
+        want = list((doc.get("input") or {}).get("keyboard_layouts") or [])
+        reached = lambda k: k.get("sources") == want  # noqa: E731
+        what = f"the seat keyboard on {want}"
+    else:
+        reached = lambda k: k == back_to  # noqa: E731
+        what = f"the seat keyboard back on {back_to.get('sources')}"
+    ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(doc, indent=2).encode())
+    ctx.wait_state(lambda s: reached((s.get("chrome") or {}).get("seat_keyboard") or {}), 10, what)
+
+
+def search_query(ctx) -> str:
+    return (ctx.state()["chrome"].get("palette") or {}).get("query") or ""
+
+
 def _typed_in_search(ctx, key: str) -> str:
     """The text a physical key press puts into the search field (read back from state-dump)."""
     ctx.close_overlays()
     ctx.vm.key("super+space")
     ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
     ctx.vm.key(key)
-    ctx.settle(0.8)
-    query = (ctx.state()["chrome"].get("palette") or {}).get("query") or ""
+    query = wait_until(lambda: search_query(ctx), 3, 0.2) or ""
     ctx.close_overlays()
     return query
 
@@ -165,12 +191,12 @@ def keyboard_layout(ctx, res):
     ctx.reset()
     doc = _settings(ctx)
     saved = dict(doc.get("input") or {})
+    keyboard = seat_keyboard(ctx)
     res.metrics["us_y"] = _typed_in_search(ctx, "y")
     doc.setdefault("input", {}).update(keyboard_layout="de:nodeadkeys",
                                        keyboard_layouts=["de:nodeadkeys"], compose_key="ralt")
-    ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(doc, indent=2).encode())
-    time.sleep(2.5)
     try:
+        write_input_settings(ctx, doc)
         # The physical Y key is `z` on a German layout; a US one types `y`.
         typed = _typed_in_search(ctx, "y")
         res.metrics["de_y"] = typed
@@ -178,8 +204,7 @@ def keyboard_layout(ctx, res):
     finally:
         doc = _settings(ctx)
         doc["input"] = saved
-        ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(doc, indent=2).encode())
-        time.sleep(2.5)
+        write_input_settings(ctx, doc, back_to=keyboard)
     expect(res.metrics["us_y"] == "y", f"with the default layout the Y key typed {res.metrics['us_y']!r}")
     expect(typed == "z", f"with de:nodeadkeys the physical Y key typed {typed!r}, not 'z'")
 

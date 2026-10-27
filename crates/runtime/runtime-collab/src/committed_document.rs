@@ -136,7 +136,8 @@ pub enum Request {
     PrivateWindowBinding,
     /// Hold until an `Open { known_revision }` would answer anything but
     /// what the caller already holds (`Unchanged` for that revision, or
-    /// `Unavailable` for `None`), then answer [`Reply::Stale`]. Refused once
+    /// for `None` the `Unavailable` or `Absent` this channel last
+    /// answered), then answer [`Reply::Stale`]. Refused once
     /// the caller may no longer read. Never carries document bytes and
     /// never publishes readiness: the caller re-`Open`s.
     Await {
@@ -204,6 +205,13 @@ pub enum Reply {
         token: [u8; 16],
     },
     ConnectionSnapshot(ConnectionSnapshot),
+    /// The record reaches a device only once it asks
+    /// (`neighbour_wire::record_sync`), and the room's hosts sent
+    /// everything they hold of it without it, or no host of the room is
+    /// connected: not readable, and not on its way either. Like
+    /// [`Self::Unavailable`] an [`Request::Await`] for `None` holds until
+    /// that changes (a host connects, the record arrives).
+    Absent,
     /// An Open the broker cannot capture yet: its byte budget is held by
     /// other reads. The read is queued in order, and nothing is refused: an
     /// [`Request::Await`] on this channel answers [`Reply::Stale`] once the

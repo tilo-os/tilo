@@ -27,6 +27,8 @@ use crate::model::{Category, Route, SearchType, SkipMode, TubeModel, Video};
 use crate::resource::Library;
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{PlayerHost, SharedPlayer};
+use ui::framework::{ActionControl, Actions};
+use ui::tilo_resource::{Binds, Edit, Invoke};
 
 /// Fraction of the content viewport height the 16:9 player may fill, so the
 /// title and actions still show below it.
@@ -39,6 +41,10 @@ pub struct Ui<'a> {
     pub model: &'a TubeModel,
     pub theme: &'a Theme,
     pub bus: &'a ActionBus,
+    /// What the controls are bound to: the library's published actions and
+    /// Tube's effects. `None` before the framework attaches, when the
+    /// controls are left unbound.
+    pub actions: Option<&'a Actions<Library>>,
     pub imgs: Imgs<'a>,
     /// Width of the shell's content column, which sizes the media grids.
     pub content_width: f64,
@@ -84,6 +90,66 @@ impl Ui<'_> {
     fn push(&self, action: Action) -> impl FnMut() + 'static {
         let bus = self.bus.clone();
         move || action::push(&bus, action.clone())
+    }
+
+    /// `control`, pressed as the published `effect`; before the framework
+    /// attaches, a press publishes its own effect and asks for it on the bus.
+    fn effect<C: Press>(&self, control: C, effect: &TubeEffect) -> C {
+        match self.actions {
+            Some(actions) => actions.bind_effect_invocation(control, effect),
+            None => control.own_effect(self.push(Action::Effect(effect.clone()))),
+        }
+    }
+
+    /// `control`, committing its value through `effect`.
+    fn bind_effect<I: 'static, C: ActionControl<I>>(
+        &self,
+        control: C,
+        effect: impl Binds<TubeEffect, I>,
+    ) -> C {
+        match self.actions {
+            Some(actions) => actions.bind_effect(control, effect),
+            None => control,
+        }
+    }
+
+    /// `control`, pressed as the library edit `edit`; before the framework
+    /// attaches, a press publishes its own effect and asks for the edit.
+    fn edit<C: Press>(&self, control: C, edit: &Edit<Library>) -> C {
+        match (self.actions, Invoke::edit(edit)) {
+            (Some(actions), Ok(invoke)) => actions.bind_invocation(control, invoke),
+            _ => control.own_effect(self.push(Action::Edit(edit.clone()))),
+        }
+    }
+}
+
+/// A control a screen presses: bound to what Tube publishes, or publishing
+/// its press as its own effect.
+trait Press: ActionControl<()> {
+    fn own_effect(self, press: impl FnMut() + 'static) -> Self;
+}
+
+impl Press for Button {
+    fn own_effect(self, press: impl FnMut() + 'static) -> Self {
+        self.on_effect(press)
+    }
+}
+
+impl Press for ListRow {
+    fn own_effect(self, press: impl FnMut() + 'static) -> Self {
+        self.on_effect(press)
+    }
+}
+
+impl Press for MediaCard {
+    fn own_effect(self, press: impl FnMut() + 'static) -> Self {
+        self.on_effect(press)
+    }
+}
+
+impl Press for Chip {
+    fn own_effect(self, press: impl FnMut() + 'static) -> Self {
+        self.on_effect(press)
     }
 }
 
@@ -230,13 +296,12 @@ fn video_card_for(ui: Ui<'_>, v: &Video, resume_line: bool) -> MediaCard {
                 &[arg("time", clock(position as f64 / 1000.0))],
             )
         });
-    match resume {
-        Some(resume) => card = card.meta(&resume),
-        None => {
-            let reach = reach(v);
-            if !reach.is_empty() {
-                card = card.meta(reach);
-            }
+    if let Some(resume) = resume {
+        card = card.meta(&resume);
+    } else {
+        let reach = reach(v);
+        if !reach.is_empty() {
+            card = card.meta(reach);
         }
     }
     card = if v.live {
@@ -246,7 +311,12 @@ fn video_card_for(ui: Ui<'_>, v: &Video, resume_line: bool) -> MediaCard {
     } else {
         card
     };
-    card.on_activate(ui.push(Action::OpenVideo(v.id.clone())))
+    ui.effect(
+        card,
+        &TubeEffect::OpenVideo {
+            video: v.id.clone(),
+        },
+    )
 }
 
 /// The grid's columns at the page's width: how many cards fit, and how wide
@@ -554,10 +624,14 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
     ));
     if let Some(first) = videos.first() {
         info = info.push(Box::new(
-            Button::new("playlist_play", &t("tube-play-all"))
-                .with_icon(Icon::Play)
-                .role(ButtonRole::Primary)
-                .on_click(ui.push(Action::OpenVideo(first.id.clone()))),
+            ui.effect(
+                Button::new("playlist_play", &t("tube-play-all"))
+                    .with_icon(Icon::Play)
+                    .role(ButtonRole::Primary),
+                &TubeEffect::OpenVideo {
+                    video: first.id.clone(),
+                },
+            ),
         ));
     }
     // The cover shows once there is real art for it; a generated placeholder
@@ -661,19 +735,16 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
 }
 
 fn subscribe_button(ui: Ui<'_>, channel_id: &str) -> Button {
-    let action = Action::Edit(match ui.model.subscription_key(channel_id) {
+    let edit = match ui.model.subscription_key(channel_id) {
         Some(key) => Library::subscribe(key, false),
         None => Library::subscribe(channel_id, true),
-    });
-    if ui.model.is_subscribed(channel_id) {
-        Button::new("subscribe_btn", &t("tube-subscribed"))
-            .with_icon(Icon::Bell)
-            .on_click(ui.push(action))
+    };
+    let button = if ui.model.is_subscribed(channel_id) {
+        Button::new("subscribe_btn", &t("tube-subscribed")).with_icon(Icon::Bell)
     } else {
-        Button::new("subscribe_btn", &t("tube-subscribe"))
-            .role(ButtonRole::Primary)
-            .on_click(ui.push(action))
-    }
+        Button::new("subscribe_btn", &t("tube-subscribe")).role(ButtonRole::Primary)
+    };
+    ui.edit(button, &edit)
 }
 
 // ---------------------------------------------------------------------------
@@ -789,14 +860,13 @@ fn unplayable_banner(ui: Ui<'_>, unplayable: &crate::model::Unplayable) -> Banne
         .with_message(message)
         .with_action(
             Button::new("retry_playback", &t("tube-try-again"))
-                .on_click(ui.push(Action::RetryPlayback)),
+                .on_view(ui.push(Action::RetryPlayback)),
         )
 }
 
 /// Hand the shared player this video's `SponsorBlock` segments, the quality
 /// choice and, inside a segment the person skips by hand, the Skip command.
 fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
-    use ui::widget::video_player::PlayerSetting;
     let model = ui.model;
     let duration = v.duration.max(1) as f32;
     let marks = if model.settings.sponsorblock_enabled {
@@ -816,7 +886,16 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
     };
     let mut player = player.borrow_mut();
     player.set_sponsor_marks(marks);
+    set_quality_setting(model, &mut player);
+    set_speed_setting(model, &mut player);
+    set_captions_setting(model, &mut player);
+    set_skip_setting(model, v, &mut player);
+}
 
+/// The player's resolution menu: the qualities on offer, and what the stream
+/// actually is when that is not what was asked for.
+fn set_quality_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
+    use ui::widget::video_player::PlayerSetting;
     let qualities: Vec<String> = crate::app::QUALITIES
         .iter()
         .map(std::string::ToString::to_string)
@@ -842,7 +921,11 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         qualities,
         selected,
     ));
+}
 
+/// The player's playback-speed menu, set to the person's chosen speed.
+fn set_speed_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
+    use ui::widget::video_player::PlayerSetting;
     let speeds: Vec<String> = crate::app::PLAYBACK_SPEEDS
         .iter()
         .map(|speed| t_args("tube-speed-value", &[arg("rate", speed.to_string())]))
@@ -859,6 +942,11 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         speeds,
         speed,
     ));
+}
+
+/// The player's caption-track menu: what this video offers, plus Off.
+fn set_captions_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
+    use ui::widget::video_player::PlayerSetting;
     // Captions: what this video offers, plus Off. The label says what the
     // choice is doing: off, on, or why it cannot be on.
     let mut captions: Vec<String> = vec![t("tube-captions-off")];
@@ -894,7 +982,12 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         captions,
         chosen,
     ));
+}
 
+/// The player's Skip command, present only inside a segment the person skips
+/// by hand.
+fn set_skip_setting(model: &TubeModel, v: &Video, player: &mut ui::widget::VideoPlayer) {
+    use ui::widget::video_player::PlayerSetting;
     let manual = v
         .sponsor
         .iter()
@@ -1018,8 +1111,8 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
     let like = Button::new("watch_like", &like_label)
         .with_icon(Icon::ThumbsUp)
         .with_accessible_name(&like_name)
-        .toggled(liked)
-        .on_click(ui.push(Action::Edit(Library::like(&v.id, !liked))));
+        .toggled(liked);
+    let like = ui.edit(like, &Library::like(&v.id, !liked));
     let queue = Button::new(
         "watch_queue",
         &t(if queued {
@@ -1029,17 +1122,25 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
         }),
     )
     .with_icon(Icon::ListVideo);
-    let queue = queue.on_click(ui.push(Action::Edit(Library::enqueue(&v.id, !queued))));
-    let copy_link = Button::new("watch_copy_link", &t("tube-copy-link"))
-        .with_icon(Icon::Copy)
-        .on_click(ui.push(Action::Share(v.id.clone())));
+    let queue = ui.edit(queue, &Library::enqueue(&v.id, !queued));
+    let copy_link = ui.effect(
+        Button::new("watch_copy_link", &t("tube-copy-link")).with_icon(Icon::Copy),
+        &TubeEffect::Share {
+            video: v.id.clone(),
+        },
+    );
     let settings = Button::icon_only(
         "watch_settings",
         Icon::Settings,
         &t("tube-playback-settings"),
     )
-    .role(ButtonRole::Secondary)
-    .on_click(ui.push(Action::Navigate(Route::Settings)));
+    .role(ButtonRole::Secondary);
+    let settings = ui.effect(
+        settings,
+        &TubeEffect::ShowScreen {
+            screen: "settings".into(),
+        },
+    );
     Row::new()
         .with_rhythm(ui::tokens::Rhythm::Related)
         .push(Box::new(like))
@@ -1172,22 +1273,13 @@ fn comment(ui: Ui<'_>, c: &crate::model::Comment) -> Row {
 
 fn up_next(ui: Ui<'_>, id: &str) -> Column {
     let rhythm = &ui.theme.tokens.spacing.rhythm;
-    let enabled = !ui.model.settings.autoplay;
-    let autoplay = Toggle::from_state(&ui::LocalState::new(ui.model.settings.autoplay))
-        .with_id("switch_up_next_autoplay")
-        .with_accessible_name(&t("tube-autoplay"))
-        .on_change({
-            let bus = ui.bus.clone();
-            move |_| {
-                action::push(
-                    &bus,
-                    Action::Effect(TubeEffect::SetPreference {
-                        preference: SettingFlag::Autoplay.id().into(),
-                        enabled,
-                    }),
-                );
-            }
-        });
+    let autoplay = switch(
+        ui,
+        "switch_up_next_autoplay",
+        ui.model.settings.autoplay,
+        SettingFlag::Autoplay,
+    )
+    .with_accessible_name(&t("tube-autoplay"));
     let header = Row::new()
         .no_wrap()
         .with_gap(rhythm.related)
@@ -1275,20 +1367,12 @@ fn toggle_field(label: &str, toggle: Toggle) -> Field {
     Field::new(label, toggle).with_trailing_control()
 }
 
-/// A switch that reports a flip of `flag` on the bus.
+/// A switch that sets the preference `flag` through its published effect.
 fn switch(ui: Ui<'_>, id: &str, on: bool, flag: SettingFlag) -> Toggle {
-    let bus = ui.bus.clone();
-    Toggle::from_state(&ui::LocalState::new(on))
-        .with_id(id)
-        .on_change(move |_| {
-            action::push(
-                &bus,
-                Action::Effect(TubeEffect::SetPreference {
-                    preference: flag.id().into(),
-                    enabled: !on,
-                }),
-            );
-        })
+    ui.bind_effect(
+        Toggle::from_state(&ui::LocalState::new(on)).with_id(id),
+        TubeEffect::SET_PREFERENCE.map(move |enabled: bool| (flag.id().to_owned(), enabled)),
+    )
 }
 
 /// A sentence under a group of settings that the person needs to read the
@@ -1379,7 +1463,6 @@ fn playback_settings(ui: Ui<'_>) -> FormSection {
 
 fn quality_settings(ui: Ui<'_>) -> FormSection {
     let s = &ui.model.settings;
-    let bus = ui.bus.clone();
     let quality = Dropdown::from_state(
         crate::app::QUALITIES
             .iter()
@@ -1387,20 +1470,18 @@ fn quality_settings(ui: Ui<'_>) -> FormSection {
             .collect(),
         &ui::LocalState::new(quality_label(&s.preferred_quality)),
     )
-    .with_id("preferred_quality")
-    .on_change(move |label| {
-        if let Some(q) = crate::app::QUALITIES
-            .iter()
-            .find(|q| quality_label(q) == label)
-        {
-            action::push(
-                &bus,
-                Action::Effect(TubeEffect::SetPreferredQuality {
-                    quality: (*q).to_string(),
-                }),
-            );
-        }
-    });
+    .with_id("preferred_quality");
+    // A label no quality shows is passed on as it is, which the effect's
+    // choices refuse.
+    let quality = ui.bind_effect(
+        quality,
+        TubeEffect::SET_PREFERRED_QUALITY.map(|label: String| {
+            crate::app::QUALITIES
+                .iter()
+                .find(|q| quality_label(q) == label)
+                .map_or(label, |q| (*q).to_owned())
+        }),
+    );
     FormSection::new(t("tube-quality"))
         .grouped()
         .field(Field::new(t("tube-preferred-quality"), quality).with_trailing_control())
@@ -1444,7 +1525,6 @@ fn segment_settings(ui: Ui<'_>) -> FormSection {
             .get(category.api_key())
             .copied()
             .unwrap_or(SkipMode::Skip);
-        let bus = ui.bus.clone();
         let modes = [SkipMode::Skip, SkipMode::Show, SkipMode::Disabled];
         let dropdown = Dropdown::from_state(
             modes.iter().map(|m| m.label().to_string()).collect(),
@@ -1452,18 +1532,17 @@ fn segment_settings(ui: Ui<'_>) -> FormSection {
         )
         .with_id(&format!("mode_{}", category.api_key()))
         .with_accessible_name(category.label())
-        .with_enabled(s.sponsorblock_enabled)
-        .on_change(move |label| {
-            if let Some(mode) = modes.iter().find(|m| m.label() == label) {
-                action::push(
-                    &bus,
-                    Action::Effect(TubeEffect::SetSegmentHandling {
-                        category: category.api_key().into(),
-                        mode: mode.key().into(),
-                    }),
-                );
-            }
-        });
+        .with_enabled(s.sponsorblock_enabled);
+        let dropdown = ui.bind_effect(
+            dropdown,
+            TubeEffect::SET_SEGMENT_HANDLING.map(move |label: String| {
+                let mode = modes
+                    .iter()
+                    .find(|m| m.label() == label)
+                    .map_or(label, |m| m.key().to_owned());
+                (category.api_key().to_owned(), mode)
+            }),
+        );
         let name =
             Chip::new(category.label()).with_lead(ChipLead::Dot(category_colour(theme, category)));
         let about = stack()
@@ -1564,11 +1643,10 @@ fn device_sync_settings(
                 )),
         )));
     if !active.is_empty() {
-        summary = summary.push(Box::new(
-            Button::new("grayjay_sync_now", &t("tube-sync-now"))
-                .with_icon(Icon::Refresh)
-                .on_click(ui.push(Action::Effect(TubeEffect::SyncDevices))),
-        ));
+        summary = summary.push(Box::new(ui.effect(
+            Button::new("grayjay_sync_now", &t("tube-sync-now")).with_icon(Icon::Refresh),
+            &TubeEffect::SyncDevices,
+        )));
     }
     section = section.content(Box::new(summary));
 
@@ -1586,8 +1664,10 @@ fn device_sync_settings(
                     .with_enter_submits(true),
             ))
             .push(Box::new(
+                // Pairing reads the invite from the field above: the press
+                // hands it to the published pairing effect.
                 Button::new("grayjay_pair", &t("tube-pair-device"))
-                    .on_click(ui.push(Action::PairDevice)),
+                    .on_own_device_effect(ui.push(Action::PairDevice)),
             )),
     ));
 
@@ -1611,16 +1691,16 @@ fn device_sync_settings(
             ));
             items.push(Box::new(
                 Row::new().no_wrap().push(Box::new(
-                    Button::new(
-                        &format!("grayjay_approve_{}", peer.short_id()),
-                        &t("tube-approve-device"),
-                    )
-                    .role(ButtonRole::Primary)
-                    .on_click(ui.push(Action::Effect(
-                        TubeEffect::ApproveDevice {
+                    ui.effect(
+                        Button::new(
+                            &format!("grayjay_approve_{}", peer.short_id()),
+                            &t("tube-approve-device"),
+                        )
+                        .role(ButtonRole::Primary),
+                        &TubeEffect::ApproveDevice {
                             device: peer.id.clone(),
                         },
-                    ))),
+                    ),
                 )),
             ));
         }
@@ -1703,9 +1783,14 @@ fn relative_sync_time(time: i64) -> String {
 pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
     let filters = SearchType::ALL.into_iter().fold(Row::new(), |row, kind| {
         row.push(Box::new(
-            Chip::new(kind.label())
-                .selected(ui.model.search_type_filter.shows(kind))
-                .on_click(ui.push(Action::ToggleSearchType(kind))),
+            ui.effect(
+                Chip::new(kind.label())
+                    .with_id(format!("search_type_{}", kind.id()))
+                    .selected(ui.model.search_type_filter.shows(kind)),
+                &TubeEffect::FilterSearch {
+                    kind: kind.id().into(),
+                },
+            ),
         ))
     });
     let mut children: Vec<Element> = vec![Box::new(filters)];
@@ -1724,12 +1809,14 @@ pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
                 .into_iter()
                 .map(|playlist| {
                     Box::new(
-                        ListRow::new(format!("tube.playlist:{}", playlist.id), &playlist.title)
-                            .icon(Icon::ListVideo)
-                            .secondary(&playlist.channel_name)
-                            .on_activate(ui.push(Action::Effect(TubeEffect::OpenPlaylist {
+                        ui.effect(
+                            ListRow::new(format!("tube.playlist:{}", playlist.id), &playlist.title)
+                                .icon(Icon::ListVideo)
+                                .secondary(&playlist.channel_name),
+                            &TubeEffect::OpenPlaylist {
                                 playlist: playlist.id.clone(),
-                            }))),
+                            },
+                        ),
                     ) as Element
                 })
                 .collect();
@@ -1744,12 +1831,14 @@ pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
                 .into_iter()
                 .map(|creator| {
                     Box::new(
-                        ListRow::new(format!("tube.channel:{}", creator.id), &creator.name)
-                            .icon(Icon::Users)
-                            .secondary(&creator.handle)
-                            .on_activate(ui.push(Action::Effect(TubeEffect::OpenCreator {
+                        ui.effect(
+                            ListRow::new(format!("tube.channel:{}", creator.id), &creator.name)
+                                .icon(Icon::Users)
+                                .secondary(&creator.handle),
+                            &TubeEffect::OpenCreator {
                                 creator: creator.id.clone(),
-                            }))),
+                            },
+                        ),
                     ) as Element
                 })
                 .collect();

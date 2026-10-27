@@ -1199,13 +1199,15 @@ impl CommandPalette {
         } else {
             self.fitted_list_height()
         };
-        let height = PADDING
-            + (INPUT_HEIGHT * self.layout_scale())
-            + PADDING
-            + self.filter_block()
-            + list
-            + PADDING;
-        (self.card_width(), height)
+        (self.card_width(), self.chrome_height() + list)
+    }
+
+    /// The card's height less its result list: the field, the filter band
+    /// and the padding around them. A host that keeps the card inside a
+    /// region gives the list what is left of it
+    /// ([`Self::set_max_list_height`]).
+    pub fn chrome_height(&self) -> f64 {
+        PADDING + (INPUT_HEIGHT * self.layout_scale()) + PADDING + self.filter_block() + PADDING
     }
 
     /// The tallest the result list may grow before it scrolls, in logical

@@ -233,3 +233,41 @@ fn a_slow_providers_pages_append_under_a_loading_row() {
     palette.set_query("receipt");
     assert!(palette.results.is_loading());
 }
+
+/// A search opened on a resource of the app's
+/// (`SearchRequest::on`) puts the row that opens it under the cursor, so
+/// one Enter opens it, and leaves a search that lists none as it was.
+#[test]
+fn select_resource_puts_the_row_of_that_resource_under_the_cursor() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        SearchField::with_language("en_US")
+    });
+    palette.load_open_resources(&[]);
+    palette.set_providers(vec![Box::new(LazyCorpus {
+        materialized: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    })]);
+    palette.open();
+    palette.set_query("Item");
+    assert!(palette.len() > 2, "the corpus lists several rows");
+
+    assert!(palette.select_resource("lazy.item:3"));
+    let labels = palette.result_labels();
+    assert_eq!(
+        labels.get(palette.cursor()).map(String::as_str),
+        Some("Item 3"),
+        "the row that opens the resource is under the cursor: {labels:?}"
+    );
+
+    let cursor = palette.cursor();
+    assert!(
+        !palette.select_resource("lazy.item:nonexistent"),
+        "a resource the search does not list selects nothing"
+    );
+    assert_eq!(
+        palette.cursor(),
+        cursor,
+        "and leaves the cursor where it was"
+    );
+}

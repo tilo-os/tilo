@@ -94,7 +94,14 @@ struct Shared {
     /// Each agent's session state, by its agent id: kept while the host
     /// runs, so an agent stopped and started again keeps its channel keys.
     sessions: Mutex<BTreeMap<String, Arc<tilo_browser_peer::MemoryPeerStore>>>,
+    /// The wall clock the keeper judges grants by.
+    clock: HostClock,
 }
+
+/// How the host reads the wall clock. The keeper runs on its own thread,
+/// which a test's thread-scoped clock does not reach, so a test hands the
+/// host its pinned time instead of pinning the whole process.
+type HostClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 impl Shared {
     /// The content store of `room`, under the state directory. One room's
@@ -136,6 +143,24 @@ impl AgentHost {
         model: ModelChoice,
         catalogue: CatalogueFactory,
     ) -> Self {
+        Self::with_clock(
+            user_public_key,
+            state_dir,
+            model,
+            catalogue,
+            Arc::new(tilo_clock::unix_now_ns),
+        )
+    }
+
+    /// [`Self::new`] with the wall clock read by `clock` (Unix nanoseconds).
+    #[must_use]
+    pub fn with_clock(
+        user_public_key: [u8; 32],
+        state_dir: PathBuf,
+        model: ModelChoice,
+        catalogue: CatalogueFactory,
+        clock: HostClock,
+    ) -> Self {
         let shared = Arc::new(Shared {
             state_dir,
             model,
@@ -146,6 +171,7 @@ impl AgentHost {
             threads: Mutex::new(Vec::new()),
             content: Mutex::new(BTreeMap::new()),
             sessions: Mutex::new(BTreeMap::new()),
+            clock,
         });
         let spawning = shared.clone();
         let supervisor = AgentSupervisor::new(
@@ -201,7 +227,7 @@ impl AgentHost {
         let _ = self.shared.runtime.set(runtime);
         self.supervisor.set_link(link);
         let snapshot = read_state(&self.state_file())?;
-        let resume = self.supervisor.restore(snapshot, tilo_clock::unix_now_ns());
+        let resume = self.supervisor.restore(snapshot, (self.shared.clock)());
         for (identity, control) in resume {
             tracing::info!(agent = %crate::control::agent_id(&identity.delegation), "agent resumes after a host restart");
             if let Err(error) = spawn_agent(&self.shared, identity, control.clone()) {
@@ -220,6 +246,7 @@ impl AgentHost {
         let shared = self.shared.clone();
         let written = self.written.clone();
         let file = self.state_file();
+        let clock = Arc::clone(&self.shared.clock);
         self.ticker = Some(
             std::thread::Builder::new()
                 .name("agent-host".into())
@@ -229,7 +256,7 @@ impl AgentHost {
                         // Read before the snapshot: a change after this
                         // point wakes the wait below.
                         let seen = changes.generation();
-                        for expired in supervisor.expire(tilo_clock::unix_now_ns()) {
+                        for expired in supervisor.expire((clock)()) {
                             tracing::info!(grant = %expired, "agent grant expired");
                         }
                         persist(&supervisor, &file, &written);
@@ -237,9 +264,9 @@ impl AgentHost {
                         if shared.stopping.load(Ordering::Acquire) {
                             break;
                         }
-                        let until_expiry = supervisor.next_expiry_ns().map(|at| {
-                            Duration::from_nanos(at.saturating_sub(tilo_clock::unix_now_ns()))
-                        });
+                        let until_expiry = supervisor
+                            .next_expiry_ns()
+                            .map(|at| Duration::from_nanos(at.saturating_sub((clock)())));
                         changes.wait_past(seen, until_expiry);
                         if shared.stopping.load(Ordering::Acquire) {
                             break;
@@ -468,16 +495,20 @@ mod tests {
     #[test]
     fn the_idle_host_sleeps_until_its_state_changes_or_a_grant_expires() {
         // The wall clock stands still until the test moves it past the
-        // grant's expiry, so a loaded runner cannot expire it early.
-        let start = tilo_clock::wall();
-        tilo_clock::freeze_wall(start);
+        // grant's expiry, so a loaded runner cannot expire it early. The
+        // keeper reads the clock this test hands it: it runs on its own
+        // thread, which a thread-scoped pin does not reach.
+        let start = tilo_clock::unix_now_ns();
+        let pinned = Arc::new(std::sync::atomic::AtomicU64::new(start));
         let state = tempfile::tempdir().unwrap();
         let root = SigningKey::from_bytes(&[1; 32]);
-        let mut host = AgentHost::new(
+        let clock = Arc::clone(&pinned);
+        let mut host = AgentHost::with_clock(
             root.verifying_key().to_bytes(),
             state.path().to_owned(),
             ModelChoice::Scripted,
             Arc::new(AppCatalogue::native),
+            Arc::new(move || clock.load(Ordering::Relaxed)),
         );
         #[cfg(target_os = "linux")]
         {
@@ -500,7 +531,7 @@ mod tests {
         host.keep().unwrap();
 
         // A change is written at once, not at the next tick.
-        let expires_at = tilo_clock::unix_now_ns().saturating_add(1_500_000_000);
+        let expires_at = start.saturating_add(1_500_000_000);
         let changed = Instant::now();
         host.supervisor()
             .add_grant(crate::control::tests::identity_until(&root, expires_at));
@@ -514,7 +545,7 @@ mod tests {
         // no interval, so only the wake it sets for the expiry gets it there.
         // A wake set from the wrong deadline or unit is minutes off, past
         // the hang bound.
-        tilo_clock::freeze_wall(start.checked_add(Duration::from_secs(2)).unwrap());
+        pinned.store(start.saturating_add(2_000_000_000), Ordering::Relaxed);
         wait_until("the grant's expiry", || {
             grant_state(&file) == Some(GrantState::Expired)
         });

@@ -15,9 +15,9 @@ use tilo_agent_models::OfferedModels;
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
 use ui::presence::ParticipantKind;
-use ui::widget::{Badge, ChipStyle, Dropdown, Tone};
+use ui::widget::{Badge, ChipStyle, Dropdown, Fact, Facts, Tone};
 
-use crate::{Nav, reference, tr};
+use crate::{Nav, reference, tr, tr_with};
 
 pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav) -> Element {
     let exists = cx.value({
@@ -183,12 +183,82 @@ fn facts(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     );
     let model = model_picker(cx, id);
     Box::new(
-        Row::new()
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(Box::new(labeled_field("tasks-field-status", status)))
-            .push(assignee)
-            .push(model),
+            .push(Box::new(
+                Row::new()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(labeled_field("tasks-field-status", status)))
+                    .push(assignee)
+                    .push(model),
+            ))
+            .push(plan(cx, id)),
     )
+}
+
+/// What the issue works towards, how urgent it is, when it is wanted and
+/// what it may cost and has: each a fact a person reads, never a control.
+fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    let planned = cx.value({
+        let id = id.clone();
+        move |tracker: &Tracker| tracker.issues.get(&id).map(Plan::of).unwrap_or_default()
+    });
+    cx.switch(&planned, |_cx, planned| {
+        let mut facts = Vec::new();
+        if let Some(label) = &planned.goal {
+            facts.push(Fact::text(tr_with("tasks-fact-goal", &[("goal", label)])));
+        }
+        if let Some(priority) = planned.priority {
+            facts.push(Fact::text(tr_with(
+                "tasks-fact-priority",
+                &[("priority", &priority.to_string())],
+            )));
+        }
+        if let Some(due) = &planned.due {
+            facts.push(Fact::text(tr_with("tasks-fact-due", &[("date", due)])));
+        }
+        if let (Some(budget), spent) = (planned.cost_budget, planned.spend.unwrap_or_default()) {
+            facts.push(Fact::text(tr_with(
+                "tasks-fact-cost",
+                &[
+                    ("spent", &spent.to_string()),
+                    ("budget", &budget.to_string()),
+                ],
+            )));
+        }
+        if facts.is_empty() {
+            return Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element;
+        }
+        Box::new(Facts::new(facts)) as Element
+    })
+}
+
+/// How a issue is planned, as its page reads it.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Plan {
+    /// How its goal reads: the resource it works towards.
+    goal: Option<String>,
+    priority: Option<u8>,
+    /// When it is wanted, as a person reads a date.
+    due: Option<String>,
+    cost_budget: Option<u64>,
+    spend: Option<u64>,
+}
+
+impl Plan {
+    fn of(issue: &Issue) -> Self {
+        Self {
+            goal: issue.area.as_ref().map(|area| area.label.clone()),
+            priority: issue.priority,
+            due: issue
+                .due_ms
+                .map(|due_ms| ui::format::date_of(&ui::format::UnixSecs(due_ms / 1_000))),
+            cost_budget: issue.cost_budget,
+            spend: issue.spend,
+        }
+    }
 }
 
 /// The model the issue's runs plan with, picked among those the person's
@@ -356,7 +426,9 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
 }
 
 /// What the issue links to, each a reference chip that opens it in the app
-/// that keeps it. Nothing shows while it links to nothing.
+/// that keeps it; the way to write a note for it in Notes, which links the
+/// note here; and the way to link a note already written, picked by its
+/// title in the system palette.
 fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let links = cx.value({
         let id = id.clone();
@@ -368,14 +440,14 @@ fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 .unwrap_or_default()
         }
     });
-    cx.switch(&links, |cx, links| {
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related);
-        if links.is_empty() {
-            return Box::new(column) as Element;
-        }
+    let write_note = cx
+        .effect_button(
+            "tasks-write-note",
+            &crate::TasksEffect::WriteNote { issue: id.clone() },
+        )
+        .with_icon(ui::icons::Icon::Plus);
+    let link_note = link_note_button(id);
+    let chips = cx.switch(&links, |cx, links| {
         let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
         for link in links {
             let reference = ui::tilo_reference::ResourceRef::whole(
@@ -389,13 +461,43 @@ fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 &reference,
             )));
         }
-        column = column
+        Box::new(row) as Element
+    });
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(
-                Text::new("tasks-links").with_role(TextRole::Heading),
+                Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(
+                        Container::new()
+                            .with_flex_grow()
+                            .with_no_padding()
+                            .with_child(Box::new(
+                                Text::new("tasks-links").with_role(TextRole::Heading),
+                            )),
+                    ))
+                    .push(Box::new(link_note))
+                    .push(Box::new(write_note)),
             ))
-            .push(Box::new(row));
-        Box::new(column) as Element
-    })
+            .push(chips),
+    )
+}
+
+/// The button that opens the system palette on the issue's "Link a note",
+/// straight on the picker of the note.
+fn link_note_button(id: &Id) -> Button {
+    let issue = ui::tilo_resource::items::item_resource_id::<Tracker>("issues", id);
+    let request = ui::search::SearchRequest::asking(
+        ui::search::ScopeDecl::new(issue.clone(), crate::tr("tasks-link-note-scope")),
+        Tracker::LINK_NOTE.id(),
+    );
+    Button::new(&format!("tasks-link-note-{issue}"), "tasks-link-note")
+        .with_icon(ui::icons::Icon::Link)
+        .on_action(ui::search::open_search_binding(&request))
 }
 
 fn status_badge(status: Status) -> Badge {
@@ -412,6 +514,9 @@ fn status_badge(status: Status) -> Badge {
 struct RunView {
     agent: Option<String>,
     phase: Option<RunPhase>,
+    /// Whether a person paused the run: it takes no new step until they let
+    /// it go on.
+    paused: bool,
     question: Option<String>,
 }
 
@@ -419,6 +524,7 @@ fn run_view(issue: &Issue) -> RunView {
     RunView {
         agent: issue.assigned_agent().map(str::to_owned),
         phase: issue.run.as_ref().map(|run| run.phase),
+        paused: issue.run.as_ref().is_some_and(|run| run.paused.is_some()),
         question: issue
             .run
             .as_ref()
@@ -454,10 +560,14 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             .push(Box::new(
                 Text::new("tasks-run").with_role(TextRole::Heading),
             ));
-        let phase = view.phase.map_or_else(
-            || tr("tasks-run-not-started"),
-            |phase| tr(phase.label_key()),
-        );
+        let phase = if view.paused {
+            tr("tasks-run-paused")
+        } else {
+            view.phase.map_or_else(
+                || tr("tasks-run-not-started"),
+                |phase| tr(phase.label_key()),
+            )
+        };
         column = column.push(Box::new(Text::new(&ui::i18n::I18nManager::format(
             "tasks-run-agent",
             &[
@@ -479,18 +589,30 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             column = column.push(answer(cx, &id));
         }
         let going = view.phase.is_some_and(RunPhase::active);
-        let control = if going {
-            cx.button(
+        let control = if view.paused {
+            Box::new(cx.button(
+                "tasks-run-resume",
+                Tracker::RESUME_RUN.with(tracker::ResumeRun { issue: id.clone() }),
+            )) as Element
+        } else if going {
+            let mut row = Row::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(cx.button(
+                    "tasks-run-pause",
+                    Tracker::PAUSE_RUN.with(tracker::PauseRun { issue: id.clone() }),
+                )));
+            row = row.push(Box::new(cx.button(
                 "tasks-run-stop",
                 Tracker::STOP_RUN.with(tracker::StopRun { issue: id.clone() }),
-            )
+            )));
+            Box::new(row) as Element
         } else {
-            cx.button(
+            Box::new(cx.button(
                 "tasks-run-approve",
                 Tracker::APPROVE_RUN.with(tracker::ApproveRun { issue: id.clone() }),
-            )
+            )) as Element
         };
-        Box::new(column.push(Box::new(control))) as Element
+        Box::new(column.push(control)) as Element
     })
 }
 
@@ -525,6 +647,15 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 .unwrap_or_default()
         }
     });
+    let running = cx.value({
+        let id = id.clone();
+        move |tracker: &Tracker| {
+            tracker
+                .issues
+                .get(&id)
+                .is_some_and(|issue| issue.active_run().is_some())
+        }
+    });
     let people = cx.people();
     let list = cx.switch(&messages, move |_, messages| {
         let mut column = Column::new()
@@ -542,24 +673,25 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         .with_id("tasks-thread-draft")
         .with_accessible_name(tr("tasks-thread-draft"))
         .with_placeholder("tasks-thread-placeholder");
-    let comment_draft = draft.clone();
-    let comment_id = id.clone();
-    let comment = cx.actions().bind(
-        Button::new("tasks-thread-comment", "tasks-thread-comment"),
-        Tracker::COMMENT.map(move |()| tracker::Comment {
-            issue: comment_id.clone(),
-            text: take(&comment_draft),
-        }),
-    );
-    let run_draft = draft;
-    let run_id = id.clone();
-    let to_run = cx.actions().bind(
-        Button::new("tasks-thread-to-run", "tasks-thread-to-run"),
+    // One message, sent with one button: to the run while one reads it, and
+    // into the thread otherwise, so a task nobody is running still carries
+    // the conversation its collaborators have about it.
+    let send_draft = draft;
+    let send_id = id.clone();
+    let send = cx.actions().bind(
+        Button::new("tasks-thread-send", "tasks-thread-send"),
         Tracker::SEND_MESSAGE.map(move |()| tracker::SendMessage {
-            issue: run_id.clone(),
-            text: take(&run_draft),
+            issue: send_id.clone(),
+            text: take(&send_draft),
         }),
     );
+    let label = cx.switch(&running, move |_, running| {
+        Box::new(Text::new(if *running {
+            "tasks-thread-send-to-agent"
+        } else {
+            "tasks-thread-send"
+        })) as Element
+    });
     Box::new(
         Column::new()
             .with_no_padding()
@@ -573,8 +705,8 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             .push(Box::new(
                 Row::new()
                     .with_rhythm(ui::tokens::Rhythm::Related)
-                    .push(Box::new(comment))
-                    .push(Box::new(to_run)),
+                    .push(Box::new(send))
+                    .push(label),
             )),
     )
 }

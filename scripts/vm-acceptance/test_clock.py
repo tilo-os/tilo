@@ -7,6 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -54,7 +55,7 @@ def ctx_for(vm):
         if not predicate(st):
             raise CheckFailed(f"{what} not reached")
         return st
-    return SimpleNamespace(vm=vm, settle=lambda *a: None, wait_state=wait_state)
+    return SimpleNamespace(vm=vm, wait_state=wait_state)
 
 
 class FsHalf(unittest.TestCase):
@@ -67,7 +68,7 @@ class FsHalf(unittest.TestCase):
 
     def test_with_a_device_certificate_a_stopped_fs_still_fails(self):
         res = Result("K01", "basics", "K01")
-        with self.assertRaises(CheckFailed) as failed:
+        with self.assertRaises(CheckFailed) as failed, patch.object(clock, "FS_WATCH_S", 0):
             clock.clock_behind_the_certificate(ctx_for(FakeVm(device_cert=True, fs_state="inactive")), res)
         self.assertIn("fs is inactive", str(failed.exception))
         self.assertNotIn("skipped", res.detail)

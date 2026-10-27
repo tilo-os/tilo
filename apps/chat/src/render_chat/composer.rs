@@ -1,6 +1,10 @@
-//! The composer: the field the person types a message in, its attach and
-//! emoji buttons, what it says when a draft cannot be sent, the read-only form
-//! a viewer gets, and the typing line under it.
+//! The composer: the field the person types a message in, its attach and send
+//! buttons, what it says when a draft cannot be sent, the read-only form a
+//! viewer gets, and the typing line under it.
+//!
+//! The field is the toolkit's rich-text composer and offers what every text
+//! field does: `:emoji:` through the picker and `@mentions`, so the composer
+//! has no emoji button of its own.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -283,11 +287,7 @@ impl ChatApp {
             .control_size(ControlSize::Regular);
         let send_w = send_probe.intrinsic_width(tr, theme);
         let leading = if attach { vec![btn] } else { Vec::new() };
-        let emoji_label = crate::i18n::t("chat-emoji-insert");
-        let emoji_w =
-            ButtonFace::icon_only(Rect::ZERO, Icon::Smile, &emoji_label).intrinsic_width(tr, theme);
-        let frame =
-            tilo_rich_text::ComposerFrame::layout(rect, theme, &leading, &[send_w, emoji_w]);
+        let frame = tilo_rich_text::ComposerFrame::layout(rect, theme, &leading, &[send_w]);
         if attach {
             let plus = composer_slot(&frame.leading, 0);
             Button::paint(
@@ -301,7 +301,7 @@ impl ChatApp {
             ChatApp::push_hit(hits, plus, Hit::Attach);
         }
 
-        // Enter sends. The send icon is a quiet one beside the emoji, for a
+        // Enter sends. The send icon is a quiet one in the corner, for a
         // pointer or a touch, lit once there is something to send.
         let send = composer_slot(&frame.trailing, 0);
         let send_face = ButtonFace::icon_only(send, Icon::Send, &send_label)
@@ -319,16 +319,6 @@ impl ChatApp {
             },
         );
         ChatApp::push_hit(hits, send, Hit::Send);
-
-        let emoji = composer_slot(&frame.trailing, 1);
-        Button::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &ButtonFace::icon_only(emoji, Icon::Smile, &emoji_label).hovered(self.hovered(emoji)),
-        );
-        ChatApp::push_hit(hits, emoji, Hit::ComposerEmoji(emoji));
 
         let _ = draft;
         frame.editor

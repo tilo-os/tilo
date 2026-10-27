@@ -31,6 +31,10 @@ tilo-files = { path = "../../platform/tilo-files" }
 # Builds the tool images `pkg install` adds.
 env-tools = { path = "../env-tools" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
+# A file's own history, read and restored through the same bounded attributes
+# the file manager's History view reads, so the two cannot disagree.
+fs-protocol = { path = "../../system/fs-protocol" }
+host-fs = { path = "../../system/host-fs" }
 # The record is stored as Terminal stores its own records.
 tilo-app-state = { path = "../../system/app-state" }
 durable-store = { path = "../../system/durable-store" }

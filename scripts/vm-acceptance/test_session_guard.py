@@ -158,5 +158,13 @@ class KillerEvidenceTest(unittest.TestCase):
     def test_a_dump_without_a_kill_names_nothing(self):
         self.assertIsNone(session_unit.killer_evidence("=== kernel\nsegfault at 0\n=== systemd-oomd\n"))
 
+    def test_a_room_id_is_not_an_oom_kill(self):
+        dump = "\n".join([
+            "=== system journal",
+            'Oct 27 12:37:54 tilo-session-acceptance[14156]: app-writer-retiring: package=so.tilo.terminal '
+            'room=Some("304f87c1") launcher_pid=14588',
+        ])
+        self.assertIsNone(session_unit.killer_evidence(dump))
+
 if __name__ == "__main__":
     unittest.main()

@@ -638,6 +638,26 @@ fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
     }
 }
 
+/// Every entry `doc` holds, by kind and id, as what it says: where it is
+/// and its text fields. An entry nobody changed reads the same.
+#[must_use]
+pub fn entries(doc: &AutoCommit) -> BTreeMap<(&'static str, u64), String> {
+    let held = held(doc);
+    [
+        (WORKSPACES, held.workspaces),
+        (STRIPS, held.strips),
+        (GROUPS, held.groups),
+        (WINDOWS, held.windows),
+    ]
+    .into_iter()
+    .flat_map(|(kind, level)| {
+        level
+            .into_iter()
+            .map(move |(id, held)| ((kind, id), format!("{:?}", held.entry)))
+    })
+    .collect()
+}
+
 /// Make the entries at `ROOT[key]` exactly `want`, writing only what differs.
 fn reconcile(
     doc: &mut AutoCommit,
@@ -701,6 +721,38 @@ fn reconcile(
     }
     Ok(changed)
 }
+
+/// The message a change of the record is committed with: an edit of the
+/// shared desktop, by `person` when one made it. It names its action, as
+/// every change a device signs must, and who made it, as the desktop's
+/// history tells it ([`change_author`]).
+#[must_use]
+pub fn change_message(person: Option<&str>) -> String {
+    let mut context = tilo_actions::ActionContext::for_resource(
+        crate::ownership::DESKTOP_RECORD,
+        crate::ownership::DESKTOP_KIND,
+        "Desktop",
+    );
+    if let Some(person) = person.filter(|person| !person.is_empty()) {
+        context = context.with_invoker(tilo_actions::ActionInvoker::actor(person));
+    }
+    context
+        .change_message()
+        .unwrap_or_else(|| tilo_actions::FrameworkChange::Native.change_message())
+}
+
+/// Who made a change of the record, as its message ([`change_message`])
+/// names them.
+#[must_use]
+pub fn change_author(message: Option<&str>) -> Option<String> {
+    tilo_actions::ActionContext::from_change_message(message?)?
+        .invoker
+        .map(|invoker| invoker.actor)
+        .filter(|actor| !actor.is_empty())
+}
+
+pub mod device;
+pub mod guard;
 
 #[cfg(test)]
 mod tests;

@@ -24,9 +24,8 @@ dev=/target/publish/os-dev/$arch
 fault=${T_INPUT_FAULT:-unlock}
 case $fault in unlock|greetd|greeter) ;; *) echo "fault must be unlock, greetd or greeter" >&2; exit 2 ;; esac
 
-dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
-  qemu-kvm qemu-img edk2-ovmf ipxe-roms-qemu openssh-clients sshpass socat \
-  btrfs-progs dosfstools e2fsprogs fuse-overlayfs podman jq skopeo systemd util-linux
+# The check's setup layer has these already (t.toml); without it, they come from dnf.
+bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
 command -v qemu-system-x86_64 qemu-img ssh sshpass socat podman systemd-repart >/dev/null
 
 ./os/dev/assert-native-arch.sh "$arch"

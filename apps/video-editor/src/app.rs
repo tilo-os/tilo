@@ -7549,11 +7549,11 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
     (
         "Project",
         &[
-            ("Ctrl+O", "Open a project"),
-            ("Ctrl+S", "Save"),
-            ("Ctrl+Shift+S", "Save as…"),
-            ("Ctrl+Shift+O", "Import media"),
-            ("Ctrl+E", "Export video"),
+            ("{cmd:O}", "Open a project"),
+            ("{cmd:S}", "Save"),
+            ("{cmd+shift:S}", "Save as…"),
+            ("{cmd+shift:O}", "Import media"),
+            ("{cmd:E}", "Export video"),
         ],
     ),
     (
@@ -7584,14 +7584,14 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
     (
         "Clipboard",
         &[
-            ("Ctrl+X / C / V", "Cut, copy, paste"),
-            ("Ctrl+D", "Duplicate selection"),
-            ("Ctrl+A", "Select all clips"),
-            ("Ctrl+Z", "Undo"),
+            ("{cmd:X} / {cmd:C} / {cmd:V}", "Cut, copy, paste"),
+            ("{cmd:D}", "Duplicate selection"),
+            ("{cmd:A}", "Select all clips"),
+            ("{cmd:Z}", "Undo"),
             // Both spellings work and neither was written down, so the sheet
             // claimed the editor had undo and no redo.
-            ("Ctrl+Shift+Z", "Redo"),
-            ("Ctrl+Y", "Redo"),
+            ("{cmd+shift:Z}", "Redo"),
+            ("{cmd:Y}", "Redo"),
         ],
     ),
     (
@@ -7602,7 +7602,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("Z", "Zoom to fit"),
             ("+ / -", "Zoom in / out"),
             ("B", "Toggle media bin"),
-            ("Ctrl+I", "Toggle inspector"),
+            ("{cmd:I}", "Toggle inspector"),
             ("?", "This sheet"),
         ],
     ),
@@ -8383,11 +8383,13 @@ impl VideoEditorApp {
                 if !whole(row.y0, row.height()) {
                     continue;
                 }
+                // Spelled for this platform: a sheet that prints `Ctrl+S`
+                // teaches a Mac user the wrong modifier (`APP-video-editor-01`).
                 text(
                     scene,
                     tr,
                     tf,
-                    combo,
+                    &ui::spell_shortcut(combo),
                     &ty.sm.clone().strong(),
                     ink,
                     row.x0,
@@ -8738,8 +8740,12 @@ impl VideoEditorApp {
             .flat_map(|(_, rows)| rows.iter())
             .map(|(combo, _)| {
                 f64::from(
-                    tr.measure_style(combo, None, &type_sizes.sm.clone().strong())
-                        .0,
+                    tr.measure_style(
+                        &ui::spell_shortcut(combo),
+                        None,
+                        &type_sizes.sm.clone().strong(),
+                    )
+                    .0,
                 )
             })
             .fold(0.0, f64::max)

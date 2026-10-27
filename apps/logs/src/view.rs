@@ -697,6 +697,11 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
         }
     }
 
+    // An entry leaves the window the way any selected thing does: copied, in
+    // the words a report needs. The message alone, and the whole entry with
+    // the fields that say where it came from (`APP-logs-01`).
+    let message = entry.message.clone();
+    let whole = entry_copy(entry);
     let heading = Row::new()
         .no_wrap()
         .with_align_items(taffy::AlignItems::Center)
@@ -708,6 +713,29 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
                 .with_role(TextRole::Caption)
                 .numeric()
                 .dimmed(),
+        ))
+        .push(Box::new(ui::widget::Spacer::new()))
+        .push(Box::new(
+            ui::widget::Button::icon_only(
+                "logs.copy-message",
+                ui::icons::Icon::Copy,
+                "Copy message",
+            )
+            .control_size(ui::widget::ControlSize::Small)
+            .on_view(move || {
+                let _ = ui::try_clipboard_copy(&message);
+            }),
+        ))
+        .push(Box::new(
+            ui::widget::Button::icon_only(
+                "logs.copy-entry",
+                ui::icons::Icon::ClipboardPaste,
+                "Copy entry",
+            )
+            .control_size(ui::widget::ControlSize::Small)
+            .on_view(move || {
+                let _ = ui::try_clipboard_copy(&whole);
+            }),
         ));
     // The severity, time, message and the property labels all start on the
     // region's gutter, under the inspector's title.
@@ -729,6 +757,28 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
             .with_semantic_key("logs.entry-detail")
             .with_child(Box::new(body)),
     )
+}
+
+/// One entry as text a bug report can carry: when it happened, where from,
+/// and what it said.
+fn entry_copy(entry: &LogEntry) -> String {
+    use std::fmt::Write as _;
+    let mut text = format!(
+        "{} {}\n{}[{}]: {}\n",
+        entry.timestamp_full(),
+        entry.hostname,
+        entry.identifier,
+        entry
+            .pid
+            .map_or_else(|| "-".to_owned(), |pid| pid.to_string()),
+        entry.message
+    );
+    for (key, value) in &entry.extra {
+        if !value.trim().is_empty() {
+            let _ = writeln!(text, "{key}={value}");
+        }
+    }
+    text
 }
 
 /// Words of journal field names that are abbreviations, as they are
@@ -771,6 +821,21 @@ pub(crate) fn field_label(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An entry copied into a bug report says when, where from and what, so
+    /// two lines of a failed unit leave the app with their provenance.
+    #[test]
+    fn a_copied_entry_carries_its_provenance_and_message() {
+        let entry = crate::journal::sample_entries()
+            .into_iter()
+            .next()
+            .expect("the sample has an entry");
+        let copied = entry_copy(&entry);
+        assert!(copied.contains(&entry.message), "{copied}");
+        assert!(copied.contains(&entry.hostname), "{copied}");
+        assert!(copied.contains(&entry.identifier), "{copied}");
+        assert!(copied.starts_with(&entry.timestamp_full()), "{copied}");
+    }
 
     #[test]
     fn field_labels_read_in_sentence_case() {

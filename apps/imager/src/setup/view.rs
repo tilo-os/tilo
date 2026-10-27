@@ -1457,6 +1457,17 @@ impl SetupApp {
         changed
     }
 
+    /// `row`, pressed as the published `effect`; before the framework
+    /// attaches, its press publishes its own effect asking for `command`.
+    fn bind_effect(&self, row: ListRow, effect: &SetupEffect, command: SetupCommand) -> ListRow {
+        if let Some(actions) = &self.actions {
+            return actions.bind_effect_invocation(row, effect);
+        }
+        // A bare window asks for the command its own published effect runs.
+        let sink = Rc::clone(&self.commands);
+        row.on_effect(move || sink.borrow_mut().push(command))
+    }
+
     fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
         let effect = match command {
             SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
@@ -1510,7 +1521,6 @@ impl SetupApp {
 
     /// One experience as a choice: what it is and what it does.
     fn experience_row(&self, experience: Experience) -> ListRow {
-        let sink = Rc::clone(&self.commands);
         let (id, secondary) = match experience {
             Experience::Desktop => (
                 "setup.experience.desktop",
@@ -1521,7 +1531,7 @@ impl SetupApp {
                 "Installs Tilo next to your current system, which stays the startup default.",
             ),
         };
-        ListRow::new(
+        let row = ListRow::new(
             id,
             if experience == Experience::FullOs {
                 super::strings::t("imager-setup-alongside")
@@ -1534,11 +1544,14 @@ impl SetupApp {
             Experience::FullOs => Icon::HardDrive,
         })
         .secondary(secondary)
-        .selected(self.chosen_experience == Some(experience))
-        .on_activate(move || {
-            sink.borrow_mut()
-                .push(SetupCommand::ChooseExperience(experience));
-        })
+        .selected(self.chosen_experience == Some(experience));
+        self.bind_effect(
+            row,
+            &SetupEffect::ChooseExperience {
+                experience: super::actions::experience_key(experience).to_owned(),
+            },
+            SetupCommand::ChooseExperience(experience),
+        )
     }
 
     fn experience_body(&self) -> Column {
@@ -1577,7 +1590,6 @@ impl SetupApp {
 
     /// One way of bringing folders over, as a choice.
     fn mode_row(&self, mode: FolderMode) -> ListRow {
-        let sink = Rc::clone(&self.commands);
         let (id, title, secondary) = match mode {
             FolderMode::Copy => (
                 "setup.mode.copy",
@@ -1595,10 +1607,16 @@ impl SetupApp {
                 "Start empty and add folders any time.",
             ),
         };
-        ListRow::new(id, title)
+        let row = ListRow::new(id, title)
             .secondary(secondary)
-            .selected(self.controller().default_mode() == mode)
-            .on_activate(move || sink.borrow_mut().push(SetupCommand::SetMode(mode)))
+            .selected(self.controller().default_mode() == mode);
+        self.bind_effect(
+            row,
+            &SetupEffect::SetCommonMode {
+                mode: super::actions::mode_key(mode).to_owned(),
+            },
+            SetupCommand::SetMode(mode),
+        )
     }
 
     /// The ways a folder can come over on this computer.
@@ -1675,8 +1693,8 @@ impl SetupApp {
             row = row.warning();
         }
         let modes = self.offered_modes();
-        let sink = Rc::clone(&self.commands);
         let choices = modes.clone();
+        let token = self.controller().folder_token(index).unwrap_or_default();
         let choice = ToggleGroup::new(
             modes
                 .iter()
@@ -1688,13 +1706,20 @@ impl SetupApp {
                 .unwrap_or(0),
         )
         .with_id(format!("setup.folder.{index}.mode"))
-        .control_size(ControlSize::Small)
-        .on_change(move |chosen| {
-            if let Some(mode) = choices.get(chosen) {
-                sink.borrow_mut()
-                    .push(SetupCommand::SetFolderMode(index, *mode));
-            }
-        });
+        .control_size(ControlSize::Small);
+        // A segment past the modes names none, which the effect refuses.
+        let choice = match &self.actions {
+            Some(actions) => actions.bind_effect(
+                choice,
+                SetupEffect::SET_FOLDER_MODE.map(move |chosen: usize| {
+                    let mode = choices
+                        .get(chosen)
+                        .map_or("", |mode| super::actions::mode_key(*mode));
+                    (token.clone(), mode.to_owned())
+                }),
+            ),
+            None => choice,
+        };
         // How the folder comes over sits under it, on the page's edge with
         // the other controls, so a long path is never cut short.
         let mut controls = Row::new()
@@ -1771,22 +1796,20 @@ impl SetupApp {
                 if chosen(path) {
                     return None;
                 }
-                let sink = Rc::clone(&self.commands);
                 let add = Rc::clone(&self.commands);
-                Some(Box::new(
-                    ListRow::new(
-                        format!("setup.suggestion.{}", known.kind.label().to_lowercase()),
-                        known.kind.label(),
-                    )
-                    .icon(Icon::Folder)
-                    .secondary(path.display().to_string())
-                    .action(Icon::Plus, "Add", move || {
-                        add.borrow_mut().push(SetupCommand::AddSuggested(index));
-                    })
-                    .on_activate(move || {
-                        sink.borrow_mut().push(SetupCommand::AddSuggested(index));
-                    }),
-                ) as Box<dyn Widget>)
+                let suggestion = known.kind.label().to_lowercase();
+                let row =
+                    ListRow::new(format!("setup.suggestion.{suggestion}"), known.kind.label())
+                        .icon(Icon::Folder)
+                        .secondary(path.display().to_string())
+                        .action(Icon::Plus, "Add", move || {
+                            add.borrow_mut().push(SetupCommand::AddSuggested(index));
+                        });
+                Some(Box::new(self.bind_effect(
+                    row,
+                    &SetupEffect::AddSuggestedFolder { suggestion },
+                    SetupCommand::AddSuggested(index),
+                )) as Box<dyn Widget>)
             })
             .collect();
         let add_folder = self
