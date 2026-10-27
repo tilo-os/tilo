@@ -74,6 +74,7 @@ pub fn shell(spec: &mut JobSpec, script: &str) {
 /// dropped; or why there is none (no delegated cgroup here).
 pub struct TestCgroup {
     pub path: std::path::PathBuf,
+    dir: std::fs::File,
 }
 
 impl TestCgroup {
@@ -88,7 +89,21 @@ impl TestCgroup {
             N.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(Self { path })
+        let dir = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Self { path, dir })
+    }
+
+    pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.dir.as_fd()
+    }
+
+    pub fn procs(&self) -> Vec<i32> {
+        std::fs::read_to_string(self.path.join("cgroup.procs"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
     }
 
     pub fn kill(&self) {
