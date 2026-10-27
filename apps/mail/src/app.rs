@@ -1030,6 +1030,96 @@ impl MailApp {
         Some(request_id)
     }
 
+    /// Select all reads the whole folder: the rows held now, and, while the
+    /// folder has pages on its server this device has not read, one after
+    /// another, each joining the selection until the folder is whole.
+    fn select_all_in_folder(&mut self) {
+        let (account, folder, all_inboxes) = self.open_listing();
+        if self.shared.borrow().outbox_open {
+            return;
+        }
+        let more = self.folder_has_more(&account, folder, all_inboxes);
+        let mut st = self.shared.borrow_mut();
+        st.select_all_visible();
+        st.more_older = more;
+        st.selecting_all = more;
+        if more {
+            st.status = Some("Reading the rest of this folder…".into());
+            st.status_undo = false;
+            drop(st);
+            self.load_older();
+        } else {
+            let noun = Self::folder_noun(folder, all_inboxes);
+            st.finish_selection(&noun);
+        }
+        self.dirty = true;
+    }
+
+    /// The account, folder and both-inboxes state the list shows.
+    fn open_listing(&self) -> (AccountConfig, Folder, bool) {
+        let st = self.shared.borrow();
+        (st.accounts.active_config(), st.folder, st.all_inboxes)
+    }
+
+    /// What "all of it" is called: the folder's own name, or both inboxes'.
+    fn folder_noun(folder: Folder, all_inboxes: bool) -> String {
+        if all_inboxes {
+            "these folders".to_owned()
+        } else {
+            folder.title().to_owned()
+        }
+    }
+
+    /// Select all reads the whole folder, not the page of it this device
+    /// happens to hold: while pages are still on their way it asks for the
+    /// next one and lets the rows that arrive join the selection, and when
+    /// there are none left it says how many it took.
+    fn follow_select_all(&mut self) {
+        if !self.shared.borrow().selecting_all {
+            return;
+        }
+        let (account, folder, all_inboxes) = self.open_listing();
+        let more = self.folder_has_more(&account, folder, all_inboxes);
+        {
+            let mut st = self.shared.borrow_mut();
+            st.more_older = more;
+            st.extend_selection();
+        }
+        if more {
+            self.load_older();
+        } else {
+            let noun = Self::folder_noun(folder, all_inboxes);
+            self.shared.borrow_mut().finish_selection(&noun);
+        }
+        self.dirty = true;
+    }
+
+    /// Whether the open folder has pages on its server this device has not
+    /// read. Without a server, or before the folder's numbering is known,
+    /// what the device holds is the whole of it.
+    fn folder_has_more(&self, account: &AccountConfig, folder: Folder, all_inboxes: bool) -> bool {
+        if self.engine.is_none() {
+            return false;
+        }
+        let st = self.shared.borrow();
+        let accounts: Vec<String> = if all_inboxes {
+            st.accounts
+                .accounts
+                .iter()
+                .map(|account| account.config.email.clone())
+                .filter(|email| !email.is_empty())
+                .collect()
+        } else {
+            vec![account.email.clone()]
+        };
+        drop(st);
+        accounts.into_iter().any(|email| {
+            let known =
+                crate::sync::Window::of(&self.shared.borrow().mailbox, &email, folder).is_some();
+            known && self.has_older.get(&(email, folder)) != Some(&false)
+        })
+    }
+
     /// What the document's outbox holds now: the messages every account
     /// still has to send, with a server's refusal where one refused them.
     /// The outbox page and the sidebar's count both read this.
@@ -1389,7 +1479,7 @@ impl MailApp {
                     let selecting = self.shared.borrow().bulk_selecting;
                     self.shared.borrow_mut().set_bulk_selecting(!selecting);
                 }
-                Command::SelectAllVisible => self.shared.borrow_mut().select_all_visible(),
+                Command::SelectAllVisible => self.select_all_in_folder(),
                 Command::Bulk(BulkAction::Purge) => {
                     self.shared
                         .borrow_mut()
@@ -2898,6 +2988,9 @@ impl MailApp {
             }
             state.dirty = true;
         }
+        // A page Select all was reading has landed: it joins the selection,
+        // and the next one is asked for if the folder has more.
+        self.follow_select_all();
         for account in std::mem::take(&mut self.pending_watch_fetches) {
             self.post_engine(EngineRequest::fetch(account, Folder::Inbox));
         }
@@ -5375,7 +5468,12 @@ impl MailApp {
                 let selecting = mail.bulk_selecting;
                 mail.set_bulk_selecting(!selecting);
             }
-            "select-all" if mail.bulk_selecting => mail.select_all_visible(),
+            "select-all" if mail.bulk_selecting => {
+                drop(mail);
+                self.select_all_in_folder();
+                self.process_intents();
+                return true;
+            }
             "archive" if mail.bulk_selecting => {
                 let affected = mail.apply_bulk_action(state, BulkAction::Archive);
                 if affected == 0 {
@@ -6654,6 +6752,150 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         assert!(
             in_drafts(&app).is_empty(),
             "the sent message no longer shows in Drafts"
+        );
+    }
+
+    /// Select all acts on the whole folder: without a server to read the
+    /// rest from, what the device holds is the whole of it, and the status
+    /// says how many it took rather than leaving the person to count.
+    #[test]
+    fn select_all_takes_the_whole_folder_and_says_how_many() {
+        let (mut app, mut doc) = app();
+        app.shared.borrow_mut().set_bulk_selecting(true);
+        app.shared
+            .borrow_mut()
+            .push_command(Command::SelectAllVisible);
+        app.apply_commands(&mut ui::widget::Edits::lend(&mut doc));
+        let (rows, selected, status) = {
+            let st = app.shared.borrow();
+            (
+                st.list_rows().len(),
+                st.selected_bulk_ids().len(),
+                st.status.clone(),
+            )
+        };
+        assert!(rows > 0, "the sample inbox holds rows");
+        assert!(
+            !app.shared.borrow().selecting_all,
+            "there is nothing more to read"
+        );
+        assert_eq!(selected, rows, "every row is chosen");
+        assert_eq!(
+            status.as_deref(),
+            Some(format!("Selected all {rows} messages in Inbox").as_str())
+        );
+    }
+
+    /// Select all on a folder whose server holds pages this device has not
+    /// read asks for them, and acts on none of them until the folder is
+    /// whole — the old "Marked 50 read" over a wall of unread mail was a
+    /// whole-folder command applied to one page.
+    #[test]
+    fn select_all_reads_the_pages_the_server_still_holds() {
+        let (mut app, mut doc) = app();
+        let (outgoing, requests) = std::sync::mpsc::channel();
+        let (incoming, incoming_rx) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing,
+            rx: incoming_rx,
+        });
+        let account = app.shared.borrow().accounts.active_config().email;
+        let first_page = |app: &mut MailApp, doc: &mut AutoCommit| {
+            let config = app.shared.borrow().accounts.active_config();
+            let request = app
+                .post_engine(EngineRequest::fetch(config, Folder::Inbox))
+                .unwrap();
+            let _ = requests.try_recv().unwrap();
+            incoming
+                .send(EngineEvent::Fetched {
+                    request_id: request,
+                    account_id: account.clone(),
+                    folder: Folder::Inbox,
+                    synced: crate::sync::Synced {
+                        uid_validity: 9,
+                        reset: true,
+                        messages: vec![fetched(&account, 1, 9, 100), fetched(&account, 2, 9, 200)],
+                        has_older: Some(true),
+                        ..Default::default()
+                    },
+                })
+                .unwrap();
+            incoming
+                .send(EngineEvent::Completed {
+                    request_id: request,
+                    kind: EngineRequestKind::Fetch,
+                })
+                .unwrap();
+            app.drain_engine(&mut ui::widget::Edits::lend(doc));
+            app.hydrate_domain_state(&mut ui::widget::Edits::lend(doc));
+        };
+        first_page(&mut app, &mut doc);
+        assert_eq!(
+            app.has_older.get(&(account.clone(), Folder::Inbox)),
+            Some(&true)
+        );
+
+        // Select all: the page held is chosen, and the page before is asked
+        // for rather than "all" being reported over what this device has.
+        app.shared.borrow_mut().set_bulk_selecting(true);
+        app.shared
+            .borrow_mut()
+            .push_command(Command::SelectAllVisible);
+        app.apply_commands(&mut ui::widget::Edits::lend(&mut doc));
+        let posted: Vec<EngineRequest> = requests.try_iter().collect();
+        assert!(
+            posted.iter().any(|request| matches!(
+                request,
+                EngineRequest::Fetch {
+                    want: crate::sync::Want::Older { .. },
+                    ..
+                }
+            )),
+            "the page before is asked for: {posted:?}"
+        );
+        assert!(app.shared.borrow().selecting_all);
+        let chose = app.shared.borrow().selected_bulk_ids().len();
+        assert_eq!(
+            app.shared.borrow().status.as_deref(),
+            Some("Reading the rest of this folder…")
+        );
+
+        // The last page arrives: the folder is whole, and the selection is
+        // every message in it.
+        let config = app.shared.borrow().accounts.active_config();
+        let request = app
+            .post_engine(EngineRequest::fetch(config, Folder::Inbox))
+            .unwrap();
+        let _ = requests.try_recv().unwrap();
+        incoming
+            .send(EngineEvent::Fetched {
+                request_id: request,
+                account_id: account.clone(),
+                folder: Folder::Inbox,
+                synced: crate::sync::Synced {
+                    uid_validity: 9,
+                    messages: vec![fetched(&account, 3, 9, 300)],
+                    has_older: Some(false),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        incoming
+            .send(EngineEvent::Completed {
+                request_id: request,
+                kind: EngineRequestKind::Fetch,
+            })
+            .unwrap();
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+        app.hydrate_domain_state(&mut ui::widget::Edits::lend(&mut doc));
+        let st = app.shared.borrow();
+        assert!(!st.selecting_all, "there is nothing left to read");
+        let held = st.list_rows().len();
+        assert!(held > chose, "the page that arrived joined it");
+        assert_eq!(st.selected_bulk_ids().len(), held);
+        assert_eq!(
+            st.status.as_deref(),
+            Some(format!("Selected all {held} messages in Inbox").as_str())
         );
     }
 
