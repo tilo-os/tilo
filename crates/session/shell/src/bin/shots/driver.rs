@@ -2452,29 +2452,31 @@ impl ShellDriver {
         query: &str,
         seed: &[(&str, &str, &str)],
     ) {
-        use shell::shell::state::{
-            MintIds, ProcessIds, Tab, TileContent, WindowGroup, WindowWidth,
-        };
-        let tab = Tab {
-            id: ProcessIds.mint_id(),
-            title: label.into(),
-            tile: TileContent::AppPlaceholder {
-                kind,
-                label: label.into(),
-            },
-            app_title: None,
-        };
-        let tab_id = tab.id;
+        use shell::shell::state::{MintIds, Tab, TileContent, WindowGroup, WindowWidth};
+        let mut tab_id = 0;
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();
+                // Minted under this tree's own salt, as the session mints.
+                let mut ids = tree.ids();
+                let tab = Tab {
+                    id: ids.mint_id(),
+                    title: label.into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind,
+                        label: label.into(),
+                    },
+                    app_title: None,
+                };
+                tab_id = tab.id;
+                let group = ids.mint_id();
                 if let Some(ws) = tree.desktop.active_workspace_mut() {
                     for strip in &mut ws.strips {
                         strip.window_groups.clear();
                     }
                     if let Some(strip) = ws.strips.first_mut() {
                         strip.window_groups.push(WindowGroup {
-                            id: ProcessIds.mint_id(),
+                            id: group,
                             active_tab: tab_id,
                             tabs: vec![tab],
                             width: WindowWidth::Normal,

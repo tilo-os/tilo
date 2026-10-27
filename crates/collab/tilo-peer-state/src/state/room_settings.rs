@@ -126,7 +126,7 @@ mod tests {
         )
         .unwrap();
         peer.install_seed(
-            super::super::workspace_seed(ROOM, &cert, &roster, "Room", 7).unwrap(),
+            super::super::workspace_seed(ROOM, &cert, &roster, "Room").unwrap(),
             &device,
             now,
         )

@@ -353,9 +353,12 @@ impl WorkspaceTree {
         Ok(())
     }
 
-    /// The record `room`'s layout names for `tab`, if any.
+    /// The record `room`'s layout names for `tab`, if any, as a route: its
+    /// tab's binding, else what the window shared as it shows.
     pub(crate) fn room_tab_record(&self, room: RoomId, tab: super::TabId) -> Option<String> {
-        tilo_desktop_model::apps::record_routes(self.layout_docs.get(&room)?).remove(&tab)
+        let bound = self.layout_docs.get(&room);
+        (bound.and_then(|doc| tilo_desktop_model::apps::record_routes(doc).remove(&tab)))
+            .or_else(|| self.shared_window_record(room, tab))
     }
 }
 

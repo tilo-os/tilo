@@ -11,7 +11,7 @@
 //! snapshot or factory crosses this action. The app's first state then reaches the record
 //! as the member's own change, admitted like any other.
 
-use super::{CollaborationError, Rooms, system_time};
+use super::{CollaborationError, GovernedRoom, Rooms, system_time};
 use tilo_user_identity::DeviceCert;
 
 /// The record a member asks for: an app and its record id on the wire
@@ -152,5 +152,44 @@ impl Rooms {
             created: true,
             generation,
         })
+    }
+
+    /// Give `governed`, a room this host governs, its shared desktop record
+    /// when it has none yet, so every member's layout has the record to
+    /// land in. A room made now holds it from the start
+    /// ([`tilo_peer_state::workspace_seed`]); one made before is given it
+    /// here. Not in a room whose records are its members' sealed channels:
+    /// the host writes nothing there.
+    pub(super) async fn prepare_workspace_layout(
+        &self,
+        governed: &mut GovernedRoom,
+    ) -> Result<(), String> {
+        use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+        if governed.stewardship.is_some()
+            || governed.peer().authority() != &self.inner.host.cert
+            || governed
+                .peer()
+                .document(DESKTOP_APP, DESKTOP_RECORD)
+                .is_some()
+        {
+            return Ok(());
+        }
+        let at = std::time::SystemTime::now();
+        let mut candidate = governed.peer().clone();
+        candidate
+            .publication_mut()
+            .publish_document(
+                DESKTOP_APP,
+                DESKTOP_RECORD,
+                automerge::AutoCommit::new().save(),
+                &self.inner.host.key,
+                at,
+            )
+            .map_err(|error| error.to_string())?;
+        let collaboration = governed.collaboration().clone();
+        governed.commit(candidate, &self.inner.host.key, at, |_, _| {
+            Ok(collaboration)
+        })?;
+        self.settle(governed).await
     }
 }

@@ -6,7 +6,7 @@
 //! Each test drives its devices the way the compositor's loop does: a device
 //! runs a turn ([`Device::frame`]) when its network wakes the loop, and
 //! otherwise only at the deadlines that loop keeps itself (a room push
-//! retry, the layout check after the tree changed, the join card's poll of
+//! retry, the join card's poll of
 //! an enrollment in flight). A wait ([`until`]) blocks on those wakes; it
 //! never sleeps on a guess.
 //!
@@ -63,9 +63,6 @@ const NOTE_RECORD: &str = "plan";
 /// The note's text, a field of the record's document.
 const NOTE_TEXT: &str = "text";
 
-/// How often the compositor looks at the windows it keeps in its rooms
-/// after its tree changed (`compositor/native.rs`).
-const LAYOUT_CHECK: Duration = Duration::from_millis(500);
 /// How often the join card asks after an enrollment in flight
 /// (`PeerSyncOverlay::pending_enrollment_request`).
 const ENROLLMENT_POLL: Duration = Duration::from_millis(200);
@@ -152,9 +149,6 @@ impl Person {
 /// woke it, and what it last did at those deadlines.
 #[derive(Default)]
 struct Loop {
-    /// The tree's write generation the windows were last looked at in, and
-    /// when.
-    layout: Option<(u64, Instant)>,
     /// When the enrollments in flight were last asked after.
     polled: Option<Instant>,
 }
@@ -594,36 +588,16 @@ impl Device {
             .clone()
     }
 
-    /// One turn of this device's compositor loop: the network's tick, the
-    /// windows it keeps in its rooms when its tree changed, and the join
-    /// card's poll of an enrollment in flight. Nothing while it is offline.
+    /// One turn of this device's compositor loop: the network's tick and the
+    /// join card's poll of an enrollment in flight. Nothing while it is
+    /// offline. (A workspace's layout travels on the room's record route,
+    /// which the session's broker carries: `shell::workspace_layouts`.)
     pub(crate) fn frame(&self) {
         let Some(net) = self.net.as_ref() else {
             return;
         };
         net.tick();
         let now = Instant::now();
-        let generation = self.tree.generation();
-        let look = {
-            let state = self.state.lock().unwrap();
-            state.layout.is_none_or(|(seen, at)| {
-                seen != generation && now.saturating_duration_since(at) >= LAYOUT_CHECK
-            })
-        };
-        if look {
-            let rooms: Vec<RoomId> = self
-                .tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .map(crate::shell::state::Workspace::room)
-                .collect();
-            for room in rooms {
-                net.publish_governed_layout(room, &self.tree);
-            }
-            self.state.lock().unwrap().layout = Some((self.tree.generation(), now));
-        }
         let pending = self.enrollments.lock().unwrap().clone();
         if !pending.is_empty() {
             self.state.lock().unwrap().polled = Some(now);
@@ -648,19 +622,12 @@ impl Device {
     /// When this device's loop next has to run though nothing wakes it.
     fn next_deadline(&self) -> Option<Instant> {
         self.net.as_ref()?;
-        let (layout, polled) = {
-            let state = self.state.lock().unwrap();
-            (state.layout, state.polled)
-        };
-        let layout = layout.and_then(|(seen, at)| {
-            (seen != self.tree.generation()).then(|| at.checked_add(LAYOUT_CHECK).unwrap_or(at))
-        });
-        let poll = (!self.enrollments.lock().unwrap().is_empty()).then(|| {
+        let polled = self.state.lock().unwrap().polled;
+        (!self.enrollments.lock().unwrap().is_empty()).then(|| {
             polled.map_or_else(Instant::now, |at| {
                 at.checked_add(ENROLLMENT_POLL).unwrap_or(at)
             })
-        });
-        [layout, poll].into_iter().flatten().min()
+        })
     }
 
     // What the person does.

@@ -1190,7 +1190,7 @@ mod tests {
             .record("so.tilo.chat", &room.to_string(), &checkout)
             .expect_err("no read is coming");
         assert!(
-            refused.contains("the broker refused the route"),
+            refused.to_string().contains("the broker refused the route"),
             "the read says why: {refused}"
         );
         drop(worker.join().expect("the worker ran"));
