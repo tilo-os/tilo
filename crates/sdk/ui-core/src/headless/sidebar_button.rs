@@ -151,12 +151,11 @@ impl FrameHarness {
             |shell| {
                 let geometry = shell.geometry();
                 format!(
-                    "{:?} at {:?}, open {}, animating {}, frame wanted {}",
+                    "{:?} at {:?}, open {}, animating {}, window {schedule:?}",
                     geometry.sidebar,
                     geometry.sidebar_column,
                     shell.is_sidebar_open(),
                     shell.needs_animation_frame(),
-                    schedule.needs_animation_frame || schedule.queued_work,
                 )
             },
         )
