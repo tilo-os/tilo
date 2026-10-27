@@ -56,6 +56,9 @@ local-daemons = ["dep:runtime-portal", "dep:runtime-identity"]
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
 broker-transport = ["local-daemons", "runtime-collab/client", "dep:capnp", "dep:capnp-rpc", "tokio/full"]
+# An integration test links the library once, without its `cfg(test)`: the
+# fixtures a test draws with ([`headless::HeadlessApp`], the pinned font
+# catalogue) come with it.
 test-support = ["tilo-host/test-support", "dep:tilo-test-env"]
 # The UX benchmark runner (`ui::ux_bench`): scenarios, checks and the HTML
 # report the shell's `ux-bench` binary drives. Off by default, so the shared

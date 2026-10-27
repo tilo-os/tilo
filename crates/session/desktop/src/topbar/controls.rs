@@ -2,7 +2,10 @@
 //! technology and a pointer address, the rect each stands in, what a press
 //! activates, and the focus ring that says the keyboard is here.
 
-use super::*;
+use super::{
+    Affine, AppTrayRequest, BAR_CONTROL_PX, ChromeIntent, Fill, Point, Rect, RoundedRect, Scene,
+    Theme, TopBarChrome, WindowEvent, pointer_coordinates, t, t_args,
+};
 
 impl TopBarChrome {
     /// The bar control under the pointer, from the hit rects the last paint

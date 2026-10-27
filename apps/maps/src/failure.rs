@@ -94,6 +94,18 @@ pub(crate) const ROUTE: &str = "planning the route";
 pub(crate) const TRANSIT: &str = "looking up departures";
 pub(crate) const NEARBY: &str = "loading nearby places";
 
+/// Look up `key`, with the catalogue loaded on a thread no host loaded it on.
+pub(crate) fn t(key: &str) -> String {
+    crate::CATALOG.ensure();
+    I18nManager::lookup_plain(key)
+}
+
+/// Look up `key`, interpolating `args`.
+pub(crate) fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    crate::CATALOG.ensure();
+    I18nManager::format(key, args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,16 +135,4 @@ mod tests {
         assert!(!said.contains("connection refused"), "{said}");
         assert!(said.contains("searching"), "{said}");
     }
-}
-
-/// Look up `key`, with the catalogue loaded on a thread no host loaded it on.
-pub(crate) fn t(key: &str) -> String {
-    crate::CATALOG.ensure();
-    I18nManager::lookup_plain(key)
-}
-
-/// Look up `key`, interpolating `args`.
-pub(crate) fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    crate::CATALOG.ensure();
-    I18nManager::format(key, args)
 }

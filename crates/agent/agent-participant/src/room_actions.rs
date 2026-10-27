@@ -1768,8 +1768,9 @@ impl Worker {
         ),
     ) -> Result<ActionOutput, Outcome> {
         let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
-        let comment = contract.kind == ui::permissions::policy::ActionKind::Undoable
-            && contract.field.as_deref() == Some(ui::permissions::policy::roles::COMMENTS_FIELD);
+        let need = contract.need();
+        let comment = need.kind == ui::permissions::policy::ActionKind::Undoable
+            && need.field.as_deref() == Some(ui::permissions::policy::roles::COMMENTS_FIELD);
         let own = contract
             .tags
             .iter()

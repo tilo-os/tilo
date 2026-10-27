@@ -1,6 +1,9 @@
 //! What arrives from the network and the location service: a tile, a geocoder reply or a position, drained on the app's own thread and applied to the map.
 
-use super::*;
+use super::{
+    ActionOutput, LatLon, LocationOutcome, MapsApp, NetMsg, POI_MAX, TravelMode, Workspace,
+    endpoint_of, failure, net, spawn_net, workspace,
+};
 
 impl MapsApp {
     #[allow(

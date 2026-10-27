@@ -47,7 +47,7 @@ fn prepare(
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let access = native_app_open_access(&owner, room, &certificate, &app.package_id)
-        .map_err(io::Error::other)?;
+        .map_err(|error| io::Error::other(error.to_string()))?;
     match access {
         NativeAppOpenAccess::Viewer => return Err(io::ErrorKind::PermissionDenied.into()),
         NativeAppOpenAccess::Author => (),

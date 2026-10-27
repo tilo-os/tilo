@@ -98,6 +98,46 @@ pub(crate) struct OfflinePanel {
     progress_bar: ProgressBar,
 }
 
+/// What the download form says under its controls: the running download's
+/// count, how it ended, or the estimate for the area chosen.
+fn download_readout(progress: DownloadProgress, estimate: u32) -> String {
+    let count = |value: u32| ui::i18n::ArgValue::from(i64::from(value));
+    if progress.is_active() {
+        crate::failure::t_args(
+            "maps-offline-progress",
+            &[
+                ("done", count(progress.done)),
+                ("total", count(progress.total)),
+            ],
+        )
+    } else if progress.stopped {
+        crate::failure::t_args(
+            "maps-offline-stopped-count",
+            &[("total", count(progress.total))],
+        )
+    } else if progress.total > 0 && progress.done >= progress.total {
+        if progress.failed > 0 {
+            crate::failure::t_args(
+                "maps-offline-done-failed",
+                &[
+                    ("total", count(progress.total)),
+                    ("failed", count(progress.failed)),
+                ],
+            )
+        } else {
+            crate::failure::t_args("maps-offline-done", &[("total", count(progress.total))])
+        }
+    } else {
+        crate::failure::t_args(
+            "maps-offline-estimate",
+            &[(
+                "size",
+                ui::format::size(u64::from(estimate) * TILE_BYTES).into(),
+            )],
+        )
+    }
+}
+
 impl OfflinePanel {
     pub fn new(cache_bytes: u64) -> Self {
         Self {
@@ -798,7 +838,7 @@ impl OfflinePanel {
 
         // The estimate, or the running download.
         let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
-        let readout = download_readout(&frame.progress, estimate);
+        let readout = download_readout(frame.progress, estimate);
         let mut ctx = PaintCtx::new(scene, transform, text, ink);
         draw::text_clip(
             &mut ctx,
@@ -825,46 +865,6 @@ impl OfflinePanel {
 
 /// About how much one stored map tile takes on disk.
 const TILE_BYTES: u64 = 18_000;
-
-/// The line under the download form: the running download's progress, how
-/// it ended, or the size estimate for the area chosen.
-fn download_readout(progress: &DownloadProgress, estimate: u32) -> String {
-    let count = |value: u32| ui::i18n::ArgValue::from(i64::from(value));
-    if progress.is_active() {
-        crate::failure::t_args(
-            "maps-offline-progress",
-            &[
-                ("done", count(progress.done)),
-                ("total", count(progress.total)),
-            ],
-        )
-    } else if progress.stopped {
-        crate::failure::t_args(
-            "maps-offline-stopped-count",
-            &[("total", count(progress.total))],
-        )
-    } else if progress.total > 0 && progress.done >= progress.total {
-        if progress.failed > 0 {
-            crate::failure::t_args(
-                "maps-offline-done-failed",
-                &[
-                    ("total", count(progress.total)),
-                    ("failed", count(progress.failed)),
-                ],
-            )
-        } else {
-            crate::failure::t_args("maps-offline-done", &[("total", count(progress.total))])
-        }
-    } else {
-        crate::failure::t_args(
-            "maps-offline-estimate",
-            &[(
-                "size",
-                ui::format::size(u64::from(estimate) * TILE_BYTES).into(),
-            )],
-        )
-    }
-}
 
 fn region_base_zoom(sw: crate::model::LatLon, ne: crate::model::LatLon, viewport: Rect) -> u8 {
     let corners = [

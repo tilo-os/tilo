@@ -205,7 +205,7 @@ impl WindowBar {
         if *published == notice {
             return;
         }
-        (*published).clone_from(&notice);
+        published.clone_from(&notice);
         ui::window_toolbar::notify(notice.map(|text| {
             ui::window_toolbar::ToolbarNotice::new(text, ui::widget::toast::ToastKind::Info)
         }));

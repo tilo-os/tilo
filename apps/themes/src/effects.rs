@@ -62,16 +62,16 @@ fn refused_notice(name: &str, reason: &str) -> String {
 pub(crate) fn install(
     cx: &ViewCx<Studio>,
     notice: &LocalState<String>,
-    theme_page: &LocalState<crate::view::Page>,
+    page: &LocalState<crate::view::Page>,
     nav_pane: &LocalState<NavPane>,
 ) {
     let notice = notice.clone();
-    let theme_page = theme_page.clone();
+    let page = page.clone();
     let nav_pane = nav_pane.clone();
     cx.effects::<ThemesEffect>(move |effect, cx| {
         if effect == ThemesEffect::Import {
             let notice = notice.clone();
-            let theme_page = theme_page.clone();
+            let page = page.clone();
             let nav_pane = nav_pane.clone();
             return Ok(cx.choose_file(
                 ui::portal::PickRequest::open(
@@ -116,7 +116,7 @@ pub(crate) fn install(
                     let json = serde_json::to_string(&document).unwrap_or_default();
                     cx.submit(Studio::IMPORT_THEME.with((id.clone(), json)));
                     notice.set(imported_notice(&document.name));
-                    theme_page.set(crate::view::Page::Theme(id));
+                    page.set(crate::view::Page::Theme(id));
                     nav_pane.set(NavPane::Content);
                     Ok(Effected::done())
                 },
