@@ -455,7 +455,10 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
 /// Whether running `kind` invokes a published action — the steps a stop must
 /// keep from starting, whose effect would otherwise land.
 fn invokes(kind: &StepKind) -> bool {
-    matches!(kind, StepKind::Invoke { .. } | StepKind::Ai { .. })
+    matches!(
+        kind,
+        StepKind::Invoke { .. } | StepKind::Ai { .. } | StepKind::Task { .. }
+    )
 }
 
 /// Which of the waits a step is in answered first.
@@ -611,24 +614,40 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 let done = self.invoke(step, &path, action, resource, args).await;
                 self.record(step, &path, done)
             }
-            StepKind::Ai { transform, input } => {
+            StepKind::Ai {
+                prompt,
+                output,
+                input,
+            } => {
                 // A secret handed to the agent would reach a model provider.
-                if self.is_secret(input) {
+                if input.as_ref().is_some_and(|input| self.is_secret(input)) {
                     let refused = StepFailure::Binding {
                         reason: "an AI step may not read a secret".into(),
                     };
                     return self.record(step, &path, Done::local(Err(refused)));
                 }
-                let mut done = self
-                    .invoke(
-                        step,
-                        &path,
-                        &transform.key(),
-                        &Selector::FirstOfKind(AGENT_TRANSFORM_KIND.into()),
-                        &transform.arguments(input),
-                    )
+                let transform = AiTransform::Freeform {
+                    prompt: prompt.clone(),
+                    output: output.clone(),
+                };
+                let done = self
+                    .ai(step, &path, &transform, input.as_ref(), output.as_ref())
                     .await;
-                done.result = done.result.and_then(|value| transformed(transform, value));
+                self.record(step, &path, done)
+            }
+            StepKind::Task {
+                instruction,
+                allow,
+                output,
+            } => {
+                let transform = AiTransform::Task {
+                    instruction: instruction.clone(),
+                    allow: allow.clone(),
+                    output: output.clone(),
+                };
+                let done = self
+                    .ai(step, &path, &transform, None, output.as_ref())
+                    .await;
                 self.record(step, &path, done)
             }
             StepKind::If {
@@ -751,6 +770,30 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             }
         })?;
         Ok(Some(answer))
+    }
+
+    /// One AI invocation of the agent's transforms: the step's declared
+    /// output is what the agent is asked for, and what its answer is held to
+    /// as well as the published result spec.
+    async fn ai(
+        &self,
+        step: &Step,
+        path: &StepPath,
+        transform: &AiTransform,
+        input: Option<&Binding>,
+        output: Option<&Value>,
+    ) -> Done {
+        let mut done = self
+            .invoke(
+                step,
+                path,
+                &transform.key(),
+                &Selector::FirstOfKind(AGENT_TRANSFORM_KIND.into()),
+                &transform.arguments(input),
+            )
+            .await;
+        done.result = done.result.and_then(|value| transformed(output, value));
+        done
     }
 
     async fn invoke(
@@ -1353,30 +1396,26 @@ fn result_value(result: &ResultSpec, output: ActionOutput) -> Option<Value> {
     }
 }
 
-/// Hold an agent transform's result to what the step asked for.
-fn transformed(
-    transform: &AiTransform,
-    value: Option<Value>,
-) -> Result<Option<Value>, StepFailure> {
+/// Hold an AI step's answer to the type it declared: the schema, or text
+/// when it declared none. A value of the wrong shape is a broken contract,
+/// never a value a later step has to guess about.
+fn transformed(output: Option<&Value>, value: Option<Value>) -> Result<Option<Value>, StepFailure> {
     let contract = |reason: String| StepFailure::Contract { reason };
     let value = value.ok_or_else(|| contract("the agent returned nothing".into()))?;
-    match transform {
-        AiTransform::Extract { schema } => {
-            validate_json_schema(&value, schema).map_err(contract)?;
+    match output {
+        // A declared shape is the step's own promise, so it holds the answer
+        // whatever the published result spec allowed.
+        Some(schema) => {
+            let declared = serde_json::json!({
+                "type": "object",
+                "properties": {"result": schema}
+            });
+            let mut wrapper = Map::new();
+            wrapper.insert("result".into(), value.clone());
+            validate_json_schema(&Value::Object(wrapper), &declared).map_err(contract)?;
         }
-        AiTransform::Classify { choices } => {
-            if !value
-                .as_str()
-                .is_some_and(|label| choices.iter().any(|choice| choice == label))
-            {
-                return Err(contract("the agent chose none of the labels".into()));
-            }
-        }
-        AiTransform::Summarise | AiTransform::Freeform { .. } => {
-            if !value.is_string() {
-                return Err(contract("the agent did not return text".into()));
-            }
-        }
+        None if !value.is_string() => return Err(contract("the agent did not return text".into())),
+        None => {}
     }
     Ok(Some(value))
 }

@@ -328,12 +328,16 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
                 };
                 add(catalog, action, target, out);
             }
-            StepKind::Ai { transform, .. } => add(
-                catalog,
-                &transform.key(),
-                ResourceTarget::Kind(AGENT_TRANSFORM_KIND),
-                out,
-            ),
+            StepKind::Ai { .. } | StepKind::Task { .. } => {
+                if let Some(transform) = step.kind.ai_transform() {
+                    add(
+                        catalog,
+                        &transform.key(),
+                        ResourceTarget::Kind(AGENT_TRANSFORM_KIND),
+                        out,
+                    );
+                }
+            }
             StepKind::If {
                 then, otherwise, ..
             } => {
@@ -540,7 +544,11 @@ fn step_keys(steps: &[Step], out: &mut Vec<ActionKey>) {
     for step in steps {
         match &step.kind {
             StepKind::Invoke { action, .. } => out.push(action.clone()),
-            StepKind::Ai { transform, .. } => out.push(transform.key()),
+            StepKind::Ai { .. } | StepKind::Task { .. } => {
+                if let Some(transform) = step.kind.ai_transform() {
+                    out.push(transform.key());
+                }
+            }
             StepKind::If {
                 then, otherwise, ..
             } => {
