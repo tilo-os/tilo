@@ -40,6 +40,10 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = runtime_portal::local_socket::SUPPOR
 #[cfg(not(feature = "local-daemons"))]
 pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 
+/// The one error a primary route that missed its deadline reports, whichever
+/// side noticed.
+const PRIMARY_ROUTE_TIMED_OUT: &str = "collaboration primary route timed out";
+
 #[cfg(feature = "broker-transport")]
 pub(crate) mod approved_checks;
 #[cfg(feature = "broker-transport")]
@@ -2105,7 +2109,7 @@ impl CollaborationManager {
                     }
                 }
                 (Some(Err(error)), _)
-                    if error == broker::PRIMARY_ROUTE_TIMED_OUT && self.rejoin_hello.is_some() =>
+                    if error == PRIMARY_ROUTE_TIMED_OUT && self.rejoin_hello.is_some() =>
                 {
                     self.rejoin_late_primary_route();
                 }
@@ -2679,7 +2683,7 @@ mod late_primary_route_tests {
         answers
             .lock()
             .unwrap()
-            .push_back(Err(broker::PRIMARY_ROUTE_TIMED_OUT.into()));
+            .push_back(Err(PRIMARY_ROUTE_TIMED_OUT.into()));
         manager.poll();
         assert_eq!(manager.state(), CollaborationState::Connecting);
         assert_eq!(*hellos.lock().unwrap(), 2);

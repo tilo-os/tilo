@@ -17,6 +17,7 @@
     reason = "native host runner: the shovel thread bridges a blocking socket"
 )]
 
+use super::PRIMARY_ROUTE_TIMED_OUT;
 #[cfg(test)]
 use super::channel_key;
 use super::route_keys::Arrived;
@@ -90,9 +91,6 @@ const SDK_PRIMARY_ROUTE_TIMEOUT: Duration = Duration::from_millis(4_500);
 /// How long past the shared primary-route deadline the owner waits for the
 /// worker's answer to arrive.
 const PRIMARY_ROUTE_REPLY_SLACK: Duration = Duration::from_millis(500);
-/// The one error a primary route that missed its deadline reports, whichever
-/// side noticed.
-pub(super) const PRIMARY_ROUTE_TIMED_OUT: &str = "collaboration primary route timed out";
 /// Whether the identity service answered and declined to sign, as opposed
 /// to being unreachable: it reports a refusal as permission denied.
 fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
