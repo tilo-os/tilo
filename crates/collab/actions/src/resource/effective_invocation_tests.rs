@@ -155,3 +155,70 @@ fn effective_primitive_canonical_stream_preserves_variant_and_tuple_boundaries()
         "sink refused"
     );
 }
+
+// A typed action whose parameters all mean something when left out fires at once for a person,
+// built per target with nothing bound, while a caller that passes an argument still binds it.
+#[test]
+fn an_all_optional_typed_action_fires_at_once_and_still_binds_arguments() {
+    let built = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&built);
+    let spec = ActionSpec::typed_on(
+        "check",
+        "Check",
+        "Check",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::optional_owned(
+            "done",
+            ParamType::Boolean,
+            "done: Bool, when left out: not item.done",
+        )],
+        move |target, args| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let on = target.get::<String>().cloned().unwrap_or_default();
+            let done = args.to_json().get("done").cloned();
+            EncodedAction::encode_operation("test.check", &(on, done)).unwrap()
+        },
+    );
+    assert!(
+        matches!(spec.input(), ActionInput::Prompted { .. }),
+        "a typed action asks for its first parameter"
+    );
+    let spec = spec.with_immediate_per_target();
+    assert!(matches!(spec.input(), ActionInput::Immediate(None)));
+    assert_eq!(
+        built.load(Ordering::SeqCst),
+        0,
+        "declaring it builds nothing"
+    );
+    let bound = spec.action_type().bind(Target::new("item-1".to_owned()));
+    let fired = bound.encode_immediate().expect("fires at once");
+    assert_eq!(
+        *fired,
+        EncodedAction::encode_operation("test.check", &("item-1".to_owned(), None::<bool>))
+            .unwrap()
+    );
+    let mut args = serde_json::Map::new();
+    args.insert("done".into(), serde_json::Value::Bool(false));
+    assert_eq!(
+        bound.build_json(&args).unwrap(),
+        EncodedAction::encode_operation("test.check", &("item-1".to_owned(), Some(false))).unwrap(),
+        "an explicit argument is bound"
+    );
+    let required = ActionSpec::typed_on(
+        "rename",
+        "Rename",
+        "Rename",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required_owned(
+            "title",
+            ParamType::Text,
+            "title: Text",
+        )],
+        |_, _| encoded(0),
+    )
+    .with_immediate_per_target();
+    assert!(
+        matches!(required.input(), ActionInput::Prompted { .. }),
+        "a required parameter is still asked for"
+    );
+}

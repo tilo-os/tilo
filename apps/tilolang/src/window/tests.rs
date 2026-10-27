@@ -682,6 +682,15 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
     room.applies_as(Some(task()), &resource, &action, &Json::Null)
         .unwrap();
     assert_eq!(room.pinned(&resource), !before, "the agent pinned the note");
+    // What the agent passes wins over the default, which would flip the note back.
+    let pinned = serde_json::json!({ "pinned": !before });
+    room.applies_as(Some(task()), &resource, &action, &pinned)
+        .unwrap();
+    assert_eq!(
+        room.pinned(&resource),
+        !before,
+        "an explicit `pinned:` is the outcome"
+    );
 
     // A draft's send reaches outside: asked of an agent, it is recorded as a suggestion.
     let mut desk = Room::seeded("letters");

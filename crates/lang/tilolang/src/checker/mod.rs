@@ -7,6 +7,7 @@ mod call;
 mod enums;
 mod expr;
 mod native;
+mod outcomes;
 mod pred;
 #[cfg(test)]
 mod tests;
@@ -71,6 +72,8 @@ struct FnState {
     fors: usize,
     /// Views made of this view's loop bodies so far.
     row_views: usize,
+    /// What the locals bound by `let` hold, in terms of places (see [`outcomes::Sym`]).
+    syms: HashMap<LocalId, outcomes::Sym>,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.
@@ -119,6 +122,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         .iter()
         .filter(|x| x.own)
         .filter_map(|x| x.func)
+        .chain(env.defaults.iter().map(|d| d.func))
         .map(|f| f.saturating_add(1))
         .max()
         .unwrap_or(0);
@@ -162,8 +166,24 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         if view.name != crate::ids::present_key(&a.name.name) {
             continue;
         }
-        let params: Vec<&str> = a.params.iter().map(|p| p.name.name.as_str()).collect();
-        funcs.push(c.run_present(&view, &a.opts, &params));
+        let Some(action) = env.own_callable(&a.name.name) else {
+            continue;
+        };
+        funcs.push(c.run_present(&view, &a.opts, &action.params));
+    }
+    // The defaults of action parameters, in the order the resolver numbered them.
+    for d in &env.defaults {
+        if funcs.len() != d.func {
+            break;
+        }
+        let written = module.items.iter().find_map(|item| match item {
+            Item::Action(a) if a.name.name == d.action => a.params.get(d.param)?.default.as_ref(),
+            _ => None,
+        });
+        let (Some(written), Some(action)) = (written, env.own_callable(&d.action)) else {
+            break;
+        };
+        funcs.push(c.run_default(action, d.param, written));
     }
     c.check_proposals(module);
     let mut views = Vec::new();
@@ -590,6 +610,7 @@ impl Checker<'_> {
             Some(w) => self.expr_as(value, w),
             None => self.expr(value, None),
         };
+        let sym = self.sym_of(value);
         let mut ty = want.unwrap_or_else(|| ex.ty.clone());
         if ty == Ty::Unit {
             self.err(
@@ -600,6 +621,9 @@ impl Checker<'_> {
             ty = Ty::Error;
         }
         let id = self.declare(name, ty);
+        if let Some(sym) = sym {
+            self.st.syms.insert(id, sym);
+        }
         self.emit(Stmt::Set(id, ex));
     }
 
@@ -695,7 +719,17 @@ impl Checker<'_> {
             };
         }
         let base_ex = self.expr(&base, None);
+        let base_ty = base_ex.ty.clone();
         self.assign_field(base_ex, last, op, value, span);
+        if op == ast::AssignOp::Set
+            && self.st.ctx == Ctx::Action
+            && let Ty::Record(key) = &base_ty
+            && let Some(f) = self.env.type_info(key).and_then(|t| t.field(&last.name))
+            && f.merge == MergeKind::Register
+        {
+            let ty = f.ty.clone();
+            self.self_dependent_write(&base, last, &ty, value, span);
+        }
     }
 
     fn assign_local(&mut self, name: &ast::Ident, op: ast::AssignOp, value: &ast::Expr) {
@@ -712,6 +746,8 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
+        // What the variable holds now depends on the path taken here.
+        self.st.syms.remove(&id);
         let cur = Ex::local(id, ty.clone());
         let rhs = self.expr_as(value, &ty);
         let new = match op {
@@ -821,7 +857,7 @@ impl Checker<'_> {
                     "E030",
                     span,
                     format!(
-                        "`{}` on a register field loses concurrent updates; declare `{name}: {ty} merge counter`, or write the read and the write out (`x.{name} = x.{name} + 1`)",
+                        "`{}` on a register field loses concurrent updates; declare `{name}: {ty} merge counter`, or take the new value as an argument: a parameter with a default the invoker gets when they leave it out (`{name}: {ty} = x.{name} + 1`, then `x.{name} = {name}`)",
                         op.text(),
                         name = f.name,
                     ),

@@ -51,8 +51,8 @@ primary action new_note(nb: Notebook) -> Note (icon: .plus) {
 }
 
 /// Pin or unpin the note so it stays on top.
-action toggle_pin(n: Note) (icon: .pin) {
-    n.pinned = not n.pinned
+action toggle_pin(n: Note, pinned: Bool = not n.pinned) (icon: .pin) {
+    n.pinned = pinned
 }
 
 /// Archive.
@@ -192,7 +192,7 @@ fn enum_variants_carry_their_icon() {
     assert!(imported.is_ok(), "{:?}", imported.err());
 }
 
-const PIN: &str = "type Note {\n    title: Text (title)\n    pinned: Bool = false\n}\n/// Pin the note.\naction toggle_pin(n: Note) (label: if n.pinned { \"Unpin\" } else { \"Pin\" }, icon: if n.pinned { .bell_off } else { .pin }, on: n.pinned) {\n    n.pinned = not n.pinned\n}";
+const PIN: &str = "type Note {\n    title: Text (title)\n    pinned: Bool = false\n}\n/// Pin the note.\naction toggle_pin(n: Note, pinned: Bool = not n.pinned) (label: if n.pinned { \"Unpin\" } else { \"Pin\" }, icon: if n.pinned { .bell_off } else { .pin }, on: n.pinned) {\n    n.pinned = pinned\n}";
 
 // An action's label and icon may follow its subject, and `on:` says it is pressed: the parts
 // that depend on the subject become a hidden view of it, one `present` node; the static label
@@ -799,8 +799,8 @@ fn dated_props_say_what_they_are() {
 fn an_action_whose_on_is_its_subjects_field_says_which_state_it_toggles() {
     let src = "app so.tilo.todo \"Todo\"\n\
         type Todo {\n    title: Text (title)\n    done: Bool = false\n    starred: Bool = false\n}\n\
-        action check(item: Todo) (icon: .check, on: item.done) {\n    item.done = not item.done\n}\n\
-        action flip(item: Todo) (icon: .check, on: not item.done) {\n    item.done = not item.done\n}\n\
+        action check(item: Todo, done: Bool = not item.done) (icon: .check, on: item.done) {\n    item.done = done\n}\n\
+        action flip(item: Todo, done: Bool = not item.done) (icon: .check, on: not item.done) {\n    item.done = done\n}\n\
         action star(item: Todo) (icon: .plus) {\n    item.starred = true\n}\n";
     let m = crate::common::compile(src).meta;
     let todo = m.types.iter().find(|t| t.name == "Todo").expect("Todo");
