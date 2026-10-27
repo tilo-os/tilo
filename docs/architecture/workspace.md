@@ -126,6 +126,16 @@ tab id, which the stream names) in their own layout, a window group at the
 end of the workspace's last strip, marked with the sharer's presence while
 they are here, and drops it when the share ends.
 
+The sharer reaches it on the window itself: its window menu and its bar's
+menu offer "Share with <workspace>", and "Stop sharing" while shared, for a
+window this device runs in a personal room only. While the room's record
+holds the share, the window's bar says "Shared with <workspace>" with the
+faces of the people there (`ui::widget::SharedWith`). A share outlives
+neither its window nor its sharer's stay: a window this device closed or
+moved out of the workspace has its share stopped, and leaving the workspace
+stops its shares before the room is released. Every door makes the one
+request `tab.share` / `tab.unshare` make (`overlay_host::window_share_controls`).
+
 **Presence is per resource, layout is per person.** Inside a resource
 several people have open (a note, a chat channel) each sees the others'
 caret, selection, typing, pointer and who is in it: that is collaboration on
