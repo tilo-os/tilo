@@ -1,0 +1,275 @@
+{
+  "finished": true,
+  "packages": {
+    "contacts": {
+      "slowest": [
+        {
+          "seconds": 35.44697044,
+          "test": "contacts$resource::reach_tests::a_drive_of_every_scenario_reaches_every_published_action"
+        },
+        {
+          "seconds": 30.953458016,
+          "test": "contacts$view::copy_tests::scrolling_the_contact_list_copies_and_matches_a_full_render"
+        },
+        {
+          "seconds": 5.085770499,
+          "test": "contacts$view::copy_tests::a_scroll_with_another_change_repaints_the_list_and_matches"
+        },
+        {
+          "seconds": 0.366696081,
+          "test": "contacts$resource::tests::malformed_and_oversized_contacts_are_refused"
+        },
+        {
+          "seconds": 0.207964613,
+          "test": "contacts$vcard::tests::embedded_photos_import_and_export_and_links_are_not_fetched"
+        }
+      ],
+      "test_seconds": 72.808991135,
+      "tests": 28,
+      "wall_seconds": 72.808991135
+    },
+    "disk-usage": {
+      "slowest": [
+        {
+          "seconds": 13.622434848,
+          "test": "disk_usage$resource::reach_tests::a_drive_of_every_scenario_reaches_every_published_action"
+        },
+        {
+          "seconds": 0.361094951,
+          "test": "disk_usage$resource::tests::folder_controls_are_certified_and_analyze_through_the_resource"
+        },
+        {
+          "seconds": 0.315297991,
+          "test": "disk_usage$resource::tests::captures_stage_through_fixtures"
+        },
+        {
+          "seconds": 0.266561079,
+          "test": "disk_usage$resource::tests::a_chosen_folder_is_analyzed"
+        },
+        {
+          "seconds": 0.247095727,
+          "test": "disk_usage$app::navigation_tests::narrow_home_keeps_common_places_visible"
+        }
+      ],
+      "test_seconds": 15.155895909999998,
+      "tests": 11,
+      "wall_seconds": 15.155895909999998
+    },
+    "imager-backend": {
+      "slowest": [
+        {
+          "seconds": 16.592546232,
+          "test": "imager_backend$setup::prepared_tpm::tests::a_real_swtpm_sidecar_and_a_large_mail_journal_compose_without_growing_the_package"
+        },
+        {
+          "seconds": 12.425302525,
+          "test": "imager_backend$setup::portable_transfer::tests::mid_export_cancellation_reaps_actual_tar_removes_ciphertext_and_retries"
+        },
+        {
+          "seconds": 12.391644443,
+          "test": "imager_backend$account_transfer::thunderbird_source::stream::tests::a_folder_beyond_the_former_inspection_cap_streams_into_the_mail_cache"
+        },
+        {
+          "seconds": 7.618254502,
+          "test": "imager_backend$account_transfer::portable::tests::selected_serialization_limit_rejects_account_before_emitting_transport"
+        },
+        {
+          "seconds": 5.228860495,
+          "test": "imager_backend$setup::browser_transfer_helper::tests::canonical_headless_activation_and_retry_verify_original_ciphertext_and_output"
+        }
+      ],
+      "test_seconds": 174.34683794100005,
+      "tests": 697,
+      "wall_seconds": 174.34683794100005
+    },
+    "installer": {
+      "slowest": [
+        {
+          "seconds": 0.590079484,
+          "test": "installer$installer_app::tests::pinned_actions_fit_large_text_and_focus_reveals_only_step_content"
+        },
+        {
+          "seconds": 0.536623332,
+          "test": "installer$installer_app::surface_tests::prepared_media_unlock_is_private_review_and_skip_preserves_medium"
+        },
+        {
+          "seconds": 0.486754462,
+          "test": "installer$windows_hint_source::tests::boot_reader_requires_explicit_unlock_and_current_private_operation"
+        },
+        {
+          "seconds": 0.485575104,
+          "test": "installer$online_accounts::tests::local_pkce_callback_saves_only_private_canonical_custody_and_stages_selection"
+        },
+        {
+          "seconds": 0.459614036,
+          "test": "installer$online_accounts::hints::tests::offline_artifact_binding_never_substitutes_for_a_fresh_selection_generation"
+        }
+      ],
+      "test_seconds": 7.974544348000002,
+      "tests": 180,
+      "wall_seconds": 7.974544348000002
+    },
+    "mail": {
+      "slowest": [
+        {
+          "seconds": 82.396429446,
+          "test": "mail$resource::reach_tests::a_drive_of_every_scenario_reaches_every_published_action"
+        },
+        {
+          "seconds": 8.077979184,
+          "test": "mail$resource::tests::captures::every_scenario_captures_the_fixture_at_its_viewport"
+        },
+        {
+          "seconds": 3.515695987,
+          "test": "perf_interaction$interaction_costs"
+        },
+        {
+          "seconds": 1.974019456,
+          "test": "mail$engine::live::live_tests::an_account_lives_against_gmail_and_outlook_layouts"
+        },
+        {
+          "seconds": 1.884627169,
+          "test": "mail$actions::tests::mailbox_publishes_bounded_stable_places"
+        }
+      ],
+      "test_seconds": 142.42785811700003,
+      "tests": 206,
+      "wall_seconds": 142.42785811700003
+    },
+    "messages": {
+      "slowest": [
+        {
+          "seconds": 10.436922911,
+          "test": "messages$reach_tests::a_drive_of_every_scenario_reaches_every_published_action"
+        },
+        {
+          "seconds": 2.278195324,
+          "test": "messages$history_tests::semantic_people_and_choices_keep_matching_names_separate_and_refuse_revocation"
+        },
+        {
+          "seconds": 2.084294427,
+          "test": "messages$tests::public_route_action_refuses_revoked_identity_until_a_new_association_is_reviewed"
+        },
+        {
+          "seconds": 1.820453016,
+          "test": "messages$history_tests::another_personas_host_capability_is_unavailable_before_any_read"
+        },
+        {
+          "seconds": 1.717941326,
+          "test": "messages$history_tests::host_history_is_transient_and_submission_is_never_delivered"
+        }
+      ],
+      "test_seconds": 34.697655599,
+      "tests": 34,
+      "wall_seconds": 34.697655599
+    },
+    "notes": {
+      "slowest": [
+        {
+          "seconds": 255.997107626,
+          "test": "notes$resource::reach_tests::a_drive_of_every_scenario_reaches_every_published_action"
+        },
+        {
+          "seconds": 71.313204797,
+          "test": "it$scroll_damage::scrolling_a_long_note_copies_what_stays_on_screen"
+        },
+        {
+          "seconds": 63.618226498,
+          "test": "it$scroll_damage::scrolling_a_note_with_lists_and_code_copies_what_stays_on_screen"
+        },
+        {
+          "seconds": 42.658272698,
+          "test": "notes$cpu_profile::owned_notebook_profile_covers_every_interaction"
+        },
+        {
+          "seconds": 39.440250016,
+          "test": "it$typing_damage::a_keystroke_in_a_code_block_damages_its_run_not_the_editor"
+        }
+      ],
+      "test_seconds": 1011.6075872760005,
+      "tests": 349,
+      "wall_seconds": 1011.6075872760005
+    },
+    "poker": {
+      "slowest": [
+        {
+          "seconds": 0.500394727,
+          "test": "app$folding_for_a_slow_player_counts_down_and_opens"
+        },
+        {
+          "seconds": 0.416912893,
+          "test": "app$dealing_is_offered_with_the_graces_count"
+        },
+        {
+          "seconds": 0.397731526,
+          "test": "app$the_window_bar_names_the_table_and_the_window_draws_no_title"
+        },
+        {
+          "seconds": 0.365884136,
+          "test": "app$opening_the_table_seats_nobody_until_they_take_a_seat"
+        },
+        {
+          "seconds": 0.362951889,
+          "test": "app$a_viewer_cannot_sit_down"
+        }
+      ],
+      "test_seconds": 4.962192358000001,
+      "tests": 21,
+      "wall_seconds": 4.962192358000001
+    },
+    "tilo-actions": {
+      "slowest": [
+        {
+          "seconds": 0.754087968,
+          "test": "stacked_dispatch$stacked_dispatches_are_deterministic"
+        },
+        {
+          "seconds": 0.625732354,
+          "test": "verify_change$a_large_action_is_recorded_with_its_parts_as_content"
+        },
+        {
+          "seconds": 0.459901784,
+          "test": "stacked_dispatch$odd_actions_in_a_stack_do_not_corrupt_the_executor"
+        },
+        {
+          "seconds": 0.144293013,
+          "test": "tilo_actions$content::tests::a_long_list_of_small_parts_is_kept_whole"
+        },
+        {
+          "seconds": 0.072413842,
+          "test": "tilo_actions$content::tests::large_parts_are_kept_as_content_and_resolve_back"
+        }
+      ],
+      "test_seconds": 3.9943143989999994,
+      "tests": 185,
+      "wall_seconds": 3.9943143989999994
+    },
+    "tilo-agent-participant": {
+      "slowest": [
+        {
+          "seconds": 21.673998521,
+          "test": "tilo_agent_participant$participant::unopened::tests::unmounted_record_bytes_are_bounded_by_its_document"
+        },
+        {
+          "seconds": 20.229052607,
+          "test": "session_coverage$every_web_app_over_the_session"
+        },
+        {
+          "seconds": 16.773512651,
+          "test": "tilo_agent_participant$participant::unopened::tests::changes_that_crash_automerge_are_decoded_only_in_the_isolate"
+        },
+        {
+          "seconds": 14.869619357,
+          "test": "tilo_agent_participant$participant::unopened::tests::malformed_changes_are_refused_and_dropped"
+        },
+        {
+          "seconds": 12.017244975,
+          "test": "room_actions$a_record_whose_keys_are_withheld_holds_back_no_other"
+        }
+      ],
+      "test_seconds": 338.2818506510001,
+      "tests": 373,
+      "wall_seconds": 338.2818506510001
+    }
+  }
+}

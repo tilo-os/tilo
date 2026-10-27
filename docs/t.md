@@ -262,6 +262,18 @@ of `stable`, when dispatched, and on `main`'s newest head when t has room (`idle
 bisects a failure to the commit that took an app over its budget. Budgets and how to raise one:
 [app package size](measurements/app-package-size.md), [runtime size](measurements/runtime-size.md).
 
+## Test time per package
+
+Every whole run of the `test` family records, per package, how many tests ran and how long
+they took, into `target/test-timings.json` in the build directory of the node that ran the
+job. `t log` stops at nextest's own summary and the node's build directory is not the
+checkout's, so the table is read from the records, not from the log: the tool warns about a
+package at least two seconds and 20% slower than
+[`docs/measurements/test-timings.json`](measurements/test-timings.json). The warning never
+fails a job. The baseline is moved deliberately, from a run that finished
+its tests; [test time per package](measurements/test-timings.md) has the commands and what is
+left out.
+
 ## Publishing
 
 Checks can also publish: container images, signatures and releases, from `main` (development

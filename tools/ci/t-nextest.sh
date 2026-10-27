@@ -7,7 +7,7 @@
 # It prepares what the packages under test need beyond the builder image,
 # then runs the command under
 # tools/test-env.sh. Without an -E of its own, the run leaves out the visual
-# goldens (the `goldens` check runs them alone, on their image), as
+# goldens (the `goldens` check runs them alone, on its image), as
 # .config/nextest-filters.toml says. With one (`t test
 # PKG --test NAME` asks for one test) the filter is left as given. Other cargo
 # commands (`t cargo build` runs under this wrapper too) pass through unchanged.
@@ -16,8 +16,18 @@
 # no -p: T_NEXTEST_PACKAGES then names the packages. When only some test
 # binaries can be affected by a change, T_NEXTEST_FILTER selects them, and every
 # filter is narrowed to it.
+#
+# A whole run records each package's test time (tools/ci/ci_test_timings.py): it
+# asks libtest for its own JSON events (--message-format, which a test binary
+# takes beside the filters) and passes every line on to the job's log unchanged,
+# recording each test's name and time as it goes, and adds what this job
+# recorded to the run's records in the build directory
+# (docs/measurements/test-timings.md). It never decides the run: the tests'
+# verdict is what nextest reported.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+target=${CARGO_TARGET_DIR:-$root/target}
+timings=$target/test-timings.json
 
 # The pinned fonts tilo-font-catalog's build script prepares, cached in the build directory: t
 # keeps that across a build lineage, so they are fetched once per lineage, not once per job.
@@ -108,7 +118,7 @@ for name, value in nextest_filters.filters().items():
     print(f"{name}={shlex.quote(value)}")
 PY
 )
-    arguments+=(-E "not ($GOLDEN_FILTER)${T_NEXTEST_FILTER:+ and ($T_NEXTEST_FILTER)}")
+    arguments+=(-E "not (${GOLDEN_FILTER:-})${T_NEXTEST_FILTER:+ and ($T_NEXTEST_FILTER)}")
 elif (( nextest )) && [[ -n ${T_NEXTEST_FILTER:-} ]]; then
     # t's selection of test binaries narrows the filters given.
     for (( index = 0; index < ${#arguments[@]}; index++ )); do
@@ -145,4 +155,41 @@ PY
 if (( nextest )) && [[ ${3:-} == run ]] && declares_no_test; then
     arguments+=(--no-tests=pass)
 fi
-exec bash "$root/tools/test-env.sh" "${arguments[@]}"
+if (( nextest )) && [[ ${3:-} == run ]] && [[ " $* " != *" --profile "* ]]; then
+    # The profile t's job is testing with (`.config/nextest.toml`): the failure
+    # output and the hang bound the job expects.
+    arguments+=(--profile ci)
+fi
+# A run that stops at its first failure leaves the later packages out of the
+# times, which would read as their tests getting faster; and a repeated run's
+# passes and failures are nextest's measurement of a flaky test, not a timing.
+timed=0
+if (( nextest )) && [[ ${3:-} == run ]]; then
+    timed=1
+    [[ " $* " == *" --no-fail-fast "* ]] || arguments+=(--no-fail-fast)
+fi
+# Part of a package is not a package's time: a test filter given here selects by
+# hand, where the one t's job passes in T_NEXTEST_FILTER is the whole of what
+# the job asked for, and nextest's report is not a selection at all.
+for (( index = 0; index < ${#arguments[@]}; index++ )); do
+    case ${arguments[index]} in
+        --no-fail-fast|--profile) ;;
+        -E|--filterset|--filter-expr) [[ -z ${T_NEXTEST_FILTER:-} ]] && timed=0 ;;
+        --junit|--junit=*) [[ " $* " == *" --junit "xml" "* || " $* " == *" --junit=xml "* ]] || timed=0 ;;
+        --test|--exact|--test-threads=*|--run-ignored=*|--retries=*) timed=0 ;;
+    esac
+done
+
+if (( ! timed )); then
+    exec bash "$root/tools/test-env.sh" "${arguments[@]}"
+fi
+# nextest's output and libtest's JSON events stay the log's own, as they were
+# written: the events pass through as t's log already carries them, and the times
+# are read from the same lines as they pass (ci_test_timings.py record). The job
+# records into the run's file, which the run's other jobs add to, so the file
+# holds the whole run.
+status=0
+bash "$root/tools/test-env.sh" "${arguments[@]}" --message-format json-pretty 2>&1 \
+    | python3 -u "$root/tools/ci/ci_test_timings.py" record --json "$timings" || status=$?
+# The run's own verdict, not the recording's.
+exit "$status"
