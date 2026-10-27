@@ -428,6 +428,9 @@ struct Mount {
     failures_logged: usize,
     /// Protection sampled only after the corresponding GPU output presents.
     presented_capture_protected: bool,
+    /// The text field the last presented frame shows focused, where the
+    /// page keeps its input method ([`Self::publish_frame`]).
+    presented_ime: Option<ui::ime::ImeWindowState>,
     presentation: std::cell::Cell<bool>,
     semantic_targets: Vec<SemanticPresentationTarget>,
     status: Function,
@@ -1447,6 +1450,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         held: "no draw yet",
         failures_logged: 0,
         presented_capture_protected: true,
+        presented_ime: None,
         presentation: std::cell::Cell::new(false),
         semantic_targets: Vec::new(),
         status: status.clone(),
@@ -2466,7 +2470,17 @@ impl Mount {
         // The windows and strip this frame laid out move the pointers over
         // them.
         self.place_remote_pointers();
-        let ime_window = self.frame.ime_window();
+        // The input method stays on the field the screen shows focused. A
+        // status between frames (the tree delivered in the task after a
+        // frame) says the presented frame's field: read from the harness
+        // there, the field Notes' editor types into came back missing
+        // after every keystroke, and the page moved its focus from its
+        // text editor to the canvas and back around every key, ending and
+        // restarting input for the app each time.
+        if presented {
+            self.presented_ime = self.frame.ime_window();
+        }
+        let ime_window = self.presented_ime;
         let ime = ime_window.as_ref().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.content.purpose),"hints":i.content.html()})
         });
