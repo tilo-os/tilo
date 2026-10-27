@@ -480,6 +480,7 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
     })
     .unwrap();
     assert!(pane.providers.get().config.profiles.is_empty());
+    forgotten(pane);
     assert_eq!(
         pane.custodian
             .oauth_grant_state(&agent_vertex::grant_id(&id))
@@ -493,29 +494,53 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
     );
 }
 
-/// Cancelling the setup of a provider being added leaves no grant.
+/// Cancelling the setup of a provider being added leaves no grant. The
+/// vault forgetting it may not answer for seconds, so a cancel on the UI
+/// thread forgets on a worker.
 #[test]
 fn cancelling_a_vertex_setup_forgets_its_grant() {
     let vault = tempfile::tempdir().unwrap();
-    let mut pane = model_over(mock(snapshot(None)));
-    pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
-    pane.vertex = Some(VertexSetup::adding());
-    let id = pane.vertex.as_ref().unwrap().profile_id.clone();
-    pane.custodian
-        .seal_oauth(
-            &agent_vertex::grant_id(&id),
-            &account_custody::TokenSet {
-                access_token: "a".into(),
-                scope: None,
-                refresh_token: "r".into(),
-                expires_in: 3600,
-                obtained_at: 0,
-            },
-        )
-        .unwrap();
-    pane.cancel_vertex();
-    assert!(pane.vertex.is_none());
-    assert!(!agent_vertex::signed_in(&pane.custodian, &id));
+    let root = vault.path().to_path_buf();
+    let window = std::thread::spawn(move || {
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.custodian = account_custody::Custodian::for_root(Some(root));
+        pane.vertex = Some(VertexSetup::adding());
+        let id = pane.vertex.as_ref().unwrap().profile_id.clone();
+        pane.custodian
+            .seal_oauth(
+                &agent_vertex::grant_id(&id),
+                &account_custody::TokenSet {
+                    access_token: "a".into(),
+                    scope: None,
+                    refresh_token: "r".into(),
+                    expires_in: 3600,
+                    obtained_at: 0,
+                },
+            )
+            .unwrap();
+        ui::rt::mark_ui_thread();
+        pane.cancel_vertex();
+        assert!(pane.vertex.is_none());
+        assert!(
+            !pane.forgetting.is_empty(),
+            "the grant is forgotten on a worker"
+        );
+        forgotten(&mut pane);
+        id
+    });
+    let id = window
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    let custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+    assert!(!agent_vertex::signed_in(&custodian, &id));
+}
+
+/// Wait for the grants `pane` forgets on a worker to be forgotten.
+pub(super) fn forgotten(pane: &mut AgentModelsModel) {
+    tilo_test_env::wait_until("the grants to be forgotten", || {
+        pane.take_forgotten();
+        pane.forgetting.is_empty()
+    });
 }
 
 pub(super) fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
