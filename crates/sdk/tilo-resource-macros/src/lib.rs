@@ -434,10 +434,10 @@ fn icon_name(name: &syn::LitStr) -> syn::Result<String> {
 
 /// `Some("…")` or `None`, as tokens of an `Option<&'static str>`.
 fn optional_str(value: Option<&str>) -> proc_macro2::TokenStream {
-    match value {
-        Some(value) => quote::quote!(::core::option::Option::Some(#value)),
-        None => quote::quote!(::core::option::Option::None),
-    }
+    value.map_or_else(
+        || quote::quote!(::core::option::Option::None),
+        |value| quote::quote!(::core::option::Option::Some(#value)),
+    )
 }
 
 fn field_list(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Vec<String>> {

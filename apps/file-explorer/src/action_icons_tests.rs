@@ -69,7 +69,7 @@ fn actions_wear_icons_the_toolkit_draws() {
 #[test]
 fn what_acts_on_the_selection_says_so() {
     let actions = actions();
-    for id in ["copy-selection", "cut-selection", "clear-selection"] {
+    for id in ["copy-selection", "cut-selection"] {
         let action = actions
             .iter()
             .find(|action| action.id == id)

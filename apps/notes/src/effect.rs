@@ -60,6 +60,7 @@ pub enum NotesEffect {
     /// Choose a Notion export and add every page in it to the notebook as one
     /// action, so one undo takes the whole import back.
     #[effect(attended, job, cancellable)]
+    #[effect(icon = "download")]
     ImportNotionExport,
     /// Import Markdown content
     ///
