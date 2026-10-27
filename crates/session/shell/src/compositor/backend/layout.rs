@@ -391,6 +391,62 @@ mod tests {
     }
 
     #[test]
+    fn pointer_and_touch_events_cross_a_mixed_scale_seam_in_logical_pixels() {
+        use super::super::{BackendEvent, TouchEvent};
+        use winit::event::WindowEvent;
+        let p = placements(&[
+            ((0, 0), (1472, 920), (2944, 1840)),
+            ((1472, 100), (1280, 800), (1920, 1200)),
+        ]);
+        for logical in [(1395.0, 24.0), (2100.0, 450.0)] {
+            let scene = logical_to_scene(&p, logical);
+            let pointer = event_to_logical(
+                &p,
+                BackendEvent::Input(WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(scene.0, scene.1),
+                }),
+            );
+            let BackendEvent::Input(WindowEvent::CursorMoved { position, .. }) = pointer else {
+                panic!("pointer motion stays pointer motion");
+            };
+            assert_eq!((position.x, position.y), logical);
+            for (raw, expected) in [
+                (
+                    TouchEvent::Down {
+                        slot: 3,
+                        x: scene.0,
+                        y: scene.1,
+                    },
+                    TouchEvent::Down {
+                        slot: 3,
+                        x: logical.0,
+                        y: logical.1,
+                    },
+                ),
+                (
+                    TouchEvent::Motion {
+                        slot: 3,
+                        x: scene.0,
+                        y: scene.1,
+                    },
+                    TouchEvent::Motion {
+                        slot: 3,
+                        x: logical.0,
+                        y: logical.1,
+                    },
+                ),
+            ] {
+                let BackendEvent::Touch(mapped) = event_to_logical(&p, BackendEvent::Touch(raw))
+                else {
+                    panic!("touch stays touch");
+                };
+                assert_eq!(mapped, expected);
+            }
+        }
+    }
+
+    #[test]
     fn a_point_between_outputs_maps_through_the_nearest() {
         let p = placements(&[
             ((0, 0), (1280, 800), (2560, 1600)),
