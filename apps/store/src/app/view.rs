@@ -867,8 +867,9 @@ impl StoreApp {
         }
         if this_action_runs {
             // No Stop stands beside it: the package manager runs this to the
-            // end in its own process, so the page says so rather than
-            // offering a control that would only stop the watching.
+            // end in its own process and holds the only handle to it, so the
+            // page says what stopping would mean and what the person can do
+            // instead, rather than offering a control that would lie.
             return Box::new(
                 Column::new()
                     .with_intrinsic_height()
