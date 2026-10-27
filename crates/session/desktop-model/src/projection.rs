@@ -1797,12 +1797,10 @@ pub fn merge_room_contents(
     // The order is canonical: every member computes the same one from the
     // same document, and merging a document again changes nothing. Every
     // strip the document carries stands at the position it was published
-    // at, `(order, id)`, ours included (it is where our last projection put
-    // it, and no command reorders strips); and a strip the document does not carry (ours, not published yet)
-    // goes back to the index it stood at. Mixing our cache's indices with
-    // published positions instead re-sorted the strips on every merge of
-    // an unchanged document, and each re-sort re-projected our positions
-    // for the others to re-sort again.
+    // at, `(order, id)`, ours included — the gap order the projection
+    // published ([`placed_order`]), which is where a move this device made
+    // or applied put it; and a strip the document does not carry (ours, not
+    // published yet) goes back to the index it stood at.
     let mut published: Vec<(u64, u64, Strip)> = Vec::new();
     let mut kept: Vec<(usize, Strip)> = Vec::new();
     // Old strip ids that don't make it into the result below — collected
