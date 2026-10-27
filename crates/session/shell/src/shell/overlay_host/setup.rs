@@ -491,6 +491,7 @@ impl ShellOverlayHost {
             session_action_policy: inputs.session_action_policy,
             top_bar_reveal: top_bar_reveal::TopBarReveal::default(),
             fullscreen_bar_reveal: top_bar_reveal::FullscreenBarReveal::default(),
+            fullscreen_hint: None,
             top_edge_swipe: None,
             strip_pan_active: false,
             qs_refresh: inputs.qs_refresh,
