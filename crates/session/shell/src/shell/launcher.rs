@@ -967,6 +967,9 @@ pub enum LaunchError {
     ShellOwnedIntent,
     /// The workspace's selected identity could not be resolved safely.
     IdentityUnavailable { detail: String },
+    /// The app is not one of the workspace's apps, and the person opening
+    /// it may not add it: only the workspace's administrators can.
+    NotListedHere,
     /// The registry file exists but could not be read or parsed.
     RegistryUnreadable { detail: String },
     /// No `.desktop` entry with this id (distinct from
@@ -1020,6 +1023,10 @@ impl LaunchError {
             LaunchError::IdentityUnavailable { detail } => {
                 format!("the workspace identity could not be loaded: {detail}")
             }
+            LaunchError::NotListedHere => {
+                "the app is not one of this workspace's apps, and only its administrators can add it"
+                    .to_string()
+            }
             LaunchError::RegistryUnreadable { detail } => {
                 format!("the app registry could not be read: {detail}")
             }
@@ -1057,6 +1064,7 @@ impl LaunchError {
             Self::NoWorkspace => t("launch-error-no-workspace"),
             Self::ShellOwnedIntent => t("launch-error-shell-owned-intent"),
             Self::IdentityUnavailable { .. } => t("launch-error-identity-unavailable"),
+            Self::NotListedHere => t("launch-error-not-listed-here"),
             Self::RegistryUnreadable { .. } => t("launch-error-registry-unreadable"),
             Self::HostAppRefused { .. } => t("launch-error-host-app-refused"),
             Self::SystemBehind { .. } => t("launch-failed-system-behind"),
@@ -1081,6 +1089,9 @@ pub enum LaunchFailure {
     NoWorkspace,
     ShellOwnedIntent,
     IdentityUnavailable,
+    /// The app is not one of the workspace's apps, and only its
+    /// administrators can add it.
+    NotListedHere,
     RegistryUnreadable,
     HostAppRefused,
     /// The room's file permissions changed between choosing to open the app
@@ -1132,6 +1143,7 @@ impl LaunchFailure {
             Self::NoWorkspace => "launch-error-no-workspace",
             Self::ShellOwnedIntent => "launch-error-shell-owned-intent",
             Self::IdentityUnavailable => "launch-error-identity-unavailable",
+            Self::NotListedHere => "launch-error-not-listed-here",
             Self::RegistryUnreadable => "launch-error-registry-unreadable",
             Self::HostAppRefused => "launch-error-host-app-refused",
             Self::AuthorityChanged => "launch-failed-authority-changed",
@@ -1164,6 +1176,7 @@ impl LaunchError {
             Self::NoWorkspace => LaunchFailure::NoWorkspace,
             Self::ShellOwnedIntent => LaunchFailure::ShellOwnedIntent,
             Self::IdentityUnavailable { .. } => LaunchFailure::IdentityUnavailable,
+            Self::NotListedHere => LaunchFailure::NotListedHere,
             Self::RegistryUnreadable { .. } => LaunchFailure::RegistryUnreadable,
             Self::HostAppRefused { .. } => LaunchFailure::HostAppRefused,
             Self::SystemBehind { .. } => LaunchFailure::SystemBehind,
@@ -4335,30 +4348,30 @@ pub(crate) fn queue_native_authoring_launch(
         app,
         room,
         move || {
-            let prepare = || -> Result<LaunchGrants, String> {
-                let (_, certificate) =
-                    tilo_identity_host::broker::trusted_current_device(&room.to_string())
-                        .map_err(|error| error.to_string())?;
-                if certificate != expected {
-                    return Err("native app opening identity changed before admission".into());
-                }
-                let owner = tree
-                    .read()
-                    .installed_native_owner()
-                    .ok_or("native app owner disappeared")?;
-                let access =
-                    admit_native_app(&owner, room, &certificate, &package, opening.as_ref())?;
-                if access != NativeAppOpenAccess::Delegate {
-                    return Ok(native_launch_capabilities(
-                        &native_launch_workspace(&tree, room)?,
-                        &package,
-                        access,
-                    ));
-                }
-                native_launch_workspace(&tree, room)
-                    .map(|workspace| workspace.launch_grants(tilo_clock::unix_now()))
-            };
-            prepare().map_err(|detail| LaunchError::IdentityUnavailable { detail })
+            let unavailable = |detail: String| LaunchError::IdentityUnavailable { detail };
+            let (_, certificate) =
+                tilo_identity_host::broker::trusted_current_device(&room.to_string())
+                    .map_err(|error| unavailable(error.to_string()))?;
+            if certificate != expected {
+                return Err(unavailable(
+                    "native app opening identity changed before admission".into(),
+                ));
+            }
+            let owner = tree
+                .read()
+                .installed_native_owner()
+                .ok_or_else(|| unavailable("native app owner disappeared".into()))?;
+            // An app the room does not list, opened by a person who may not
+            // add it, is refused in its own words: whom to ask, not why the
+            // identity machinery said no.
+            let access = admit_native_app(&owner, room, &certificate, &package, opening.as_ref())
+                .map_err(unavailable)?
+                .map_err(|NotListedHere| LaunchError::NotListedHere)?;
+            let workspace = native_launch_workspace(&tree, room).map_err(unavailable)?;
+            if access != NativeAppOpenAccess::Delegate {
+                return Ok(native_launch_capabilities(&workspace, &package, access));
+            }
+            Ok(workspace.launch_grants(tilo_clock::unix_now()))
         },
         QueuedOpen::default(),
         native_owner,
@@ -4378,10 +4391,13 @@ pub(crate) fn admit_native_app(
     certificate: &tilo_user_identity::DeviceCert,
     package: &str,
     opening: Option<&NativeAppOpening>,
-) -> Result<NativeAppOpenAccess, String> {
-    let access = native_app_open_access(owner, room, certificate, package)?;
+) -> Result<Result<NativeAppOpenAccess, NotListedHere>, String> {
+    let access = match open_access_in(owner, room, certificate, package)? {
+        Ok(access) => access,
+        Err(refused) => return Ok(Err(refused)),
+    };
     if access != NativeAppOpenAccess::Delegate {
-        return Ok(access);
+        return Ok(Ok(access));
     }
     let opening = opening.ok_or("native app authorship broker unavailable")?;
     // A room this device just made or joined has its membership actions
@@ -4411,7 +4427,7 @@ pub(crate) fn admit_native_app(
             completed.message
         ));
     }
-    Ok(NativeAppOpenAccess::Delegate)
+    Ok(Ok(NativeAppOpenAccess::Delegate))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4541,6 +4557,24 @@ pub(crate) fn native_app_open_access(
     certificate: &tilo_user_identity::DeviceCert,
     package: &str,
 ) -> Result<NativeAppOpenAccess, String> {
+    open_access_in(owner, room, certificate, package)?.map_err(|NotListedHere| {
+        "creating an application requires governor-authorized authorship".into()
+    })
+}
+
+/// An app that is not one of a room's apps, opened by a person who may not
+/// add it there: only the room's administrators can.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NotListedHere;
+
+/// [`native_app_open_access`], with an app the room does not list for the
+/// person told apart from every other refusal.
+fn open_access_in(
+    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+    room: RoomId,
+    certificate: &tilo_user_identity::DeviceCert,
+    package: &str,
+) -> Result<Result<NativeAppOpenAccess, NotListedHere>, String> {
     owner.with_current(room, |view| {
         if !view.peer().certificates().contains(certificate) {
             return Err("native app opening certificate is no longer admitted".into());
@@ -4573,21 +4607,19 @@ pub(crate) fn native_app_open_access(
         // member, room and app.
         if !administrator && !application_writes {
             if view.peer().document(package, "").is_none() {
-                return Err(
-                    "creating an application requires governor-authorized authorship".into(),
-                );
+                return Ok(Err(NotListedHere));
             }
             view.peer()
                 .check_document_read(certificate.device_public_key, package, "", now)?;
         }
         if person_writes && application_writes {
-            return Ok(NativeAppOpenAccess::Author);
+            return Ok(Ok(NativeAppOpenAccess::Author));
         }
-        Ok(if administrator {
+        Ok(Ok(if administrator {
             NativeAppOpenAccess::Delegate
         } else {
             NativeAppOpenAccess::Viewer
-        })
+        }))
     })
 }
 
