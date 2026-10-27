@@ -518,6 +518,7 @@ inputs = [
   "os/Containerfile",
   "os/external-assets/github-assets.tsv",
   "apps/browser/tilo-app.toml",
+  "apps/browser/src/browser_widget/engine_runtime.rs",
   "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
 ]
 suites = [
