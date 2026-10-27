@@ -206,6 +206,15 @@ class ScriptKeyTests(unittest.TestCase):
         self.assertIn("os/dev/_common.sh", keyed)
         self.assertFalse(keyed & {"os/dev/vm.sh", "os/tests/boot_performance_gate.sh"})
 
+    def test_layers_are_keyed_by_what_a_layer_action_runs(self) -> None:
+        # build-image.sh's layer action exits before the disk, the raw-rootfs receipt and the
+        # development signing of a whole build: editing those rebuilds no layer.
+        keyed = set(os_toml.layer_scripts())
+        self.assertIn("os/dev/_common.sh", keyed)
+        self.assertIn("os/dev/resolve-rpm-snapshot.sh", keyed)
+        self.assertFalse(keyed & {"os/dev/disk-image.sh", "os/dev/raw-rootfs-receipt.py",
+                                  "os/dev/sign-development-rootfs.py", os_toml.KERNEL_VERIFIER})
+
 
 if __name__ == "__main__":
     unittest.main()

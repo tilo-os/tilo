@@ -163,6 +163,29 @@ def scripts_of(paths, skip=()):
     return sorted(found - set(skip) - set(paths))
 
 
+# Where build-image.sh's layer action ends (`exit 0`): a layer action runs only what comes
+# before it, never the disk, raw-rootfs and signing steps of a whole build after it.
+LAYER_EXIT = 'if [ -n "${TILO_LAYER_TARGET:-}" ]; then\n  [ -f "${TILO_CONTAINERFILE'
+
+
+def layer_scripts():
+    """The os/ scripts a layer action runs: those build-image.sh names before its layer action
+    ends and those TOOLS' other files name, transitively, without the kernel's verifier (see
+    kernel_tools). So editing a script only a whole build runs (the disk image, the
+    raw-rootfs receipt, the development signer) rebuilds no layer."""
+    path = "os/dev/build-image.sh"
+    with open(os.path.join(REPO, path), errors="replace") as f:
+        text = f.read()
+    if LAYER_EXIT not in text:
+        sys.exit(f"{path}: no layer action (TILO_LAYER_TARGET ... exit 0) to key the layers by")
+    head = without_comments(path, text[:text.index(LAYER_EXIT)])
+    named = {"os/" + m.group(1) for m in SCRIPT.finditer(head)}
+    named |= {os.path.join(os.path.dirname(path), m.group(1)) for m in SIBLING.finditer(head)}
+    named = {n for n in named if os.path.isfile(os.path.join(REPO, n))} - {KERNEL_VERIFIER, path}
+    others = [t for t in TOOLS if t != path]
+    return sorted(named | set(scripts_of(sorted(named) + others, skip=[KERNEL_VERIFIER, path])))
+
+
 def kernel_tools():
     """What keys an action that installs the pinned kernel, beyond TOOLS."""
     return [KERNEL_PIN, KERNEL_VERIFIER] + scripts_of([KERNEL_VERIFIER])
@@ -355,7 +378,7 @@ def flavour_checks(plan, arch, req, tools, flavour, layer):
 
 def block():
     plan = pieces.plan()
-    tools = TOOLS + scripts_of(TOOLS, skip=[KERNEL_VERIFIER])
+    tools = TOOLS + layer_scripts()
     out = ["""# The OS image as layer actions (os/image/layers.toml, os/image/build-layer.sh): per
 # architecture the assembler the actions run in, the pinned base, the OS builder and the side
 # builds, the compile in the OS builder with t's compiler cache and warm build directories, one
