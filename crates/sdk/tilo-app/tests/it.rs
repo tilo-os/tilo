@@ -5,6 +5,8 @@
 
 #[path = "action_groups.rs"]
 pub mod action_groups;
+#[path = "action_proposal.rs"]
+pub mod action_proposal;
 #[path = "actors.rs"]
 pub mod actors;
 #[path = "add_item_work.rs"]

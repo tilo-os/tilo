@@ -18,12 +18,15 @@
 //!
 //! [`ActionProposal::accept_action`] is the one write-back: a single typed
 //! field edit on the resource the proposal was made of
-//! ([`tilo_resource::Edit`]), which the executor commits once — one undo
-//! step, one History row — and a peer replays for what it was. A selection is
-//! named by its character range, and the edit refuses
-//! ([`ActionError::Refused`]) when the field no longer says what the model was
-//! shown, rather than written over whatever is there now.
-//! [`ActionProposal::reject`] writes nothing and stores nothing.
+//! ([`tilo_resource::Edit`]), submitted as the record's own
+//! [`field edit`](tilo_resource::FIELD_EDIT)
+//! ([`ProposalAccept::invoke`]) so it lands as one action — one change, one
+//! undo step, one History row — and a peer replays it for what it was. A
+//! selection is named by its character range, and
+//! [`ProposalAccept::refusal_over`] says why it must not be written when the
+//! field no longer holds what the model was shown, rather than writing over
+//! whatever is there now. [`ActionProposal::reject`] writes nothing and
+//! stores nothing.
 //!
 //! A secret field never offers any of this: its text stays in the widget, so
 //! there is nothing to propose over (`TextInput::set_sensitive`).
@@ -35,11 +38,8 @@
 //! person reads exactly what leaves before it does. The view is built from
 //! [`Column`], [`Text`] and [`Button`] and paints no control of its own.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
-use tilo_actions::{Action, ActionError, Did, Scalar};
-use tilo_resource::{ActionCx, Edit, EditOp, Path, Segment};
+use tilo_resource::{Edit, EditOp, Path, Segment};
 
 mod view;
 
@@ -183,7 +183,10 @@ impl ProposalContext {
     pub fn refusal(&self) -> Option<String> {
         if self.parts.len() > MAX_CONTEXT_PARTS {
             let mut args = fluent::FluentArgs::new();
-            args.set("limit", MAX_CONTEXT_PARTS as i64);
+            args.set(
+                "limit",
+                i64::try_from(MAX_CONTEXT_PARTS).unwrap_or(i64::MAX),
+            );
             return Some(crate::i18n::I18nManager::lookup(
                 "proposal-context-too-many",
                 Some(&args),
@@ -195,7 +198,10 @@ impl ProposalContext {
             .map(|part| {
                 let mut args = fluent::FluentArgs::new();
                 args.set("name", part.titled());
-                args.set("limit", (MAX_CONTEXT_BYTES / 1024) as i64);
+                args.set(
+                    "limit",
+                    i64::try_from(MAX_CONTEXT_BYTES / 1024).unwrap_or(i64::MAX),
+                );
                 crate::i18n::I18nManager::lookup("proposal-context-too-long", Some(&args))
             })
     }
@@ -338,24 +344,37 @@ impl ProposalChange {
 
 /// Where an accepted proposal writes: the field of the record `R` the answer
 /// belongs to, and the characters of it the answer replaces.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProposalTarget<R: Clone> {
-    /// The text field, from the record's root.
-    pub path: Path<R, String>,
+///
+/// `T` is the field's own value type, so a [`ProposalChange::Value`] answer
+/// is written as that field is stored — a boolean, a number, a choice's key —
+/// and a [`ProposalChange::Text`] answer splices the characters of a text.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ProposalTarget<R: tilo_resource::Resource, T = String> {
+    /// The field, from the record's root.
+    pub path: Path<R, T>,
     /// The characters the answer replaces, when the proposal is of a
     /// selection; `None` replaces the field whole.
     pub range: Option<std::ops::Range<usize>>,
 }
 
-impl<R: Clone> ProposalTarget<R> {
-    /// The whole of the text field at `path`.
-    pub fn whole(path: Path<R, String>) -> Self {
+impl<R: tilo_resource::Resource, T> Clone for ProposalTarget<R, T> {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            range: self.range.clone(),
+        }
+    }
+}
+
+impl<R: tilo_resource::Resource, T> ProposalTarget<R, T> {
+    /// The whole of the field at `path`.
+    pub fn whole(path: Path<R, T>) -> Self {
         Self { path, range: None }
     }
 
     /// The characters of the text field at `path` between the range's bounds,
     /// counted in chars from the start of the field.
-    pub fn selection(path: Path<R, String>, range: std::ops::Range<usize>) -> Self {
+    pub fn selection(path: Path<R, T>, range: std::ops::Range<usize>) -> Self {
         Self {
             path,
             range: Some(range),
@@ -431,39 +450,73 @@ impl ActionProposal {
         self.context.refusal()
     }
 
-    /// Accepting this writes `target`: the one action the executor runs,
-    /// committed once (one undo step, one History row) and replayed by a peer
-    /// for what it was.
+    /// Accepting this writes `target`: the resource's own field edit, which
+    /// is one action on the record — one change, one History row, one undo
+    /// step — and a peer replays for what it was.
     ///
-    /// A [`ProposalChange::Text`] splices the characters `target` names — the
+    /// A [`ProposalChange::Text`] splice the characters `target` names — the
     /// selection's, or the whole field's — and a [`ProposalChange::Value`]
-    /// writes the field as the smallest splice that makes it the answer.
-    pub fn accept_action<R: tilo_resource::Fields + Clone>(
-        &self,
-        target: ProposalTarget<R>,
-    ) -> ProposalAccept<R> {
-        let op = match &self.change {
+    /// writes the field as the value the answer reads as.
+    pub fn accept_action<R, T>(&self, target: ProposalTarget<R, T>) -> ProposalAccept<R>
+    where
+        R: tilo_resource::Resource,
+        T: tilo_resource::Settable + serde::de::DeserializeOwned,
+    {
+        match &self.change {
             ProposalChange::Text { original, proposed } => {
                 let (at, delete) = target.characters(original);
-                EditOp::Splice {
-                    at,
-                    delete,
-                    insert: proposed.clone(),
+                let mut accept = self.accept_edit(Edit::new(
+                    target.path.segments().to_vec(),
+                    EditOp::Splice {
+                        at,
+                        delete,
+                        insert: proposed.clone(),
+                    },
+                ));
+                accept.selection = target.range.clone().map(|range| (range.start, range.end));
+                accept.expecting(at, delete, original)
+            }
+            ProposalChange::Value { after, .. } => {
+                // The answer as text, read back as the field's own value: a
+                // boolean, a number, a choice's key.
+                match serde_json::from_str::<T>(after) {
+                    Ok(value) => self.accept_edit(target.path.set(value)),
+                    // An answer that is not the field's type is never
+                    // written: the accept carries the refusal instead.
+                    Err(error) => self
+                        .accept_edit(Edit::new(
+                            Vec::new(),
+                            EditOp::Set {
+                                value: serde_json::Value::Null,
+                            },
+                        ))
+                        .refusing(error.to_string()),
                 }
             }
-            ProposalChange::Value { after, .. } => EditOp::Replace {
-                text: after.clone(),
-            },
+        }
+    }
+
+    /// The one accept for `edit`, holding both the edit and the action that
+    /// carries it through the app's door.
+    fn accept_edit<R: tilo_resource::Resource>(&self, edit: Edit<R>) -> ProposalAccept<R> {
+        let field = edit.path().last().map(field_of).unwrap_or_default();
+        // The action that carries the edit through the app's door; an edit
+        // that does not encode is never written, and carries why.
+        let (invoke, refusal) = match tilo_resource::Invoke::edit(&edit) {
+            Ok(invoke) => (Some(invoke), None),
+            Err(error) => (
+                None,
+                Some(format!("this answer cannot be written: {error}")),
+            ),
         };
         ProposalAccept {
-            field: target
-                .path
-                .segments()
-                .last()
-                .map(field_of)
-                .unwrap_or_default(),
-            edit: Edit::new(target.path.segments().to_vec(), op),
+            edit,
+            invoke,
+            field,
             change: self.change.clone(),
+            refusal,
+            selection: None,
+            expects: None,
         }
     }
 
@@ -474,34 +527,53 @@ impl ActionProposal {
     }
 }
 
-/// Accepting one proposal, as the action the executor runs.
-pub struct ProposalAccept<R> {
+/// Accepting one proposal: the field edit it writes, and the change it is.
+///
+/// The edit is the resource's own [field edit](tilo_resource::FIELD_EDIT),
+/// held as the action to submit ([`tilo_resource::Invoke`]): applying it is
+/// one action on the record — one change, one version in History, one undo
+/// step — and a peer replays it for what it was.
+pub struct ProposalAccept<R: tilo_resource::Resource> {
     edit: Edit<R>,
+    invoke: Option<tilo_resource::Invoke<R>>,
     field: String,
     change: ProposalChange,
+    refusal: Option<String>,
+    /// The characters the answer replaces: where, and how many.
+    selection: Option<(usize, usize)>,
+    /// The characters the answer was made of, at the selection it replaces.
+    expects: Option<(std::ops::Range<usize>, String)>,
 }
 
-impl<R> Clone for ProposalAccept<R> {
+impl<R: tilo_resource::Resource> Clone for ProposalAccept<R> {
     fn clone(&self) -> Self {
         Self {
             edit: self.edit.clone(),
+            invoke: self.invoke.clone(),
             field: self.field.clone(),
             change: self.change.clone(),
+            refusal: self.refusal.clone(),
+            selection: self.selection,
+            expects: self.expects.clone(),
         }
     }
 }
 
-impl<R> std::fmt::Debug for ProposalAccept<R> {
+impl<R: tilo_resource::Resource> std::fmt::Debug for ProposalAccept<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProposalAccept")
             .field("path", &self.edit.path())
             .field("field", &self.field)
             .field("change", &self.change)
+            .field("refusal", &self.refusal)
+            .field("selection", &self.selection)
+            .field("expects", &self.expects)
+            .field("invoke", &self.invoke.as_ref().map(|invoke| invoke.id))
             .finish()
     }
 }
 
-impl<R> ProposalAccept<R> {
+impl<R: tilo_resource::Resource> ProposalAccept<R> {
     /// What this accept wrote, for a caller that synced the document itself.
     pub fn decision(&self) -> ProposalDecision {
         ProposalDecision::Accept {
@@ -509,50 +581,73 @@ impl<R> ProposalAccept<R> {
         }
     }
 
-    /// The field edit itself, for a caller that routes it through the
-    /// resource's own executor ([`tilo_resource::Replica`], the action host)
-    /// rather than applying it here.
+    /// The field edit itself, for a caller that reads or records it.
     pub fn edit(&self) -> &Edit<R> {
         &self.edit
     }
-}
 
-impl<R> Action for ProposalAccept<R>
-where
-    R: tilo_resource::Fields,
-{
-    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
-        let payload = serde_json::to_vec(&self.edit).map_err(ActionError::Encode)?;
-        let mut cx = ActionCx::for_write(doc, &payload);
-        self.edit
-            .apply(doc, &mut cx)
-            .map_err(|error| ActionError::Refused(format!("{error}")))
+    /// Why this accept writes nothing: the answer is not the field's own
+    /// type, so it is refused rather than stored as something else.
+    pub fn refusal(&self) -> Option<&str> {
+        self.refusal.as_deref()
     }
 
-    fn describe(&self, _doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
-        // A field edit, named the way the app's own edits name it: one
-        // History row describes an accepted answer and a typed one alike.
-        let mut path: Vec<tilo_actions::PathStep> = self.edit.path().iter().map(step).collect();
-        path.pop();
-        Some(tilo_actions::Described::new(Did::Edit(
-            tilo_actions::FieldEdit {
-                ty: std::any::type_name::<R>()
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or_default()
-                    .to_owned(),
-                field: self.field.clone(),
-                path,
-                op: match self.edit.op() {
-                    EditOp::Splice { .. } => tilo_actions::EditOp::Splice,
-                    EditOp::Replace { .. } => tilo_actions::EditOp::Replace,
-                    _ => tilo_actions::EditOp::Set,
-                },
-                old: None,
-                new: Some(Scalar::whole_text(self.change.proposed())),
-                args: BTreeMap::new(),
-            },
-        )))
+    /// This accept, refusing to write for `why`.
+    fn refusing(mut self, why: String) -> Self {
+        self.refusal = Some(why);
+        self
+    }
+
+    /// This accept, which only writes while the field still holds `original`
+    /// at the characters it replaces.
+    fn expecting(mut self, at: usize, delete: usize, original: &str) -> Self {
+        if self.selection.is_some() {
+            self.expects = Some((at..at.saturating_add(delete), original.to_owned()));
+        }
+        self
+    }
+
+    /// Why this accept must not be written over the field holding `now`, or
+    /// `None` when it still writes what the model answered about.
+    ///
+    /// The characters an answer replaces are checked as the field stands: if
+    /// the person typed inside or before them while the model ran, they moved,
+    /// and the answer would land on letters it never saw. Refused, it is
+    /// never written and the person keeps their text.
+    pub fn refusal_over(&self, now: &str) -> Option<String> {
+        if let Some(why) = self.refusal.as_deref() {
+            return Some(why.to_owned());
+        }
+        let (range, expected) = self.expects.as_ref()?;
+        let held: String = now
+            .chars()
+            .skip(range.start)
+            .take(range.end.saturating_sub(range.start))
+            .collect();
+        (*held != *expected).then(|| expected.clone())
+    }
+
+    /// The characters this accept replaces, when it replaces a selection.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.selection
+    }
+
+    /// The action to submit through the app's own door — `cx
+    /// .dispatcher().submit(...)`, or `app.invoke(...)` in a test — which
+    /// applies it as the record's one field edit: one change, one History
+    /// row, one undo step, and the refusal the door gives when the field
+    /// moved on while the model ran.
+    ///
+    /// # Errors
+    ///
+    /// Why the answer cannot be written at all — see
+    /// [`Self::refusal`] — so a caller says it instead of writing.
+    pub fn invoke(&self) -> Result<tilo_resource::Invoke<R>, String> {
+        match (&self.invoke, self.refusal.as_deref()) {
+            (Some(invoke), None) => Ok(invoke.clone()),
+            (_, Some(why)) => Err(why.to_owned()),
+            (None, None) => Err("this answer cannot be written".to_owned()),
+        }
     }
 }
 
@@ -562,17 +657,5 @@ fn field_of(step: &Segment) -> String {
         Segment::Field(key) | Segment::Key(key) => key.clone(),
         Segment::Item(id) => id.as_str().to_owned(),
         Segment::Cell { row, column } => format!("{row}:{column}"),
-    }
-}
-
-/// One step of an edit's path, in the History vocabulary.
-fn step(step: &Segment) -> tilo_actions::PathStep {
-    match step {
-        Segment::Field(key) => tilo_actions::PathStep::Field(key.clone()),
-        Segment::Item(id) => tilo_actions::PathStep::Item(id.as_str().to_owned()),
-        Segment::Key(key) => tilo_actions::PathStep::Key(key.clone()),
-        Segment::Cell { row, column } => {
-            tilo_actions::PathStep::Cell(row.as_str().to_owned(), column.as_str().to_owned())
-        }
     }
 }
