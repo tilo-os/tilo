@@ -190,6 +190,22 @@ fn a_persons_record_rides_its_own_route_in_their_room_and_converges_across_devic
     assert!(watched(&laptop).contains(&"later".to_owned()));
 }
 
+/// The owner's route names the kind its record holds, so a host that must
+/// create the record on this device's first write knows what it holds
+/// instead of answering that the app named no kind.
+#[test]
+fn a_persons_record_route_joins_naming_the_records_kind() {
+    let laptop = device();
+    let app = app_holding(&laptop);
+    let route = laptop.route().expect("the laptop's record route");
+    assert_eq!(route.app_id, APP);
+    assert_eq!(
+        app.collaboration.manager.joined_record_kind(&route),
+        Some(RecordKind::new("test.watched")),
+        "the join names what the record holds"
+    );
+}
+
 #[test]
 fn without_a_root_identity_the_persons_records_stay_on_the_device() {
     let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
