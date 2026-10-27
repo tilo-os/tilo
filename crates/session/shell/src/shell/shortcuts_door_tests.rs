@@ -1099,15 +1099,38 @@ fn an_app_opening_in_the_room_is_let_author_its_own_records() {
         OPENING_APP,
         &door.room.to_string(),
     );
-    let mut opening = CollaborationManager::for_route_fd_with_identity(
-        stream.into_raw_fd(),
-        OPENING_APP,
-        door.room.to_string().parse().expect("a room is a UUID"),
-        Some("file:opening.qdoc".to_string()),
-        None,
-        door.hosted.device.endpoint_identity(door.room),
-    )
-    .expect("start the collaboration client");
+    let identity = door.hosted.device.endpoint_identity(door.room);
+    let room = door.room;
+    // The app runs on its own thread beside the session, as an app does:
+    // its connection and its keys are answered while the session's loop
+    // keeps turning here.
+    let (access_tx, access_rx) = std::sync::mpsc::channel();
+    let open = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let app = {
+        let open = std::sync::Arc::clone(&open);
+        std::thread::spawn(move || {
+            let mut opening = CollaborationManager::for_route_fd_with_identity(
+                stream.into_raw_fd(),
+                OPENING_APP,
+                room.to_string().parse().expect("a room is a UUID"),
+                Some("file:opening.qdoc".to_string()),
+                None,
+                identity,
+            )
+            .expect("start the collaboration client");
+            while open.load(std::sync::atomic::Ordering::Relaxed) {
+                for event in opening.poll() {
+                    if let CollabEvent::ChannelAccess { route, state } = event
+                        && route.app_id == OPENING_APP
+                        && access_tx.send(state).is_err()
+                    {
+                        return;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+    };
     let mut access = None;
     while !(authors(&door) && access == Some(ChannelAccessState::Encrypted)) {
         assert!(
@@ -1117,15 +1140,11 @@ fn an_app_opening_in_the_room_is_let_author_its_own_records() {
             authors(&door),
         );
         door.app.pump();
-        for event in opening.poll() {
-            if let CollabEvent::ChannelAccess { route, state } = event
-                && route.app_id == OPENING_APP
-            {
-                access = Some(state);
-            }
-        }
+        access = access_rx.try_iter().last().or(access);
         std::thread::sleep(Duration::from_millis(10));
     }
+    open.store(false, std::sync::atomic::Ordering::Relaxed);
+    app.join().expect("the opening app ran");
 }
 
 #[test]
