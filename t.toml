@@ -923,7 +923,7 @@ inputs = ["**", "tools/ci/t-git-index.sh", "tools/policy/check_source_content.py
 name = "policy/public-references"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh python3 tools/policy/check_public_references.py"
+run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh --paths python3 tools/policy/check_public_references.py"
 hints = { builds = false }
 inputs = ["**", "tools/ci/t-git-index.sh", "tools/policy/check_public_references.py", "tools/policy/findings.py"]
 
@@ -1003,7 +1003,7 @@ inputs = ["docs/**", "**/*.md", "**/Cargo.toml", "tools/docs/**", "tools/tests/t
 name = "policy/suites"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh python3 tools/ci/suites.py check"
+run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh --paths python3 tools/ci/suites.py check"
 hints = { builds = false }
 inputs = ["**/*.py", "**/*.sh", "**/*.mjs", "**/*.rs", "**/*.toml", "**/*.yml", "**/*.txt", "tools/ci/suites.py", "tools/ci/t-git-index.sh", "tools/policy/findings.py", "tools/policy/run_unit_tests.py"]
 
@@ -1131,7 +1131,7 @@ inputs = ["os/Containerfile*", "os/dev/**", ".forgejo/workflows/os-dev-installer
 name = "policy/image-builder-inputs"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh python3 tools/policy/check_image_builder_inputs.py"
+run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh --paths python3 tools/policy/check_image_builder_inputs.py"
 hints = { builds = false }
 inputs = ["os/**", "tools/**", "fuzz/**", "**/*.rs", "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "tools/ci/t-git-index.sh", "tools/policy/check_image_builder_inputs.py", "tools/policy/findings.py"]
 
@@ -1235,7 +1235,7 @@ inputs = ["Cargo.lock", "vendor/**/Cargo.toml", "tools/policy/check_crypto_gener
 name = "policy/automerge-apply-contract"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh python3 tools/policy/check_automerge_apply_contract.py"
+run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh --paths python3 tools/policy/check_automerge_apply_contract.py"
 hints = { builds = false }
 inputs = ["**/*.rs", "**/Cargo.toml", "tools/ci/t-git-index.sh", "tools/policy/check_automerge_apply_contract.py", "tools/policy/findings.py", "tools/policy/rust_source.py"]
 
@@ -1283,7 +1283,7 @@ inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", "tools/policy/check_wasm_
 name = "policy/image-interpreters"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh python3 tools/policy/check_image_interpreters.py"
+run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh --paths python3 tools/policy/check_image_interpreters.py"
 hints = { builds = false }
 inputs = ["os/**", "dist/**", "docs/**", "keys/**", "crates/session/install-profile-model/locales.txt", "tools/policy/image_interpreter_baseline.txt", "tools/ci/t-git-index.sh", "tools/policy/check_image_interpreters.py", "tools/policy/findings.py"]
 
@@ -1291,7 +1291,7 @@ inputs = ["os/**", "dist/**", "docs/**", "keys/**", "crates/session/install-prof
 name = "policy/seeded-state-history"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh python3 tools/policy/check_seeded_state_history.py"
+run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh --paths python3 tools/policy/check_seeded_state_history.py"
 hints = { builds = false }
 inputs = ["**", "tools/ci/t-git-index.sh", "tools/policy/check_seeded_state_history.py", "tools/policy/findings.py"]
 
@@ -1331,7 +1331,7 @@ inputs = ["crates/**/*.rs", "tools/policy/check_iroh_presets.py", "tools/policy/
 name = "policy/setup-neutral"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh python3 tools/policy/check_setup_neutral.py"
+run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh --paths python3 tools/policy/check_setup_neutral.py"
 hints = { builds = false }
 inputs = ["**", "tools/ci/t-git-index.sh", "tools/policy/check_setup_neutral.py", "tools/policy/findings.py"]
 
@@ -1355,7 +1355,7 @@ inputs = ["**/*.rs", "**/Cargo.toml", "**/clippy.toml", "clippy.toml", "tools/ci
 name = "policy/source-file-size"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh python3 tools/policy/check_source_file_size.py"
+run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh --paths python3 tools/policy/check_source_file_size.py"
 hints = { builds = false }
 inputs = ["**/*.rs", "tools/policy/source_file_size_baseline.toml", "tools/ci/t-git-index.sh", "tools/policy/check_source_file_size.py", "tools/policy/findings.py"]
 
