@@ -1,6 +1,8 @@
 //! Scrolling the client's lists: the region under a pointer, the offsets it keeps, the edge fades and bars it paints, and a press or drag on a bar.
 
-use super::*;
+use super::{
+    GitClientApp, PaintCtx, Point, PressOutcome, Rect, ScrollMetrics, Scrollbar, Scroller,
+};
 
 impl GitClientApp {
     pub(super) fn scroll_at(&mut self, pos: Point, dx: f64, dy: f64) {
