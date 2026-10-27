@@ -12,8 +12,8 @@
 
 use std::collections::BTreeMap;
 
-use bounded_zip::BoundedArchive;
 use serde_json::Value;
+use tilo_doc_codecs::safety::{ZipLimits, read_zip_parts};
 
 /// The most pages, databases or views one export may bring in.
 pub const MAX_IMPORTED_TABLES: usize = 64;
@@ -64,19 +64,18 @@ fn looks_like_archive(bytes: &[u8]) -> bool {
 
 /// The CSV files of an export archive, in name order.
 fn tables_from_archive(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
-    let mut archive = BoundedArchive::from_bytes(bytes, archive_limits())
+    let mut parts = read_zip_parts(bytes, &archive_limits())
         .map_err(|_| ui::i18n!("sheets-notion-archive-invalid"))?;
-    let names: Vec<String> = archive
-        .file_names()
-        .filter(|name| has_extension(name, "csv"))
-        .map(std::borrow::Cow::into_owned)
-        .collect();
-    let mut names = names;
-    names.sort();
+    // A view's name is its file's, so the order a reader meets them in is
+    // the order the tables arrive: sorted, the same archive always lands as
+    // the same sheets.
+    parts.sort_by(|(left, _), (right, _)| left.cmp(right));
     let mut tables = Vec::new();
-    for name in names {
-        let cap = MAX_EXPORT_BYTES;
-        let Ok(text) = archive.read_text(&name, cap) else {
+    for (name, part) in parts {
+        if !has_extension(&name, "csv") {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(part) else {
             continue;
         };
         tables.push(ImportedTable {
@@ -87,8 +86,8 @@ fn tables_from_archive(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
     Ok(tables)
 }
 
-fn archive_limits() -> bounded_zip::ZipLimits {
-    bounded_zip::ZipLimits {
+fn archive_limits() -> ZipLimits {
+    ZipLimits {
         max_parts: MAX_IMPORTED_TABLES.saturating_mul(8),
         max_part_bytes: MAX_EXPORT_BYTES,
         max_total_bytes: MAX_EXPORT_BYTES,

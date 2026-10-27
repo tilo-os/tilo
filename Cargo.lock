@@ -10049,6 +10049,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-surface",
  "tilo-doc",
+ "tilo-doc-codecs",
  "tilo-document",
  "tilo-emoji-engine",
  "tilo-files",
@@ -10061,6 +10062,7 @@ dependencies = [
  "url",
  "uuid",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]
