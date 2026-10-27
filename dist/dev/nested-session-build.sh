@@ -34,7 +34,7 @@ fi
 out=$(realpath -m "${1:?usage: nested-session-build.sh OUT | --apps}")
 cd "$repo_root"
 arch=$(uname -m)
-env_runtime_trees=$(realpath -m "${TILO_ENV_RUNTIME_TREES:?TILO_ENV_RUNTIME_TREES names the env-runtime trees (t.toml's image-env-runtime-dev-tree-ARCH outputs)}")
+env_runtime_trees=$(realpath -m "${TILO_ENV_RUNTIME_TREES:?TILO_ENV_RUNTIME_TREES names the env-runtime trees (the outputs of the image-env-runtime-dev-tree-ARCH check)}")
 [[ -f $env_runtime_trees/env-runtime-tree-$arch.tar && -f $env_runtime_trees/env-runtime-rpms-$arch.txt ]] \
     || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
