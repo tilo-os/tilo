@@ -561,3 +561,107 @@ async fn a_share_to_edit_lifts_no_restriction() {
     );
     relay.shutdown().await;
 }
+
+/// A window is shared under its own share id by the device it runs on, the
+/// one its tab's topology namespace is registered to; nobody shares another
+/// device's window, nor a window in a namespace no device holds. The share
+/// is the room's record of who shared which window, read back by every
+/// member ([`tilo_desktop_model::window_share::window_shares`]).
+#[tokio::test]
+async fn only_the_device_a_window_runs_on_shares_it() {
+    use tilo_desktop_model::window_share::{window_node, window_share_id, window_shares};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let (room, workspace, host) = governed(rooms).await;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    let bo = admit(rooms, &room, &owner, 2).await;
+    let salt: u16 = 0x0A51;
+    invoke(
+        &host,
+        workspace,
+        &ada,
+        member_request(&room, CLAIM_TOPOLOGY_NAMESPACE, json!({ "salt": salt })),
+    )
+    .await
+    .unwrap();
+    let notes = (u64::from(salt) << 48) | 4;
+    let share = |tab: u64, id: &str| {
+        member_request(
+            &room,
+            SHARE_RESOURCE,
+            json!({
+                "share": id,
+                "node": window_node(&room, "so.tilo.notes", tab).to_string(),
+                "access": "view",
+            }),
+        )
+    };
+    let refused = |answer: Result<Value, ActionHostError>| {
+        matches!(answer, Err(ActionHostError::Refused { .. }))
+    };
+    assert!(
+        refused(invoke(&host, workspace, &bo, share(notes, &window_share_id(notes))).await),
+        "Bo can't share a window of Ada's device"
+    );
+    assert!(
+        refused(invoke(&host, workspace, &ada, share(notes, "m1")).await),
+        "a window is shared under its own share id"
+    );
+    let elsewhere = (0x0B52_u64 << 48) | 4;
+    assert!(
+        refused(
+            invoke(
+                &host,
+                workspace,
+                &ada,
+                share(elsewhere, &window_share_id(elsewhere))
+            )
+            .await
+        ),
+        "nor a window in a namespace no device holds"
+    );
+    let held_room = room.as_str();
+    let shared_now = || async move {
+        let state = rooms.room(held_room).await.unwrap();
+        let held = state.lock().await;
+        let doc = held.peer().admitted_room().unwrap();
+        window_shares(
+            &tilo_desktop_model::projection::room_policy_of(doc, held_room),
+            &tilo_desktop_model::projection::contents_owners_of(doc),
+            tilo_clock::unix_now_ms(),
+        )
+    };
+    assert!(shared_now().await.is_empty());
+
+    invoke(
+        &host,
+        workspace,
+        &ada,
+        share(notes, &window_share_id(notes)),
+    )
+    .await
+    .unwrap();
+    let shares = shared_now().await;
+    let shared = shares.get(&notes).expect("Ada's Notes is shared");
+    assert_eq!(shared.host, hex::encode(ada.device_public_key));
+    assert_eq!(shared.sharer, hex::encode(ada.user_public_key));
+    assert_eq!(shared.app_id, "so.tilo.notes");
+
+    invoke(
+        &host,
+        workspace,
+        &ada,
+        member_request(
+            &room,
+            UNSHARE_RESOURCE,
+            json!({ "share": window_share_id(notes) }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(shared_now().await.is_empty(), "the share ended");
+    relay.shutdown().await;
+}

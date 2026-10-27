@@ -534,6 +534,9 @@ impl ShellOverlayHost {
                 }
             }
             (PeerSyncRequest::AskForBot { .. }, Ok(_)) => {}
+            (PeerSyncRequest::ShareWindow { .. }, outcome) => {
+                self.window_share_answered(request, outcome.err().as_deref());
+            }
             (PeerSyncRequest::ReportWorkspace { .. }, outcome) => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     let mut state = chrome.borrow_mut();
