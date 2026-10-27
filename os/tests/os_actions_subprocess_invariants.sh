@@ -28,16 +28,10 @@ fi
 
 if [ ! -r "$PRIVACY" ]; then
     fail "cannot inspect $PRIVACY"
+elif grep -Eq 'Command::new|\.spawn\(' "$PRIVACY"; then
+    fail "PipeWire privacy helpers start processes outside the bounded runner"
 else
-    if grep -Eq '\[0_u8; 8192\]' "$PRIVACY"; then ok; else
-        fail "PipeWire monitor reads daemon output with unbounded line allocation"
-    fi
-    if grep -Eq '\.process_group\(0\)' "$PRIVACY"; then ok; else
-        fail "PipeWire monitor lacks isolated process ownership"
-    fi
-    if grep -Eq 'bounded_command::terminate_tree' "$PRIVACY"; then ok; else
-        fail "PipeWire monitor errors can leave descendants alive"
-    fi
+    ok
 fi
 must_contain 'bounded_command::run\(' \
     "OS controls do not use the shared bounded process runner"
