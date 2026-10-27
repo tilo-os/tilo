@@ -6176,6 +6176,40 @@ fn template_slot(template: crate::Template) -> String {
     format!("file-template:{index}")
 }
 
+/// The bar says a document holds work its file does not, and stops saying so
+/// when the file takes it. The mark is the document's, so a frame drawn in
+/// between (which clears the repaint flag) changes nothing about it.
+#[test]
+fn the_bar_marks_work_the_file_does_not_have() {
+    let (mut state, mut wp) = bound();
+    let edited = |wp: &WordProcessorWidget| {
+        wp.window_bar()
+            .location
+            .is_some_and(|location| location.edited)
+    };
+    assert!(!edited(&wp), "a new document holds nothing to lose");
+
+    wp.model_mut()
+        .insert_str(&mut edits(&mut state.doc), "Work in progress");
+    wp.refresh_blocks(&state.doc);
+    assert!(edited(&wp), "typed words are work no file has");
+
+    // The repaint flag going down, as the end of a frame takes it, is not
+    // the mark: it stays up until the file takes the work.
+    wp.lifecycle.dirty = false;
+    assert!(edited(&wp), "the mark is not the repaint flag");
+
+    crate::model::apply(
+        &mut state.doc,
+        &crate::actions::RichTextAction::NoteFileWritten {
+            digest: tilo_content::hash_bytes(b"written"),
+        },
+    )
+    .expect("the write is noted");
+    wp.refresh_blocks(&state.doc);
+    assert!(!edited(&wp), "the file took the work, and the bar says so");
+}
+
 /// The File commands are the window bar's File menu: open, save, save as and
 /// every template; on an empty document a template starts at once.
 #[test]
