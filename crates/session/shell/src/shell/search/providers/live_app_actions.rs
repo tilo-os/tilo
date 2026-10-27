@@ -373,6 +373,10 @@ pub struct LiveAppActionsProvider {
     resource_kinds: Vec<ResourceKind>,
     directory_invalidations: Rc<RefCell<HashSet<DirectoryCacheKey>>>,
     directory_epoch: AtomicU64,
+    /// Moves when a continuation page lands. It is part of the refresh
+    /// identity, so an open palette lists the page, but not of the cursor
+    /// revision: a cursor waiting on that page stays valid and resumes at it.
+    directory_appended: Cell<u64>,
     surface_snapshot: RefCell<Option<SurfaceSnapshot>>,
     surface_build: RefCell<Option<Receiver<SurfaceSnapshot>>>,
     /// The long-lived index worker, started by the first rebuild.
@@ -780,6 +784,7 @@ impl LiveAppActionsProvider {
             ],
             directory_invalidations: Rc::new(RefCell::new(HashSet::new())),
             directory_epoch: AtomicU64::new(0),
+            directory_appended: Cell::new(0),
             surface_snapshot: RefCell::new(None),
             surface_build: RefCell::new(None),
             index_worker: RefCell::new(None),
@@ -1338,41 +1343,51 @@ impl LiveAppActionsProvider {
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
         if !ready.is_empty() {
-            let mut pages = self.directory_pages_mut();
-            for (key, page, initial_page) in ready {
-                self.directory_failures.borrow_mut().remove(&key);
-                // A first page starts a new chain: the pages of an earlier
-                // one for this route/query continue cursors this page does
-                // not name, so they go. A continuation keeps the chain it
-                // extends: a complete listing walks it again from its first
-                // page, and dropping that page asked the app for it again,
-                // whose answer named a new continuation, never cached, so the
-                // listing never settled. The chain stays bounded by
-                // MAX_RETAINED_DIRECTORY_PAGES.
-                if initial_page {
-                    pages.retain(|existing, _| {
-                        existing == &key
-                            || existing.0 != key.0
-                            || existing.1 != key.1
-                            || existing.2 != key.2
-                    });
-                }
-                if !pages.contains_key(&key)
-                    && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
-                    && let Some(evicted) = pages.keys().next().cloned()
-                {
-                    pages.remove(&evicted);
-                }
-                pages.insert(key, page);
-                if initial_page {
-                    self.directory_epoch.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            // A later page appends after a retained cursor. Drop only the
-            // projection so that cursor can continue at its prior offset;
-            // the source revision deliberately remains stable.
-            self.auxiliary_snapshot.borrow_mut().take();
+            self.land_directory_pages(ready);
         }
+    }
+
+    /// Cache directory pages that arrived; `initial_page` tells a chain's
+    /// first page from a continuation.
+    fn land_directory_pages(&self, ready: Vec<(DirectoryCacheKey, CataloguePage, bool)>) {
+        let mut pages = self.directory_pages_mut();
+        for (key, page, initial_page) in ready {
+            self.directory_failures.borrow_mut().remove(&key);
+            // A first page starts a new chain: the pages of an earlier
+            // one for this route/query continue cursors this page does
+            // not name, so they go. A continuation keeps the chain it
+            // extends: a complete listing walks it again from its first
+            // page, and dropping that page asked the app for it again,
+            // whose answer named a new continuation, never cached, so the
+            // listing never settled. The chain stays bounded by
+            // MAX_RETAINED_DIRECTORY_PAGES.
+            if initial_page {
+                pages.retain(|existing, _| {
+                    existing == &key
+                        || existing.0 != key.0
+                        || existing.1 != key.1
+                        || existing.2 != key.2
+                });
+            }
+            if !pages.contains_key(&key)
+                && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
+                && let Some(evicted) = pages.keys().next().cloned()
+            {
+                pages.remove(&evicted);
+            }
+            pages.insert(key, page);
+            if initial_page {
+                self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.directory_appended
+                    .set(self.directory_appended.get().wrapping_add(1));
+            }
+        }
+        drop(pages);
+        // A later page appends after a retained cursor. Drop only the
+        // projection so that cursor resumes at the appended page; the
+        // cursor revision deliberately remains stable.
+        self.auxiliary_snapshot.borrow_mut().take();
     }
 
     /// Land the nested pages that have arrived. `true` when any did, or one
@@ -1653,7 +1668,13 @@ impl LiveAppActionsProvider {
         let mut pending_directory = Vec::new();
         let mut next_resume = None;
         let actor = ctx.chrome.active_local_user();
-        if ctx.chrome.search_resource_scope.is_none()
+        // Jobs lead the first page only; a resumed page continues after them.
+        if *resume
+            == (AuxiliaryResume {
+                root_after: None,
+                directory: None,
+            })
+            && ctx.chrome.search_resource_scope.is_none()
             && (needle.is_empty() || "jobs status progress".contains(needle))
         {
             for (id, update, lifecycle) in self
@@ -1992,6 +2013,32 @@ impl LiveAppActionsProvider {
         }
     }
 
+    /// What a cursor of this provider stays valid for: the local index,
+    /// the directory pages a walk starts from, publishers, actor and
+    /// locale. Pages appended behind a continuation leave it unchanged.
+    fn cursor_revision(&self, ctx: &SearchContext<'_>) -> String {
+        let scope = Self::surface_scope(ctx);
+        let source_generation = self.broker.surfaces_generation();
+        let ready = self
+            .surface_snapshot
+            .borrow()
+            .as_ref()
+            .is_some_and(|snapshot| {
+                snapshot.source_generation == source_generation && snapshot.scope == scope
+            });
+        format!(
+            "{}:{source_generation}:{}:{}:{}:{}:{}:{}",
+            if ready { "ready" } else { "indexing" },
+            self.directory_epoch.load(Ordering::Relaxed),
+            // Listing publishers is a memory read; it never asks an app.
+            self.directory_revision(ctx.chrome),
+            self.broker.statuses_generation(),
+            ctx.chrome.active_local_user(),
+            ctx.include_programmatic,
+            crate::shell::i18n::current_locale(),
+        )
+    }
+
     /// Exact receipt reads use the actor-owned broker key, not the four-row
     /// palette preview or the currently browsed application resource parent.
     fn job_control_page(
@@ -2001,7 +2048,7 @@ impl LiveAppActionsProvider {
         cursor: Option<&SearchCursor>,
         budget: SearchBudget,
     ) -> SearchPage {
-        let revision = self.search_revision(ctx);
+        let revision = self.cursor_revision(ctx);
         if cursor.is_some() {
             return SearchPage::stale(revision);
         }
@@ -3205,25 +3252,10 @@ impl SearchProvider for LiveAppActionsProvider {
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
-        let scope = Self::surface_scope(ctx);
-        let source_generation = self.broker.surfaces_generation();
-        let ready = self
-            .surface_snapshot
-            .borrow()
-            .as_ref()
-            .is_some_and(|snapshot| {
-                snapshot.source_generation == source_generation && snapshot.scope == scope
-            });
         format!(
-            "{}:{source_generation}:{}:{}:{}:{}:{}:{}",
-            if ready { "ready" } else { "indexing" },
-            self.directory_epoch.load(Ordering::Relaxed),
-            // Listing publishers is a memory read; it never asks an app.
-            self.directory_revision(ctx.chrome),
-            self.broker.statuses_generation(),
-            ctx.chrome.active_local_user(),
-            ctx.include_programmatic,
-            crate::shell::i18n::current_locale(),
+            "{}:{}",
+            self.cursor_revision(ctx),
+            self.directory_appended.get()
         )
     }
 
@@ -3277,7 +3309,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 && !ctx.wanted.contains(&ResourceKind::Action)
                 && !Self::wants_resource_rows(ctx.wanted))
         {
-            return SearchPage::exhausted(self.search_revision(&ctx), Vec::new());
+            return SearchPage::exhausted(self.cursor_revision(&ctx), Vec::new());
         }
         if let Some(target) = job_control_target(ctx.needle) {
             return self.job_control_page(&ctx, target, cursor, budget);
@@ -3286,7 +3318,7 @@ impl SearchProvider for LiveAppActionsProvider {
         self.set_directory_context(&ctx, &needle);
         self.apply_directory_invalidations();
         self.poll_directory_pages();
-        let revision = self.search_revision(&ctx);
+        let revision = self.cursor_revision(&ctx);
         let scope = Self::surface_scope(&ctx);
         let (stage, after, resume) = match cursor {
             Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
@@ -3461,10 +3493,12 @@ impl SearchProvider for LiveAppActionsProvider {
                         .as_ref()
                         .map_or("", |scope| scope.resource.as_str()),
                 );
+                // The resumed projection starts at this continuation's
+                // first row, not after this projection's rows.
                 return Self::live_aux_page(
                     revision,
                     results,
-                    position,
+                    0,
                     &needle,
                     &scope,
                     &AuxiliaryResume {
@@ -4909,7 +4943,7 @@ mod tests {
             let doc = AutoCommit::new();
             provider.set_directory_query("open");
             let ctx = context("open", &chrome, &doc);
-            let revision = provider.search_revision(&ctx);
+            let revision = provider.cursor_revision(&ctx);
             let scope = LiveAppActionsProvider::surface_scope(&ctx);
             let root = ActionDirectoryRoot {
                 peer_id: 7,
@@ -6460,3 +6494,7 @@ mod window_records_tests;
 #[cfg(test)]
 #[path = "live_app_actions/row_order_tests.rs"]
 mod row_order_tests;
+
+#[cfg(test)]
+#[path = "live_app_actions/catalogue_paging_tests.rs"]
+mod catalogue_paging_tests;
