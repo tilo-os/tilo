@@ -1056,3 +1056,4 @@ attention-deferred-one = { $count } put aside
 attention-deferred = { $count } put aside
 attention-pill-one = { $count } waiting
 attention-pill = { $count } waiting
+action-document-replaced = This action did not run because its document was reopened or replaced. Try again in the current document.
