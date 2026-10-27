@@ -10499,6 +10499,10 @@ mod native_field_tests;
     clippy::too_many_lines,
     reason = "each scenario is one function, kept whole so its fixture and its asserts read together"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each scenario's frame builder is its subject from its first paint to its last assertion"
+)]
 #[path = "frame_native_tab_scenarios.rs"]
 mod native_tab_scenarios;
 
