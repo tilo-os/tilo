@@ -22,6 +22,76 @@ starter-clear = Leeren\n";
     pub static CATALOG: ui::i18n::EmbeddedCatalog =
         ui::i18n::EmbeddedCatalog::new("en-US", &[("de-DE", DE_DE), ("en-US", EN_US)])
             .with_system_locale();
+
+    /// The label keys `tilo-app locale` writes into a generated
+    /// `src/locales.rs`, for the messages of all four templates.
+    pub mod keys {
+
+        pub const COLLECTION_ADD: ui::i18n::LabelKey = ui::i18n::LabelKey::new("collection-add");
+        pub const COLLECTION_DONE_LABEL: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("collection-done-label");
+        pub const COLLECTION_DRAFT_LABEL: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("collection-draft-label");
+        pub const COLLECTION_DRAFT_PLACEHOLDER: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("collection-draft-placeholder");
+        pub const COLLECTION_EMPTY_MESSAGE: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("collection-empty-message");
+        pub const COLLECTION_EMPTY_TITLE: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("collection-empty-title");
+        pub const COLLECTION_REMOVE: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("collection-remove");
+        pub const COLLECTION_TITLE_PLACEHOLDER: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("collection-title-placeholder");
+        pub const DOCUMENT_BODY_LABEL: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("document-body-label");
+        pub const DOCUMENT_BODY_PLACEHOLDER: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("document-body-placeholder");
+        pub const DOCUMENT_PREVIEW_HEADING: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("document-preview-heading");
+        pub const DOCUMENT_TITLE_LABEL: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("document-title-label");
+        pub const DOCUMENT_TITLE_PLACEHOLDER: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("document-title-placeholder");
+        pub const DOCUMENT_UNTITLED: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("document-untitled");
+        pub const GENERATED_ADD: ui::i18n::LabelKey = ui::i18n::LabelKey::new("generated-add");
+        pub const GENERATED_CLEAR: ui::i18n::LabelKey = ui::i18n::LabelKey::new("generated-clear");
+        pub const GENERATED_CREATE: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-create");
+        pub const GENERATED_DOCUMENT_BODY: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-document-body");
+        pub const GENERATED_DOCUMENT_TITLE: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-document-title");
+        pub const GENERATED_GREETING_NAME: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-greeting-name");
+        pub const GENERATED_ITEM_DONE: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-item-done");
+        pub const GENERATED_ITEM_TITLE: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-item-title");
+        pub const GENERATED_PROJECT_NAME: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-project-name");
+        pub const GENERATED_PROJECTS_DRAFT: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-projects-draft");
+        pub const GENERATED_REMOVE: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-remove");
+        pub const GENERATED_SET_CONTENT: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("generated-set-content");
+        pub const GRAPH_CREATE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("graph-create");
+        pub const GRAPH_LOAD_ERROR: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("graph-load-error");
+        pub const GRAPH_PROJECT_NAME: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("graph-project-name");
+        pub const STARTER_CLEAR: ui::i18n::LabelKey = ui::i18n::LabelKey::new("starter-clear");
+        pub const STARTER_GREETING: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("starter-greeting");
+        pub const STARTER_GREETING_EMPTY: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("starter-greeting-empty");
+        pub const STARTER_NAME_LABEL: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("starter-name-label");
+        pub const STARTER_NAME_PLACEHOLDER: ui::i18n::LabelKey =
+            ui::i18n::LabelKey::new("starter-name-placeholder");
+        pub const STARTER_TITLE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("starter-title");
+    }
 }
 
 /// The application id every included template runs under.
