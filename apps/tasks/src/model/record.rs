@@ -144,7 +144,7 @@ impl Tracker {
             {
                 limits.push(budget.clone());
             }
-            at = found.parent.clone();
+            at.clone_from(&found.parent);
         }
         limits
     }
@@ -160,7 +160,7 @@ impl Tracker {
                 break;
             };
             found.spend = (total.cost_micros > 0).then_some(total.cost_micros);
-            at = found.parent.clone();
+            at.clone_from(&found.parent);
         }
     }
 
