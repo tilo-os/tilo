@@ -38,9 +38,9 @@ mod scheduled;
 
 #[cfg(target_os = "linux")]
 pub use dbus::{NotificationService, ServerHandle, serve_notifications, spawn_signal_emitter};
+use flatpak::valid_notification_app_id;
 #[cfg(target_os = "linux")]
 pub(crate) use flatpak::verified_flatpak_app_id;
-use flatpak::*;
 pub use hints::IncomingImageData;
 
 pub const BUS_NAME: &str = "org.freedesktop.Notifications";
@@ -1160,6 +1160,9 @@ fn evict_oldest_remote_if_full(inner: &mut BridgeInner) {
 
 #[cfg(test)]
 mod tests {
+    use super::flatpak::{
+        flatpak_cgroup_matches, systemd_escape, verified_foreign_notification_identity_from,
+    };
     use super::*;
     #[cfg(target_os = "linux")]
     use crate::portal::CallerMap;

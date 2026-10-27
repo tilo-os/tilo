@@ -24,3 +24,12 @@ fn start_cost() {
         .expect("calendar opens")
         .print();
 }
+
+/// What a hover moving down the sidebar and back repaints and costs, each
+/// motion on the live window path. Reports only.
+#[test]
+fn sidebar_hover() {
+    ui::framework::testing::perf::sidebar_sweep::<calendar::CalendarShell>(2)
+        .expect("calendar opens")
+        .print();
+}

@@ -727,6 +727,11 @@ impl AudioArea {
         self.read.is_finished()
     }
 
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
+    }
+
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
     /// its first frame ([`crate::panes::LIVE_AREAS`]).
@@ -1032,6 +1037,7 @@ impl AudioRead {
     /// `input`, the devices' names) is applied again when its device is
     /// present.
     fn of_device(output: Option<&str>, input: Option<&str>) -> Self {
+        crate::device_read::off_ui_thread();
         let (initial, volume_error) = match os_actions::get_volume_state() {
             Ok(state) => (state, None),
             Err(error) => (

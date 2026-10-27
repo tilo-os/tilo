@@ -2502,6 +2502,15 @@ fn serve_x11_clipboard(
     window: u32,
     text: String,
 ) -> X11ClipboardOwner {
+    serve_x11_clipboard_gated(conn, window, text, |_| {})
+}
+
+fn serve_x11_clipboard_gated(
+    conn: x11rb::rust_connection::RustConnection,
+    window: u32,
+    text: String,
+    mut gate: impl FnMut(usize) + Send + 'static,
+) -> X11ClipboardOwner {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::Event;
     use x11rb::protocol::xproto::{
@@ -2523,6 +2532,7 @@ fn serve_x11_clipboard(
     let cleared = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let lost = Arc::clone(&cleared);
     let thread = std::thread::spawn(move || {
+        let mut payload_requests: usize = 0;
         while !flag.load(std::sync::atomic::Ordering::SeqCst) {
             let Ok(Some(event)) = conn.poll_for_event() else {
                 std::thread::sleep(Duration::from_millis(5));
@@ -2542,6 +2552,10 @@ fn serve_x11_clipboard(
             } else {
                 request.property
             };
+            if request.target != targets {
+                payload_requests = payload_requests.saturating_add(1);
+                gate(payload_requests);
+            }
             let served = if request.target == targets {
                 conn.change_property32(
                     PropMode::REPLACE,
@@ -2597,10 +2611,80 @@ fn serve_x11_clipboard(
 /// is gone, for a short string and a long one.
 #[test]
 fn x11_clipboard_source_pastes_into_a_wayland_client() {
-    for text in [
-        "short from x11".to_string(),
-        "long x11 line. ".repeat(20_000),
-    ] {
+    exercise_x11_clipboard_source(
+        false,
+        [
+            "short from x11".to_string(),
+            "long x11 line. ".repeat(20_000),
+        ],
+    );
+}
+
+/// Hold the final mirror reply until two real receives through the original
+/// offer are queued. Then let the manager adopt while the external reply is
+/// still withheld. Both the active conversion and the queued one must survive.
+#[test]
+fn x11_clipboard_mirror_handoff_preserves_pending_pastes() {
+    exercise_x11_clipboard_source(true, ["short from x11".to_string()]);
+}
+
+#[test]
+fn x11_clipboard_mirror_handoff_preserves_pending_large_pastes() {
+    exercise_x11_clipboard_source(true, ["long x11 line. ".repeat(20_000)]);
+}
+
+/// Queue two receives on satellite's original offer, release the final mirror
+/// format, and answer the external conversion only once the manager's offer has
+/// reached satellite. Both pastes must still deliver the exact bytes.
+fn paste_across_handoff(
+    compositor: &Compositor,
+    terminal: &mut TestClient,
+    text: &str,
+    last_mirror_tx: &mpsc::Sender<()>,
+    requested_rx: &mpsc::Receiver<()>,
+    external_tx: &mpsc::Sender<()>,
+) {
+    terminal.wait_until(|s| s.clipboard_offer.is_some(), "original satellite offer");
+    let offer = terminal
+        .state
+        .clipboard_offer
+        .clone()
+        .expect("original offer");
+    let pipes: Vec<_> = (0..2)
+        .map(|_| {
+            let (read_fd, write_fd) = make_pipe();
+            offer.receive(TEXT_MIME.to_owned(), write_fd.as_fd_ref());
+            drop(write_fd);
+            read_fd
+        })
+        .collect();
+    terminal.roundtrip();
+    last_mirror_tx.send(()).expect("release last mirror");
+    requested_rx
+        .recv_timeout(deadline())
+        .expect("external request before takeover");
+    // An unpatched bridge takes ownership at once; the patched one keeps the
+    // X11 queue until it drains. Either way the real Wayland mirror offer has
+    // reached satellite before the external conversion may answer.
+    tilo_test_env::wait_until("the mirror offer to reach satellite", || {
+        terminal.pump();
+        let log = compositor.full_log();
+        log.contains("Clipboard set from Wayland")
+            || log.contains("Deferring Wayland selection ownership until X11 conversions finish")
+    });
+    external_tx.send(()).expect("release external conversion");
+    for (index, pipe) in pipes.into_iter().enumerate() {
+        assert_eq!(
+            String::from_utf8(drain_bytes(pipe, terminal, None)).unwrap(),
+            text,
+            "in-flight paste {index} while the X11 owner lives"
+        );
+    }
+    compositor.wait_for_log(&["Clipboard set from Wayland"], "handoff never completed");
+}
+
+fn exercise_x11_clipboard_source(handoff: bool, texts: impl IntoIterator<Item = String>) {
+    for text in texts {
         let compositor = Compositor::start_host_desktop();
         let mut native = TestClient::new(compositor.connect(), "org.tilo.test.x11-paste-native");
         native.map_window(&compositor);
@@ -2610,10 +2694,30 @@ fn x11_clipboard_source_pastes_into_a_wayland_client() {
             "xwayland-satellite is not installed, so no X11 clipboard path can be tested"
         );
         let (conn, window) = x11_focused_window(&compositor, &mut native, &token);
-        let owner = serve_x11_clipboard(conn, window, text.clone());
+        let (last_mirror_tx, last_mirror_rx) = mpsc::channel();
+        let (external_tx, external_rx) = mpsc::channel();
+        let (requested_tx, requested_rx) = mpsc::channel();
+        let owner = serve_x11_clipboard_gated(conn, window, text.clone(), move |request| {
+            if handoff {
+                match request {
+                    3 => last_mirror_rx
+                        .recv_timeout(deadline())
+                        .expect("release last mirror"),
+                    4 => {
+                        requested_tx
+                            .send(())
+                            .expect("external conversion requested");
+                        external_rx
+                            .recv_timeout(deadline())
+                            .expect("release external receive");
+                    }
+                    _ => (),
+                }
+            }
+        });
         // The copy lands while the X11 window is focused; opening another
         // window first would take focus before satellite's request arrives.
-        let end = Instant::now() + deadline();
+        let end = deadline_end();
         while compositor.chrome_paste(false).as_deref() != Some(text.as_str()) {
             assert!(
                 Instant::now() < end,
@@ -2624,13 +2728,24 @@ fn x11_clipboard_source_pastes_into_a_wayland_client() {
         }
         let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.alacritty");
         terminal.map_window(&compositor);
-        assert_eq!(
-            terminal.read_clipboard(None),
-            text,
-            "paste while the X11 owner lives"
-        );
+        if handoff {
+            paste_across_handoff(
+                &compositor,
+                &mut terminal,
+                &text,
+                &last_mirror_tx,
+                &requested_rx,
+                &external_tx,
+            );
+        } else {
+            assert_eq!(
+                terminal.read_clipboard(None),
+                text,
+                "paste while the X11 owner lives"
+            );
+        }
         // Tilo has mirrored it by now; the X11 program exits.
-        let deadline = Instant::now() + deadline();
+        let deadline = deadline_end();
         while compositor.chrome_paste(false).as_deref() != Some(text.as_str()) {
             assert!(
                 Instant::now() < deadline,
@@ -2748,6 +2863,55 @@ fn is_white([r, g, b]: [u8; 3]) -> bool {
     r >= 240 && g >= 240 && b >= 240
 }
 
+/// The centre of the tile showing white: the X11 window, as the person sees
+/// it before pressing Print. The X11 window fills its tile white; the native
+/// client's is grey.
+fn white_tile_centre(compositor: &Compositor, paint: &dyn Fn()) -> (f64, f64) {
+    let end = deadline_end();
+    loop {
+        assert!(
+            Instant::now() < end,
+            "the X11 window never showed its white content in any tile {:?}\n{}",
+            compositor.foreign_surface_rects(),
+            compositor.recent_log()
+        );
+        paint();
+        let shown = compositor
+            .foreign_surface_rects()
+            .into_iter()
+            .map(|[x, y, w, h]| (x + w / 2.0, y + h / 2.0))
+            .find(|&at| is_white(screen_pixel(compositor, "before-print", at)));
+        if let Some(at) = shown {
+            return at;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The capture bar and its shutter are wholly on the screen.
+fn assert_capture_tool_on_screen(compositor: &Compositor) {
+    let screen = [
+        0.0,
+        0.0,
+        f64::from(compositor.size.0),
+        f64::from(compositor.size.1),
+    ];
+    for name in ["capture.bar", "capture.shutter"] {
+        let [x, y, w, h] = compositor
+            .named_rect(name)
+            .unwrap_or_else(|| panic!("{name} is laid out after Print"));
+        assert!(
+            w > 0.0
+                && h > 0.0
+                && x >= screen[0] - 0.5
+                && y >= screen[1] - 0.5
+                && x + w <= screen[2] + 0.5
+                && y + h <= screen[3] + 0.5,
+            "{name} [{x}, {y}, {w}, {h}] is wholly on the screen {screen:?}"
+        );
+    }
+}
+
 /// A host program under Xwayland (a terminal such as Alacritty) is focused
 /// and the person presses Print: the capture bar comes up and the window
 /// keeps showing what it showed, held for the screenshot, never a greyed or
@@ -2787,28 +2951,7 @@ fn print_over_a_focused_x11_window_opens_the_capture_bar_and_keeps_the_window_sh
         .unwrap();
         conn.flush().unwrap();
     };
-    // The X11 window fills its tile white; the native client's is grey.
-    // Find the tile showing white: that is the X11 window, as the person
-    // sees it before pressing Print.
-    let end = deadline_end();
-    let centre = loop {
-        assert!(
-            Instant::now() < end,
-            "the X11 window never showed its white content in any tile {:?}\n{}",
-            compositor.foreign_surface_rects(),
-            compositor.recent_log()
-        );
-        paint();
-        let shown = compositor
-            .foreign_surface_rects()
-            .into_iter()
-            .map(|[x, y, w, h]| (x + w / 2.0, y + h / 2.0))
-            .find(|&at| is_white(screen_pixel(&compositor, "before-print", at)));
-        if let Some(at) = shown {
-            break at;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let centre = white_tile_centre(&compositor, &paint);
 
     for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
         let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
@@ -2824,26 +2967,7 @@ fn print_over_a_focused_x11_window_opens_the_capture_bar_and_keeps_the_window_sh
         |name| name.starts_with("capture."),
         "the capture tool opening",
     );
-    let screen = [
-        0.0,
-        0.0,
-        f64::from(compositor.size.0),
-        f64::from(compositor.size.1),
-    ];
-    for name in ["capture.bar", "capture.shutter"] {
-        let [x, y, w, h] = compositor
-            .named_rect(name)
-            .unwrap_or_else(|| panic!("{name} is laid out after Print"));
-        assert!(
-            w > 0.0
-                && h > 0.0
-                && x >= screen[0] - 0.5
-                && y >= screen[1] - 0.5
-                && x + w <= screen[2] + 0.5
-                && y + h <= screen[3] + 0.5,
-            "{name} [{x}, {y}, {w}, {h}] is wholly on the screen {screen:?}"
-        );
-    }
+    assert_capture_tool_on_screen(&compositor);
     let held = screen_pixel(&compositor, "capture-open", centre);
     assert!(
         is_white(held),

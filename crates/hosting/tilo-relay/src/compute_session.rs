@@ -167,6 +167,15 @@ impl ProtocolHandler for ComputeProtocol {
     }
 }
 
+/// The workspace a message offers this device's compute in, if it is an
+/// offer.
+fn advertised_in(incoming: &ComputeEnvelope) -> Option<u64> {
+    match incoming {
+        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
+        _ => None,
+    }
+}
+
 async fn run_server_session(
     protocol: ComputeProtocol,
     connection: Connection,
@@ -256,10 +265,7 @@ async fn run_server_session(
                             "compute message sent before workspace attach".into(),
                         ));
                     }
-                    let advertising = match &incoming {
-                        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
-                        _ => None,
-                    };
+                    let advertising = advertised_in(&incoming);
                     if let Some(reply) = dispatch_compute(&protocol.workspaces, &peer, incoming).await? {
                         write_compute(&mut send, &reply).await?;
                     }

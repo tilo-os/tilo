@@ -2311,14 +2311,16 @@ COPY \
 # offers it only while the person's key is held. A custom authselect
 # profile over the configured one, with its features, so authselect keeps
 # owning the files; an image whose base has no authselect configuration fails
-# here rather than shipping a stack that skips the daemon.
+# here rather than shipping a stack that skips the daemon. No backup of the
+# files it replaces: the base image has them, and a backup is named by the time
+# the build ran, which made the layer differ in every build.
 RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselect-tilo.py,ro \
     current="$(authselect current --raw)" \
     && base="${current%% *}" \
     && features="$(printf '%s' "$current" | cut -s -d' ' -f2-)" \
     && authselect create-profile tilo --base-on="$base" \
     && python3 /run/authselect-tilo.py /etc/authselect/custom/tilo \
-    && authselect select custom/tilo $features --force \
+    && authselect select custom/tilo $features --force --nobackup \
     && grep -q pam_tilo.so /etc/pam.d/system-auth \
     && grep -q pam_tilo.so /etc/pam.d/password-auth \
     && ! grep -q pam_fprintd /etc/pam.d/system-auth /etc/pam.d/password-auth
@@ -2917,12 +2919,11 @@ RUN --network=none \
 # (with the side builds: the AirPlay sender, joycond, bootc,
 # xwayland-satellite), the Windows components, the signed runtime bundle and
 # the font catalog's names, the runtimes' publishers, the app store (left out of
-# it what the layers below hold already). They are made over nothing, a scratch
-# stage, so they don't depend on the layers below them: t builds this stage
-# alone and puts its layers over the trust layer as they are, so the same binary
-# gives the same layer whatever the variant. One `podman build` of the whole
-# image (os/Containerfile) copies the stage into the rootfs whole.
-FROM scratch AS binaries-out
+# it what the layers below hold already). One layer each, so a tree that did not
+# change is the same layer as before and an update sends only the trees that
+# did: a changed program doesn't send the runtimes, the side builds or the app
+# store again.
+FROM trust AS binaries
 COPY --from=component-files /image/rollback-files/ /
 COPY --from=component-files /image/recovery-files/ /
 COPY --from=component-files /image/extension-files/ /
@@ -2934,9 +2935,7 @@ COPY --from=component-files /image/extension-files/ /
 # that do are here too. (tilo-rollback, which the initramfs carries, arrives
 # earlier with rollback-files.)
 #
-# Compositor, FUSE driver, system apps, settings and model services. The
-# enumerated scratch overlay preserves their individual paths and metadata but
-# costs this large rootfs only one commit.
+# Compositor, FUSE driver, system apps, settings and model services.
 # Settings. Everything the compositor's quick-settings popover cannot
 # reach lives here — Wi-Fi profiles, audio device routing, display scale,
 # keyboard layout, power policy, touchpad — so an image without it is an
@@ -2989,9 +2988,6 @@ COPY --from=native-builder-payload \
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
 COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
-
-FROM trust AS binaries
-COPY --from=binaries-out / /
 
 # ---- The derived state: what reads every layer below ----------------------
 # The initramfs (the kernel's modules, the rollback and unlock helpers, the

@@ -403,3 +403,13 @@ fn customizing_writes_the_theme_on_its_first_edit() {
     leave_for_presets(&mut app);
     assert_eq!(app.state().themes.len(), 1, "a written theme stays");
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<App>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}

@@ -530,15 +530,12 @@ impl Widget for ShellOverlayHost {
         }
         self.push_display_layout();
         let content_node = self.content.build_layout(taffy, theme, node_map);
-        // The list grows with its rows up to most of the display it is on,
-        // then scrolls; what fits decides how many rows each group shows.
-        let palette_area = self.overlay_area();
-        if palette_area.height() > 0.0 {
-            self.palette.set_max_list_height(
-                (palette_area.height() * PALETTE_LIST_SHARE)
-                    .min(PALETTE_LIST_MAX * f64::from(theme.text_scale))
-                    .max(160.0),
-            );
+        // The list grows with its rows up to most of the display it is on
+        // (or of the window an app's search stands in), then scrolls; what
+        // fits decides how many rows each group shows.
+        let (palette_frame, palette_list_max) = self.palette_place(theme);
+        if self.overlay_area().height() > 0.0 {
+            self.palette.set_max_list_height(palette_list_max);
         }
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         // Match children(): a closed composer has no live controls to measure
@@ -578,13 +575,14 @@ impl Widget for ShellOverlayHost {
         // inserted above — but the override is skippable, so a failure
         // here degrades to the widget's own default layout instead of
         // panicking.
-        // Centred on the focused display: across two, the host's own
-        // centre is the seam between them.
+        // Where `palette_place` puts it: centred on the focused display
+        // (across two, the host's own centre is the seam between them), or
+        // in the window of the app a search is scoped to.
         let area = self.overlay_area();
         if let Ok(style) = taffy.style(palette_node) {
             let mut palette_style = style.clone();
             palette_style.position = Position::Absolute;
-            let frame = self.palette_frame(theme.text_scale);
+            let frame = palette_frame;
             let palette_target_w = frame.width();
             palette_style.max_size.height =
                 Dimension::length(f32_of_f64((area.height() - 112.0).max(200.0)));
@@ -609,7 +607,7 @@ impl Widget for ShellOverlayHost {
         // `self.rect` is last frame's, so frame 1 sizes off a zero-width
         // host and lands on the 560 floor; remembering what it sized
         // against lets `apply_layout` re-dirty and converge.
-        self.palette_layout_host = Some((self.rect, area));
+        self.palette_layout_host = Some((self.rect, area, self.searched_window()));
 
         self.content_node = Some(content_node);
         self.palette_node = Some(palette_node);
@@ -718,7 +716,9 @@ impl Widget for ShellOverlayHost {
         }
         // One more pass if the card sized against stale host dimensions or
         // focus moved to another display; settles in a single extra frame.
-        if self.palette_layout_host != Some((self.rect, self.overlay_area())) {
+        if self.palette_layout_host
+            != Some((self.rect, self.overlay_area(), self.searched_window()))
+        {
             self.palette_layout_dirty = true;
         }
         // Re-derive strip widths now the host's rect is known: frame 1's

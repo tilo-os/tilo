@@ -1880,3 +1880,62 @@ fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
         "once the tap has landed the rows are touch-sized: {seen_row:?} then {touch_row:?}"
     );
 }
+
+/// Moving the pointer from one destination to the next repaints those two
+/// rows, not the sidebar, the content beside it or the window: each frame's
+/// damage stays within the two rows the hover moved between, and no frame
+/// asks for a layout.
+#[cfg(feature = "native")]
+#[test]
+fn a_hover_moving_between_destinations_damages_only_those_two_rows() {
+    use crate::a11y::Role;
+    let shell = crate::widget::NavShell::new()
+        .sidebar(Box::new(NavList::new(destinations(12))))
+        .content(Box::new(
+            crate::widget::Stack::new().push(Box::new(crate::widget::Text::new("A folder"))),
+        ));
+    let mut app = crate::app::App::new_with_controlled_inputs(State::new(), Box::new(shell));
+    let mut damage = crate::app::SurfaceDamage::default();
+    app.init_layout();
+    for _ in 0..4 {
+        host_frame(&mut app, &mut damage);
+    }
+    let rows: Vec<Rect> = app
+        .semantic_tree()
+        .iter()
+        .filter(|node| node.role == Role::TreeItem)
+        .filter_map(|node| node.bounds)
+        .take(8)
+        .collect();
+    assert!(rows.len() >= 4, "the sidebar shows its rows: {rows:?}");
+    let sidebar_right = rows.iter().map(|row| row.x1).fold(0.0, f64::max);
+    let mut hover = |app: &mut crate::app::App, at: Rect| {
+        let centre = at.center();
+        app.surface_input(
+            &Region,
+            crate::synthetic_input::cursor_moved(centre.x, centre.y),
+            false,
+        );
+        let unsettled = app.unsettled();
+        host_frame(app, &mut damage);
+        let rects = damage.take();
+        (unsettled, rects, damage.repainted())
+    };
+    let _ = hover(&mut app, rows[0]);
+    for pair in rows.windows(2) {
+        let (unsettled, rects, why) = hover(&mut app, pair[1]);
+        assert!(!unsettled, "a hover asked for a layout");
+        let rects = rects.unwrap_or_else(|| panic!("a hover repainted the window: {why:?}"));
+        let (top, bottom) = (pair[0].y0.min(pair[1].y0), pair[0].y1.max(pair[1].y1));
+        assert!(!rects.is_empty(), "the hover shows");
+        // An empty rect covers no pixel.
+        for rect in rects.iter().filter(|rect| rect.area() > 0.0) {
+            assert!(
+                rect.y0 >= top - 2.0 && rect.y1 <= bottom + 2.0 && rect.x1 <= sidebar_right + 16.0,
+                "hovering from {:?} to {:?} damaged {rect:?}, outside the two rows",
+                pair[0],
+                pair[1],
+            );
+        }
+    }
+}

@@ -461,6 +461,7 @@ impl ActorState {
             tracing::warn!(ws, %error, "could not join the room's live plane");
         }
         self.native_media.reconnected(ws, &session);
+        self.reopen_records(ws, &session);
         self.host_sessions.insert(
             (ws, host),
             HostRuntime {

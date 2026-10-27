@@ -47,19 +47,28 @@ crate::effects::effect_family!(AppearanceEffect => answer);
 /// The shape of the wallpaper thumbnails: the laptop panel's 16:10.
 const WALLPAPER_ASPECT: f64 = 16.0 / 10.0;
 
-/// The shipped wallpapers whose thumbnails this system has installed, with
-/// those thumbnails, decoded once per process.
-fn installed_thumbnails() -> &'static [(
+/// A shipped wallpaper with its decoded thumbnail.
+type Thumbnail = (
     &'static tilo_wallpapers::Wallpaper,
     vello::peniko::ImageData,
-)] {
-    static THUMBNAILS: std::sync::OnceLock<
-        Vec<(
-            &'static tilo_wallpapers::Wallpaper,
-            vello::peniko::ImageData,
-        )>,
-    > = std::sync::OnceLock::new();
+);
+
+/// The thumbnails, once decoded: read off the UI thread once per process
+/// ([`read_thumbnails`]).
+static THUMBNAILS: std::sync::OnceLock<Vec<Thumbnail>> = std::sync::OnceLock::new();
+
+/// The shipped wallpapers whose thumbnails this system has installed, with
+/// those thumbnails; none until [`read_thumbnails`] has decoded them.
+fn installed_thumbnails() -> &'static [Thumbnail] {
+    THUMBNAILS.get().map_or(&[], Vec::as_slice)
+}
+
+/// Decode the installed thumbnails unless they have been: a read of every
+/// thumbnail file from the data directories and its decode, too slow for
+/// the UI thread.
+fn read_thumbnails() {
     THUMBNAILS.get_or_init(|| {
+        crate::device_read::off_ui_thread();
         tilo_wallpapers::all()
             .iter()
             .filter_map(|wallpaper| {
@@ -70,7 +79,7 @@ fn installed_thumbnails() -> &'static [(
                 ))
             })
             .collect()
-    })
+    });
 }
 
 /// The persisted values of `table`, each `(label, value)`.
@@ -349,6 +358,8 @@ struct Shape {
     schedule: [String; 3],
     desk: [bool; 4],
     status: Option<String>,
+    /// Whether the wallpaper thumbnails have been decoded.
+    thumbnails: bool,
 }
 
 impl AppearancePane {
@@ -370,6 +381,7 @@ impl AppearancePane {
                 desk.system_monitor.enabled,
             ],
             status: self.wallpaper_status.get(),
+            thumbnails: THUMBNAILS.get().is_some(),
         }
     }
 }
@@ -381,6 +393,11 @@ impl AppearancePane {
         let prefs = cx.follow::<AppearancePrefs>();
         let desktop = cx.follow::<DesktopControls>();
         let desk = cx.follow::<crate::prefs::DeskWidgetsPrefs>();
+        // The picker shows the person's own picture until the shipped
+        // ones are decoded; their landing wakes the window to show them.
+        if THUMBNAILS.get().is_none() {
+            crate::device_read::Reading::new(read_thumbnails).refresh();
+        }
         let mut pane = Self {
             cx,
             prefs,
@@ -393,6 +410,7 @@ impl AppearancePane {
                 schedule: Default::default(),
                 desk: [false; 4],
                 status: None,
+                thumbnails: false,
             },
             composed: ui::widget::Composed::default(),
         };
@@ -489,13 +507,7 @@ impl AppearancePane {
         self.wallpaper_picker_of(installed_thumbnails())
     }
 
-    fn wallpaper_picker_of(
-        &self,
-        thumbnails: &[(
-            &'static tilo_wallpapers::Wallpaper,
-            vello::peniko::ImageData,
-        )],
-    ) -> ui::widget::MediaGrid {
+    fn wallpaper_picker_of(&self, thumbnails: &[Thumbnail]) -> ui::widget::MediaGrid {
         let chosen = tilo_wallpapers::choice(self.prefs().wallpaper.as_deref());
         let mut cards: Vec<ui::widget::MediaCard> = thumbnails
             .iter()

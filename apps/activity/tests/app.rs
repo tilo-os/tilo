@@ -339,3 +339,13 @@ fn the_window_bars_search_narrows_history_and_the_bar_counts_what_it_kept() {
         "closing the search shows every change again"
     );
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(|| {
+        ui::framework::testing::TestApp::<App>::capture(Some("whats-new"))
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+}

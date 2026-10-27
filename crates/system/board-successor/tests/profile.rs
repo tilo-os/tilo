@@ -314,6 +314,68 @@ fn a_firmware_described_board_is_confined_by_its_dmi_identity() {
 }
 
 #[test]
+fn a_board_defaults_hardening_only_for_what_its_kernel_cannot_deliver() {
+    let board = json!({"schema_version": 2, "id": "handset-board", "architecture": "aarch64",
+                       "devicetree": "rockchip/board.dtb", "system_firmware": [],
+                       "firmware": {},
+                       "crash_record": {"storage": "ramoops", "watchdog": "none",
+                                        "lockup": "none"},
+                       "hardening_defaults": [
+                           {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"},
+                           {"action": "microphone", "driver": "CONFIG_SND"}]});
+    assert!(validate_definition(board.clone()).is_ok());
+    for (label, defaults) in [
+        (
+            "an action no view offers",
+            json!([{"action": "wifi", "driver": "CONFIG_MEDIA_SUPPORT"}]),
+        ),
+        (
+            "a driver that is not a kernel option",
+            json!([{"action": "camera", "driver": "media"}]),
+        ),
+        // Relaxing the camera's hardening because of a sound card would open
+        // a hole the board's own declaration does not cover.
+        (
+            "a driver the action does not cover",
+            json!([{"action": "camera", "driver": "CONFIG_SND"}]),
+        ),
+        (
+            "the same action twice",
+            json!([{"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"},
+                                          {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"}]),
+        ),
+        ("an entry missing its driver", json!([{"action": "camera"}])),
+        (
+            "an entry with an unknown field",
+            json!([{"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT", "why": "handset"}]),
+        ),
+        ("a list that is not one", json!("camera")),
+    ] {
+        let mut refused = board.clone();
+        refused["hardening_defaults"] = defaults;
+        assert!(validate_definition(refused).is_err(), "{label}");
+    }
+}
+
+#[test]
+fn the_shipped_handset_states_what_its_kernel_cannot_deliver() {
+    // A handset is a personal computer, not an always-on host, and its camera
+    // and headset microphone are options the shared image builds in for other
+    // boards, so its definition is where that is decided.
+    let handset = shipped("pinephone-pro");
+    assert_eq!(handset["architecture"], json!("aarch64"));
+    assert_eq!(handset["always_on"], json!(false));
+    let actions: Vec<&str> = handset["hardening_defaults"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions, ["camera", "microphone"]);
+    assert_eq!(handset["crash_record"]["storage"], json!("ramoops"));
+}
+
+#[test]
 fn definition_mutations_are_refused() {
     let lenovo = shipped("lenovo-83ed");
     let mutations: Vec<(&str, Value)> = vec![

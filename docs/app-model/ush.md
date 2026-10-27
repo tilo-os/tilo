@@ -247,6 +247,22 @@ clones cannot extend this lifetime. A legacy client's request connection remains
 its lease. No client reconnects through a global socket to recover a consumed
 launcher capability.
 
+A request with `"end_report":true` reads one line on the lease just before it
+closes, saying how the session ended: `{"ended":"exited"}`;
+`{"ended":"failed","reason":…}` when the guest could not be set up and no shell
+started; and for a relay session `{"ended":"lost","reason":…}` or
+`{"ended":"superseded"}`. The reason is for the log. Terminal says the
+environment could not be set up and offers to try again.
+
+Nothing about setting a guest up is written on its terminal
+(`crates/runtime/ush/src/setup.rs`). The supervisor starts `ush run` with the
+pty as standard input and output, and hands it the pty again as descriptor 3
+(`--terminal-fd 3`). Its standard error is a pipe the supervisor reads and
+logs: `ush run`'s own log, `bwrap`'s refusals, a library's warning, and the
+`{"setup":"failed","reason":…}` line that becomes the `failed` report. The
+guest's first process makes the terminal its standard error just before it
+starts the shell.
+
 ## Command runs
 
 Terminal records what a session **ran**, not what its screen showed. A
