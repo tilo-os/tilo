@@ -147,6 +147,12 @@ impl WakeScope {
         ))
     }
 
+    /// Whether a wake is waiting for its owner, without taking it: work
+    /// the owner's next pass has to run.
+    pub fn is_pending(&self) -> bool {
+        self.route.open.load(Ordering::Acquire) && self.route.destination.lock_recover().pending
+    }
+
     /// Receiver-side validation remains mandatory after sender-side checks.
     pub fn accepts(&self, event: &WakeEvent) -> bool {
         self.route.open.load(Ordering::Acquire)

@@ -735,6 +735,15 @@ pub trait SearchProvider {
         0.0
     }
 
+    /// Where `result` stands among the rows one source ranks itself: the
+    /// source (an app) and the row's rank in it, higher first. The merge
+    /// keeps each source's order among its own rows
+    /// ([`sources_keep_their_order`]), whatever their titles' lexical fit
+    /// says. `None` for rows no source ranks, most of them.
+    fn source_order(&self, _result: &SearchResult) -> Option<(String, i64)> {
+        None
+    }
+
     /// The word `result` matched `needle` through when neither its title nor
     /// its subtitle shows it: a keyword, a name in another language. The
     /// palette says so ("Matches “darker”"), or the row looks unrelated.
@@ -1671,6 +1680,7 @@ impl SearchRegistry {
             .enabled_providers()
             .map(|provider| (provider.id(), provider.as_ref()))
             .collect();
+        sources_keep_their_order(&mut merged, &providers);
         system::order_hits(&mut merged, |row| {
             let availability = providers
                 .get(row.provider_id.as_str())
@@ -1865,6 +1875,74 @@ impl SearchRegistry {
 #[must_use]
 pub fn in_the_store() -> ResourceKind {
     ResourceKind::Custom(t("search-group-in-the-store"))
+}
+
+/// An app orders its own rows ([`SearchProvider::source_order`]): among
+/// one source's rows the merge hands the strongest strengths and earliest
+/// places to the rows the source ranks first, whatever the merge read in
+/// their titles. Tube's "Search `YouTube` for “lofi”" leads the videos that
+/// begin with "lofi", so Enter searches, and the videos keep `YouTube`'s
+/// order. The rows only trade their strengths and places among themselves,
+/// so a source's rows weigh no more against other providers' than they
+/// did: no ranking of its own floods a search with one app.
+fn sources_keep_their_order(
+    merged: &mut Vec<(SearchResult, f32)>,
+    providers: &HashMap<&str, &dyn SearchProvider>,
+) {
+    // Each source's rows: where each stands, its strength, its rank there.
+    type Rows = Vec<(usize, f32, i64)>;
+    let mut sources: HashMap<(String, String), Rows> = HashMap::new();
+    for (at, (row, strength)) in merged.iter().enumerate() {
+        let Some((source, order)) = providers
+            .get(row.provider_id.as_str())
+            .and_then(|provider| provider.source_order(row))
+        else {
+            continue;
+        };
+        sources
+            .entry((row.provider_id.clone(), source))
+            .or_default()
+            .push((at, *strength, order));
+    }
+    // Where each place's row and strength come from.
+    let mut from: Vec<(usize, f32)> = merged
+        .iter()
+        .enumerate()
+        .map(|(at, (_, strength))| (at, *strength))
+        .collect();
+    let mut moved = false;
+    for mut rows in sources.into_values().filter(|rows| rows.len() > 1) {
+        // The places and strengths these rows hold, best first ...
+        let mut places: Vec<(usize, f32)> = rows
+            .iter()
+            .map(|&(at, strength, _)| (at, strength))
+            .collect();
+        places.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        // ... go to the rows in their source's order; rows it ranks alike
+        // keep the merge's order.
+        rows.sort_by(|a, b| {
+            b.2.cmp(&a.2)
+                .then_with(|| b.1.total_cmp(&a.1))
+                .then(a.0.cmp(&b.0))
+        });
+        for ((place, strength), (row, _, _)) in places.into_iter().zip(rows) {
+            if let Some(slot) = from.get_mut(place) {
+                moved |= slot.0 != row;
+                *slot = (row, strength);
+            }
+        }
+    }
+    if !moved {
+        return;
+    }
+    let mut taken: Vec<Option<SearchResult>> = merged.drain(..).map(|(row, _)| Some(row)).collect();
+    // `from` is a permutation of the places: every row moves once.
+    merged.extend(from.into_iter().filter_map(|(row, strength)| {
+        taken
+            .get_mut(row)
+            .and_then(Option::take)
+            .map(|row| (row, strength))
+    }));
 }
 
 /// How much nearer the person a row is in Workspace scope: from the focused
