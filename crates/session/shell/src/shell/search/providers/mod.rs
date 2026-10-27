@@ -17,6 +17,7 @@ pub mod files;
 pub mod happening_now;
 pub mod host_applications;
 pub mod live_app_actions;
+mod live_app_jobs;
 pub mod now_playing;
 pub mod people;
 pub mod permission_prompts;

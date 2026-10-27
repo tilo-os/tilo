@@ -11,9 +11,9 @@
 
 use super::{
     Applicability, ComponentKind, ComponentSupport, DestinationIdentity, DeviceBinding, Evidence,
-    EvidenceFact, EvidenceScope, REPORT_SCHEMA, RawBattery, RawDevice, RawDisk, RawDisplay,
-    RawGraphics, RawNetwork, RawReport, RawSoundCard, Remedy, ReportSource, SupportReason,
-    SupportReport, SupportState,
+    EvidenceFact, EvidenceScope, REPORT_SCHEMA, RawBattery, RawBoard, RawDevice, RawDisk,
+    RawDisplay, RawGraphics, RawNetwork, RawReport, RawSoundCard, Remedy, ReportSource,
+    SupportReason, SupportReport, SupportState,
 };
 
 pub(super) fn assemble(raw: RawReport) -> SupportReport {
@@ -38,7 +38,14 @@ pub(super) fn assemble(raw: RawReport) -> SupportReport {
         fingerprint(&raw.fingerprint),
         power(raw.battery.as_ref(), raw.ac_online, &raw.suspend_states),
         acpi(raw.acpi_tables, raw.kernel.as_deref()),
-        boot(raw.uefi, raw.secure_boot, raw.tpm.as_deref()),
+        boot(
+            raw.uefi,
+            raw.secure_boot,
+            raw.tpm.as_deref(),
+            raw.architecture.as_deref(),
+            raw.board.as_ref(),
+            &raw.virtualization,
+        ),
         storage(&raw.disks),
         input(&raw.inputs),
     ];
@@ -753,20 +760,35 @@ fn acpi(tables: Option<usize>, kernel: Option<&str>) -> ComponentSupport {
     )
 }
 
-fn boot(uefi: Option<bool>, secure_boot: Option<bool>, tpm: Option<&str>) -> ComponentSupport {
-    match uefi {
-        Some(true) => observed(
-            ComponentKind::Boot,
-            "",
-            true,
-            SupportState::Unverified,
-            SupportReason::Uefi {
-                secure_boot,
-                tpm: tpm.map(str::to_string),
-            },
-            Vec::new(),
+/// The boot chain is read in two parts, because they answer different
+/// questions. What the firmware offers decides whether this computer starts
+/// the way Tilo needs; whether the image was built for this architecture and
+/// board decides whether it can start at all. A machine that fails the second
+/// is not merely missing an entry.
+fn boot(
+    uefi: Option<bool>,
+    secure_boot: Option<bool>,
+    tpm: Option<&str>,
+    architecture: Option<&str>,
+    board: Option<&RawBoard>,
+    virtualization: &[String],
+) -> ComponentSupport {
+    let (mut component, remedy) = match uefi {
+        Some(true) => (
+            observed(
+                ComponentKind::Boot,
+                "",
+                true,
+                SupportState::Unverified,
+                SupportReason::Uefi {
+                    secure_boot,
+                    tpm: tpm.map(str::to_string),
+                },
+                Vec::new(),
+            ),
+            None,
         ),
-        Some(false) => with_remedy(
+        Some(false) => (
             observed(
                 ComponentKind::Boot,
                 "",
@@ -775,9 +797,9 @@ fn boot(uefi: Option<bool>, secure_boot: Option<bool>, tpm: Option<&str>) -> Com
                 SupportReason::LegacyBoot,
                 Vec::new(),
             ),
-            Remedy::UefiBoot,
+            Some(Remedy::UefiBoot),
         ),
-        None => with_remedy(
+        None => (
             observed(
                 ComponentKind::Boot,
                 "",
@@ -786,9 +808,81 @@ fn boot(uefi: Option<bool>, secure_boot: Option<bool>, tpm: Option<&str>) -> Com
                 SupportReason::StartupUnknown,
                 Vec::new(),
             ),
-            Remedy::UefiBoot,
+            Some(Remedy::UefiBoot),
         ),
+    };
+
+    // An image built for another architecture cannot start here whatever the
+    // firmware offers, so this overrides the startup verdict rather than
+    // standing beside it.
+    let other_architecture = match (architecture, board.and_then(|b| b.architecture.as_deref())) {
+        (Some(running), Some(built)) if built != running => {
+            Some(SupportReason::OtherArchitecture {
+                architecture: built.to_string(),
+                running: running.to_string(),
+            })
+        }
+        _ => None,
+    };
+    // An ARM64 machine starts from a device tree. Without one the firmware
+    // alone does not describe the board, so nothing can be handed to it.
+    let without_devicetree = match (architecture, board) {
+        (Some("aarch64"), Some(board)) if board.devicetree.is_none() => {
+            Some(SupportReason::BoardWithoutDevicetree {
+                board: board.id.clone(),
+                architecture: "aarch64".to_string(),
+            })
+        }
+        _ => None,
+    };
+    if let Some(reason) = other_architecture.or(without_devicetree) {
+        component.state = SupportState::Unsupported;
+        component.reason = reason;
+        component.remedy = Some(Remedy::RunOnDestination);
+    } else if let Some(running) = architecture {
+        // The image starts here. The startup reason stays the firmware's own,
+        // so Secure Boot and the TPM a person needs are still said.
+        component.reason = match component.reason {
+            SupportReason::Uefi { secure_boot, tpm } => SupportReason::StartsHere {
+                architecture: running.to_string(),
+                board: board.map(|board| board.id.clone()),
+                devicetree: board.and_then(|board| board.devicetree.clone()),
+                secure_boot,
+                tpm,
+            },
+            reason => reason,
+        };
     }
+
+    if let Some(reason) = remedy {
+        component.remedy = Some(reason);
+    }
+    if let Some(running) = architecture {
+        component.evidence.push(Evidence {
+            scope: EvidenceScope::Observation,
+            fact: EvidenceFact::Architecture {
+                name: running.to_string(),
+            },
+        });
+    }
+    if let Some(board) = board {
+        component.evidence.push(Evidence {
+            scope: EvidenceScope::Observation,
+            fact: EvidenceFact::Board {
+                id: board.id.clone(),
+                devicetree: board.devicetree.clone(),
+            },
+        });
+    }
+    if !virtualization.is_empty() {
+        component.evidence.push(Evidence {
+            scope: EvidenceScope::Observation,
+            fact: EvidenceFact::Virtualization {
+                names: virtualization.to_vec(),
+            },
+        });
+    }
+    component
 }
 
 fn storage(disks: &[RawDisk]) -> ComponentSupport {

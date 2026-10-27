@@ -138,25 +138,98 @@ fn local_dependencies(metadata: &Value) -> Result<Vec<PathBuf>> {
 }
 
 fn visit_sources(dir: &Path, kinds: &mut Kinds) -> Result<()> {
-    if !dir.is_dir() {
+    visit_dir(dir, &HashSet::new(), kinds)
+}
+
+/// The sources under `dir`, less `excluded`: the files and directories of
+/// modules a parent declared test-only (`#[cfg(test)] mod tests;`), whose
+/// own files carry no `cfg` of their own.
+fn visit_dir(dir: &Path, excluded: &HashSet<PathBuf>, kinds: &mut Kinds) -> Result<()> {
+    if !dir.is_dir() || excluded.contains(dir) {
         return Ok(());
     }
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry?.path();
         if path.is_dir() {
-            visit_sources(&path, kinds)?;
+            dirs.push(path);
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             let source = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            if !source.contains("resource") && !source.contains("Resource") {
+            let declares = source.contains("resource") || source.contains("Resource");
+            if !declares && !source.contains("cfg(") {
                 continue;
             }
-            let mut file =
+            let file =
                 syn::parse_file(&source).with_context(|| format!("parsing {}", path.display()))?;
+            files.push((path, declares, file));
+        }
+    }
+    let mut excluded = excluded.clone();
+    for (path, _, file) in &files {
+        excluded.extend(test_only_module_paths(path, file));
+    }
+    for (path, declares, mut file) in files {
+        if declares && !excluded.contains(&path) {
             kinds.visit_file_mut(&mut file);
         }
     }
+    for dir in dirs {
+        visit_dir(&dir, &excluded, kinds)?;
+    }
     Ok(())
+}
+
+/// Where the modules `file` declares out of line and only for tests live:
+/// `name.rs` and `name/` beside a `lib.rs`, `main.rs` or `mod.rs`, and under
+/// a directory named for any other file.
+fn test_only_module_paths(path: &Path, file: &syn::File) -> Vec<PathBuf> {
+    let Some(dir) = path.parent() else {
+        return Vec::new();
+    };
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    let base = if matches!(stem, "lib" | "main" | "mod") {
+        dir.to_path_buf()
+    } else {
+        dir.join(stem)
+    };
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) if module.content.is_none() && test_only(&module.attrs) => {
+                // `#[path = "..."]` names the file beside the declaring one.
+                if let Some(path) = module_path(&module.attrs) {
+                    return Some(vec![dir.join(path)]);
+                }
+                let name = module.ident.to_string();
+                Some(vec![base.join(format!("{name}.rs")), base.join(name)])
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// The file a `#[path = "..."]` attribute puts a module in.
+fn module_path(attributes: &[syn::Attribute]) -> Option<String> {
+    attributes
+        .iter()
+        .find_map(|attribute| match &attribute.meta {
+            syn::Meta::NameValue(name_value) if name_value.path.is_ident("path") => {
+                match &name_value.value {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(path),
+                        ..
+                    }) => Some(path.value()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
 }
 
 /// Whether the attributes compile their item only into the crate's tests,
@@ -450,7 +523,42 @@ mod tests {
         .unwrap();
         std::fs::write(
             src.join("model/mod.rs"),
-            r#"#[resource(kind = "example.note")] impl Again {}"#,
+            r#"#[resource(kind = "example.note")] impl Again {}
+            #[cfg(test)]
+            mod tests;"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("model/tests.rs"),
+            r#"#[resource(kind = "test.model")] impl Fixture {}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("main.rs"),
+            std::fs::read_to_string(src.join("main.rs")).unwrap() + "\n#[cfg(test)]\nmod board;\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.join("board")).unwrap();
+        std::fs::write(
+            src.join("board.rs"),
+            r#"#[resource(kind = "test.board")] impl Board {}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("board/cells.rs"),
+            r#"#[resource(kind = "test.cell")] impl Cell {}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("model/view.rs"),
+            r#"#[cfg(test)]
+            #[path = "view_tests.rs"]
+            mod tests;"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("model/view_tests.rs"),
+            r#"#[resource(kind = "test.view")] impl Fixture {}"#,
         )
         .unwrap();
         assert_eq!(

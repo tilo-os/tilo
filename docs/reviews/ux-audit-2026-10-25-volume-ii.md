@@ -1840,20 +1840,22 @@ Everything else in the range is conventionally correct and its body says why.
 
 ## 7.4 What is still open
 
-- **Emoji and mentions as a field's defaults** (in flight): the catalogue becomes the toolkit's, so
-  no app links one to have emoji; text fields resolve `:name:` and `@mention` by default, and a
-  field opts out with its reason at the call site (HIG §3, `docs/design-language.md`).
-- **A `ResourceApp` cannot be searched from the window bar** (in flight): Activity draws its own
-  find field because `SearchableWindow` needs a root widget and a function-based app has none.
-  That is the last `app-toolbars` finding, and its fix is a query view in the toolkit.
-- **Size ceilings**: thirteen files were over their ceiling on main before this work; several more
-  after. Pure structure, no behaviour in it, and the least valuable thing left.
-- **`T10`**: one antialiased pixel still differs between identical runs of the calculator's graph.
-- **The lock suite is flaky on main** — 18/1, then 16/3, then 15/4 on identical trees, failing at
-  "compositor did not start". A login-adjacent suite that fails a third of the time teaches people
-  to ignore it.
-- **`chat` links `tilo-emoji-catalogue`** until the toolkit owns the catalogue; that dependency is
-  the whole of the `D2 = 7` portability finding.
+- **`apps.agent` links `tilo-model-client` directly** (`check_app_portability`: 8 `D2` against a
+  baseline of 7). The architecture doc explains why the agent holds the gateway's client — streamed
+  turns it may abandon, trace marks the gateway logs, bounded transforms — and `ui::models` carries
+  none of that. Narrowing `D2` to apps that ship to the web would exempt **62 of 64 apps and erase
+  164 findings**, so that is not a tightening of the rule but a deletion of it. The decision belongs
+  to whoever owns the agent↔gateway boundary.
+- **Four files over their ceilings, all from work in flight elsewhere**: `action_palette` and
+  `bound_dispatch` by a line each, `search/providers/actions.rs` by three, `search/mod.rs` by
+  fifty-one. Each needs a small extraction by whoever is in those files next.
+- **`T10`**: closed. Captures ask the rasteriser for a fixed segment order
+  (`enable_canonical_segment_order`) instead of depending on `VELLO_CANONICAL_SEGMENT_ORDER`, and
+  `--shots-dir` pins the clock like every other capture mode. Two runs of one command now write the
+  same bytes: 41/41 of Chat's scenarios, six of six calculator runs.
+- **The lock suite's flakiness**: closed. A test pointed the process's `HOME` at a tree it deleted
+  when it finished, so a compositor started afterwards by another test refused to start. Every
+  fixture gives its child its own `HOME`; the suite runs 19/19 where it failed three or four.
 
 ## 7.5 What the blocker cost
 
