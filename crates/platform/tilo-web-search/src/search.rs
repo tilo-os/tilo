@@ -9,7 +9,7 @@ use futures_util::future::join_all;
 use serde::Serialize;
 
 use crate::engines::google::{self, Token};
-use crate::engines::{Engine, EngineError, EngineRequest, EngineResult};
+use crate::engines::{Engine, EngineError, EngineRequest, EngineResult, SafeMode};
 use crate::merge::{SearchResult, merge};
 
 /// Bounds on one search.
@@ -192,12 +192,15 @@ impl SearchState {
     }
 }
 
-/// Ask `engines` for `query` at once and merge their results, best first.
+/// Ask `engines` for `query` under `safe` at once and merge their results,
+/// best first.
 ///
 /// An engine that fails, times out or shows a challenge only loses its own
 /// results; its report says what happened. An engine that says it is getting
 /// too many requests is left alone for a while, recorded in `state`, and
-/// reported as rate-limited without being asked until then.
+/// reported as rate-limited without being asked until then. An engine that
+/// cannot be asked for filtered results is reported as skipped in a filtered
+/// search, named, and never asked unfiltered.
 ///
 /// # Errors
 ///
@@ -209,6 +212,7 @@ pub async fn search(
     state: &SearchState,
     query: &str,
     engines: &[Engine],
+    safe: SafeMode,
     limits: &SearchLimits,
 ) -> Result<SearchResponse, SearchError> {
     let query = query.trim();
@@ -237,7 +241,16 @@ pub async fn search(
             });
             continue;
         }
-        match engine.request(query) {
+        if safe == SafeMode::Strict && !engine.filters() {
+            reports.push(EngineReport {
+                engine,
+                status: EngineStatus::Skipped,
+                results: 0,
+                detail: Some("cannot filter results; not asked".into()),
+            });
+            continue;
+        }
+        match engine.request(query, safe) {
             Some(request) => asked.push((engine, request)),
             None => reports.push(EngineReport {
                 engine,
@@ -248,10 +261,12 @@ pub async fn search(
         }
     }
     if asked.is_empty() {
-        if reports
-            .iter()
-            .any(|r| r.status == EngineStatus::RateLimited)
-        {
+        if reports.iter().any(|r| r.status != EngineStatus::Skipped) {
+            return Err(SearchError::AllFailed(reports));
+        }
+        // Every named engine was skipped: in a filtered search say which
+        // ones could not filter, rather than answering as if none were named.
+        if safe == SafeMode::Strict {
             return Err(SearchError::AllFailed(reports));
         }
         return Err(SearchError::NoEngines);
@@ -508,6 +523,40 @@ mod tests {
     }
 
     #[test]
+    fn a_filtered_search_names_an_engine_that_cannot_filter() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = crate::client().unwrap();
+        // Marginalia is the only engine with no filter; asking only it for
+        // filtered results names it instead of answering unfiltered.
+        let error = runtime
+            .block_on(search(
+                &client,
+                &SearchState::default(),
+                "rust",
+                &[Engine::Marginalia],
+                SafeMode::Strict,
+                &SearchLimits::default(),
+            ))
+            .unwrap_err();
+        let SearchError::AllFailed(reports) = error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].engine, Engine::Marginalia);
+        assert_eq!(reports[0].status, EngineStatus::Skipped);
+        assert!(
+            reports[0]
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("cannot filter")
+        );
+    }
+
+    #[test]
     fn engines_backing_off_are_reported_without_being_asked() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -523,6 +572,7 @@ mod tests {
                 &state,
                 "rust",
                 &[Engine::Google, Engine::Google],
+                SafeMode::Off,
                 &SearchLimits::default(),
             ))
             .unwrap_err();
