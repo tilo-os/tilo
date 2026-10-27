@@ -42,7 +42,7 @@ pub mod install;
 
 use serde::{Deserialize, Serialize};
 
-pub use client::{TrustLevel, VerifiedEntry};
+pub use client::{BehindAccepted, SnapshotAnswer, TrustLevel, VerifiedEntry};
 pub use config::{RegistriesFile, RegistryConfig};
 pub use registry_types::catalogue::{CatalogueApp, CatalogueListing, UnreachableRegistry};
 
@@ -746,6 +746,53 @@ pub fn dedupe_and_subtract(apps: Vec<CatalogueApp>, installed: &[String]) -> Vec
     out
 }
 
+/// One registry's answer to a listing.
+enum Fetched {
+    /// Its catalogue in force, ready to be offered.
+    Offers(Vec<client::VerifiedEntry>),
+    /// It answered with a catalogue older than the last one this device
+    /// accepted, so the accepted one stays in force and the listing says why
+    /// this registry contributed nothing.
+    BehindAccepted(client::BehindAccepted),
+    /// Its catalogue could not be read at all.
+    Failed(String),
+}
+
+fn fetch_offers(registry: &RegistryConfig) -> Fetched {
+    match client::fetch_snapshot_answer(registry) {
+        Ok((snapshot, answer)) => {
+            let entries = match client::classify_snapshot(
+                &snapshot,
+                &registry.owner_pubkey_hex,
+                tilo_clock::unix_now(),
+            ) {
+                Ok(entries) => entries,
+                Err(error) => return Fetched::Failed(error.to_string()),
+            };
+            match answer {
+                client::SnapshotAnswer::Advanced => Fetched::Offers(entries),
+                client::SnapshotAnswer::BehindAccepted(behind) => Fetched::BehindAccepted(behind),
+            }
+        }
+        Err(error) => error.behind_accepted().map_or_else(
+            || Fetched::Failed(error.to_string()),
+            Fetched::BehindAccepted,
+        ),
+    }
+}
+
+/// Why a registry contributed nothing: it answered with a signed catalogue
+/// older than the one this device already accepted from it, and that newer
+/// one is what stays in force until the registry publishes past it.
+fn behind_accepted_detail(registry_name: &str, behind: client::BehindAccepted) -> String {
+    format!(
+        "{registry_name} offers a catalogue signed with sequence {}, behind the sequence {} \
+         this device already accepted; until it publishes beyond that, nothing is offered from \
+         it",
+        behind.served_sequence, behind.held_sequence
+    )
+}
+
 /// Everything the configured registries offer that is not installed.
 /// Blocking, but enabled registries are fetched concurrently so one slow
 /// mirror does not serially delay every healthy source. Results are still
@@ -762,7 +809,7 @@ pub fn all_offers() -> CatalogueListing {
     let fetched = std::thread::scope(|scope| {
         let handles: Vec<_> = enabled
             .iter()
-            .map(|registry| scope.spawn(move || client::fetch_entries(registry)))
+            .map(|registry| scope.spawn(move || fetch_offers(registry)))
             .collect();
         handles
             .into_iter()
@@ -777,19 +824,21 @@ pub fn all_offers() -> CatalogueListing {
                 name: reg.name.clone(),
                 detail: "registry worker stopped unexpectedly".to_string(),
             }),
-            Ok(result) => match result {
-                Ok(entries) => {
-                    for v in &entries {
-                        if let Some(app) = entry_to_app_for_channel(v, &reg.name, reg.channel) {
-                            apps.push(app);
-                        }
+            Ok(Fetched::Offers(entries)) => {
+                for v in &entries {
+                    if let Some(app) = entry_to_app_for_channel(v, &reg.name, reg.channel) {
+                        apps.push(app);
                     }
                 }
-                Err(e) => unreachable.push(UnreachableRegistry {
-                    name: reg.name.clone(),
-                    detail: e.to_string(),
-                }),
-            },
+            }
+            Ok(Fetched::BehindAccepted(behind)) => unreachable.push(UnreachableRegistry {
+                name: reg.name.clone(),
+                detail: behind_accepted_detail(&reg.name, behind),
+            }),
+            Ok(Fetched::Failed(detail)) => unreachable.push(UnreachableRegistry {
+                name: reg.name.clone(),
+                detail,
+            }),
         }
     }
     CatalogueListing {

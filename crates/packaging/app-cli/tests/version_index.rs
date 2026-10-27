@@ -371,10 +371,13 @@ fn older_versions_install_and_roll_back_through_a_verified_version_index() {
     app_cli::version_offers(PACKAGE_ID, "local").unwrap();
 
     // A replayed older snapshot, signed and naming its own valid index, is
-    // still below the checkpoint.
+    // still below the checkpoint, and the refusal says which way it goes.
     serve(&routes, &old);
     let error = app_cli::version_offers(PACKAGE_ID, "local").unwrap_err();
-    assert!(error.contains("rolled back"), "{error}");
+    assert!(
+        error.contains("sequence 2") && error.contains("sequence 1"),
+        "the refusal names the sequences on both sides: {error}"
+    );
     assert!(!app_cli::available().unreachable.is_empty());
     let replayed = app(&["install", OTHER_ID, "--version", "3.0.0"]);
     assert!(!replayed.status.success());
