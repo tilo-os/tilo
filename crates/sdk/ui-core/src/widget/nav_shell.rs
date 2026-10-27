@@ -681,11 +681,6 @@ impl Inputs {
     fn slots_in_bar(&self) -> bool {
         self.toolbar_in_bar || self.shell_bar
     }
-
-    /// The window bar shows the sidebar toggle, the app's or the shell's.
-    fn toggle_in_window_bar(&self) -> bool {
-        self.toggle_in_bar || self.shell_bar
-    }
 }
 
 /// The shell's geometry for one size, in coordinates local to the shell.
@@ -1141,8 +1136,10 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
     // The bar's toggle reaches a sidebar screen; Back drills only past the
     // first screen after it (a list, the empty state), else past the first.
-    let first =
-        usize::from(inputs.toggle_in_window_bar() && stack.first() == Some(&NavPane::Sidebar));
+    // A shell that declares the bar's slots has no toggle there of its own
+    // (only an app that asks for one does, [`NavShell::with_window_toolbar`]),
+    // so Back is what reaches the sidebar's screen.
+    let first = usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
     let drills = stack.len().saturating_sub(first) > 1;
 
     // 5. The header row. A column's header stands in it only where the
@@ -1428,13 +1425,16 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         None
     };
     if let Some(column) = back_column
-        && (inputs.slots_in_bar() || inputs.toggle_in_bar)
+        && inputs.slots_in_bar()
     {
         // Back is the window bar's, beside its toggle ([`NavShell::window_toolbar`]).
         g.back_column = Some(column);
     } else if let Some(column) = back_column
         && (push_back || g.header(column) != Rect::ZERO)
     {
+        // The bar declares none of the shell's slots (an app keeps its own),
+        // so Back is a chevron the shell draws, beside the toggle if the bar
+        // carries it.
         let slot = usize::from(g.toggle_column == Some(column) && g.toggle.width() > 0.0);
         // The page moves; navigation belongs to the window. Back must stay
         // operable even before the incoming screen enters the viewport.
