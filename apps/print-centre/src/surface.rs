@@ -3263,12 +3263,11 @@ mod tests {
     /// drawn, and a choice it never listed is never sent.
     #[test]
     fn the_form_offers_what_the_driver_reports_and_refuses_what_it_does_not() {
+        // The form's own state only: a print sheet here, not a window, so this
+        // test shares nothing with the ones that page a person for attention.
         let mut centre = PrintCentre::new();
-        centre.show(Some(&demo_snapshot()));
-        centre.pending_document = Some(PathBuf::from("Travel itinerary.pdf"));
         centre.selected_printer = Some("Studio_printer".into());
         centre.print_options = demo_printer_options();
-        centre.rebuild_print_setup();
 
         // A value the driver reported is taken.
         centre
@@ -3304,7 +3303,6 @@ mod tests {
     #[test]
     fn a_long_document_pages_and_a_range_is_checked_before_it_is_sent() {
         let mut centre = PrintCentre::new();
-        centre.show(Some(&demo_snapshot()));
         centre.pending_document = Some(PathBuf::from("Travel itinerary.pdf"));
         centre.selected_printer = Some("Studio_printer".into());
         centre.preview_pages = 40;
