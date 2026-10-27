@@ -153,7 +153,7 @@ raw-colour 1 crates/session/shell/src/compositor/backend/headless.rs
 raw-colour 1 crates/session/shell/src/compositor/backend/winit.rs
 raw-colour 1 crates/session/shell/src/compositor/projection_capture.rs
 raw-colour 1 crates/session/shell/src/compositor/screen_dim.rs
-raw-colour 3 crates/session/shell/src/shell/frame.rs
+raw-colour 1 crates/session/shell/src/shell/frame.rs
 raw-colour 1 crates/session/shell/src/shell/live_presence.rs
 raw-colour 1 crates/session/shell/src/shell/overlay_host/bar_popovers.rs
 raw-colour 1 crates/session/shell/src/shell/overlay_host/follow.rs
