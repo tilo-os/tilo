@@ -228,33 +228,110 @@ pub fn doc_of(resource: &str) -> &str {
 ///
 /// Item ids are shared too: what a view read of a listing (the item at an index) is kept to
 /// compare with the listing after a change, which costs a count, not a copy.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// A store may hand out the items it holds ([`Listing::from_items`]) or a listing it reads
+/// page by page as items are asked for ([`Listing::paged`]): a view that shows the first rows
+/// of 100,000 items then reads those rows' page, not the 100,000.
+#[derive(Clone, Debug, Default)]
 pub struct Listing {
-    pub items: Vec<Rc<str>>,
+    /// The items, when held.
+    held: Vec<Rc<str>>,
+    /// Where the items are read from instead, when paged.
+    paged: Option<Rc<dyn PagedItems>>,
 }
+
+/// Items a store reads as they are asked for: a listing as it was when handed out, which a
+/// later change does not alter.
+pub trait PagedItems: std::fmt::Debug {
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The item at `index`, `None` past the end.
+    fn get(&self, index: usize) -> Option<Rc<str>>;
+}
+
+impl PartialEq for Listing {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for Listing {}
 
 impl Listing {
     pub fn from_ids(ids: impl IntoIterator<Item = ItemId>) -> Self {
+        Self::from_items(ids.into_iter().map(Rc::from).collect())
+    }
+
+    /// A listing of the items `items`, held.
+    pub fn from_items(items: Vec<Rc<str>>) -> Self {
         Self {
-            items: ids.into_iter().map(Rc::from).collect(),
+            held: items,
+            paged: None,
+        }
+    }
+
+    /// A listing read page by page from `items`.
+    pub fn paged(items: Rc<dyn PagedItems>) -> Self {
+        Self {
+            held: Vec::new(),
+            paged: Some(items),
         }
     }
 
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.paged
+            .as_ref()
+            .map_or(self.held.len(), |paged| paged.len())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.len() == 0
     }
 
-    pub fn get(&self, index: usize) -> Option<&Rc<str>> {
-        self.items.get(index)
+    pub fn get(&self, index: usize) -> Option<Rc<str>> {
+        match &self.paged {
+            Some(paged) => paged.get(index),
+            None => self.held.get(index).cloned(),
+        }
+    }
+
+    pub fn first(&self) -> Option<Rc<str>> {
+        self.get(0)
+    }
+
+    pub fn last(&self) -> Option<Rc<str>> {
+        self.len().checked_sub(1).and_then(|last| self.get(last))
+    }
+
+    /// The items in order, each read as it is reached.
+    pub fn iter(&self) -> impl Iterator<Item = Rc<str>> + '_ {
+        (0..self.len()).map_while(|index| self.get(index))
+    }
+
+    /// The items, held: read whole when paged.
+    pub fn items(&self) -> Vec<Rc<str>> {
+        match &self.paged {
+            Some(_) => self.iter().collect(),
+            None => self.held.clone(),
+        }
+    }
+
+    /// The items to change in place: read whole, and held from then on, when paged.
+    pub fn items_mut(&mut self) -> &mut Vec<Rc<str>> {
+        if self.paged.is_some() {
+            self.held = self.iter().collect();
+            self.paged = None;
+        }
+        &mut self.held
     }
 
     /// The item ids, as owned text.
     pub fn ids(&self) -> Vec<ItemId> {
-        self.items.iter().map(ToString::to_string).collect()
+        self.iter().map(|id| id.to_string()).collect()
     }
 }
 
@@ -413,15 +490,15 @@ pub trait Store {
     ) -> Result<Rc<Listing>, StoreError> {
         let all = self.listing(at, field)?;
         let mut items = Vec::new();
-        for id in &all.items {
-            let target = at.item(&field.id, id, item.clone());
+        for id in all.iter() {
+            let target = at.item(&field.id, &id, item.clone());
             let holds =
                 pred.eval(&mut |read: &FieldRead| read.lit(self.read(&target, &read.spec)?))?;
             if holds {
-                items.push(Rc::clone(id));
+                items.push(id);
             }
         }
-        Ok(Rc::new(Listing { items }))
+        Ok(Rc::new(Listing::from_items(items)))
     }
 
     /// The notes of a document's changes, oldest first.

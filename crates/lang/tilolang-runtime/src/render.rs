@@ -726,7 +726,7 @@ impl Items<'_> {
     fn get(&self, core: &Core, index: usize) -> Option<Value> {
         match self {
             Self::List(items) => items.get(index).cloned(),
-            Self::Coll(coll, listing) => listing.get(index).map(|id| core.item_ref(coll, id)),
+            Self::Coll(coll, listing) => listing.get(index).map(|id| core.item_ref(coll, &id)),
         }
     }
 }
