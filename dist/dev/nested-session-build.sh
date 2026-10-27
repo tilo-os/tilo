@@ -125,8 +125,29 @@ build_thin() {
         os/scripts/build-thin-apps.sh
 }
 
+# The env-runtime Terminal's environments start from, sealed with a throwaway
+# key into the layout os/scripts/install-env-runtime.sh installs from, as a
+# run's dev images get theirs (os/scripts/ensure-dev-env-runtime.sh): the
+# session ships it in a system store of its own, with that key as the store's
+# image publisher, and the ush supervisor finds it there as on a Tilo device.
+# Sealing takes minutes; it needs only the host build's packer, so it runs
+# beside the site build rather than after everything.
+env_runtime=$target/nested-session-env-runtime
+seal_env_runtime() {
+    local began=$SECONDS
+    bash tools/ci/publish/env-runtime.sh dev "$arch" "$env_runtime_trees" "$target/$host_profile" "$env_runtime"
+    printf 'sealed the env-runtime in %s s\n' "$((SECONDS - began))"
+}
+build_host_then_site() {
+    build_host 2>&1 | label host || return 1
+    local seal
+    seal_env_runtime 2>&1 | label seal & seal=$!
+    build_site 2>&1 | label site || { wait "$seal"; return 1; }
+    wait "$seal"
+}
+
 pids=()
-(build_host 2>&1 | label host && build_site 2>&1 | label site) & pids+=($!)
+build_host_then_site & pids+=($!)
 (build_thin 2>&1 | label thin) & pids+=($!)
 failed=0
 for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
@@ -146,14 +167,7 @@ while IFS= read -r file; do
     cp -p "$target/thin-app/$file" "$out/thin-app/"
 done < <(cat "$target/thin-app/runtime-engines"
          python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
-# The env-runtime Terminal's environments start from, sealed with a throwaway
-# key into the layout os/scripts/install-env-runtime.sh installs from, as a
-# run's dev images get theirs (os/scripts/ensure-dev-env-runtime.sh): the
-# session ships it in a system store of its own, with that key as the store's
-# image publisher, and the ush supervisor finds it there as on a Tilo device.
-sealing_began=$SECONDS
-bash tools/ci/publish/env-runtime.sh dev "$arch" "$env_runtime_trees" "$out/bin" "$out/env-runtime"
-printf 'sealed the env-runtime in %s s\n' "$((SECONDS - sealing_began))"
+cp -rp "$env_runtime" "$out/env-runtime"
 # The runtime bundle carries the exact libstd the runtime links, so the
 # session needs no local Rust toolchain.
 needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \
