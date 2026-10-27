@@ -161,3 +161,38 @@ fn a_recording_opens_only_in_a_private_window() {
         "a window that reaches the person's records never takes a recording in"
     );
 }
+
+/// Stepping a replay looks at past states, a read: an agent steps the
+/// read-only replay window through its History, each step drawn as the
+/// state it was, and nothing in the window changes.
+#[test]
+fn an_agent_steps_a_replay_through_its_history() {
+    let (doc, made) = edited();
+    let (file, states) = recording_file(&doc, made);
+    let mut replay = HeadlessApp::<ShoppingApp>::replaying(file).unwrap();
+    replay.settle();
+    // As an agent's `tilo_invoke` reaches the window.
+    let mut call = |action: &str, arguments: serde_json::Value| {
+        replay.call(action, arguments).unwrap().unwrap()
+    };
+    let listed = call("history", serde_json::json!({}));
+    let changes: Vec<String> = listed["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|version| version["change"].as_str().unwrap().to_owned())
+        .collect();
+    let steps = &changes[changes.len() - states.len()..];
+    let mut drawn = Vec::new();
+    for change in steps {
+        let shown = call("render", serde_json::json!({"version": change}));
+        drawn.push(shown["revision"].clone());
+    }
+    drawn.dedup();
+    assert_eq!(drawn.len(), states.len(), "each step draws its own state");
+    assert_eq!(
+        replay.state(),
+        *states.last().unwrap(),
+        "stepping writes nothing"
+    );
+}
