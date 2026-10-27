@@ -410,51 +410,7 @@ impl Replica {
         let offers_reads = matches!(actor, ReplicaActor::Bot { .. });
         let runs_effects = matches!(actor, ReplicaActor::Agent);
         let (invoker, permissions) = replica_standing(actor, room, participant);
-        let (checkout, bytes, created) = match seed {
-            Seed::New => {
-                let checkout = if definition.keeps_room_record() {
-                    RecordCheckout::package_primary(definition.record_kind.clone())
-                } else {
-                    RecordCheckout::new(RecordId::minted(), definition.record_kind.clone())
-                };
-                let bytes = genesis(definition, room, &checkout, kind, participant)?;
-                (checkout, bytes, true)
-            }
-            Seed::NewAt(record) => {
-                if definition.keeps_room_record() != record.is_package_primary() {
-                    return Err(AppError::Merge(
-                        "record route does not match the app's room scope".into(),
-                    ));
-                }
-                let checkout = RecordCheckout::new(record, definition.record_kind.clone());
-                let bytes = genesis(definition, room, &checkout, kind, participant)?;
-                (checkout, bytes, true)
-            }
-            Seed::Existing { record, changes } => {
-                if definition.keeps_room_record() != record.is_package_primary() {
-                    return Err(AppError::Merge(
-                        "record route does not match the app's room scope".into(),
-                    ));
-                }
-                let mut doc = automerge::AutoCommit::new();
-                for change in &changes {
-                    tilo_automerge::ApplyIncoming::load_incoming(&mut doc, change)
-                        .map_err(|error| AppError::Merge(error.to_string()))?;
-                }
-                let checkout = RecordCheckout::new(record, definition.record_kind.clone());
-                (checkout, doc.save(), false)
-            }
-        };
-        {
-            let doc = ui::tilo_resource::Doc::load(&bytes)
-                .map_err(|error| AppError::Merge(error.to_string()))?;
-            // A record kept before the app changed its storage is brought up
-            // to the app's version when its view opens, as in a window.
-            if !kind.holds_or_older(&doc) {
-                kind.read(&doc)
-                    .map_err(|error| AppError::Merge(error.to_string()))?;
-            }
-        }
+        let (checkout, bytes, created) = seeded(definition, kind, room, participant, seed)?;
         let opening = AttachedView::opening(definition, room, checkout, bytes)
             .for_invoker(&invoker)
             .with_permissions(permissions)
@@ -886,6 +842,60 @@ const DEVICE: &str = "agent";
 /// A new record of `kind`: its genesis, with the identity its route names,
 /// as every member creating it derives it, then what its app seeds a record
 /// `creator` creates with.
+/// The record a view opens: minted, or the one whose changes were handed over.
+/// A record kept before the app changed its storage is brought up to the app's
+/// version when its view opens, as in a window.
+fn seeded(
+    definition: &ApplicationDefinition,
+    kind: ResourceKind,
+    room: &str,
+    participant: &str,
+    seed: Seed,
+) -> Result<(RecordCheckout, Vec<u8>, bool), AppError> {
+    let (checkout, bytes, created) = match seed {
+        Seed::New => {
+            let checkout = if definition.keeps_room_record() {
+                RecordCheckout::package_primary(definition.record_kind.clone())
+            } else {
+                RecordCheckout::new(RecordId::minted(), definition.record_kind.clone())
+            };
+            let bytes = genesis(definition, room, &checkout, kind, participant)?;
+            (checkout, bytes, true)
+        }
+        Seed::NewAt(record) => {
+            if definition.keeps_room_record() != record.is_package_primary() {
+                return Err(AppError::Merge(
+                    "record route does not match the app's room scope".into(),
+                ));
+            }
+            let checkout = RecordCheckout::new(record, definition.record_kind.clone());
+            let bytes = genesis(definition, room, &checkout, kind, participant)?;
+            (checkout, bytes, true)
+        }
+        Seed::Existing { record, changes } => {
+            if definition.keeps_room_record() != record.is_package_primary() {
+                return Err(AppError::Merge(
+                    "record route does not match the app's room scope".into(),
+                ));
+            }
+            let mut doc = automerge::AutoCommit::new();
+            for change in &changes {
+                tilo_automerge::ApplyIncoming::load_incoming(&mut doc, change)
+                    .map_err(|error| AppError::Merge(error.to_string()))?;
+            }
+            let checkout = RecordCheckout::new(record, definition.record_kind.clone());
+            (checkout, doc.save(), false)
+        }
+    };
+    let doc =
+        ui::tilo_resource::Doc::load(&bytes).map_err(|error| AppError::Merge(error.to_string()))?;
+    if !kind.holds_or_older(&doc) {
+        kind.read(&doc)
+            .map_err(|error| AppError::Merge(error.to_string()))?;
+    }
+    Ok((checkout, bytes, created))
+}
+
 fn genesis(
     definition: &ApplicationDefinition,
     room: &str,

@@ -947,6 +947,17 @@ impl OpenResourceSearch {
                 .find(|action| action.kind == tilo_actions::OperationKind::View)
                 .or_else(|| resource.actions.first())?;
             let address = ActionAddress::new(resource.id.as_str(), &action.id);
+            // Named as the app names it, with the detail it gives (where
+            // it is, when it changed); never its kind tag, its id or the
+            // action that opens it, which say nothing to a person.
+            let mut hit = SearchResult::for_action("Resources", resource.label.clone(), address);
+            if let Some(detail) = resource
+                .presentation
+                .as_ref()
+                .and_then(|presentation| presentation.detail.clone())
+            {
+                hit = hit.with_subtitle(detail);
+            }
             Some((
                 resource.id.as_str().to_string(),
                 format!(
@@ -955,8 +966,7 @@ impl OpenResourceSearch {
                     resource.kind,
                     resource.id.as_str()
                 ),
-                SearchResult::for_action("Resources", resource.label.clone(), address)
-                    .with_subtitle(format!("{} · {}", action.label, resource.kind)),
+                hit,
             ))
         })) {
             tracing::error!(%error, "could not index open resources");
@@ -1431,6 +1441,12 @@ mod tests {
                 .expect("resource is findable");
             let address = hit.action_address().expect("canonical activation");
             assert_eq!(address, ActionAddress::new("note:launch", "open"));
+            assert_eq!(hit.title, "Launch plan");
+            assert_eq!(
+                hit.subtitle, None,
+                "a resource with no detail of its own is its name alone, never \
+                 the action that opens it or its kind"
+            );
             assert_eq!(
                 provider
                     .resolve_action_resource(&address)
@@ -1439,6 +1455,32 @@ mod tests {
                 "Launch plan"
             );
             assert_eq!(provider.action_directory_generation(), None);
+
+            // A resource's own detail is its secondary line.
+            let report = tilo_actions::Resource::new("file:report", "files.entry", "Report.pdf")
+                .with_presentation(tilo_actions::ResourcePresentation {
+                    detail: Some("Documents".into()),
+                    badge: None,
+                    preview: None,
+                })
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "open",
+                        "Open",
+                        tilo_actions::OperationKind::View,
+                        "test.file",
+                        &serde_json::json!({}),
+                    )
+                    .unwrap(),
+                );
+            let hit = OpenResourceSearch::new(&[report])
+                .search("report")
+                .pop()
+                .expect("the file is findable");
+            assert_eq!(
+                (hit.title.as_str(), hit.subtitle.as_deref()),
+                ("Report.pdf", Some("Documents"))
+            );
         }
         // phase: open_resource_search_pages_with_hard_budgets
         {

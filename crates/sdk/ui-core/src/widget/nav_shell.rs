@@ -2493,18 +2493,34 @@ impl NavShell {
 
     /// Show or hide the sidebar, remembering the choice for this window size
     /// class. In [`NavMode::Push`] narrow, the sidebar is a screen: showing
-    /// it goes back to it.
+    /// it goes back to it, and hiding it goes on to the screen the person
+    /// left for it.
     pub fn toggle_sidebar(&mut self) {
         if !self.has_sidebar() {
             return;
         }
         if self.geometry.sidebar == SidebarPlacement::Screen {
-            self.show(NavPane::Sidebar);
+            let pane = if self.front_pane() == NavPane::Sidebar {
+                self.screen_behind_sidebar()
+            } else {
+                NavPane::Sidebar
+            };
+            self.show(pane);
             return;
         }
         let layout = layout_of(self.geometry.sidebar);
         self.inputs.borrow_mut().sidebar.toggle(layout);
         self.after_flap_change();
+    }
+
+    /// The screen a hidden sidebar screen leaves in front: the one the
+    /// person last worked in, else the one the sidebar leads to.
+    fn screen_behind_sidebar(&self) -> NavPane {
+        let stack = &self.geometry.stack;
+        self.active_hint
+            .filter(|pane| *pane != NavPane::Sidebar && stack.contains(pane))
+            .or_else(|| stack.iter().copied().find(|pane| *pane != NavPane::Sidebar))
+            .unwrap_or(NavPane::Content)
     }
 
     /// A toggle a key asked for: it lands at once (motion follows the
@@ -2664,6 +2680,13 @@ impl NavShell {
         if let Some(binding) = self.pane_binding.as_mut() {
             binding.publish(&pane);
         }
+        // A sidebar that is a screen shows or hides with the screen in
+        // front: its toggle and the window bar's slots say so now, not at
+        // the next layout, so an app that builds its slots from the shell's
+        // ([`WindowBarLink::slots`]) while the sidebar covers it reads them
+        // current.
+        self.update_toggle_names();
+        self.publish_open_states();
         self.animating = true;
         self.structure_dirty = true;
         self.invalidate();
@@ -3945,7 +3968,11 @@ impl Widget for NavShell {
     // what continues on another device, what a diagnostic input reads) is
     // the content it frames.
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+        // The shell itself, for a harness that reads its sidebar through a
+        // root that stands in for it (a framework app's view).
+        if request.wants::<Self>() {
+            request.provide::<Self>(self);
+        } else if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
