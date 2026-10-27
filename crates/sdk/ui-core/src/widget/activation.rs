@@ -456,6 +456,16 @@ impl PaintedTargets {
         self.focused.as_deref()
     }
 
+    /// The target under the pointer, if any.
+    pub fn hovered(&self) -> Option<&str> {
+        self.hovered.as_deref()
+    }
+
+    /// The target a pointer press is held on, if any.
+    pub fn pressed(&self) -> Option<&str> {
+        self.pressed.as_deref()
+    }
+
     /// Move keyboard focus to target `id`.
     pub fn focus(&mut self, id: &str) {
         if self.targets.iter().any(|target| target.id == id) {

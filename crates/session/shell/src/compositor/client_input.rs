@@ -309,6 +309,16 @@ impl ClientInput {
         self.pointer_focus
     }
 
+    /// Who holds the implicit pointer grab, for the input-route log: the
+    /// chrome, a client surface by protocol id, or nobody.
+    pub fn grab_label(&self) -> String {
+        match self.grab {
+            None => "none".to_owned(),
+            Some(PointerOwner::Chrome) => "chrome".to_owned(),
+            Some(PointerOwner::Client(id)) => format!("client {id}"),
+        }
+    }
+
     /// Content-free custody of the router's implicit pointer grab. This is
     /// separate from both the actual Wayland focus and keyboard focus.
     pub(super) fn pointer_custody(&self) -> (&'static str, Option<u64>, u32) {
