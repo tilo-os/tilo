@@ -596,19 +596,9 @@ fn pills(out: &std::path::Path) {
     println!("{}", path.display());
 }
 
-fn main() {
-    ui::i18n::I18nManager::init("en-US");
-    let out = std::env::args()
-        .nth(1)
-        .map_or_else(|| PathBuf::from("target/look/web-bar"), PathBuf::from);
-    std::fs::create_dir_all(&out).expect("output directory");
-    let settle = Duration::from_secs(2);
-    let shoot = |harness: &mut FrameHarness, name: &str| {
-        harness.settle_for_capture(settle);
-        let path = out.join(name);
-        harness.render_png(&path);
-        println!("{}", path.display());
-    };
+/// The bar and the profile cards wearing the pictures people chose, then
+/// without them.
+fn shoot_picture_cards(shoot: &impl Fn(&mut FrameHarness, &str), settle: Duration) {
     // Pictures people chose, on the bar and on their cards.
     ui::people_photos::set(ME, Some(sample_photo(96, [222, 132, 88], [120, 60, 120])));
     ui::people_photos::set(
@@ -664,6 +654,22 @@ fn main() {
     // The bar and the cards above wear the pictures; the rest do not.
     ui::people_photos::set(ME, None);
     ui::people_photos::set("key-a", None);
+}
+
+fn main() {
+    ui::i18n::I18nManager::init("en-US");
+    let out = std::env::args()
+        .nth(1)
+        .map_or_else(|| PathBuf::from("target/look/web-bar"), PathBuf::from);
+    std::fs::create_dir_all(&out).expect("output directory");
+    let settle = Duration::from_secs(2);
+    let shoot = |harness: &mut FrameHarness, name: &str| {
+        harness.settle_for_capture(settle);
+        let path = out.join(name);
+        harness.render_png(&path);
+        println!("{}", path.display());
+    };
+    shoot_picture_cards(&shoot, settle);
 
     for (variant, theme, viewport) in [
         ("dark", Theme::dark(), (1280, 480)),
