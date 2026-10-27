@@ -130,16 +130,41 @@ fn refused(id: u64) -> Reply {
         reason: crate::shell::i18n::t("portal-chooser-file-grant-unavailable"),
     }
 }
+/// Whether the person at this device may give `caller` their files: the
+/// app's workspace is the one on screen, and the person manages it.
 pub(super) fn owner(context: &ChooserContext, caller: &PortalCaller) -> bool {
+    standing(context, caller) == Standing::Owner
+}
+
+/// Where the person stands towards the workspace of an app that asks for
+/// their files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Standing {
+    /// The app's workspace is on screen and the person manages it.
+    Owner,
+    /// The app's workspace is not the one on screen.
+    ElsewhereOnScreen,
+    /// The app's workspace is on screen, but someone else manages it.
+    NotManaged,
+}
+
+pub(super) fn standing(context: &ChooserContext, caller: &PortalCaller) -> Standing {
     let handle = context.grants.tree_handle();
     let tree = handle.read();
-    tree.desktop.active_workspace().is_some_and(|workspace| {
-        workspace.id == caller.workspace_id
-            && tree.governs_room(workspace.room())
-            && workspace.may_administer(&crate::shell::state::local_user_id_for_room(
-                &workspace.room(),
-            ))
-    })
+    match tree.desktop.active_workspace() {
+        Some(workspace) if workspace.id == caller.workspace_id => {
+            if tree.governs_room(workspace.room())
+                && workspace.may_administer(&crate::shell::state::local_user_id_for_room(
+                    &workspace.room(),
+                ))
+            {
+                Standing::Owner
+            } else {
+                Standing::NotManaged
+            }
+        }
+        _ => Standing::ElsewhereOnScreen,
+    }
 }
 
 pub(super) fn answer(

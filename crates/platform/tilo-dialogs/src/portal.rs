@@ -610,7 +610,7 @@ impl PickRequest {
         let files = crate::current_picker();
         scoped_pick_worker(scope, move || {
             files.pick(self).recv().unwrap_or_else(|_| {
-                PortalOutcome::Failed("the file chooser closed without answering".into())
+                PortalOutcome::Failed("The file chooser closed before you chose. Try again.".into())
             })
         })
     }
@@ -752,7 +752,7 @@ pub enum SaveOutcome {
 /// A pending contents save, drained by the UI thread.
 pub type SaveChannel = Receiver<SaveOutcome>;
 
-const CHOOSER_GONE: &str = "the file chooser went away";
+const CHOOSER_GONE: &str = "The file chooser closed before you chose. Try again.";
 
 /// A path-based picker's pending answer.
 pub(crate) enum PickedPaths {

@@ -131,6 +131,28 @@ impl SearchProvider for StepsFixture {
             },
         );
         rows.push(lock);
+        let mut open = self.action(
+            "open",
+            "Zqfixture open",
+            vec![ActionParam::optional(
+                "path",
+                ParamType::Text,
+                "Folder; omit to choose one",
+            )],
+            96,
+        );
+        open.on_open = Rc::new(
+            |_: &mut ui::widget::Edits<'_>,
+             _: &ObjId,
+             _: &crate::shell::chrome_state::Chrome,
+             _: &ActionArgs|
+             -> Result<(), ActionError> {
+                Err(ActionError::Explained(
+                    "Another file is being opened. Finish that first.".into(),
+                ))
+            },
+        );
+        rows.push(open);
         let runs = self.runs.clone();
         rows.push(SearchResult::nullary(
             ResourceKind::Application,
@@ -532,4 +554,31 @@ fn rows_wear_their_own_pictures() {
         notes.icon,
         Some(ui::icons::app_glyph("so.tilo.notes", None))
     );
+}
+
+/// An action whose arguments may all be left out runs at once; when it
+/// fails, the failure is told on its row, as for one that takes none.
+#[test]
+fn a_failed_run_with_nothing_to_ask_is_told_on_its_row() {
+    let (mut h, _) = steps_harness(QUERY);
+    select(&mut h, "Zqfixture open");
+    assert!(press(&mut h, NamedKey::Enter));
+    assert!(
+        h.host.palette_visible(),
+        "search stays to tell what happened"
+    );
+    let row = h
+        .host
+        .palette
+        .visible_entries()
+        .iter()
+        .find(|entry| entry.label == "Zqfixture open")
+        .cloned()
+        .expect("the row that ran is still listed");
+    assert_eq!(
+        row.description.as_deref(),
+        Some("Another file is being opened. Finish that first."),
+        "the failure is on the row that ran"
+    );
+    assert!(row.badge.is_some(), "the row is marked as failed");
 }
