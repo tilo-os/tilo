@@ -314,14 +314,13 @@ impl ShellOverlayHost {
             };
             let actions = self.agent_actions.entry(owner.clone()).or_default();
             let start = !live && actions.start_once(Instant::now());
-            let opened = actions.open_and_ask(source, &owner, (&ask.title, &ask.body), ask.show);
-            if start {
-                self.start_agent_for(&ask.room, &owner.agent);
-            }
-            if opened {
+            if actions.open_and_ask(source, &owner, (&ask.title, &ask.body), ask.show) {
                 asked = true;
             } else {
                 tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");
+            }
+            if start {
+                self.start_agent_for(&ask.room, &owner.agent);
             }
         }
         asked

@@ -6,6 +6,25 @@ use ui::search::system;
 
 use super::{KindGroup, ResourceKind, SearchProvider, SearchRegistry, SearchResult};
 
+/// Put the rows that answer any query (`fallbacks`, each with its rank)
+/// beside the matches in `merged`: after them when something matched
+/// directly, which Enter then runs; before them otherwise, so Enter hands
+/// the query on. Among themselves they go by rank, in their providers'
+/// order on a tie.
+pub(super) fn place(
+    merged: &mut Vec<(SearchResult, f32)>,
+    mut fallbacks: Vec<(SearchResult, f32)>,
+    direct: bool,
+) {
+    fallbacks.sort_by(|a, b| a.1.total_cmp(&b.1));
+    if direct {
+        merged.append(&mut fallbacks);
+    } else {
+        fallbacks.append(merged);
+        *merged = fallbacks;
+    }
+}
+
 impl SearchRegistry {
     /// Whether `result` answers any query; see
     /// [`SearchProvider::is_fallback`].
@@ -29,10 +48,7 @@ impl SearchRegistry {
         let answers_any = |group: &KindGroup| {
             !group.results.is_empty() && group.results.iter().all(|row| self.is_fallback(row))
         };
-        let lead = groups
-            .iter()
-            .take_while(|group| answers_any(*group))
-            .count();
+        let lead = groups.iter().take_while(|group| answers_any(group)).count();
         let mut groups = groups;
         let mut trailing = Vec::new();
         while groups.len() > lead && groups.last().is_some_and(answers_any) {
