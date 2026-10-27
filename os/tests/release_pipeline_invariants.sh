@@ -95,7 +95,8 @@ t_has() {
 t_has publish-kernel run "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64 'once:sha-{commit}-x86_64'" \
   && t_has publish-kernel run "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64 'once:sha-{commit}-aarch64'" \
   && grep -Fq 'archive_digest "$out/image.oci.tar" > "$out/digest"' "$kernel_script" \
-  && grep -Fq 'for attempt in 1 2 3 4 5; do' "$publish/oci-publish.sh" \
+  && grep -Fq 'registry_copy "$auth" "$1" "$2" --all' "$publish/oci-publish.sh" \
+  && grep -Fq 'for attempt in 1 2 3 4 5; do' <<<"$(sed -n '/^registry_copy() {$/,/^}$/p' "$publish/lib.sh")" \
   && grep -Fq '[[ sha256:$pushed == "$digest" ]] || die' "$publish/oci-publish.sh" \
   && grep -Fq '"$dir/$arch/receipt.json")' <<<"$(sed -n '/^  pins)$/,/^    ;;$/p' "$kernel_script")" \
   && ok 'kernel publication retries a failed push of the completed build and keeps its digest' \

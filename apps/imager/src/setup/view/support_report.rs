@@ -507,6 +507,68 @@ fn reason_text(component: &ComponentSupport) -> String {
             &[("count", (*count).into())],
         ),
         SupportReason::NoKeyboard => t("installer-hardware-reason-no-keyboard"),
+        SupportReason::StartsHere {
+            architecture,
+            board,
+            devicetree,
+            secure_boot,
+            tpm,
+        } => {
+            let mut text = t_args(
+                "installer-hardware-reason-starts-here",
+                &[("architecture", architecture.as_str().into())],
+            );
+            if let Some(board) = board {
+                text.push(' ');
+                text.push_str(&t_args(
+                    "installer-hardware-reason-starts-board",
+                    &[("board", board.as_str().into())],
+                ));
+            }
+            if let Some(devicetree) = devicetree {
+                text.push(' ');
+                text.push_str(&t_args(
+                    "installer-hardware-reason-starts-devicetree",
+                    &[("devicetree", devicetree.as_str().into())],
+                ));
+            }
+            if let Some(secure_boot) = secure_boot {
+                text.push(' ');
+                text.push_str(&t(if *secure_boot {
+                    "installer-hardware-reason-secure-boot-on"
+                } else {
+                    "installer-hardware-reason-secure-boot-off"
+                }));
+            }
+            if let Some(tpm) = tpm {
+                text.push(' ');
+                text.push_str(&t_args(
+                    "installer-hardware-reason-tpm",
+                    &[("tpm", tpm.as_str().into())],
+                ));
+            }
+            text
+        }
+        SupportReason::OtherArchitecture {
+            architecture,
+            running,
+        } => t_args(
+            "installer-hardware-reason-other-architecture",
+            &[
+                ("architecture", architecture.as_str().into()),
+                ("running", running.as_str().into()),
+            ],
+        ),
+        SupportReason::BoardWithoutDevicetree {
+            board,
+            architecture,
+        } => t_args(
+            "installer-hardware-reason-board-without-devicetree",
+            &[
+                ("board", board.as_str().into()),
+                ("architecture", architecture.as_str().into()),
+            ],
+        ),
     }
 }
 
@@ -595,6 +657,28 @@ fn evidence_text(evidence: &Evidence) -> String {
             "installer-hardware-evidence-suspend",
             &[("states", states.join(", ").into())],
         ),
+        EvidenceFact::Architecture { name } => t_args(
+            "installer-hardware-evidence-architecture",
+            &[("architecture", name.as_str().into())],
+        ),
+        EvidenceFact::Virtualization { names } => t_args(
+            "installer-hardware-evidence-virtualization",
+            &[("names", names.join(", ").into())],
+        ),
+        EvidenceFact::Board { id, devicetree } => {
+            let mut text = t_args(
+                "installer-hardware-evidence-board",
+                &[("board", id.as_str().into())],
+            );
+            if let Some(devicetree) = devicetree {
+                text.push(' ');
+                text.push_str(&t_args(
+                    "installer-hardware-evidence-devicetree",
+                    &[("devicetree", devicetree.as_str().into())],
+                ));
+            }
+            text
+        }
     };
     if evidence.scope == EvidenceScope::SelectedRelease {
         t_args(
