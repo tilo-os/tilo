@@ -19,9 +19,8 @@ root shell on a virtio-serial port the check hot-plugs after each boot. Nothing 
 target is changed.
 
 Variants:
-  one-secret             the installer's own path: one secret for disk and account; the recovery
-                         key is taken the way a person takes it, with the wizard's Copy button,
-                         and must open a keyslot of its own after install (item 8)
+  one-secret             the installer's own default: one secret for disk and account; the
+                         recovery key it hands over must open a keyslot of its own (item 8)
   separate-disk-secret   the installer's separate disk secret: migration adds the keyslot with the
                          volume key the initrd links, then the boot sign-in takes the password
 
@@ -307,7 +306,6 @@ class Run:
         self.wrong = SECRETS.add("tilosignin7horse4batterz")
         self.disk = SECRETS.add("tilodisk9meadow2lantern5") if variant == "separate-disk-secret" else None
         self.recovery: str | None = None
-        self.recovery_read_error: str | None = None
         self.baseline: dict = {}
         self.items: dict[str, dict] = {}
         self.avcs: dict[str, list[str]] = {}
@@ -329,14 +327,13 @@ class Run:
     # -- the installer ------------------------------------------------------------------------
 
     def install(self) -> None:
-        """The separate-secret variant installs through the installer's unattended entry point:
-        a private recipe applied through the same published actions and privileged backend
-        (tilo-install, tilo-disk-encrypt) as the wizard, with the one-time recovery key written
-        to a private file the test shell reads. The one-secret variant drives the wizard over
-        the console, because only the wizard installs with one secret: an unattended recipe
-        always carries a separate disk secret and refuses one equal to the account password.
-        That variant takes its recovery key from the wizard's Copy button (item 8); item 6, the
-        key at the boot prompt, runs in the other."""
+        """Both variants install through the installer's unattended entry point: a private
+        recipe applied through the same published actions and privileged backend (tilo-install,
+        tilo-disk-encrypt) as the wizard, with the one-time recovery key written to a private
+        file the test shell reads. The one-secret recipe carries no `protection`, so the account
+        password is the startup secret too, as the wizard installs it; the separate-secret
+        recipe carries its own disk secret. Item 8 checks the one-secret key's keyslot after
+        install; item 6, the key at the boot prompt, runs in the other variant."""
         c = self.cycle
         c.vm("init-cycle")
         # The medium is unsigned: its installer admits the target only with the VM proof port.
@@ -346,14 +343,9 @@ class Run:
             console.poll(c.console, lambda s: s.get("app") == "installer", 900, 5)
         except TimeoutError as error:
             raise Failed("the live installer never answered on its console") from error
-        if not self.disk:
-            self.run_wizard()
         sh = self.live_shell()
         try:
-            if self.disk:
-                self.run_unattended(sh)
-            else:
-                self.read_copied_recovery_key(sh)
+            self.run_unattended(sh)
             self.prepare_target(sh)
         finally:
             try:
@@ -366,99 +358,6 @@ class Run:
             c.stop()
         (self.out / "serial-installer-withheld.log").write_text(
             "withheld: the live installer's serial may carry the one-time recovery key\n")
-
-    def run_wizard(self) -> None:
-        c = self.cycle
-        last, repeats = "", 0
-        while True:
-            state = console.state(c.console, 30)
-            step = state.get("step", "unknown")
-            repeats = repeats + 1 if step == last else 0
-            if repeats > 3:
-                raise Failed(f"the installer stays on {step}: {state.get('status')}")
-            last = step
-            say(f"installer: {step}")
-            if step in ("keyboard", "network", "media"):
-                c.invoke("installer", "next@installer")
-            elif step == "accounts":
-                c.invoke("installer", "skip-offline@installer.accounts")
-            elif step == "disk":
-                c.invoke("installer", "set-method@installer.storage", {"method": "erase"})
-                disks = [d for d in (state.get("storage") or {}).get("disks", [])
-                         if not d.get("installer_medium") and not d.get("read_only")]
-                if len(disks) != 1:
-                    raise Failed(f"expected one target disk, the installer lists {disks}")
-                c.invoke("installer", f"select@installer.disk:{disks[0]['device']}")
-                c.invoke("installer", "next@installer")
-            elif step == "account":
-                self.facts["installer_secret_policy"] = (state.get("account") or {}).get("secret_policy")
-                c.invoke("installer", "set-identity@installer.account",
-                         {"username": self.user, "full_name": self.full_name})
-                c.invoke("installer", "set-passphrase@installer.account",
-                         {"passphrase": self.account, "confirmation": self.account})
-                c.invoke("installer", "next@installer")
-            elif step == "options":
-                c.invoke("installer", "set-hostname@installer.options", {"hostname": "signin-e2e"})
-                c.invoke("installer", "next@installer")
-            elif step == "review":
-                c.invoke("installer", "set-recovery-promise@installer.review", {"acknowledged": True})
-                target = (console.state(c.console, 30).get("storage") or {}).get("confirmation_target")
-                if not target:
-                    raise Failed("the installer names no confirmation target")
-                c.invoke("installer", "begin@installer.review", {"confirmation_phrase": target})
-            elif step == "install":
-                break
-            else:
-                raise Failed(f"the installer is on a step this check does not know: {step}")
-        started = time.monotonic()
-        seen: list = []
-
-        def finished(state: dict) -> bool:
-            install = state.get("install") or {}
-            for stage in (install.get("stages") or [])[len(seen):]:
-                seen.append(stage)
-                say(f"install stage after {time.monotonic() - started:.0f}s: {SECRETS.redact(str(stage))}")
-            return install.get("state") in ("done", "failed")
-
-        try:
-            final = console.poll(c.console, finished, 3600, 10)
-        except TimeoutError as error:
-            raise Failed("the install did not finish within an hour") from error
-        self.save("installer-final-state.json", final)
-        if final["install"]["state"] != "done":
-            raise Failed("the install failed: " + " | ".join(final["install"].get("log_tail", [])[-5:]))
-        self.facts["install_seconds"] = round(time.monotonic() - started)
-        # The person's way to take the key: the Copy button puts it on the live session's
-        # clipboard, which the test shell reads once it is up (read_copied_recovery_key).
-        try:
-            c.invoke("installer", "copy@installer.recovery")
-            self.facts["recovery_key_copied"] = True
-        except Exception as error:  # noqa: BLE001 - item 8 reports it; the install itself is done
-            self.facts["recovery_key_copied"] = SECRETS.redact(str(error))[:300]
-        c.invoke("installer", "confirm-saved@installer.recovery", {"saved": True})
-
-    def read_copied_recovery_key(self, sh: Shell) -> None:
-        """Item 8's input: the recovery key the wizard's Copy button put on the live session's
-        clipboard (the installer clears it after five minutes, well after this runs). cage
-        offers no clipboard-manager protocol, so wl-paste joins the session as the installer's
-        own user and takes the selection the way any client there would."""
-        copied = self.facts.get("recovery_key_copied")
-        if copied is not True:
-            self.recovery_read_error = f"the Copy button did not copy the recovery key: {copied}"
-            return
-        code, text = sh.run(
-            "s=$(find /run/user -maxdepth 2 -type s -name 'wayland-[0-9]' 2>/dev/null | head -1); "
-            "test -n \"$s\" || { echo 'no Wayland socket under /run/user'; exit 3; }; "
-            "runuser -u \"$(stat -c %U \"$s\")\" -- env XDG_RUNTIME_DIR=\"${s%/*}\" "
-            "WAYLAND_DISPLAY=\"${s##*/}\" timeout 30 wl-paste --no-newline --type text/plain",
-            60, quiet=True)
-        found = RECOVERY_SHAPE.fullmatch(text.strip())
-        if code or not found:
-            self.recovery_read_error = (f"the clipboard did not hold a recovery key after Copy (exit {code}: "
-                                        f"{SECRETS.redact(text.strip())[-300:]!r})")
-            return
-        self.recovery = SECRETS.add(found.group(0))
-        say("read the recovery key the wizard's Copy button put on the clipboard")
 
     def run_unattended(self, sh: Shell) -> None:
         c = self.cycle
@@ -479,12 +378,13 @@ class Run:
                      "partition_table": device.get("pttype") or "",
                      "partition_table_uuid": device.get("ptuuid") or "",
                      "logical_sector_size": int(device["log-sec"])},
-            "protection": {"kind": "passphrase", "secret": self.disk or self.account},
             "data_source": "none",
             "acknowledge_recovery_key": True,
             "preferences": {"hostname": "signin-e2e"},
             "finish": "stay",
         }
+        if self.disk:
+            recipe["protection"] = {"kind": "passphrase", "secret": self.disk}
         self.facts["target_disk"] = recipe["disk"]
         # The recipe travels on the shell's input, never in argv, and only into a 0600 file.
         body = json.dumps(recipe)
@@ -600,15 +500,15 @@ class Run:
                     "systemd_recovery_token_slots": recovery_tokens,
                     "keyslots": sorted(self.baseline["keyslots"])}
         if not self.recovery:
-            self.item("8", "failed", self.recovery_read_error or "the recovery key was not read", **evidence)
+            self.item("8", "failed", "the install handed over no recovery key", **evidence)
         elif recovery_slot is None:
-            self.item("8", "failed", "the recovery key the installer showed opens no keyslot", **evidence)
+            self.item("8", "failed", "the recovery key the installer handed over opens no keyslot", **evidence)
         elif recovery_slot == disk_slot or recovery_tokens != [recovery_slot]:
             self.item("8", "failed", f"the recovery key opens keyslot {recovery_slot}, not the one slot "
                       f"its systemd-recovery token names ({recovery_tokens}) apart from the startup "
                       f"secret's ({disk_slot})", **evidence)
         else:
-            self.item("8", "passed", f"the recovery key from the wizard's Copy button opens keyslot "
+            self.item("8", "passed", f"the recovery key the installer handed over opens keyslot "
                       f"{recovery_slot}, the one its systemd-recovery token names; the account "
                       f"password opens {disk_slot}", **evidence)
 
@@ -1457,7 +1357,7 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "5": "Lock screen, sudo and polkit accept the secret through pam_tilo and reject a wrong one",
         "6": "Recovery key opens the volume from \"Can't sign in\"",
         "7": "Separate disk passphrase: migration through the linked volume key, then boot sign-in",
-        "8": "One secret: the recovery key from the wizard's Copy button opens its own keyslot after install",
+        "8": "One secret: the recovery key the installer hands over opens its own keyslot after install",
     }
     for key in names:
         items.setdefault(key, {"status": "not-run", "summary": "an earlier step failed", "evidence": {}})
