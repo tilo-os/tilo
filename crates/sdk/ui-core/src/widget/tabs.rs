@@ -5659,7 +5659,7 @@ mod tests {
         assert!(bar.set_dev_build(1, Some("Ada".into())));
         assert!(!bar.set_dev_build(1, Some("Ada".into())), "unchanged");
         let (alone, label) = bar.dev_build_chip(&mut tr, &theme).expect("the mark shows");
-        assert_eq!(label, "Dev build · by Ada");
+        assert_eq!(label, "Dev build by Ada");
         assert!(alone.x0 >= bar.tab_rects[1].x1, "after the pills");
         bar.set_desktop_control(1, true);
         let (control, _) = bar.desktop_control_chip(&mut tr, &theme).unwrap();
@@ -5675,7 +5675,7 @@ mod tests {
         );
         assert_eq!(
             bar.dev_build_access().and_then(|node| node.name),
-            Some("Dev build · by Ada".to_owned())
+            Some("Dev build by Ada".to_owned())
         );
         // `TILO_SHOT_OUT=<file.png>` keeps a picture of the bar to look at.
         if let Some(out) = std::env::var_os("TILO_SHOT_OUT") {
