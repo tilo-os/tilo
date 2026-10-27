@@ -17,7 +17,6 @@ use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
-use ui::time::{Duration, Instant};
 use ui::widget::{Button, ChipStyle, ControlSize, Row, RowMenu, Widget};
 
 use crate::channel;
@@ -252,10 +251,26 @@ pub trait PrintService: Send + Sync {
     /// Returns `Err` if `id` does not name a stopped/canceled/aborted job, or
     /// CUPS refuses to resubmit it.
     fn retry(&self, id: &str) -> Result<(), String>;
+
+    /// Follow the print service: `changed` is called, on another thread,
+    /// each time a queue or a job changes, for as long as the answer is
+    /// held. `None` when nothing can be followed.
+    fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
 }
 
 struct CupsService;
 impl PrintService for CupsService {
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        match os_actions::printing::follow_changes(changed) {
+            Ok(follow) => Some(Box::new(follow)),
+            Err(error) => {
+                tracing::warn!(target: "tilo::settings", %error, "the print service's changes are not followed");
+                None
+            }
+        }
+    }
     fn queues(&self) -> Result<Vec<PrinterQueue>, String> {
         os_actions::printing::queues()
     }
@@ -450,7 +465,11 @@ pub struct PrintersModel {
     scanners: Vec<Scanner>,
     refresh_rx: Option<channel::Receiver<PrinterSnapshot>>,
     discover_rx: Option<channel::Receiver<Result<Vec<DiscoveredPrinter>, String>>>,
-    last_refresh: Instant,
+    /// What tells the model the queues or jobs changed while a pane shows
+    /// it.
+    following: std::rc::Weak<crate::watch::Counted>,
+    /// The change count last read for.
+    changes_seen: u64,
     error: Option<String>,
     /// Why each list could not be read in the last refresh. A list that
     /// could not be read is shown as that failure, not as empty, and stays
@@ -477,7 +496,8 @@ impl PrintersModel {
             scanners: Vec::new(),
             refresh_rx: None,
             discover_rx: None,
-            last_refresh: ui::time::now(),
+            following: std::rc::Weak::new(),
+            changes_seen: 0,
             error: None,
             read_errors: PrinterReadErrors::default(),
             changed: false,
@@ -551,7 +571,6 @@ impl PrintersModel {
     }
 
     fn adopt_snapshot(&mut self, result: PrinterSnapshot) {
-        self.last_refresh = ui::time::now();
         self.read_errors = PrinterReadErrors {
             printers: adopt(result.printers, &mut self.printers),
             jobs: adopt(result.jobs, &mut self.jobs),
@@ -595,7 +614,8 @@ impl PrintersModel {
             ));
         }
 
-        // The queues are read again every few seconds: no refresh.
+        // The queues are read again whenever the print service reports a
+        // change: no refresh.
         let printers = if let Some(error) = &self.read_errors.printers {
             rows(vec![block(error_caption(&t_args(
                 "settings-printers-read-error",
@@ -905,7 +925,16 @@ impl PaneModel for PrintersModel {
 
     fn poll(&mut self) -> bool {
         self.poll_background();
-        if self.last_refresh.elapsed() >= Duration::from_secs(3) {
+        // Read again once the print service reported a change; a read
+        // running takes in changes up to its start, and the next one after.
+        if let Some(changes) = self
+            .following
+            .upgrade()
+            .and_then(|following| following.changes())
+            && changes != self.changes_seen
+            && self.refresh_rx.is_none()
+        {
+            self.changes_seen = changes;
             self.request_refresh();
         }
         std::mem::take(&mut self.changed)
@@ -913,6 +942,20 @@ impl PaneModel for PrintersModel {
 
     fn name(&self) -> &'static str {
         "PrintersPane"
+    }
+
+    fn follow(&mut self) -> Option<std::rc::Rc<dyn std::any::Any>> {
+        if let Some(held) = self.following.upgrade() {
+            return Some(held);
+        }
+        // Nothing was followed while no pane showed the model: the queues
+        // are read again once.
+        self.changes_seen = u64::MAX;
+        let service = Arc::clone(&self.service);
+        let following = crate::watch::shared(&mut self.following, move || {
+            crate::watch::Counted::start(|changed| service.follow(changed))
+        });
+        Some(following)
     }
 
     fn busy(&self) -> bool {
@@ -1132,6 +1175,101 @@ mod tests {
             self.calls.lock().unwrap().push(format!("retry:{id}"));
             Ok(())
         }
+    }
+
+    /// A print service whose changes are followed by hand.
+    struct FollowedPrinters {
+        recording: RecordingService,
+        reads: std::sync::atomic::AtomicUsize,
+        follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    }
+    impl PrintService for FollowedPrinters {
+        fn queues(&self) -> Result<Vec<PrinterQueue>, String> {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.recording.queues()
+        }
+        fn jobs(&self) -> Result<Vec<PrintJob>, String> {
+            self.recording.jobs()
+        }
+        fn discover(&self) -> Result<Vec<DiscoveredPrinter>, String> {
+            self.recording.discover()
+        }
+        fn scanners(&self) -> Result<Vec<Scanner>, String> {
+            self.recording.scanners()
+        }
+        fn add(&self, p: &DiscoveredPrinter) -> Result<(), String> {
+            self.recording.add(p)
+        }
+        fn set_default(&self, n: &str) -> Result<(), String> {
+            self.recording.set_default(n)
+        }
+        fn set_enabled(&self, n: &str, e: bool) -> Result<(), String> {
+            self.recording.set_enabled(n, e)
+        }
+        fn remove(&self, n: &str) -> Result<(), String> {
+            self.recording.remove(n)
+        }
+        fn cancel(&self, id: &str) -> Result<(), String> {
+            self.recording.cancel(id)
+        }
+        fn retry(&self, id: &str) -> Result<(), String> {
+            self.recording.retry(id)
+        }
+        fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+            *self.follower.lock().unwrap() = Some(Arc::from(changed));
+            Some(Box::new(()))
+        }
+    }
+
+    /// The shown page reads the queues and jobs again when the print
+    /// service reports a change, and only then; a closed page reads nothing.
+    #[test]
+    fn the_shown_page_reads_the_queues_again_when_the_print_service_reports_a_change() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let service = Arc::new(FollowedPrinters {
+            recording: RecordingService::new(),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            follower: Mutex::new(None),
+        });
+        let mut model =
+            PrintersModel::new(cx, Arc::clone(&service) as Arc<dyn PrintService>, false);
+        let reads = || service.reads.load(std::sync::atomic::Ordering::Relaxed);
+        let read_until = |model: &mut PrintersModel, count: usize| {
+            let deadline = tilo_test_env::hang_deadline();
+            while reads() < count || model.refresh_rx.is_some() {
+                model.poll();
+                assert!(std::time::Instant::now() < deadline, "never read again");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        let following = PaneModel::follow(&mut model).expect("a shown page follows the printers");
+        let changed = service
+            .follower
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the print service is followed while the page shows");
+        read_until(&mut model, 1);
+        model.poll();
+        assert_eq!(reads(), 1, "showing the page reads once");
+        assert_eq!(
+            PaneModel::next_wake(&model),
+            None,
+            "nothing reads on a timer"
+        );
+
+        changed();
+        read_until(&mut model, 2);
+        model.poll();
+        assert_eq!(reads(), 2, "one change, one read");
+
+        drop(following);
+        changed();
+        model.poll();
+        assert!(model.refresh_rx.is_none(), "a closed page reads nothing");
+        assert_eq!(reads(), 2);
     }
 
     /// Each change reaches the one typed backend, for the printer or job it
