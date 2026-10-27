@@ -146,7 +146,8 @@ impl ShellOverlayHost {
                         let number = order
                             .iter()
                             .position(|candidate| candidate == id)
-                            .map_or(index.saturating_add(1), |place| place.saturating_add(1));
+                            .unwrap_or(index)
+                            .saturating_add(1);
                         (
                             *id,
                             crate::shell::i18n::t_args(
@@ -427,6 +428,26 @@ impl ShellOverlayHost {
         changed
     }
 
+    /// Tell an agent about the menu's window, whatever app it shows: done
+    /// either way, so the menu has nothing more to offer.
+    fn tell_agent_from_menu(&mut self, target: TabMenuTarget) -> bool {
+        let app_id = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| {
+                chrome
+                    .borrow()
+                    .tab_app_id(target.strip, target.group, target.tab)
+            })
+            .map(|app| app.as_str().to_owned())
+            .unwrap_or_default();
+        // Done either way: without an agent to tell, the desktop
+        // says so, and the menu has nothing more to offer.
+        let at = self.layers.tab_menu.anchor_point();
+        self.tell_agent_about_app(&app_id, at);
+        true
+    }
+
     /// Run one tab-menu action against its tab; `true` when it was
     /// performed. Shared by the pointer and keyboard selection and by the
     /// accessibility route, so every door reaches the same operation — and
@@ -449,23 +470,7 @@ impl ShellOverlayHost {
             // and document first, then the widget's close animation.
             WindowMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
             WindowMenuAction::CloseWindow => self.close_window_from_menu(target),
-            WindowMenuAction::TellAgent => {
-                let app_id = self
-                    .chrome
-                    .as_ref()
-                    .and_then(|chrome| {
-                        chrome
-                            .borrow()
-                            .tab_app_id(target.strip, target.group, target.tab)
-                    })
-                    .map(|app| app.as_str().to_owned())
-                    .unwrap_or_default();
-                // Done either way: without an agent to tell, the desktop
-                // says so, and the menu has nothing more to offer.
-                let at = self.layers.tab_menu.anchor_point();
-                self.tell_agent_about_app(&app_id, at);
-                true
-            }
+            WindowMenuAction::TellAgent => self.tell_agent_from_menu(target),
             WindowMenuAction::FullScreen => self.toggle_full_screen_from_menu(target),
             WindowMenuAction::Maximize => self.toggle_maximize_from_menu(target),
             WindowMenuAction::MoveToStrip(destination) => {
