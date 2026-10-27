@@ -599,16 +599,20 @@ mod tests {
             // keyboard repaints a large part of it — some keys share a colour
             // with what they cover — while a shot that draws no keyboard
             // changes none of it.
+            let (mut x, y) = (room(panel.x0), room(panel.y0));
             let mut differing = 0usize;
-            for y in panel.y0 as u32..panel.y1 as u32 {
-                for x in panel.x0 as u32..panel.x1 as u32 {
-                    if before.get_pixel(x, y) != after.get_pixel(x, y) {
+            let mut total = 0usize;
+            while x < room(panel.x1) && y < room(panel.y1) {
+                let mut row = y;
+                while row < room(panel.y1) {
+                    if before.get_pixel(x, row) != after.get_pixel(x, row) {
                         differing += 1;
                     }
+                    total += 1;
+                    row += 1;
                 }
+                x += 1;
             }
-            let total = usize::try_from(panel.width() as u32 * (panel.height() as u32))
-                .unwrap_or(usize::MAX);
             assert!(
                 differing * 5 > total,
                 "{name}: the keyboard panel should change when the keyboard rises; \
@@ -616,6 +620,17 @@ mod tests {
             );
             let _ = fs::remove_dir_all(&dir);
         }
+    }
+
+    /// A scene coordinate as the pixel column or row it covers.
+    fn room(points: f64) -> u32 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a panel's edges are non-negative and inside a display's pixel count"
+        )]
+        let pixel = points as u32;
+        pixel
     }
 
     /// Read a PNG these tests wrote as RGBA8.

@@ -37,6 +37,35 @@ pub fn keyboard_panel(output: Rect) -> Rect {
     Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
+/// What `widget`'s field asks an input method for: a focused field's content
+/// if it has one, else the first field it holds — the one a finger would
+/// reach first. Read off the widget tree the way the keyboard app reads the
+/// purpose off the wire.
+#[must_use]
+pub fn field_content(widget: &dyn Widget) -> Option<ui::ime::InputContent> {
+    let (mut first, mut focused) = (None, None);
+    walk_for_fields(widget, &mut first, &mut focused);
+    focused.or(first)
+}
+
+fn walk_for_fields(
+    widget: &dyn Widget,
+    first: &mut Option<ui::ime::InputContent>,
+    focused: &mut Option<ui::ime::InputContent>,
+) {
+    if let Some(content) = widget.ime_content() {
+        if widget.is_focused() && focused.is_none() {
+            *focused = Some(content);
+        }
+        if first.is_none() {
+            *first = Some(content);
+        }
+    }
+    for child in widget.children() {
+        walk_for_fields(child, first, focused);
+    }
+}
+
 /// Build the keyboard widget `content` asks for: its own layout for that
 /// purpose (a terminal's editing strip, an email field's `@`) and the hints
 /// the field allows (a secret field learns nothing). `None` for a field
@@ -55,14 +84,26 @@ pub fn keyboard_for(content: ui::ime::InputContent) -> OskWidget {
     keyboard
 }
 
+/// A panel's length in taffy's units. Screen sizes sit far inside `f32`'s
+/// exact integers; the cast is stated once rather than at each use.
+fn to_f32(length: f64) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a display's extent in points is far inside f32's exact integers"
+    )]
+    let narrowed = length as f32;
+    narrowed
+}
+
 /// Lay `keyboard` out to fill `panel` and return where its keys landed.
 pub fn lay_out(keyboard: &mut OskWidget, panel: Rect, theme: &ui::theme::Theme) -> Rect {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map = HashMap::<NodeId, *mut dyn Widget>::new();
     let child = keyboard.build_layout(&mut taffy, theme, &mut node_map);
+    let (width, height) = (to_f32(panel.width()), to_f32(panel.height()));
     let size = Size {
-        width: Dimension::length(panel.width() as f32),
-        height: Dimension::length(panel.height() as f32),
+        width: Dimension::length(width),
+        height: Dimension::length(height),
     };
     if let Ok(root) = taffy.new_with_children(
         Style {
@@ -74,8 +115,8 @@ pub fn lay_out(keyboard: &mut OskWidget, panel: Rect, theme: &ui::theme::Theme) 
         .compute_layout(
             root,
             taffy::Size {
-                width: taffy::AvailableSpace::Definite(panel.width() as f32),
-                height: taffy::AvailableSpace::Definite(panel.height() as f32),
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::Definite(height),
             },
         )
         .is_ok()
