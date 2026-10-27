@@ -152,17 +152,52 @@ require_published_snapshot() {
 }
 
 # The image a build left in OUT, as an OCI archive (OUT/image.oci.tar) or an OCI layout
-# (OUT/oci, as the OS image layers compose one): a reference skopeo copies from, and the
-# manifest digest of its single image.
-built_image() {
-  if [[ -f $1/image.oci.tar ]]; then printf 'oci-archive:%s/image.oci.tar' "$1"; else printf 'oci:%s/oci' "$1"; fi
-}
+# (OUT/oci, as the OS image layers compose one): the manifest digest of its single image.
 built_digest() {
   if [[ -f $1/image.oci.tar ]]; then
     archive_digest "$1/image.oci.tar"
   else
     index_digest "$1/oci/index.json" < "$1/oci/index.json"
   fi
+}
+
+# The image a build left in OUT as an OCI layout to copy from, in `layout`: OUT/oci, or
+# OUT/image.oci.tar unpacked once. Copying from oci-archive: has skopeo unpack the whole archive
+# into TMPDIR and read it back while it sends, a write and a read of every layer more on the
+# step's disk; this unpacks it into /dev/shm where it fits beside what the step's memory already
+# holds, else into the scratch directory. `layout_unpacked` names what to remove afterwards.
+built_layout() {
+  local out=$1 size room dir=$scratch
+  layout_unpacked=
+  if [[ ! -f $out/image.oci.tar ]]; then
+    [[ -f $out/oci/index.json ]] || die "$out holds no image: neither image.oci.tar nor oci/"
+    layout=$out/oci
+    return
+  fi
+  size=$(stat -c %s "$out/image.oci.tar")
+  # Half a GiB to spare for skopeo and cosign themselves.
+  if room=$(memory_room) && ((size + 536870912 < room)); then dir=/dev/shm; fi
+  layout=$(mktemp -d "$dir/layout.XXXXXX")
+  layout_unpacked=$layout
+  tar -xf "$out/image.oci.tar" -C "$layout"
+}
+
+# Bytes a file on /dev/shm may still take: what the tmpfs has free, at most what the step's
+# memory (its cgroup's limit, the machine's available memory) has left. Fails without a tmpfs
+# there.
+memory_room() {
+  local room limit used available
+  [[ -d /dev/shm && $(stat -f -c %T /dev/shm) == tmpfs ]] || return 1
+  room=$(($(stat -f -c '%a * %S' /dev/shm)))
+  available=$(sed -n 's/^MemAvailable: *\([0-9]*\) kB$/\1/p' /proc/meminfo)
+  [[ -n $available ]] || return 1
+  ((available * 1024 < room)) && room=$((available * 1024))
+  if [[ -r /sys/fs/cgroup/memory.max && -r /sys/fs/cgroup/memory.current ]]; then
+    limit=$(cat /sys/fs/cgroup/memory.max)
+    used=$(cat /sys/fs/cgroup/memory.current)
+    if [[ $limit =~ ^[0-9]+$ ]] && ((limit - used < room)); then room=$((limit - used)); fi
+  fi
+  printf '%s' "$room"
 }
 
 # Whether a moving development tag that now names commit $1 (nothing, this commit, or an

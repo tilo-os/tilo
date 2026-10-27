@@ -12,7 +12,7 @@
 #                                  composed with them, with OUT/digest and OUT/revision
 #   os-image.sh board BOARD IN OUT the board's sealed dev image (os/Containerfile.board: firmware,
 #                                  device tree, initramfs, a UKI) FROM the aarch64 dev image `dev`
-#                                  left in IN, into OUT/image.oci.tar, with OUT/digest, OUT/revision
+#                                  left in IN, as an OCI layout in OUT/oci, with OUT/digest, OUT/revision
 #                                  and OUT/board; the Lenovo's audio stack checked inside it; and
 #                                  its flashable disk in OUT/disk
 #
@@ -61,13 +61,14 @@ load_image() {
   podman tag "$id" "$name"
 }
 
-# NAME from podman's store into OUT/image.oci.tar, with OUT/digest and OUT/revision.
+# NAME from podman's store into the OCI layout OUT/oci, which the size check, the signature and
+# the publication read as it is, with OUT/digest and OUT/revision.
 save_image() {
   local name=$1 out=$2 revision=$3
   mkdir -p "$out"
-  rm -f "$out/image.oci.tar"
-  podman push --compression-format zstd --compression-level 3 "$name" "oci-archive:$out/image.oci.tar"
-  archive_digest "$out/image.oci.tar" > "$out/digest"
+  rm -rf "$out/oci"
+  podman push --compression-format zstd --compression-level 3 "$name" "oci:$out/oci:tilo"
+  index_digest "$out/oci/index.json" < "$out/oci/index.json" > "$out/digest"
   printf '%s\n' "$revision" > "$out/revision"
   printf 'built %s of %s\n' "$(cat "$out/digest")" "$revision"
 }
