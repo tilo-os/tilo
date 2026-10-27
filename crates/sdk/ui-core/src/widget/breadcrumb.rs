@@ -5,7 +5,8 @@
 //! truncates the middle: keeps the first segment, puts the
 //! [`Icon::MoreHorizontal`] glyph in place of the hidden ones, keeps the
 //! last two, then fewer. What still does not fit ends the current
-//! segment's label in an ellipsis.
+//! segment's label in an ellipsis, and where the `…` leaves it no room the
+//! current segment stands alone. Nothing paints past the trail's width.
 //!
 //! An optional root icon ([`Breadcrumb::root_icon`]) leads the first
 //! segment (a drive, Home). A trail that doubles as an editable path
@@ -140,9 +141,11 @@ impl Breadcrumb {
 
     /// Compute the list of visible labels for the given available width.
     /// The whole trail when it fits; otherwise the first segment, `...`
-    /// and the last two; then the first, `...` and the last; and at the
-    /// narrowest `...` and the last (for a trail of two as well). The
-    /// current folder always shows.
+    /// and the last two; then the first, `...` and the last; then `...`
+    /// and the last (for a trail of two as well), the last cut short where
+    /// it does not stand whole; and at the narrowest, where the `...`
+    /// leaves the last no room for a letter, the last alone, cut short.
+    /// The current folder always shows.
     /// Pure function — does not mutate `self`. Exposed for tests that want
     /// to pin the truncation behaviour without running a full layout pass.
     pub fn visible_segments(
@@ -176,11 +179,36 @@ impl Breadcrumb {
             candidates.push(vec![Some(0), None, Some(last)]);
         }
         candidates.push(vec![None, Some(last)]);
-        let narrowest = candidates.pop().unwrap_or_default();
-        candidates
-            .into_iter()
+        if let Some(fits) = candidates
+            .iter()
             .find(|origins| self.width_of(origins, theme, tr) <= available_width)
-            .unwrap_or(narrowest)
+        {
+            return fits.clone();
+        }
+        // Nothing stands whole: the current segment is cut short beside the
+        // `…` while that leaves it room for a letter and its ellipsis, and
+        // stands alone, cut short, where it does not.
+        let style = theme.text(self.role);
+        let label = self.segments.get(last).map_or("", String::as_str);
+        let first: String = crate::text_break::grapheme_indices(label)
+            .next()
+            .map(|(_, grapheme)| grapheme)
+            .unwrap_or_default()
+            .to_owned();
+        let least = f64::from(
+            tr.measure_style(
+                &format!("{first}{}", crate::text_render::ELLIPSIS),
+                None,
+                &style,
+            )
+            .0,
+        );
+        let beside = self.width_of(&[None], theme, tr) + self.separator_block(theme);
+        if beside + least <= available_width {
+            vec![None, Some(last)]
+        } else {
+            vec![Some(last)]
+        }
     }
 
     fn labels_of(&self, origins: &[Option<usize>]) -> Vec<String> {
@@ -211,9 +239,14 @@ impl Breadcrumb {
         }
     }
 
+    /// A chevron between two segments with the space either side of it.
+    fn separator_block(&self, theme: &Theme) -> f64 {
+        separator_width(theme) + f64::from(theme.tokens.spacing.s2) * 2.0
+    }
+
     /// The width the trail takes showing `origins`, chevrons included.
     fn width_of(&self, origins: &[Option<usize>], theme: &Theme, tr: &mut TextRenderer) -> f64 {
-        let sep_block = separator_width(theme) + f64::from(theme.tokens.spacing.s2) * 2.0;
+        let sep_block = self.separator_block(theme);
         let labels: f64 = origins
             .iter()
             .map(|origin| self.segment_width(*origin, theme, tr))
@@ -260,7 +293,13 @@ impl Breadcrumb {
                 reason = "a segment's width is a bounded on-screen size, far inside f32"
             )]
             let room = rect.width() as f32;
-            *label = tr.elide_to_width_style(label, room, &theme.text(self.role));
+            let style = theme.text(self.role);
+            *label = tr.elide_to_width_style(label, room, &style);
+            // Too little room for even the ellipsis: nothing is painted
+            // rather than something past the trail's end.
+            if tr.measure_style(label, None, &style).0 > room {
+                label.clear();
+            }
         }
         self.cached_visible = labels;
         self.segment_rects = rects;
@@ -276,6 +315,20 @@ impl Breadcrumb {
             .zip(self.segment_rects.iter())
             .filter_map(|(origin, rect)| origin.map(|index| (index, *rect)))
             .collect()
+    }
+
+    /// What the last draw painted: each shown label (`None`: the `…`) and
+    /// the rect it was laid out in, and where the trail stood.
+    #[cfg(test)]
+    pub(crate) fn painted(&self) -> (Vec<(Option<String>, Rect)>, Rect) {
+        let shown = self
+            .cached_visible
+            .iter()
+            .zip(&self.visible_origin)
+            .zip(&self.segment_rects)
+            .map(|((label, origin), rect)| (origin.map(|_| label.clone()), *rect))
+            .collect();
+        (shown, self.rect)
     }
 
     /// The room the root icon takes before the first label, with its gap.
@@ -695,6 +748,68 @@ mod tests {
             );
         }
 
+        /// However narrow, a deep trail paints inside its width: the middle
+        /// folds into the `…`, then the current segment is cut short beside
+        /// it, then stands alone, cut short.
+        fn deep_trail_never_paints_past_its_width() {
+            let levels = ["Home", "Documents", "Projects", "Tilo", "designs"];
+            let mut bc = Breadcrumb::new(
+                levels
+                    .iter()
+                    .map(|level| (*level).to_string())
+                    .chain(std::iter::once("app-language".to_string()))
+                    .collect(),
+            )
+            .with_role(TextRole::Body);
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let style = theme.text(bc.role);
+            let sep = separator_width(&theme) + f64::from(theme.tokens.spacing.s2) * 2.0;
+            let mut forms = Vec::new();
+            for width in (4..=520).step_by(4).map(f64::from) {
+                let rect = Rect::new(20.0, 0.0, 20.0 + width, 28.0);
+                bc.set_rect(rect);
+                bc.rebuild_rects(&theme, &mut tr);
+                let n = bc.segment_rects.len();
+                for (i, (seg, label)) in bc.segment_rects.iter().zip(&bc.cached_visible).enumerate()
+                {
+                    let ink = if bc.visible_origin[i].is_none() {
+                        seg.width()
+                    } else {
+                        f64::from(tr.measure_style(label, None, &style).0)
+                    };
+                    let chevron = if i + 1 < n { sep } else { 0.0 };
+                    assert!(
+                        seg.x0 >= rect.x0 && seg.x0 + ink + chevron <= rect.x1 + 0.5,
+                        "{width} px: {label:?} at {seg:?} ({ink} px) paints past {rect:?}: {:?}",
+                        bc.cached_visible
+                    );
+                }
+                let last = bc.cached_visible.last().cloned().unwrap_or_default();
+                assert!(
+                    "app-language".starts_with(last.trim_end_matches(crate::text_render::ELLIPSIS)),
+                    "{width} px: the current folder ends the trail: {last:?}"
+                );
+                forms.push(bc.visible_origin.clone());
+            }
+            forms.dedup();
+            assert_eq!(
+                forms.first(),
+                Some(&vec![Some(5)]),
+                "at the narrowest the current folder stands alone: {forms:?}"
+            );
+            assert!(
+                forms.contains(&vec![None, Some(5)]),
+                "before that it is cut short beside the `…`: {forms:?}"
+            );
+            assert_eq!(
+                forms.last(),
+                Some(&(0..6).map(Some).collect::<Vec<_>>()),
+                "wide, every level shows: {forms:?}"
+            );
+        }
+
+        deep_trail_never_paints_past_its_width();
         breadcrumb_of_two_long_segments_stays_inside_its_width();
         breadcrumb_with_one_segment_paints_no_separator();
         breadcrumb_labels_and_chevrons_centre_their_measured_line();

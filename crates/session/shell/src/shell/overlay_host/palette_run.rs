@@ -634,6 +634,17 @@ impl ShellOverlayHost {
             flow.values.clear();
             flow.asked.clear();
             flow.pending = palette_flow::missing_params(&result.params, &flow.values);
+            if flow.pending.is_empty() {
+                // Nothing to ask again (every argument it takes may be
+                // left out), so no step was ever shown: the results are
+                // still on screen, and the failure is told on the row that
+                // ran, as a run that asks nothing tells it.
+                self.end_palette_steps();
+                self.palette
+                    .set_selected_status(t("host-action-failed-status"), error.user_message());
+                self.palette_layout_dirty = true;
+                return;
+            }
             self.param_flow = Some(flow);
             self.show_param_step();
             self.show_step_error(error.user_message());
