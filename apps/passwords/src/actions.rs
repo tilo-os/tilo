@@ -8,6 +8,7 @@
 
 use accounts::{SecretItem, SecretItemKind};
 use ui::framework::LiveRow;
+use ui::tilo_actions::{ActionBinding, Resource};
 use ui::tilo_resource::{self, Effect};
 
 /// The prefix of an item row's id; the rest is the item's opaque vault id.
@@ -189,12 +190,33 @@ pub fn item_row(item: &SecretItem) -> LiveRow {
     copy.clone_into(&mut copy_spec.label);
     let mut reveal_spec = PasswordsEffect::Reveal { item: id.clone() }.bound();
     reveal.clone_into(&mut reveal_spec.label);
+    let favorite = crate::vault::is_favorite(item);
+    let mut favorite_spec = PasswordsEffect::Favorite {
+        item: id.clone(),
+        favorite: !favorite,
+    }
+    .bound();
+    if favorite {
+        "Remove from favorites"
+    } else {
+        "Add to favorites"
+    }
+    .clone_into(&mut favorite_spec.label);
     LiveRow::new(item_resource_id(&id), kind, name)
         .operation(PasswordsEffect::Open { item: id.clone() }.bound())
+        .operation(favorite_spec)
         .operation(PasswordsEffect::Edit { item: id.clone() }.bound())
         .operation(copy_spec)
         .operation(reveal_spec)
         .operation(PasswordsEffect::Delete { item: id }.bound())
+}
+
+/// A control's binding to `action` of the item's published row
+/// ([`item_row`]): pressing it is what an agent addressing the item by its
+/// opaque id does, and it names the item by that id alone.
+pub(crate) fn item_binding(row: &Resource, action: &str) -> Option<ActionBinding<()>> {
+    let spec = row.actions.iter().find(|spec| spec.id == action)?;
+    ActionBinding::static_json(row, spec, serde_json::Map::new()).ok()
 }
 
 #[cfg(test)]
@@ -224,7 +246,10 @@ mod tests {
             assert!(!public.contains(private), "resource leaked {private:?}");
         }
         let ids: Vec<&str> = resource.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["open", "edit", "copy", "reveal", "delete"]);
+        assert_eq!(
+            ids,
+            ["open", "favorite", "edit", "copy", "reveal", "delete"]
+        );
         assert!(public.contains("Reveal password"));
         let delete = resource.actions.iter().find(|a| a.id == "delete").unwrap();
         assert_eq!(
