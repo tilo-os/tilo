@@ -11,6 +11,9 @@ use agent_provider_config::{ModelDescriptor, ProviderConfig, ProviderProfile, Se
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderSelection {
     pub profile_id: String,
+    /// The provider as its profile names it, for a run's own words about who
+    /// planned it. Never a credential or an endpoint.
+    pub profile_label: String,
     pub endpoint: String,
     pub protocol: agent_provider_config::ProviderProtocol,
     pub model: ModelDescriptor,
@@ -35,6 +38,11 @@ impl ProviderSelection {
     pub fn from_profile(profile: &ProviderProfile, model: ModelDescriptor) -> Self {
         Self {
             profile_id: profile.id.clone(),
+            profile_label: if profile.label.is_empty() {
+                profile.id.clone()
+            } else {
+                profile.label.clone()
+            },
             endpoint: profile.endpoint.clone(),
             protocol: profile.protocol,
             model,

@@ -59,17 +59,6 @@ pub enum Fallback {
     Failed(String),
 }
 
-impl Route {
-    /// The detail behind the label, for the log line.
-    pub fn detail(&self) -> String {
-        match self {
-            Route::Keywords(Fallback::NoKey) => "no api key".to_string(),
-            Route::Keywords(Fallback::Disabled) => "switched off".to_string(),
-            Route::Keywords(Fallback::Failed(e)) => format!("the call failed: {e}"),
-        }
-    }
-}
-
 /// Selects the gateway-held profile, then answers instructions.
 pub struct Chooser {
     /// A Settings-selected provider. Its credential remains in the gateway.
@@ -95,6 +84,18 @@ impl Chooser {
     /// The provider this chooser asks, when it has one.
     pub fn selection(&self) -> Option<&ProviderSelection> {
         self.provider.as_ref().map(|provider| &provider.selection)
+    }
+
+    /// The provider and model that plan with this chooser, as a person reads
+    /// them, when [`Self::loop_model`] would reach one: the note a run reports
+    /// names the same plan the loop takes.
+    pub fn planned_by(&self) -> Option<(&str, &str)> {
+        self.loop_model().ok()?;
+        let selection = self.selection()?;
+        Some((
+            selection.profile_label.as_str(),
+            selection.model.label.as_str(),
+        ))
     }
 
     /// Whether the model this chooser asks sees pictures.
@@ -2504,6 +2505,7 @@ pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, St
     };
     let profile_id = field("profile_id")?;
     Ok(ProviderSelection {
+        profile_label: profile_id.clone(),
         profile_id,
         endpoint: String::new(),
         protocol,

@@ -254,6 +254,42 @@ impl ActiveTurn {
     }
 }
 
+/// What the provider counted for the turn `body` answers.
+///
+/// The gateway normalises every provider's counters into the same `usage`
+/// object; a body without one, or with counters this reader does not know,
+/// stays zero, and the run's receipt says the provider reported none rather
+/// than showing a run as free.
+fn turn_usage(body: &str) -> agent_provider_config::protocol::Usage {
+    #[derive(serde::Deserialize)]
+    struct Reported {
+        #[serde(default)]
+        input_tokens: u64,
+        #[serde(default)]
+        output_tokens: u64,
+        #[serde(default)]
+        cached_input_tokens: u64,
+        #[serde(default)]
+        cache_write_tokens: u64,
+        #[serde(default)]
+        reasoning_tokens: u64,
+    }
+    let reported = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|body| serde_json::from_value::<Reported>(body.get("usage")?.clone()).ok());
+    let Some(reported) = reported else {
+        return agent_provider_config::protocol::Usage::default();
+    };
+    agent_provider_config::protocol::Usage {
+        input_tokens: reported.input_tokens,
+        output_tokens: reported.output_tokens,
+        cached_input_tokens: reported.cached_input_tokens,
+        cache_write_tokens: reported.cache_write_tokens,
+        reasoning_tokens: reported.reasoning_tokens,
+        total_tokens: 0,
+    }
+}
+
 /// The longest prefix of `text` within `max` bytes, cut on a character
 /// boundary.
 fn head(text: &str, max: usize) -> &str {
@@ -900,10 +936,7 @@ impl Session {
         let (protocol, model) = match self.chooser.loop_model() {
             Ok(model) => model,
             Err(route) => {
-                return Ok(LoopEnd::Failed(format!(
-                    "Managed model planning unavailable: {}",
-                    route.detail()
-                )));
+                return Ok(LoopEnd::Failed(super::planning::no_model(&route)));
             }
         };
         let (total_budget, turn_budget) = if let Some(budget) = run.execution_budget {
@@ -1226,6 +1259,9 @@ impl Session {
             if !validated && let Some(active) = &mut self.turn {
                 active.ready.clear();
                 if let Some(Ok(body)) = &active.finished {
+                    // The turn was answered, so its provider counted what it
+                    // spent, whatever the answer turns out to be worth.
+                    self.spend.turn(turn_usage(body));
                     match conversation.calls(body) {
                         Ok((_, calls)) => {
                             active.completed = calls.len();
@@ -1302,7 +1338,8 @@ impl Session {
                     return Ok(Some(end));
                 }
                 return Ok(Some(LoopEnd::Failed(format!(
-                    "Managed model planning unavailable: the call failed: {error}"
+                    "The model call failed: {error}. Check the model in Settings, under Agent \
+                     models, then run this again."
                 ))));
             }
         };
@@ -1327,7 +1364,7 @@ impl Session {
                     return Ok(Some(end));
                 }
                 return Ok(Some(LoopEnd::Failed(format!(
-                    "Managed model planning unavailable: {error}"
+                    "The model's answer couldn't be used: {error}. Run this again."
                 ))));
             }
         };
@@ -3653,6 +3690,7 @@ mod tests {
             catalogue_cache: None,
             turn: None,
             outstanding: crate::session::outstanding::Outstanding::default(),
+            spend: crate::session::planning::Spend::default(),
         };
         Fixture {
             session,
@@ -3843,6 +3881,76 @@ mod tests {
         assert!(
             matches!(last, runtime_collab::TaskRunUpdate::Failed { message } if message == "I need the owner's decision"),
             "unfinished native work reported {last:?}"
+        );
+    }
+
+    /// Every public note the run reported, in order.
+    fn notes(sent: &[CollabRequest]) -> Vec<String> {
+        sent.iter()
+            .filter_map(|request| match request {
+                CollabRequest::ReportTaskRun {
+                    update:
+                        runtime_collab::TaskRunUpdate::Progress {
+                            message,
+                            presentation: None,
+                        },
+                    ..
+                } => Some(message.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A run whose issue asked for a model, with none set up: it says which
+    /// model is missing and where to choose one, and never lets that read as
+    /// a permission the person could go and grant.
+    #[test]
+    fn a_run_with_no_model_says_so_and_never_blames_permissions() {
+        let mut f = fixture("zzz", World::default(), Vec::new());
+        f.session.chooser = Chooser::new(false, Duration::from_secs(5));
+        f.session.run_task(&f.run).unwrap();
+        let sent = f.sent.borrow();
+        let notes = notes(&sent);
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("No model is set up") && note.contains("Agent models")),
+            "the run announces the missing model where it decides: {notes:?}"
+        );
+        let runtime_collab::TaskRunUpdate::Failed { message } = terminal(&sent) else {
+            panic!("a run with nothing to do fails: {:?}", terminal(&sent));
+        };
+        assert!(message.contains("No model is set up"), "{message}");
+        assert!(message.contains("Agent models"), "{message}");
+        assert!(
+            !message.to_lowercase().contains("permission"),
+            "a missing model never reads as a permission: {message}"
+        );
+    }
+
+    /// A run a model answered reports what it cost on the run's own thread:
+    /// the provider and model that spent it, and the tokens they counted.
+    #[test]
+    fn a_model_run_reports_what_it_spent_and_which_model_spent_it() {
+        let mut f = fixture(
+            "make it bold",
+            World::default(),
+            vec![turn(&[finish("Done.", true)], 32)],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let sent = f.sent.borrow();
+        let notes = notes(&sent);
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.starts_with("Planning with scripted from ")),
+            "the run names the model that plans it: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("answered 1 model turn")),
+            "the run leaves what it spent in its record: {notes:?}"
         );
     }
 
