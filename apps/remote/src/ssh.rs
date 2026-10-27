@@ -1166,30 +1166,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
     #[test]
     fn real_ssh_round_trip_over_loopback() {
-        let (port, _files) = ui::rt::app()
-            .block_on(async {
-                let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
-                let config = Arc::new(server::Config {
-                    inactivity_timeout: None,
-                    auth_rejection_time: Duration::from_millis(50),
-                    keys: vec![host_key],
-                    ..Default::default()
-                });
-                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-                    .await
-                    .unwrap();
-                let port = listener.local_addr().unwrap().port();
-                let files = TestFiles::default();
-                let for_the_server = files.clone();
-                tokio::spawn(async move {
-                    let mut server = TestServer {
-                        files: for_the_server,
-                    };
-                    let _ = server.run_on_socket(config, &listener).await;
-                });
-                (port, files)
-            })
-            .unwrap();
+        let (port, _files) = served_files([]);
 
         let (known_hosts, known_hosts_directory) = test_known_hosts();
         let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
@@ -1396,8 +1373,10 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         drop(known_hosts_directory);
     }
 
-    /// A loopback server holding `served` by path, on a port of its own.
-    fn served_files(served: impl IntoIterator<Item = (&'static str, Vec<u8>)>) -> (u16, TestFiles) {
+    /// A loopback server holding `by_path`'s files, on a port of its own.
+    fn served_files(
+        by_path: impl IntoIterator<Item = (&'static str, Vec<u8>)>,
+    ) -> (u16, TestFiles) {
         ui::rt::app()
             .block_on(async move {
                 let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
@@ -1412,7 +1391,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
                     .unwrap();
                 let port = listener.local_addr().unwrap().port();
                 let files = TestFiles::default();
-                for (path, bytes) in served {
+                for (path, bytes) in by_path {
                     files.files.lock().unwrap().insert(path.into(), bytes);
                 }
                 let for_the_server = files.clone();
