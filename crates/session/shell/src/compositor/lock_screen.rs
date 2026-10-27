@@ -101,6 +101,9 @@ pub struct LockView<'a> {
     /// What is playing, shown as a compact card with transport controls
     /// only. `None` hides the card.
     pub now_playing: Option<&'a PlayerSnapshot>,
+    /// The transport button keyboard focus is on; `None` is the password
+    /// field. Tab and the arrows move between them, Enter and Space act.
+    pub media_focus: Option<Transport>,
     /// The keyboard drawn on the lock screen for unlocking by touch, while
     /// touch is the input in use. `None` hides it.
     pub keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
@@ -516,6 +519,53 @@ pub fn transport_at(
         .map(|(transport, _)| transport)
 }
 
+/// The transport Tab or an arrow reaches from `current`, in `forward`
+/// direction: through the buttons the player offers and back to the password
+/// field at either end. `None` when there is no player or no button to reach.
+#[must_use]
+pub fn media_focus_step(
+    current: Option<Transport>,
+    player: Option<&PlayerSnapshot>,
+    forward: bool,
+) -> Option<Transport> {
+    let player = player?;
+    let enabled: Vec<Transport> = Transport::ALL
+        .into_iter()
+        .filter(|transport| transport.enabled(player))
+        .collect();
+    if enabled.is_empty() {
+        return None;
+    }
+    match current.and_then(|current| enabled.iter().position(|button| *button == current)) {
+        None => {
+            if forward {
+                enabled.first().copied()
+            } else {
+                enabled.last().copied()
+            }
+        }
+        Some(index) => {
+            let next = if forward {
+                index.checked_add(1)
+            } else {
+                index.checked_sub(1)
+            };
+            next.and_then(|next| enabled.get(next).copied())
+        }
+    }
+}
+
+/// The transport `current` names, when the player still offers it: the
+/// player's state can remove a button while focus is on it.
+#[must_use]
+pub fn media_focused_transport(
+    current: Option<Transport>,
+    player: Option<&PlayerSnapshot>,
+) -> Option<Transport> {
+    let current = current?;
+    current.enabled(player?).then_some(current)
+}
+
 /// When the lock screen draws its keyboard for unlocking by touch, and what
 /// its keys type. No input method runs while the session is locked; the
 /// passcode never leaves the lock screen.
@@ -787,6 +837,9 @@ pub fn build_accessibility_tree(
         tree_id: TreeId::ROOT,
         focus: if view.verifying {
             LOCK_ROOT_ID
+        } else if let Some(transport) = media_focused_transport(view.media_focus, view.now_playing)
+        {
+            transport_node(transport)
         } else {
             LOCK_PASSWORD_ID
         },
@@ -1237,7 +1290,7 @@ fn draw_lock_widget(
     if let (Some(player), Some(media)) =
         (view.now_playing, LockMediaLayout::for_layout(layout, theme))
     {
-        draw_lock_media(scene, layout, &media, theme, text, player);
+        draw_lock_media(scene, layout, &media, theme, text, player, view.media_focus);
     }
     let label = count_label(view.notification_count);
     if !label.is_empty() {
@@ -1266,6 +1319,7 @@ fn draw_lock_media(
     theme: &Theme,
     text: &mut TextRenderer,
     player: &PlayerSnapshot,
+    focused: Option<Transport>,
 ) {
     let card = RoundedRect::from_rect(
         media.card,
@@ -1307,7 +1361,7 @@ fn draw_lock_media(
         &media.transport,
         player,
         None,
-        None,
+        media_focused_transport(focused, Some(player)),
     );
 }
 
@@ -2702,6 +2756,63 @@ mod tests {
         assert_eq!(update.focus, LOCK_PASSWORD_ID, "the card never takes focus");
         assert_eq!(transport_for_node(LOCK_PASSWORD_ID), None);
         assert_eq!(transport_for_node(LOCK_MEDIA_ID), None);
+    }
+
+    #[test]
+    fn lock_media_transport_is_reachable_from_the_keyboard() {
+        let player = playing();
+        assert_eq!(
+            media_focus_step(None, Some(&player), true),
+            Some(Transport::Previous)
+        );
+        assert_eq!(
+            media_focus_step(Some(Transport::Previous), Some(&player), true),
+            Some(Transport::PlayPause)
+        );
+        assert_eq!(
+            media_focus_step(Some(Transport::PlayPause), Some(&player), true),
+            Some(Transport::Next)
+        );
+        assert_eq!(
+            media_focus_step(Some(Transport::Next), Some(&player), true),
+            None,
+            "past the last button Tab returns to the password field"
+        );
+        assert_eq!(
+            media_focus_step(None, Some(&player), false),
+            Some(Transport::Next),
+            "Shift+Tab enters at the last button"
+        );
+        assert_eq!(
+            media_focus_step(Some(Transport::Previous), Some(&player), false),
+            None,
+            "before the first button Shift+Tab returns to the field"
+        );
+        assert_eq!(media_focus_step(None, None, true), None);
+
+        let focused = LockView {
+            now_playing: Some(&player),
+            media_focus: Some(Transport::PlayPause),
+            ..view()
+        };
+        let update = build_accessibility_tree(&single(1600.0, 900.0), &Theme::dark(), &focused);
+        assert_eq!(
+            update.focus, LOCK_MEDIA_PLAY_PAUSE_ID,
+            "the transport Tab reached is the tree's focus"
+        );
+
+        let mut missing_next = playing();
+        missing_next.can_go_next = false;
+        let gone = LockView {
+            now_playing: Some(&missing_next),
+            media_focus: Some(Transport::Next),
+            ..view()
+        };
+        let update = build_accessibility_tree(&single(1600.0, 900.0), &Theme::dark(), &gone);
+        assert_eq!(
+            update.focus, LOCK_PASSWORD_ID,
+            "a button the player removed gives focus back to the field"
+        );
     }
 
     #[test]
