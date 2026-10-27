@@ -999,3 +999,65 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     })
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// A project is a resource of its own above the tasks: it is made,
+/// listed in the sidebar, opened by the address it is published under, and
+/// holds the tasks that work towards it and the people involved.
+#[test]
+fn a_project_is_made_listed_and_opened_by_its_address() {
+    let mut app = open();
+    assert!(app.state().areas.is_empty(), "a tracker starts empty");
+
+    // The project page's own action makes one, with the kind it is given.
+    app.call("create-area", json!({ "name": "Launch", "kind": "area" }))
+        .expect("create the area");
+    let (area, made) = app
+        .state()
+        .areas
+        .iter()
+        .next()
+        .map(|(id, area)| (id.clone(), area.clone()))
+        .expect("the area just made");
+    assert_eq!(made.name, "Launch");
+    assert_eq!(made.kind, tasks::model::Kind::Area);
+
+    // Its address opens its page, as a row of the sidebar or a search hit
+    // does, and the page offers what it holds.
+    let address = tasks::model::area_resource(&area);
+    app.call_on(&address, "open", json!({}))
+        .expect("open the project");
+    assert!(app.harness().targets().contains_key("tasks-project-name"));
+    assert!(
+        app.harness()
+            .targets()
+            .contains_key("tasks-project-involve")
+    );
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert_eq!(
+        bar.location.map(|location| location.label).as_deref(),
+        Some("Launch"),
+        "the bar says which project the window shows"
+    );
+
+    // Someone involved is part of the project, in their own words.
+    app.call_on(
+        &address,
+        "involve",
+        json!({ "name": "Grace", "role": "Writes the launch notes" }),
+    )
+    .expect("involve Grace");
+    let people = app.state().area(&area).expect("the project").people.clone();
+    assert_eq!(people.len(), 1);
+    assert_eq!(people.iter().next().expect("Grace").1.name, "Grace");
+
+    // Undo takes the involvement back: it is an ordinary change, kept as
+    // any other, and the project stays.
+    assert!(app.undo());
+    assert!(
+        app.state()
+            .area(&area)
+            .expect("the project still stands")
+            .people
+            .is_empty()
+    );
+}
