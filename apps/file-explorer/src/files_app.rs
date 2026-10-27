@@ -954,6 +954,9 @@ pub struct FileExplorerWidget {
     /// column widths and scroll anchor (the list scrolls itself; only the grid
     /// scrolls under `scroll_offset`).
     list_slot: crate::views::file_list::ListSlot,
+    /// The column widths when the press that may turn into a drag of a
+    /// column's edge began, so the release knows whether it resized anything.
+    widths_at_press: Option<std::collections::BTreeMap<String, u32>>,
     /// The shared, off-thread thumbnail service (content-addressed cache +
     /// worker pool). Cloned into each rebuilt file view so a folder of images /
     /// PDFs / ebooks shows real previews (and workspace files show the host's
@@ -2039,6 +2042,7 @@ impl FileExplorerWidget {
             marquee: None,
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             list_slot: crate::views::file_list::ListSlot::default(),
+            widths_at_press: None,
             thumbs,
             recent: crate::recent::RecentFiles::default(),
             recent_setting: None,
@@ -10235,6 +10239,18 @@ impl Widget for FileExplorerWidget {
             return;
         }
         let panel_was_open = self.collab_panel.is_some();
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            // What a column drag would start from: a press on a column's
+            // edge resizes as the pointer moves and ends on the release.
+            self.widths_at_press = Some(self.list_slot.widths());
+        }
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
@@ -10359,6 +10375,21 @@ impl Widget for FileExplorerWidget {
         }
 
         self.finish_event(event, ctx);
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self.widths_at_press.take() != Some(self.list_slot.widths())
+        {
+            // The press resized a column and this is where it ended: the
+            // width the person dragged is theirs from here on
+            // (`APP-file-explorer-02`). A press that resized nothing keeps
+            // the widths it began with, and nothing is stored.
+            self.store_widths();
+        }
         if !panel_was_open && self.collab_panel.is_some() {
             // The dialog replaced the semantic subtree during this event.
             // Focus its real backing widget so AccessKit never points at a
