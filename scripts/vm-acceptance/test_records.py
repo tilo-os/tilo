@@ -466,6 +466,15 @@ class Boot(unittest.TestCase):
         self.assertEqual(a["greeter_chain"][-1], "dev-disk-by\\x2duuid-5594\\x2d590C.device")
         self.assertEqual((a["greeter_s"], a["userspace_to_greeter_s"]), (10.157, 4.459))
 
+    def test_the_chain_carries_each_units_start_and_the_boots_steal(self):
+        a = resources.parse_boot_analysis(BOOT_ANALYSIS_NM.replace(
+            "== end", "cpu_ticks=2000\nsteal_ticks=500\n== end"))
+        self.assertEqual(a["greeter_chain_timed"][:3], ["greetd.service @4.5s",
+                                                        "plymouth-quit-wait.service @4.4s +0.0s",
+                                                        "systemd-user-sessions.service @4.4s +0.0s"])
+        self.assertEqual(a["greeter_chain_timed"][4], "NetworkManager.service @3.9s +0.4s")
+        self.assertEqual(a["boot_steal_pct"], 25.0)
+
     def test_the_network_on_the_greeters_chain_fails_the_boot(self):
         ctx, res, problems = self.attribution(BOOT_ANALYSIS_NM)
         self.assertEqual(problems, ["network.target is on the greeter's critical chain",
