@@ -488,14 +488,13 @@ fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 }
 
 /// The button that opens the system palette on the issue's "Link a note",
-/// where the person picks the note by its title.
+/// straight on the picker of the note.
 fn link_note_button(id: &Id) -> Button {
     let issue = ui::tilo_resource::items::item_resource_id::<Tracker>("issues", id);
-    let request = ui::search::SearchRequest::within(ui::search::ScopeDecl::new(
-        issue.clone(),
-        crate::tr("tasks-link-note-scope"),
-    ))
-    .with_query(crate::tr("tasks-link-note"));
+    let request = ui::search::SearchRequest::asking(
+        ui::search::ScopeDecl::new(issue.clone(), crate::tr("tasks-link-note-scope")),
+        Tracker::LINK_NOTE.id(),
+    );
     Button::new(&format!("tasks-link-note-{issue}"), "tasks-link-note")
         .with_icon(ui::icons::Icon::Link)
         .on_action(ui::search::open_search_binding(&request))

@@ -48,6 +48,7 @@ fn row(surface_id: u64, name: &str) -> SearchResult {
         }),
         on_invoke: None,
         on_begin_invoke: None,
+        resource: None,
     }
 }
 

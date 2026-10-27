@@ -3217,6 +3217,16 @@ host-crash-records-read-detail = Alles, was der Bericht über ein Problem enthä
 
 ## Desk widgets
 
+desk-widgets-a11y = Schreibtisch-Widgets
+desk-widget-music = Musik
+desk-widget-team = Menschen hier
+desk-widget-calendar = Kalender
+desk-widget-system-monitor = Systemmonitor
+desk-widget-open = { $widget } öffnen
+desk-widget-close = { $widget } schließen
+desk-widget-pin = Dieses Widget immer in diesem Arbeitsbereich anzeigen
+desk-widget-unpin = Dieses Widget nicht mehr immer anzeigen
+
 desk-team-title = In diesem Arbeitsbereich
 # Where a person is: their strip, then the window they are on.
 desk-team-place = { $strip } · { $window }

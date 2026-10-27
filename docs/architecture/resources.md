@@ -205,8 +205,12 @@ impl Snippets {
   A person picks it in the system palette from the workspace's resources of
   that kind, found by the titles their apps publish in search, the same way
   the palette picks who, where and which grant (`tilo_actions::Pick`); an
-  agent passes the same reference. Nobody types an id. Tasks' "Link a note"
-  is one: its button opens the palette on the issue's `link-note`.
+  agent passes the same reference. Nobody types an id. A button whose action
+  needs such a parameter opens search on that action
+  (`SearchRequest::asking(scope, action)`), and the palette starts on its
+  first missing argument, a picked one on its picker. Tasks' "Link a note"
+  is one: its button opens straight on the notes of the workspace, and
+  picking one runs the issue's `link-note`.
 - Verbs run against the record the framework reads for them, and write back as
   a diff. A verb that only touches one item is an item method: it takes the
   item instead of `&mut self` and reads and writes only that item.

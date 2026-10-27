@@ -271,6 +271,7 @@ fn result(row: WindowRow, app: Option<&str>, score: i32) -> SearchResult {
         }),
         on_invoke: None,
         on_begin_invoke: None,
+        resource: None,
     }
 }
 

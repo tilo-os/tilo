@@ -46,6 +46,8 @@ public final class TiloTextInput extends View {
     // toolkit derives from the field's purpose and hints.
     private int mInputType;
     private int mImeOptions;
+    /** False for a field typed from the app's own on-screen keys. */
+    private boolean mSoftKeyboard = true;
     /** The field's text around its selection, in UTF-16 offsets. */
     private String mSurrounding = "";
     private int mSurroundingAnchor;
@@ -90,6 +92,7 @@ public final class TiloTextInput extends View {
             final int width,
             final int height,
             final boolean restart,
+            final boolean softKeyboard,
             final String surrounding,
             final int anchor,
             final int focus) {
@@ -104,7 +107,8 @@ public final class TiloTextInput extends View {
                 view.mSurrounding = surrounding;
                 view.mSurroundingAnchor = Math.max(0, Math.min(anchor, length));
                 view.mSurroundingFocus = Math.max(0, Math.min(focus, length));
-                view.apply(enabled, inputType, imeOptions, x, y, width, height, restart);
+                view.apply(
+                        enabled, inputType, imeOptions, x, y, width, height, restart, softKeyboard);
             }
         });
     }
@@ -119,7 +123,9 @@ public final class TiloTextInput extends View {
             public void run() {
                 if (view.mEnabled) {
                     view.restart();
-                    view.showKeyboard();
+                    if (view.mSoftKeyboard) {
+                        view.showKeyboard();
+                    }
                 }
             }
         });
@@ -133,12 +139,15 @@ public final class TiloTextInput extends View {
             int y,
             int width,
             int height,
-            boolean restart) {
+            boolean restart,
+            boolean softKeyboard) {
         boolean changed =
                 enabled != mEnabled || inputType != mInputType || imeOptions != mImeOptions;
+        boolean softKeyboardChanged = softKeyboard != mSoftKeyboard;
         mEnabled = enabled;
         mInputType = inputType;
         mImeOptions = imeOptions;
+        mSoftKeyboard = softKeyboard;
         mCaret.set(x, y, x + width, y + height);
         if (enabled) {
             if (!isFocused()) {
@@ -147,7 +156,9 @@ public final class TiloTextInput extends View {
             if (changed || restart) {
                 restart();
             }
-            if (changed) {
+            if (!softKeyboard) {
+                mInputMethods.hideSoftInputFromWindow(getWindowToken(), 0);
+            } else if (changed || softKeyboardChanged) {
                 showKeyboard();
             }
             if (mConnection != null) {

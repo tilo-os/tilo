@@ -423,6 +423,52 @@ impl ShellOverlayHost {
         self.advance_param_flow(doc, root);
     }
 
+    /// Ask for the arguments of the action an app opened search on
+    /// (`SearchRequest::asking`) once `groups` list it: its first missing
+    /// one on its step, a parameter picked from the workspace on its
+    /// picker. Nothing runs here; an action that needs nothing stays a row
+    /// the person runs. Whether the step is shown.
+    pub(super) fn start_asked_action(
+        &mut self,
+        groups: &[crate::shell::search::KindGroup],
+    ) -> bool {
+        use crate::shell::search::providers::live_app_actions::{
+            LiveAppActionsProvider, PROVIDER_ID,
+        };
+        let Some(asked) = self.palette_asked.as_ref() else {
+            return false;
+        };
+        let Some(result) = groups
+            .iter()
+            .flat_map(|group| &group.results)
+            .find(|result| {
+                result.provider_id == PROVIDER_ID
+                    && LiveAppActionsProvider::address_of(&result.id)
+                        == Some((asked.resource.as_str(), asked.action.as_str()))
+            })
+            .cloned()
+        else {
+            return false;
+        };
+        self.palette_asked = None;
+        let values = serde_json::Map::new();
+        let pending = palette_flow::missing_params(&result.params, &values);
+        if pending.is_empty() {
+            return false;
+        }
+        self.param_flow = Some(palette_flow::ParamFlow {
+            result,
+            values,
+            pending,
+            asked: Vec::new(),
+            choices: Vec::new(),
+            query: String::new(),
+            prefill: None,
+        });
+        self.show_param_step();
+        true
+    }
+
     /// Show the next step, or run the action once nothing is missing.
     pub(super) fn advance_param_flow(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
         if self

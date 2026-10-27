@@ -114,7 +114,10 @@ pub mod http {
     )]
     pub fn client() -> reqwest::ClientBuilder {
         crate::install_crypto_provider();
-        reqwest::Client::builder().gzip(false).brotli(false)
+        let builder = reqwest::Client::builder().gzip(false).brotli(false);
+        #[cfg(target_os = "android")]
+        let builder = builder.tls_certs_only(system_certificates());
+        builder
     }
 
     /// A blocking client builder with the crypto provider installed.
@@ -125,8 +128,22 @@ pub mod http {
     )]
     pub fn blocking_client() -> reqwest::blocking::ClientBuilder {
         crate::install_crypto_provider();
-        reqwest::blocking::Client::builder()
+        let builder = reqwest::blocking::Client::builder()
             .gzip(false)
-            .brotli(false)
+            .brotli(false);
+        #[cfg(target_os = "android")]
+        let builder = builder.tls_certs_only(system_certificates());
+        builder
+    }
+
+    /// reqwest's platform verifier aborts on Android without the app's JVM
+    /// context, so clients there verify against Android's system store.
+    #[cfg(target_os = "android")]
+    fn system_certificates() -> Vec<reqwest::Certificate> {
+        rustls_native_certs::load_native_certs()
+            .certs
+            .iter()
+            .filter_map(|der| reqwest::Certificate::from_der(der).ok())
+            .collect()
     }
 }

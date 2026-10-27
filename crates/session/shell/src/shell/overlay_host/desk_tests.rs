@@ -13,7 +13,9 @@ use automerge::AutoCommit;
 use tilo_desktop::notifications::{Addressed, Notification};
 use tilo_desktop_model::Collaborator;
 use ui::widget::Container;
-use vello::kurbo::{Point, Rect};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::keyboard::{Key, NamedKey};
 
 use super::*;
 use crate::shell::chrome_state::{Chrome, ChromeState};
@@ -25,6 +27,20 @@ use crate::shell::state::WorkspaceTree;
 
 fn ms(t0: Instant, n: u64) -> Instant {
     t0 + Duration::from_millis(n)
+}
+
+/// One production paint, so the desk registers the controls Tab and a
+/// reader reach.
+fn paint_desk(host: &mut ShellOverlayHost) {
+    let mut scene = Scene::new();
+    let mut text = ui::text_render::TextRenderer::new();
+    let _ = host.draw_desk(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &ui::theme::Theme::dark(),
+        &ui::presence::PresenceCtx::default(),
+    );
 }
 
 /// A 1600 × 900 desk with a player and one other person in the workspace.
@@ -712,4 +728,75 @@ fn the_team_widget_is_whole_or_hidden_never_a_ghost() {
     let (mut host, _chrome, _) = desk();
     host.update_desk(t0);
     assert_eq!(host.desk_form(WidgetId::Team), Form::Glance);
+}
+
+#[test]
+fn a_reader_reaches_each_showing_widget_and_its_pin() {
+    let (mut host, _chrome, _) = desk();
+    host.update_desk(Instant::now());
+    paint_desk(&mut host);
+    let targets = |host: &ShellOverlayHost| {
+        host.desk_accessibility_children()
+            .into_iter()
+            .filter_map(|node| node.action_target)
+            .collect::<Vec<_>>()
+    };
+    let before = targets(&host);
+    assert!(
+        before.iter().any(|target| target == "desk.widget:music"),
+        "a showing widget is a control: {before:?}"
+    );
+    assert!(
+        !before.iter().any(|target| target.ends_with(".pin")),
+        "a folded widget has no pin to reach: {before:?}"
+    );
+
+    host.desk.board.open(WidgetId::Music);
+    host.update_desk(Instant::now());
+    paint_desk(&mut host);
+    let open = targets(&host);
+    assert!(
+        open.iter().any(|target| target == "desk.widget:music.pin"),
+        "an open card offers its pin: {open:?}"
+    );
+}
+
+#[test]
+fn tab_reaches_the_desk_and_enter_opens_and_pins_a_widget() {
+    let (mut host, _chrome, _) = desk();
+    host.update_desk(Instant::now());
+    paint_desk(&mut host);
+    assert!(host.desk_is_focusable());
+    host.set_desk_focus(true);
+    host.desk.targets.focus("desk.widget:music");
+
+    assert!(ui::testing::dispatch(
+        &mut host,
+        &ui::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+    ));
+    assert_eq!(
+        host.desk_form(WidgetId::Music),
+        Form::Open,
+        "Enter opens the widget Tab reached"
+    );
+
+    paint_desk(&mut host);
+    assert!(ui::testing::dispatch(
+        &mut host,
+        &ui::synthetic_input::key_press(Key::Named(NamedKey::Tab), None),
+    ));
+    assert_eq!(
+        host.desk.targets.focused(),
+        Some("desk.widget:music.pin"),
+        "Tab reaches the open card's pin"
+    );
+    assert!(ui::testing::dispatch(
+        &mut host,
+        &ui::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+    ));
+    assert_eq!(
+        host.desk_widget_prefs().music.show,
+        ShowMode::Always,
+        "Enter pins the widget on this strip"
+    );
 }
