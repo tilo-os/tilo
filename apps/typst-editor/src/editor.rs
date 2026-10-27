@@ -97,11 +97,12 @@ impl ui::widget::Findable for SourceEditor {
         };
         self.current = Some(index);
         let text = self.text().to_owned();
-        let before = text
-            .as_bytes()
-            .get(..found.start.min(text.len()))
-            .unwrap_or_default();
-        let line = before.iter().filter(|byte| **byte == b'\n').count() + 1;
+        let line = text
+            .bytes()
+            .take(found.start)
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
         self.goto_line(&text, line);
         self.set_caret(found.end);
         self.focused = true;

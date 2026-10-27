@@ -208,6 +208,7 @@ fn history_roundtrip(
         &BrowserEffect::WaitPageSettled {
             quiet_ms: Some(100),
             timeout_ms: Some(2000),
+            frame: None,
         },
     )?;
     verify_equal(
@@ -215,7 +216,7 @@ fn history_roundtrip(
         &before.checked_add(1).ok_or("history count overflow")?,
         "full navigation visit count",
     )?;
-    let page = invoke(app, &BrowserEffect::ReadPage)?;
+    let page = invoke(app, &BrowserEffect::ReadPage { frame: None })?;
     let outline = page
         .value
         .as_ref()
@@ -228,7 +229,13 @@ fn history_roundtrip(
         .and_then(|tail| tail.split(']').next())
         .ok_or("missing fixture link")?
         .to_owned();
-    let clicked = invoke(app, &BrowserEffect::ClickPage { element })?;
+    let clicked = invoke(
+        app,
+        &BrowserEffect::ClickPage {
+            element,
+            frame: None,
+        },
+    )?;
     verify_equal(
         &clicked.value.as_ref().and_then(|value| value.get("url")),
         &Some(&serde_json::json!(format!("{url}#second"))),

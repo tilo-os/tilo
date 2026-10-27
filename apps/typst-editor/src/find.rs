@@ -76,7 +76,10 @@ mod tests {
             },
         );
         assert_eq!(cased.len(), 1, "match case finds the capitalised one");
-        assert_eq!(&source[cased[0].start..cased[0].end], "Text");
+        assert_eq!(
+            source.get(cased[0].start..cased[0].end).unwrap_or_default(),
+            "Text"
+        );
         assert!(in_text(source, "", FindOptions::default()).is_empty());
         let words = in_text(
             source,
@@ -97,6 +100,9 @@ mod tests {
         let source = "Straße IST gross";
         let found = in_text(source, "ist", FindOptions::default());
         assert_eq!(found.len(), 1);
-        assert_eq!(&source[found[0].start..found[0].end], "IST");
+        assert_eq!(
+            source.get(found[0].start..found[0].end).unwrap_or_default(),
+            "IST"
+        );
     }
 }

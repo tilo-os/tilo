@@ -308,12 +308,12 @@ pub struct Route {
 }
 
 impl Route {
-    /// Whether `other` is the same offered trip: the service gives alternatives
-    /// no id, so the trip's distance and duration identify it.
-    #[must_use]
-    pub fn is_same_trip(&self, other: &Self) -> bool {
-        self.duration_s.total_cmp(&other.duration_s).is_eq()
-            && self.distance_m.total_cmp(&other.distance_m).is_eq()
+    /// Whether `other` is the same trip: the service's alternatives differ in
+    /// length and time by far more than the half metre and half second
+    /// within which two routes are one.
+    pub fn is_same_trip(&self, other: &Route) -> bool {
+        (self.duration_s - other.duration_s).abs() < 0.5
+            && (self.distance_m - other.distance_m).abs() < 0.5
     }
 }
 

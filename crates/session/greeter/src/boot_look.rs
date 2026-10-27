@@ -1,17 +1,19 @@
 //! The login screen's look as the boot sign-in screen draws it.
 //!
 //! The boot sign-in screen runs in the initramfs, where Plymouth draws with
-//! pre-rendered images and one font, and no toolkit runs. It takes its
-//! colours and sizes from `os/usr/share/plymouth/themes/tilo/look.json`:
-//! its asset generator draws the avatar discs, the field and the fixed text
-//! from it, and `tilo.script` carries the rest (`os/tests/boot_ux_invariants.sh`
-//! checks that it matches). This module derives that file from the theme the
+//! pre-rendered images and the greeter's face cut to two fixed weights, and
+//! no toolkit runs. It takes its face, colours, sizes and weights from
+//! `os/usr/share/plymouth/themes/tilo/look.json`: its asset generator cuts the
+//! face and draws the avatar discs, the field and the fixed text from it, and
+//! `tilo.script` carries the rest (`os/tests/boot_ux_invariants.sh` checks
+//! that it matches). This module derives that file from the theme the
 //! greeter paints with, and the test below keeps the file equal to it.
 
+use ui::text_render::{TextWeight, UI_SANS_FAMILY};
 use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
-use ui::widget::ControlSize;
 use ui::widget::avatar::{AvatarSize, initial_ink, initials_fill};
+use ui::widget::{SecretPrompt, modal_dialog};
 use vello::peniko::Color;
 
 /// The theme the greeter paints with.
@@ -35,20 +37,30 @@ pub fn json(theme: &Theme) -> String {
         .collect();
     let avatar = AvatarSize::Hero.side(theme);
     let size = |role: TextRole| f64::from(theme.text(role).size);
+    let weight = |role: TextRole| theme.text(role).weight.to_u16();
     let look = serde_json::json!({
         "faces": faces,
+        "family": UI_SANS_FAMILY,
         "text": hex(colors.text_primary),
         "dim": hex(colors.text_dim),
-        "placeholder": hex(colors.text_tertiary),
         "danger": hex(colors.semantic.danger),
+        "field_label": hex(modal_dialog::ink(theme).0),
         "field": hex(colors.surfaces.raised),
         "field_radius": theme.tokens.radii.control,
-        "field_height": ControlSize::Large.height(theme),
+        "field_height": SecretPrompt::field_height(theme),
+        "field_label_gap": theme.tokens.spacing.s1,
         "avatar": avatar,
         "initials_size": (avatar * 0.4).round(),
+        "initials_weight": theme.text(TextRole::Label).strong().weight.to_u16(),
+        // The greeter sets the name semibold whatever its role's weight.
         "name_size": size(TextRole::LargeTitle),
+        "name_weight": TextWeight::Semibold.to_u16(),
         "body_size": size(TextRole::Body),
+        "body_weight": weight(TextRole::Body),
         "label_size": size(TextRole::Label),
+        "label_weight": weight(TextRole::Label),
+        // Plymouth places in whole pixels.
+        "label_line": f64::from(theme.text(TextRole::Label).line_height_px()).round(),
     });
     let mut text = serde_json::to_string_pretty(&look).unwrap_or_default();
     text.push('\n');

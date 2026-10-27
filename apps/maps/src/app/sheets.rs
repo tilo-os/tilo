@@ -1,6 +1,11 @@
 //! The directions and departures sheets, with the picker that sets when a trip leaves.
 
-use super::*;
+use super::{
+    Affine, ButtonFace, ButtonRole, ChipStyle, ControlSize, EndpointFrame, Hit, Icon, ListRowFace,
+    MapsApp, NumberStepperFace, PaintCtx, Point, Rect, RowLeading, Scene, SegmentedFace,
+    SegmentedStyle, SelectionState, TextRenderer, TextRole, Theme, ToggleGroup, Tone, TransitMode,
+    TransitTimeMode, TravelMode, canvas, clock_label, draw, failure, geo,
+};
 
 impl MapsApp {
     /// The Directions view: the From/To fields, the travel mode, the

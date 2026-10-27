@@ -495,9 +495,9 @@ fn stroke_path(scene: &mut Scene, t: Affine, width: f64, color: Color, path: &Be
     scene.stroke(&Stroke::new(width), t, color, None, path);
 }
 
-fn scale_rgb(color: Color, scale: f64) -> Color {
+fn scale_rgb(color: Color, factor: f64) -> Color {
     let [r, g, b, a] = color.components;
-    let factor = scale as f32;
+    let factor = factor as f32;
     vello::peniko::color::AlphaColor::<vello::peniko::color::Srgb>::new([
         (r * factor).clamp(0.0, 1.0),
         (g * factor).clamp(0.0, 1.0),

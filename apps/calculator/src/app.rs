@@ -621,53 +621,6 @@ impl CalculatorApp {
         self.on_key_with_paste(key, modifiers, doc, ui::clipboard_paste);
     }
 
-    /// Ctrl shortcuts that apply on every screen: copying a display value and
-    /// switching mode. Reports whether the key was consumed.
-    fn on_ctrl_shortcut(
-        &mut self,
-        key: &WKey,
-        shift: bool,
-        doc: &mut ui::widget::Edits<'_>,
-    ) -> bool {
-        // The display's values are copy targets. A selection in the
-        // expression keeps the editor's own copy first; with nothing
-        // selected, Ctrl+C takes the result and Ctrl+Shift+C the expression.
-        if self.model.mode == Mode::Calc
-            && let WKey::Character(s) = key
-            && s.eq_ignore_ascii_case("c")
-        {
-            if shift {
-                self.copy_display(DisplaySlot::Expression);
-                return true;
-            }
-            self.calc.field.set_source(&self.model.expr);
-            if !self.calc.field.has_selection() {
-                self.copy_display(DisplaySlot::Result);
-                return true;
-            }
-        }
-
-        // Ctrl+digit always switches mode, from any screen.
-        if let WKey::Character(s) = key {
-            match s.as_str() {
-                "1" => {
-                    self.switch_mode(Mode::Calc, doc);
-                    return true;
-                }
-                "2" => {
-                    self.switch_mode(Mode::Graph2d, doc);
-                    return true;
-                }
-                "3" => {
-                    self.switch_mode(Mode::Graph3d, doc);
-                    return true;
-                }
-                _ => {}
-            }
-        }
-        false
-    }
-
     fn on_key_with_paste(
         &mut self,
         key: &WKey,
@@ -678,24 +631,8 @@ impl CalculatorApp {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         let shift = modifiers.state().shift_key();
 
-        if ctrl && self.on_ctrl_shortcut(key, shift, doc) {
+        if self.on_global_shortcut(key, ctrl, shift, doc) {
             return;
-        }
-
-        // Escape first dismisses transient drawers. Clearing an expression is
-        // still available on a second Escape in Calculator mode, but an open
-        // overlay must never trap a keyboard user behind its scrim.
-        if matches!(key, WKey::Named(NamedKey::Escape)) {
-            let dismissed = match self.model.mode.graph() {
-                Some(kind) if self.panel(kind).side().is_open() => {
-                    self.panel_mut(kind).side_mut().close();
-                    true
-                }
-                _ => false,
-            };
-            if dismissed {
-                return;
-            }
         }
 
         // The graph editors own a real math field; route their input there.
@@ -766,6 +703,73 @@ impl CalculatorApp {
             }
             _ => {}
         }
+    }
+
+    /// The shortcuts that work from any screen: copying the display's
+    /// values, Ctrl+digit mode switches and Escape dismissing a drawer.
+    /// Whether the key was consumed.
+    fn on_global_shortcut(
+        &mut self,
+        key: &WKey,
+        ctrl: bool,
+        shift: bool,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        // The display's values are copy targets. A selection in the
+        // expression keeps the editor's own copy first; with nothing
+        // selected, Ctrl+C takes the result and Ctrl+Shift+C the expression.
+        if ctrl
+            && self.model.mode == Mode::Calc
+            && let WKey::Character(s) = key
+            && s.eq_ignore_ascii_case("c")
+        {
+            if shift {
+                self.copy_display(DisplaySlot::Expression);
+                return true;
+            }
+            self.calc.field.set_source(&self.model.expr);
+            if !self.calc.field.has_selection() {
+                self.copy_display(DisplaySlot::Result);
+                return true;
+            }
+        }
+
+        // Ctrl+digit always switches mode, from any screen.
+        if ctrl && let WKey::Character(s) = key {
+            match s.as_str() {
+                "1" => {
+                    self.switch_mode(Mode::Calc, doc);
+                    return true;
+                }
+                "2" => {
+                    self.switch_mode(Mode::Graph2d, doc);
+                    return true;
+                }
+                "3" => {
+                    self.switch_mode(Mode::Graph3d, doc);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        // Escape first dismisses transient drawers. Clearing an expression is
+        // still available on a second Escape in Calculator mode, but an open
+        // overlay must never trap a keyboard user behind its scrim.
+        if matches!(key, WKey::Named(NamedKey::Escape)) {
+            let dismissed = match self.model.mode.graph() {
+                Some(kind) if self.panel(kind).side().is_open() => {
+                    self.panel_mut(kind).side_mut().close();
+                    true
+                }
+                _ => false,
+            };
+            if dismissed {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Edit at the two-dimensional caret, preserving continuation after Equals.

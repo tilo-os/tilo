@@ -203,7 +203,7 @@ pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
     ]
 }
 
-/// The letter layout row.
+/// The letter layout row, offering each bundled layout.
 fn layout_row(preferences: &OskPreferences) -> LiveRow {
     let mut layout = LiveRow::new(
         "osk.keyboard.layout",
@@ -228,7 +228,7 @@ fn layout_row(preferences: &OskPreferences) -> LiveRow {
     layout
 }
 
-/// The key size row.
+/// The keyboard size row, offering each size.
 fn size_row(preferences: &OskPreferences) -> LiveRow {
     let mut size = LiveRow::new(
         "osk.keyboard.size",
@@ -253,7 +253,7 @@ fn size_row(preferences: &OskPreferences) -> LiveRow {
     size
 }
 
-/// The typing language row.
+/// The typing-language row; the dictionary language need not match the layout.
 fn language_row(preferences: &OskPreferences) -> LiveRow {
     let language_name = preferences
         .typing_language
@@ -360,7 +360,7 @@ fn suggestions_row(preferences: &OskPreferences) -> LiveRow {
     .operation(OskEffect::ClearPersonal.bound())
 }
 
-/// The recent emoji row.
+/// The recent-emoji row.
 fn emoji_row(preferences: &OskPreferences) -> LiveRow {
     LiveRow::new("osk.keyboard.emoji", "osk.emoji", "Recent emoji").operation(asking(
         "set-recents",

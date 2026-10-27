@@ -5563,7 +5563,7 @@ impl CapnpBrokerState {
             && (!matches!(
                 offered.1.operation_kind,
                 tilo_actions::OperationKind::Document | tilo_actions::OperationKind::View
-            ) && offered.1.contract.kind != tilo_actions::ActionKind::Read
+            ) && offered.1.contract.need().kind != tilo_actions::ActionKind::Read
                 || (offered.1.operation_kind != tilo_actions::OperationKind::Document
                     && local_report.is_some_and(|report| !report.mutation_hashes.is_empty()))
                 || provenance.durable.is_some()
@@ -12059,7 +12059,7 @@ impl<'a> DirectoryQuestion<'a> {
             resource,
             action,
             field: contract.field.as_deref(),
-            kind: contract.kind,
+            kind: contract.need().kind,
             // Read kind alone does not make a private UI view public.
             // A declared document read, however, discloses document state
             // under the caller's ordinary resource policy, not owner UI.

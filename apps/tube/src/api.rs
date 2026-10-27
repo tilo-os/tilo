@@ -104,7 +104,8 @@ impl Updates {
         Ok(())
     }
 
-    /// Post `update` unless the queue is full, and wake the window.
+    /// Post `update` unless the queue is full, and wake the window. The
+    /// refusal is boxed: it carries the whole update back.
     pub fn try_send(
         &self,
         update: Update,

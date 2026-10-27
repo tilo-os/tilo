@@ -1,6 +1,19 @@
 # Dropbox adapter checks against Rystic
 
-## Versions and isolation
+## Current status — 2026-10-17
+
+Fresh testing against **Dropbox twin 0.0.4** reports **3 passed, 1 failed**.
+ID-addressed replacement still creates a new object and a literal ID path,
+through both direct upload and upload-session finish. The continuation contract
+now passes; valid-cursor longpoll returns 200, and an exact 1,048,577-byte upload
+is accepted. Those older failures are not current claims.
+
+Use the developer-ready [current handoff](rystic-feedback.md) and its
+[standalone reproduction](rystic-dropbox-repro.py). Everything below records the
+**older 0.0.2 measurements**, retained for history rather than as an open issue
+list for 0.0.4.
+
+## Historical 0.0.2 versions and isolation
 
 Measured on 2026-10-14 with authenticated installed Rystic CLI
 `0.0.28` (`3e381c4`, Go 1.24.0 linux/amd64), Dropbox twin `0.0.2`,

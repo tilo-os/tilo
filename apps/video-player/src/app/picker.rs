@@ -1,6 +1,10 @@
 //! The app's side of the file chooser: the request it remembers, the generation that tells an old answer from the current one, the first frame it waits for, and what a failure says.
 
-use super::*;
+use super::{
+    EffectAnswer, EffectCx, EffectReply, Effected, OPEN_FRAME_TIMEOUT, PendingMediaOpen,
+    PendingPortalOpen, PickerChannel, PlayerApp, PlayerResource, VideoEffect, source_for_argument,
+    source_title, video_open_request,
+};
 
 impl PlayerApp {
     /// Kick off a file-picker open, answering `reply` once a picture of the

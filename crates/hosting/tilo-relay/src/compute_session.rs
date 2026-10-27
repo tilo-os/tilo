@@ -277,7 +277,14 @@ async fn run_server_session(
             let lost = advertised
                 .contains(&workspace_id)
                 .then(|| refused.get(&workspace_id).copied().unwrap_or(WORKER_LOST));
-            release_workspace(workspace, peer.device_public_key, &disconnect, lost).await;
+            release_workspace(
+                workspace,
+                peer.device_public_key,
+                &disconnect,
+                advertised.is_empty(),
+                lost,
+            )
+            .await;
         }
     }
     outcome
@@ -325,12 +332,17 @@ async fn refused_workspaces(
 
 /// Release `device`'s compute state in `workspace` when this session (whose
 /// disconnect signal is `disconnect`) still holds it, and when it was
-/// working there, end its jobs with `lost`. The job scan is blocking I/O,
-/// so it runs on the blocking pool with the workspace lock moved along.
+/// working there, end its jobs with `lost`. A session that never offered
+/// compute is a requester's, and a requester keeps the results it is owed:
+/// ending it drops only its delivery channel, so the durable queue it was
+/// replaying stays whole for its device's next session instead of being
+/// withdrawn with a worker's job. The job scan is blocking I/O, so it runs
+/// on the blocking pool with the workspace lock moved along.
 async fn release_workspace(
     workspace: SharedWorkspace,
     device: [u8; 32],
     disconnect: &mpsc::Sender<()>,
+    requester_session: bool,
     lost: Option<&'static str>,
 ) {
     let Some(code) = lost else {
@@ -345,6 +357,10 @@ async fn release_workspace(
     let disconnect = disconnect.clone();
     let released = tokio::task::spawn_blocking(move || {
         let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *runtime;
+        if requester_session {
+            compute.leave_requester(&device, &disconnect);
+            return Ok(0);
+        }
         if !compute.detach_session(&device, &disconnect) {
             return Ok(0);
         }

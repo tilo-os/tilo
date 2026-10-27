@@ -1,6 +1,9 @@
 //! Directions: the two endpoints and where they come from, the route and its transit variants, when it is replanned, and the framing that fits it in the viewport.
 
-use super::*;
+use super::{
+    Endpoint, EndpointEffect, LatLon, MapsApp, NetMsg, Panel, Place, Point, Projection, Rect,
+    TravelMode, Workspace, failure, geo, location, net, sample, spawn_net, workspace,
+};
 
 impl MapsApp {
     /// Resolve the route/transit origin. Uses a prior origin if one is set,

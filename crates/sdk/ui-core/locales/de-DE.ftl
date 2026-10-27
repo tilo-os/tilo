@@ -978,6 +978,7 @@ conversation-delivery-delivered = Zugestellt
 conversation-delivery-read = Gelesen
 conversation-delivery-failed = Nicht gesendet
 conversation-delivery-uncertain = Status unklar
+conversation-new-messages = Neue Nachrichten
 conversation-attachment-open = Öffnen
 conversation-attachment-open-full-size = In voller Größe öffnen
 conversation-attachment-save = Speichern

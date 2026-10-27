@@ -214,7 +214,7 @@ fn bundle_runtime(
         "wasm":wasm_stamp(wasm, release)?,
         "profile":profile,
         "optimizer":optimizer.map(Optimizer::input),
-        "split":split,
+        "split":split.map(splitter_input).transpose()?,
     }))?;
     let pkg = bundle.join("pkg");
     let output = pkg.join("tilo_browser_runtime_bg.wasm");
@@ -276,6 +276,29 @@ fn bundle_runtime(
         std::fs::write(&stamp, input).context("recording the bundled module")?;
     }
     Ok(())
+}
+
+/// What the splitter `script` is: its path and the digests of the script and
+/// of the tool beside it (`Cargo.toml`, `Cargo.lock`, `src/`), so a changed
+/// splitter splits the module again.
+fn splitter_input(script: &Path) -> Result<serde_json::Value> {
+    let tool = script.parent().context("the splitter has no directory")?;
+    let mut files = vec![
+        script.to_path_buf(),
+        tool.join("Cargo.toml"),
+        tool.join("Cargo.lock"),
+    ];
+    let src = tool.join("src");
+    for entry in std::fs::read_dir(&src).with_context(|| format!("reading {}", src.display()))? {
+        files.push(entry?.path());
+    }
+    let mut digests = std::collections::BTreeMap::new();
+    for file in files {
+        let bytes = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+        let name = file.strip_prefix(tool).unwrap_or(&file);
+        digests.insert(name.display().to_string(), hex_digest(&bytes));
+    }
+    Ok(serde_json::json!({"path": script, "sources": digests}))
 }
 
 fn compute_memory(wasm: &[u8], release: bool) -> Result<serde_json::Value> {
@@ -1834,6 +1857,53 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::write(path, script).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_bundle_splits_again_when_the_splitter_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let tool = root.join("wasm-split");
+        std::fs::create_dir_all(tool.join("src")).unwrap();
+        for name in ["Cargo.toml", "Cargo.lock", "src/main.rs", "src/split.rs"] {
+            std::fs::write(tool.join(name), "first").unwrap();
+        }
+        let wasm = root.join("input.wasm");
+        std::fs::write(&wasm, b"module").unwrap();
+        let bundle = root.join("bundle");
+        std::fs::create_dir_all(bundle.join("pkg")).unwrap();
+        let bindgen = root.join("bindgen");
+        executable(
+            &bindgen,
+            r#"#!/bin/sh
+set -eu
+input=$1
+while [ "$1" != --out-dir ]; do shift; done
+cp "$input" "$2/tilo_browser_runtime_bg.wasm"
+"#,
+        );
+        let split = tool.join("split.sh");
+        executable(
+            &split,
+            r#"#!/bin/sh
+printf 'split\n' >> "$2/../calls"
+"#,
+        );
+        let linked = Linked::new(&wasm, "wasm-split", false);
+        let calls = bundle.join("calls");
+        bundle_runtime(&linked, &bindgen, &bundle, None, Some(&split)).unwrap();
+        bundle_runtime(&linked, &bindgen, &bundle, None, Some(&split)).unwrap();
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "split\n");
+        std::fs::write(tool.join("src/split.rs"), "second").unwrap();
+        bundle_runtime(&linked, &bindgen, &bundle, None, Some(&split)).unwrap();
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "split\nsplit\n");
+        std::fs::write(tool.join("src/data.rs"), "new module").unwrap();
+        bundle_runtime(&linked, &bindgen, &bundle, None, Some(&split)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap(),
+            "split\nsplit\nsplit\n"
+        );
     }
 
     #[cfg(unix)]

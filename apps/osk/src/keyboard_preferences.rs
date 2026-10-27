@@ -75,13 +75,15 @@ impl OskWidget {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::layout::{KeyAction, KeyId};
     use std::collections::HashMap;
+
     use taffy::{NodeId, Size, Style, TaffyTree};
     use ui::theme::Theme;
     use ui::widget::Widget;
     use vello::kurbo::{Point, Rect};
+
+    use super::{KeyboardSize, Language, OskWidget};
+    use crate::{KeyAction, KeyId};
 
     fn type_word(osk: &mut OskWidget, word: &str) {
         for c in word.chars() {
