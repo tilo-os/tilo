@@ -736,7 +736,7 @@ a11y-magnifier = Magnifier
 a11y-magnifier-view = Magnifier view
 a11y-pointer-title = Pointer
 a11y-mouse-keys = Mouse keys
-a11y-mouse-keys-desc = Move the pointer with the numeric keypad
+a11y-mouse-keys-desc = Move the pointer and click with the numeric keypad
 a11y-large-cursor = Large cursor
 a11y-large-cursor-desc = Enlarge the mouse pointer so it is easy to find
 a11y-cursor-size = Cursor size
@@ -2025,7 +2025,6 @@ net-wake-pending = The wake setting is saved, but applying it to this connection
 net-wake-saved = Wake configuration saved. Physical wake remains unverified.
 
 # Copy used by Settings panes and their status/error branches.
-a11y-mouse-keys-caption = Use the numeric keypad to move the pointer and click.
 a11y-shared-caption = Tilo apps use these shared accessibility settings.
 a11y-shared-title = Across Tilo
 a11y-text-size = Text size

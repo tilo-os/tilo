@@ -1,6 +1,6 @@
 //! Bounded migration values applied to Browser's real library and private person record.
 //! Parsing grants and authenticated installer delivery are separate from these actions.
-use tilo_actions::ActionError;
+use ui::tilo_actions::ActionError;
 
 pub use browser_continuity::imports::{
     BookmarkImport, HistoryImport, ImportBatch, ImportBundle, MAX_BUNDLE_BYTES, MAX_BUNDLE_ENTRIES,
@@ -174,10 +174,13 @@ mod tests {
             .iter()
             .find(|action| action.id == "import-history-bundle")
             .unwrap();
-        assert_eq!(declaration.params()[0].ty, tilo_actions::ParamType::Secret);
+        assert_eq!(
+            declaration.params()[0].ty,
+            ui::tilo_actions::ParamType::Secret
+        );
         assert_eq!(
             declaration.contract.need().kind,
-            tilo_actions::ActionKind::Undoable
+            ui::tilo_actions::ActionKind::Undoable
         );
         assert!(!declaration.contract.need().privileged);
     }
@@ -366,7 +369,10 @@ mod tests {
             .iter()
             .find(|action| action.id == "import-history-bundle")
             .unwrap();
-        assert_eq!(declaration.params()[0].ty, tilo_actions::ParamType::Secret);
+        assert_eq!(
+            declaration.params()[0].ty,
+            ui::tilo_actions::ParamType::Secret
+        );
     }
 
     #[test]

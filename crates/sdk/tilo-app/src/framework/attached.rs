@@ -552,10 +552,14 @@ impl AttachedView {
         if let Some(refusal) = invoke.refusal() {
             return Err(DoorError::InvalidArguments(refusal.to_owned()));
         }
+        // The record this view draws is the one its actions are published
+        // under: one of another app's, kept here, is reached through the
+        // provider that keeps it.
+        let app = self.definition.app_id;
         let resource = self
             .resources()
             .into_iter()
-            .find(|resource| resource.kind == R::KIND)
+            .find(|resource| resource.kind == R::KIND && resource.app().is_none_or(|of| of == app))
             .ok_or_else(|| DoorError::Unknown(ActionAddress::new(R::KIND, invoke.id)))?;
         self.invoke(
             &ActionAddress::new(resource.id.as_str(), invoke.id),

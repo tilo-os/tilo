@@ -7,9 +7,9 @@
 //! resolved against the current entries, which refuses an address that went
 //! stale after the result was rendered.
 
-use tilo_actions::Resource;
 use ui::icons::Icon;
 use ui::lock::RwLockRecover as _;
+use ui::tilo_actions::Resource;
 use ui::tilo_resource::SearchEntry;
 
 #[derive(Clone)]

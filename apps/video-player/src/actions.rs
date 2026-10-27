@@ -8,6 +8,12 @@ use ui::framework::LiveRow;
 use ui::tilo_resource;
 use ui::tilo_resource::Effect;
 
+/// The player's effect `id`, referenced as a control is bound to it: the
+/// kind is the one its vocabulary publishes under.
+pub fn reference(id: &'static str) -> tilo_resource::ActionRef<VideoEffect, ()> {
+    tilo_resource::ActionRef::new(id, &[], VideoEffect::kind())
+}
+
 /// The published tree stays responsive even for containers with an unusually
 /// large number of streams or chapters, or a long library. Stable ids still
 /// let a caller reach an omitted row.

@@ -10,7 +10,11 @@ pub struct Counter {
     pub count: i64,
 }
 
-#[resource(kind = "test.counter", label = "Counter")]
+#[resource(
+    kind = "test.counter",
+    label = "Counter",
+    app = "so.tilo.test-surface-good"
+)]
 impl Counter {
     /// Count one more.
     #[action]
@@ -25,7 +29,11 @@ pub struct Prefs {
     pub compact: bool,
 }
 
-#[resource(kind = "test.counter-prefs", label = "Counter preferences")]
+#[resource(
+    kind = "test.counter-prefs",
+    label = "Counter preferences",
+    app = "so.tilo.test-surface-good"
+)]
 impl Prefs {}
 
 struct GoodApp;
@@ -49,7 +57,11 @@ impl ResourceApp for TypoApp {
     const TITLE: &'static str = "Counter";
 
     fn view(cx: &mut ViewCx<Counter>) -> Element {
-        let typo = ActionRef::<Counter, ()>::new("bunp", &[]);
+        let typo = ActionRef::<Counter, ()>::new(
+            "bunp",
+            &[],
+            tilo_resource::ResourceKind::of::<Counter>(),
+        );
         Box::new(cx.button("bump", typo.invoke()))
     }
 }

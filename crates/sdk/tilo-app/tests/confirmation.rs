@@ -21,7 +21,11 @@ pub struct Notes {
     pub open_minutes: u32,
 }
 
-#[resource(kind = "test.notes", label = "Notes")]
+#[resource(
+    kind = "test.notes",
+    label = "Notes",
+    app = "so.tilo.test-confirmation"
+)]
 impl Notes {
     /// Add a note.
     #[action]
