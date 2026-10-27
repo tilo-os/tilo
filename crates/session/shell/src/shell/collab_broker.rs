@@ -422,6 +422,16 @@ enum CertificateProvisioning {
     HarnessDevices(Arc<Vec<[u8; 32]>>, Option<NativeReadHarnessWrapper>),
 }
 
+impl CertificateProvisioning {
+    fn uses_harness_devices(&self) -> bool {
+        match self {
+            Self::Production => false,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::HarnessDevices(..) => true,
+        }
+    }
+}
+
 /// A harness's certificate authority: the devices it enrolled, in every
 /// room, under a policy clock of its own as a session's identity store is.
 #[cfg(any(test, feature = "test-support"))]
@@ -1090,16 +1100,8 @@ fn spawn_inner(
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
-    // A harness admits its enrolled devices where a session's broker asks
-    // the identity store, under its own policy clock as a session's does:
-    // membership changes, an opening app's authorship among them, keep
-    // their original custody as they do in a session.
-    #[cfg(any(test, feature = "test-support"))]
-    if let CertificateProvisioning::HarnessDevices(devices, _) = &certificate_provisioning
-        && config.is_none()
-    {
-        services.native_certificates =
-            Some(Arc::new(HarnessCertificates::new(Arc::clone(devices))));
+    if certificate_provisioning.uses_harness_devices() && config.is_none() {
+        services.native_certificates = None;
         services.local_person = None;
     }
     let realtime_fabric = if config.is_none() {
@@ -1143,15 +1145,21 @@ fn spawn_inner(
                 table,
             )?
         }
+        // A harness admits its enrolled devices where a session's broker
+        // asks the identity store, under its own policy clock as a
+        // session's does: membership changes, an opening app's authorship
+        // among them, keep their original custody as they do in a session.
+        // Its local callers stay its own: it has no person service. A
+        // harness is never a configured peer broker.
         #[cfg(any(test, feature = "test-support"))]
         CertificateProvisioning::HarnessDevices(trusted_devices, _) => {
-            tilo_action_broker::collab_broker::spawn_with_test_services(
+            tilo_action_broker::collab_broker::spawn_with_harness_authority(
                 capnp_socket_path,
                 authority,
                 publisher.clone(),
-                config,
                 services,
-                Some(trusted_devices),
+                Arc::clone(&trusted_devices),
+                Arc::new(HarnessCertificates::new(trusted_devices)),
                 channels,
                 table,
             )?
