@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Images built on the OS image, each as root in a micro-VM step. The OS image itself is
+# Images built on the OS image, each as root in a micro-VM step but for dev-compose. The OS image itself is
 # composed from layer actions (os/image/layers.toml, os/image/build-layer.sh) and comes here
 # as the OCI layout os-image-<arch> left. Nothing here holds a secret or publishes:
 # os-board-publish.sh pushes a board image from a trusted run on main.
@@ -7,9 +7,13 @@
 #   os-image.sh dev ARCH IN OUT COMPILED
 #                                  the dev image (os/Containerfile.dev: tilo-vmd, sshd, the toolchain,
 #                                  the dev-overrides components compiled in COMPILED by
-#                                  os/image/compile.sh --dev) FROM the OS image in IN (IN/oci), as
-#                                  an OCI layout in OUT/oci, its layers over the OS image's
-#                                  composed with them, with OUT/digest and OUT/revision
+#                                  os/image/compile.sh --dev) FROM the OS image in IN (IN/oci),
+#                                  kept in OUT as the fragment of the layers it adds over the OS
+#                                  image's (tools/ci/os/oci_layers.py)
+#   os-image.sh dev-compose ARCH IN FRAGMENT OUT
+#                                  the OS image in IN and the fragment `dev` left in FRAGMENT as
+#                                  one OCI layout in OUT/oci, its blobs links to theirs, with
+#                                  OUT/digest and OUT/revision (no VM)
 #   os-image.sh board BOARD IN OUT the board's sealed dev image (os/Containerfile.board: firmware,
 #                                  device tree, initramfs, a UKI) FROM the aarch64 dev image `dev`
 #                                  left in IN, as an OCI layout in OUT/oci, with OUT/digest, OUT/revision
@@ -48,7 +52,7 @@ guest_tools() {
 # layers, named by its digest whatever commit's run composed it), or an archive `dev` left,
 # checked to be of this commit.
 load_image() {
-  local dir=$1 name=$2 revision=$3 id
+  local dir=$1 name=$2 revision=${3:-} id
   if [[ -d $dir/oci ]]; then
     id=$(podman pull -q "oci:$dir/oci")
     [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$dir/digest")" ]] || die "$dir/oci is not the image $dir/digest names"
@@ -197,17 +201,18 @@ case ${1:-} in
     out=${4:?}
     [[ $(uname -m) == "$arch" ]] || die "the $arch dev image builds natively, not on $(uname -m)"
     guest_tools
-    revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
     compiled=${5:?usage: os-image.sh dev ARCH IN OUT COMPILED}
     phase load
-    load_image "$in" localhost/tilo:ci "$revision"
+    load_image "$in" localhost/tilo:ci
     # The snapshot the OS image was built from, which build-dev-image.sh would otherwise pull by
     # the image's label: a local set from image-rpms-ARCH exists only in the job that made it.
     rpms_snapshot "$arch"
     export RPMS_REF
     # tilo-vm moves a machine only onto a dev image whose base is no older than the one it
-    # runs; the OS image's own clock is its base's and RPM snapshot's, so the commit's time
-    # orders dev bases, as it did in Build / OS dev. The dev components come compiled
+    # runs. The base's time is the OS image's own clock (its base's and RPM snapshot's), as a
+    # local build takes it (build-dev-image.sh), not the commit's: then these layers are the
+    # same for every commit whose OS image and dev components are, and t keeps them by what
+    # they are made of rather than building them again for each commit. The dev components come compiled
     # (os-compile-dev-<arch>): nothing compiles here. While stable has not published this tree's
     # env-runtime the OS image ships none; the dev image then ships env-runtime-dev-<arch>'s, built
     # from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone. Its
@@ -219,7 +224,6 @@ case ${1:-} in
     [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "the OS image carries no clock but '$epoch'"
     phase build
     SOURCE_DATE_EPOCH=$epoch TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
-      TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
       TILO_COMPILED_DEV=$compiled \
       TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/dev/$arch \
       TILO_DEV_MODEL_CATALOG=/target/model-catalog/dev/$arch \
@@ -235,18 +239,15 @@ case ${1:-} in
     printf '{"inputs":{},"inputsDigest":""}' > "$scratch/dev-inputs.json"
     python3 -I tools/ci/os/oci_layers.py take "$in/oci" "$dev" "$out" dev-image "$scratch/dev-inputs.json"
     rm -rf "$dev"
-    printf '%s\n' "$revision" > "$out/revision"
     ;;
   dev-compose)
     # The dev image as one OCI layout: the OS image's layers and the dev fragment `dev` left,
-    # their blobs hard links to theirs, with the commit both were built from.
+    # their blobs hard links to theirs, with the commit this run is for.
     arch=${2:?usage: os-image.sh dev-compose ARCH IN FRAGMENT OUT}
     in=${3:?}
     fragment=${4:?}
     out=${5:?}
     revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
-    [[ $(cat "$fragment/revision") == "$revision" ]] \
-      || die "$fragment is of $(cat "$fragment/revision"), this build of $revision"
     rm -rf "$out"
     python3 -I tools/ci/os/oci_layers.py compose "$out" "$in/oci" "$fragment"
     printf '%s\n' "$revision" > "$out/revision"

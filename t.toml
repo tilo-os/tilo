@@ -7572,7 +7572,8 @@ default = false
 # The layers of the dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the
 # toolchain and the components with their dev features, compiled by os-compile-dev-{arch}, and
 # model-catalog-dev-{arch}'s local model catalog with the runtimes of this tree) over os-image-{arch},
-# kept as a fragment of only the layers it adds, which os-dev-image-{arch} composes.
+# kept as a fragment of only the layers it adds, which os-dev-image-{arch} composes. Keyed by what
+# it is built from, not the commit: its base's time is the OS image's clock.
 [[check]]
 name = "os-dev-layer-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
@@ -7580,7 +7581,6 @@ run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /tar
 inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "keys/cosign-dev.pub", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/build-lib.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
 needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "model-catalog-dev-{arch}", "signing-tools"]
 outputs = ["/target/os/{arch}/dev-layer/**"]
-git = true
 requires = ["{node}", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
