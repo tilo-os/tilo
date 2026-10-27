@@ -4692,7 +4692,7 @@ async fn drive_shovel(
                 }
             }
             SdkCommand::Join(spec, record_kind) => {
-                let _ = ensure_sdk_route(
+                let joined = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
                         key_signals: &key_signals,
@@ -4709,6 +4709,14 @@ async fn drive_shovel(
                     record_kind.as_deref().unwrap_or(""),
                 )
                 .await;
+                // A read waiting for this route's first read hears that none
+                // is coming.
+                if let Err(error) = joined {
+                    inbound_tx
+                        .state
+                        .document_reads
+                        .join_failed(&spec.channel_id(), error);
+                }
             }
             SdkCommand::ToRoute(spec, request) => {
                 let key = spec.channel_id();
