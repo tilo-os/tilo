@@ -847,7 +847,7 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
         let mut item = ListRow::new(format!("run-record-{}", run.serial), run.name.clone())
             .secondary(secondary)
             .meta(run.started.clone())
-            .on_activate(open);
+            .on_view(open);
         item = match &run.status {
             RunStatus::Running => item.active(),
             RunStatus::Failed(_) => item.error(),

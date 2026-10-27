@@ -784,7 +784,7 @@ fn snapshot_row(
         .secondary(secondary)
         .meta(clock(snapshot.taken))
         .selected(model.selected == Some(snapshot.id.as_str()))
-        .on_activate(move || intents.push(Intent::SelectSnapshot(id.clone())));
+        .on_view(move || intents.push(Intent::SelectSnapshot(id.clone())));
     if let Some(source) = source {
         row = row.icon(source_icon(source.kind));
     }

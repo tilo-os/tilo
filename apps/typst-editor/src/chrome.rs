@@ -129,7 +129,7 @@ impl Chrome {
                 Icon::X,
                 &ui::i18n::I18nManager::lookup_plain("typst-close-problems"),
             )
-            .on_click({
+            .on_view({
                 let queue = Rc::clone(&queue);
                 move || queue.borrow_mut().push(Command::ToggleProblems)
             }),
