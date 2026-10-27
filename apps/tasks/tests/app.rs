@@ -665,3 +665,13 @@ fn choose(app: &mut TestApp<App>, name: &str) {
         .unwrap_or_else(|error| panic!("{name} is chosen: {error}"));
     let _ = harness.poll_frame();
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(|| {
+        ui::framework::testing::TestApp::<App>::for_person("ada")
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+}

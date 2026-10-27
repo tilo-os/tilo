@@ -5,23 +5,16 @@
 use super::*;
 use crate::headless::SidebarShown;
 
-/// Click the bar's sidebar button three times in a window `width` wide and
-/// check that each click flipped the sidebar, on the bar, in the shell and
-/// on screen alike. Returns where it stood before the first click.
+/// Click the bar's sidebar button three times in a window `width` wide;
+/// each click flips the sidebar ([`FrameHarness::check_window_sidebar_button`]).
+/// Returns where it stood before the first click.
 fn three_clicks(shell: NavShell, width: u32, placement: SidebarPlacement) -> bool {
     let mut h = harness(shell, width, 800, Theme::dark());
     h.present_in_window_bar();
     settle(&mut h, width, 800);
     assert_eq!(geometry(&h).sidebar, placement, "{width} px wide");
-    let states = h.press_window_sidebar_button(3).expect("the bar's button");
-    let shown: Vec<_> = states.iter().map(|state| state.agreed()).collect();
-    let first = shown[0].unwrap_or_else(|| panic!("{width} px: {:?}", states[0]));
-    assert_eq!(
-        shown,
-        [Some(first), Some(!first), Some(first), Some(!first)],
-        "{width} px wide ({placement:?}): {states:?}"
-    );
-    first
+    h.check_window_sidebar_button()
+        .unwrap_or_else(|error| panic!("{width} px wide ({placement:?}): {error}"))
 }
 
 #[test]
@@ -38,7 +31,7 @@ fn the_bars_sidebar_button_flips_a_sidebar_screen() {
         .content_kind(ContentKind::List)
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0);
-    assert!(!three_clicks(shell, 560, SidebarPlacement::Screen));
+    assert!(!three_clicks(shell, 400, SidebarPlacement::Screen));
 }
 
 /// With an overview, putting the sidebar's screen away goes back to the
@@ -66,7 +59,7 @@ fn the_bars_sidebar_button_flips_a_sidebar_drawer() {
         .content_kind(ContentKind::Document)
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0);
-    assert!(!three_clicks(shell, 560, SidebarPlacement::Drawer));
+    assert!(!three_clicks(shell, 400, SidebarPlacement::Drawer));
 }
 
 #[test]

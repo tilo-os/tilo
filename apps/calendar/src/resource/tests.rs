@@ -1307,3 +1307,13 @@ fn export_ics_content_keeps_the_calendar_or_one_event_as_content() {
     let ics = text(&app, &one);
     assert!(ics.contains("SUMMARY:Review") && !ics.contains("SUMMARY:Standup"));
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<CalendarShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}
