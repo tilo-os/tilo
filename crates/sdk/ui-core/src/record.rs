@@ -3503,7 +3503,14 @@ impl RecordStore {
         if set.portable.is_some() {
             return self.reserve_portable(&mut set, want);
         }
-        if set.native_initial.is_some() {
+        // A record the app's own channel answers (one a sealed room does not
+        // hold yet) is new, and the app makes it: reserved as without a
+        // bridge. Every other new record waits for its creation admission.
+        if set
+            .native_initial
+            .as_ref()
+            .is_some_and(|bridge| !bridge.answered_by_own_channel(want))
+        {
             return Err(RecordOpenError::Initialization(
                 "native new document requires governor creation admission before canonical reservation".into(),
             ));
