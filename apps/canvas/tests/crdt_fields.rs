@@ -610,7 +610,7 @@ fn a_document_from_before_a_style_was_fields_is_migrated_on_open() {
 /// ground are field maps already, but each mark's shape is still one JSON
 /// string.
 fn version_two() -> serde_json::Value {
-    let mut before = version_one();
+    let (mut before, _, _) = version_one();
     let style = canvas::model::Style {
         fill: Some("#204020".into()),
         stroke_width: 1.0,
