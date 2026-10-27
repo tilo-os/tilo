@@ -482,6 +482,9 @@ fn status_badge(status: Status) -> Badge {
 struct RunView {
     agent: Option<String>,
     phase: Option<RunPhase>,
+    /// Whether a person paused the run: it takes no new step until they let
+    /// it go on.
+    paused: bool,
     question: Option<String>,
 }
 
@@ -489,6 +492,7 @@ fn run_view(issue: &Issue) -> RunView {
     RunView {
         agent: issue.assigned_agent().map(str::to_owned),
         phase: issue.run.as_ref().map(|run| run.phase),
+        paused: issue.run.as_ref().is_some_and(|run| run.paused.is_some()),
         question: issue
             .run
             .as_ref()
@@ -524,10 +528,14 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             .push(Box::new(
                 Text::new("tasks-run").with_role(TextRole::Heading),
             ));
-        let phase = view.phase.map_or_else(
-            || tr("tasks-run-not-started"),
-            |phase| tr(phase.label_key()),
-        );
+        let phase = if view.paused {
+            tr("tasks-run-paused")
+        } else {
+            view.phase.map_or_else(
+                || tr("tasks-run-not-started"),
+                |phase| tr(phase.label_key()),
+            )
+        };
         column = column.push(Box::new(Text::new(&ui::i18n::I18nManager::format(
             "tasks-run-agent",
             &[
@@ -549,18 +557,30 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             column = column.push(answer(cx, &id));
         }
         let going = view.phase.is_some_and(RunPhase::active);
-        let control = if going {
-            cx.button(
+        let control = if view.paused {
+            Box::new(cx.button(
+                "tasks-run-resume",
+                Tracker::RESUME_RUN.with(tracker::ResumeRun { issue: id.clone() }),
+            )) as Element
+        } else if going {
+            let mut row = Row::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(cx.button(
+                    "tasks-run-pause",
+                    Tracker::PAUSE_RUN.with(tracker::PauseRun { issue: id.clone() }),
+                )));
+            row = row.push(Box::new(cx.button(
                 "tasks-run-stop",
                 Tracker::STOP_RUN.with(tracker::StopRun { issue: id.clone() }),
-            )
+            )));
+            Box::new(row) as Element
         } else {
-            cx.button(
+            Box::new(cx.button(
                 "tasks-run-approve",
                 Tracker::APPROVE_RUN.with(tracker::ApproveRun { issue: id.clone() }),
-            )
+            )) as Element
         };
-        Box::new(column.push(Box::new(control))) as Element
+        Box::new(column.push(control)) as Element
     })
 }
 
