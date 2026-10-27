@@ -336,7 +336,9 @@ fn open_in_fresh_profile(
     let room = room.to_string();
     let app = {
         let mut owners = owners.clone();
-        ui::App::from_prepared_component_with_collaboration(
+        // As the session's launch mounts it: `target` decides whether the
+        // record exists or the app makes it.
+        ui::App::from_launched_component_with_collaboration(
             collaboration,
             || {
                 let records = owners
