@@ -2523,7 +2523,6 @@ mod tests {
         fn start(&self, request: TurnRequest) -> Receiver<TurnEvent> {
             self.0.timeouts.lock().unwrap().push(request.timeout);
             self.0.bodies.lock().unwrap().push(request.body);
-            let (tx, rx) = std::sync::mpsc::channel();
             let events = self
                 .0
                 .turns
@@ -2531,13 +2530,24 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .unwrap_or_else(|| vec![TurnEvent::Finished(Err("script exhausted".into()))]);
+            // Paced, each send waits until the loop takes the event, so
+            // `emitted` never counts events still queued: it is a lower bound
+            // on what the loop has received, and order assertions on it hold.
+            let capacity = if self.0.pace.is_some() {
+                0
+            } else {
+                events.len()
+            };
+            let (tx, rx) = std::sync::mpsc::sync_channel(capacity);
             let emitted = Arc::clone(&self.0.emitted);
             let send = move |events: Vec<TurnEvent>, pace: Option<Duration>| {
                 for event in events {
                     if let Some(pace) = pace {
                         std::thread::sleep(pace);
                     }
-                    let _ = tx.send(event);
+                    if tx.send(event).is_err() {
+                        break;
+                    }
                     emitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
             };
