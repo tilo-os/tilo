@@ -4,6 +4,7 @@ tab-search-in = In { $title } suchen
 tab-held-by = Fenster von { $name }
 tab-controls-desktop = Steuert deinen Desktop
 tab-dev-build = Entwicklungsversion · von { $installer }
+tab-shared-with = Geteilt mit { $place }
 
 standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…

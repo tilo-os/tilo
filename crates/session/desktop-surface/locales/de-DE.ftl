@@ -514,11 +514,14 @@ search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste
 }
 search-window-close-tab = Tab „{ $tab }“ schließen
 search-window-close-tab-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“
+search-window-share-tab = „{ $tab }“ mit dem Arbeitsbereich teilen
+search-window-unshare-tab = „{ $tab }“ nicht mehr teilen
 search-window-focus-place-strip = Leiste „{ $strip }“
 # Wörter, die nach Schließen- bzw. Verschieben/Kopieren-Zeilen fragen;
 # Englisch bleibt als Rückfall erhalten. Leerzeichengetrennt, klein.
 search-window-verb-close = schließen beenden close quit
 search-window-verb-relocate = verschieben kopieren senden move copy send
+search-window-verb-share = teilen zeigen beenden share show unshare stop
 
 # Notifications: banner stack and notification centre
 drill-in-back = Zurück

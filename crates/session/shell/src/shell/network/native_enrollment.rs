@@ -353,7 +353,29 @@ impl ShellNetwork {
             .write()
             .join_native_room(&crate::shell::i18n::t("workspace-joined-name"), room)
             .ok_or("that invitation is for a room that is not joined")?;
-        self.accept_invitation_via(local, token.trim(), via)
+        // The invitation names the room's host by the devices that answer
+        // for it: a site whose entry names that host makes it its workspace.
+        let hosts: Vec<[u8; 32]> = join
+            .grant()
+            .transport
+            .iter()
+            .map(|hint| hint.host.device_public_key)
+            .chain([join.grant().issuer.device_public_key])
+            .collect();
+        self.expect_arrival(
+            room,
+            &super::site_join::Arriving {
+                hosts: &hosts,
+                ..Default::default()
+            },
+        );
+        let answer = self.accept_invitation_via(local, token.trim(), via)?;
+        // The join is known by its room, as every join into a room is: the
+        // enrollment that installs it ends there, and the person arrives.
+        if let PeerSyncResponse::EnrollmentPending { id } = &answer {
+            self.finish_when_enrolled(room, *id, false)?;
+        }
+        Ok(answer)
     }
 
     /// Redeem `token` into `local`, the workspace made for the room it

@@ -107,7 +107,34 @@ alone (`SurfaceViewRequest`), and the host encodes the window only while
 someone views it, damage-driven, with the hardware encoder where there is
 one, and sends it to that viewer alone over the authenticated direct route,
 end-to-end encrypted to its device. A member only watches; driving someone's
-window needs its owner's control grant. In a personal room nothing streams.
+window needs its owner's control grant. In a personal room only a window
+its person shares on purpose streams.
+
+**Sharing one window in a personal room.** A member shares one of their
+windows with a personal room through the room's resource share
+(`tilo_action_policy::share`, the `resource.share` member action) of the
+window's own node, `room › <app> › window › <tab>`, under the share id
+`window.<tab>`; stopping is `resource.unshare`. The host writes it into the
+room's governance as grants: who shared it (`granted_by`), which window (the
+node) and until when (the grant's lifetime). It takes the share only from
+the device the tab's topology namespace is registered to, so nobody shares
+another device's window and the registry says which device hosts it
+(`tilo_desktop_model::window_share`). The sharer streams that window, and no
+other, to the members viewing it and to the room's hosts. Every other member
+shows it as a tab of the sharer's window (`HostedWindow`, under the sharer's
+tab id, which the stream names) in their own layout, a window group at the
+end of the workspace's last strip, marked with the sharer's presence while
+they are here, and drops it when the share ends.
+
+The sharer reaches it on the window itself: its window menu and its bar's
+menu offer "Share with <workspace>", and "Stop sharing" while shared, for a
+window this device runs in a personal room only. While the room's record
+holds the share, the window's bar says "Shared with <workspace>" with the
+faces of the people there (`ui::widget::SharedWith`). A share outlives
+neither its window nor its sharer's stay: a window this device closed or
+moved out of the workspace has its share stopped, and leaving the workspace
+stops its shares before the room is released. Every door makes the one
+request `tab.share` / `tab.unshare` make (`overlay_host::window_share_controls`).
 
 **Presence is per resource, layout is per person.** Inside a resource
 several people have open (a note, a chat channel) each sees the others'

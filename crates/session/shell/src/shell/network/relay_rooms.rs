@@ -668,6 +668,59 @@ impl ShellNetwork {
         Ok(answer)
     }
 
+    /// Share this device's window `tab` of `app_id` with `room` (`share`),
+    /// or stop sharing it, at the host governing the room: the room's
+    /// resource share of the window's node, which the host takes only from
+    /// the device the tab's topology namespace is registered to
+    /// ([`tilo_desktop_model::window_share`]). A namespace this device has
+    /// not claimed in the room yet is claimed first. Waits for the host's
+    /// answer: runs on the peer-sync worker.
+    ///
+    /// # Errors
+    /// No host governs the room, or the host refused or did not answer.
+    pub(crate) fn share_window(
+        &self,
+        room: RoomId,
+        tab: crate::shell::state::TabId,
+        app_id: &str,
+        share: bool,
+    ) -> Result<(), String> {
+        use tilo_desktop_model::window_share::{window_node, window_share_id};
+        use tilo_relay_session::rooms::{SHARE_RESOURCE, UNSHARE_RESOURCE};
+        let host = self
+            .host_governor(room)?
+            .ok_or("only a room a host governs keeps what is shared in it")?;
+        let ask = |action: &str, arguments: serde_json::Map<String, serde_json::Value>| {
+            self.ask_as_member(room, host, action, arguments)?
+                .recv_timeout(ADMIN_TIMEOUT)
+                .map_err(|_| "the room did not answer in time".to_owned())
+                .and_then(std::convert::identity)
+                .and_then(receipt_value)
+        };
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("share".into(), window_share_id(tab).into());
+        if !share {
+            return ask(UNSHARE_RESOURCE, arguments).map(drop);
+        }
+        let salt = tilo_desktop_model::peer_salt_of(tab);
+        let claimed = self.tree.read().room_docs.get(&room).is_some_and(|doc| {
+            tilo_desktop_model::projection::contents_owners_of(doc).contains_key(&salt)
+        });
+        if !claimed {
+            let mut claim = serde_json::Map::new();
+            claim.insert("salt".into(), salt.into());
+            ask(CLAIM_TOPOLOGY_NAMESPACE, claim)?;
+        }
+        arguments.insert(
+            "node".into(),
+            window_node(&room.to_string(), app_id, tab)
+                .to_string()
+                .into(),
+        );
+        arguments.insert("access".into(), "view".into());
+        ask(SHARE_RESOURCE, arguments).map(drop)
+    }
+
     /// Send a person's own bounded terminal audit to the exact signed governor.
     /// Room administration retains its independent same-person owner checks.
     pub(crate) async fn record_governed_effect_receipt(
