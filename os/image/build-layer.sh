@@ -294,7 +294,19 @@ build_target() {
   python3 -I tools/ci/os/pieces.py containerfile "$name" --given "$given" > "$file"
   pin_source_times "$name" "$given"
   TILO_IMAGE=$image TILO_LAYER_TARGET=$target TILO_CONTAINERFILE=$file \
-    TILO_LAYER_ARGS="${layer_args[*]}" bash os/dev/build-image.sh
+    TILO_LAYER_ARGS="${layer_args[*]}" bash os/dev/build-image.sh 2>&1 | step_times
+}
+
+# Each build step's line with the seconds the action had run when it started, so a log tells
+# which step of a layer its time went to.
+step_times() {
+  local line
+  while IFS= read -r line; do
+    case $line in
+      '['*'] STEP '*) printf '[+%ss] %s\n' "$SECONDS" "$line" ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done
 }
 
 cmd_base() {
