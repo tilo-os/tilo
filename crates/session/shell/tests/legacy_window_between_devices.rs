@@ -46,6 +46,11 @@ const HEIGHT: u32 = 720;
 const DAMAGE_INTERVAL: Duration = Duration::from_micros(16_667);
 const FRAMES: u32 = 180;
 const INPUT_SAMPLES: u8 = 40;
+/// How long the viewer waits for frames the host has already sent before it
+/// says they never arrived. This is delivery, not the timing the first-picture
+/// line records: a unit lost on the way leaves a gap the rest of the stream
+/// cannot fill.
+const DELIVERY_WAIT: Duration = Duration::from_secs(5);
 
 async fn spawn_device() -> (
     mpsc::Sender<NetCmd>,
@@ -345,10 +350,6 @@ async fn stream_a_window(who: Viewer) {
     // The rest of the stream never arrived: the run ends here and the
     // delivery asserts below judge it.
     let mut never_arrived = false;
-    // How long the viewer waits for frames the host has already sent before
-    // it says they never arrived. This is delivery, not the timing the line
-    // records: a lost unit leaves a gap the rest of the stream cannot fill.
-    const DELIVERY_WAIT: Duration = Duration::from_secs(5);
     let mut quiet_since = None;
     loop {
         if producer
