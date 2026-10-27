@@ -777,12 +777,13 @@ impl MouseKeyboardPane {
         let shown = self.selected_source();
         let osk = self.editor.get().scope == OSK;
         let mut page = Vec::new();
+        // `None` while the drawing is being compiled.
         let map = if osk {
-            None
+            Some(Err(String::new()))
         } else {
-            self.keyboard_preview(&shown).ok()
+            self.keyboard_preview(&shown)
         };
-        if let Some(map) = &map
+        if let Some(Ok(map)) = &map
             && shown == profile.active
             && map.live_agrees() == Some(false)
         {
@@ -820,7 +821,7 @@ impl MouseKeyboardPane {
         &self,
         shown: &str,
         profile: &KeyboardProfile,
-        map: Option<ui::KeyboardMap>,
+        map: Option<Result<ui::KeyboardMap, String>>,
     ) -> SettingsSection {
         let name = self.source_name(shown);
         let in_use = shown == profile.active;
@@ -856,7 +857,7 @@ impl MouseKeyboardPane {
             return block_section(Box::new(body));
         }
         match map {
-            Some(map) => {
+            Some(Ok(map)) => {
                 let levels = map.level_count().clamp(1, 4);
                 let level = self.last.keyboard_preview_level.min(levels - 1);
                 let layers = ui::widget::ToggleGroup::new(
@@ -898,7 +899,8 @@ impl MouseKeyboardPane {
                     body = body.push(Box::new(layers));
                 }
             }
-            None => body = body.push(error_caption(&t("input-map-unavailable"))),
+            Some(Err(_)) => body = body.push(error_caption(&t("input-map-unavailable"))),
+            None => body = body.push(caption(&t("input-map-drawing"))),
         }
         block_section(Box::new(body))
     }
@@ -1008,7 +1010,6 @@ impl MouseKeyboardPane {
             editor: self.editor.clone(),
             osk_always: false,
             document: self.cx.storage().settings_document().clone(),
-            map_cache: std::rc::Rc::default(),
         }
     }
 

@@ -2199,6 +2199,7 @@ input-map-iso = 105-key ISO
 input-map-instructions = Press keys while this page is open, including while searching layouts. The map highlights physical positions without changing what you type.
 input-map-levels = Choose a level to see what each key types with Shift or AltGr.
 input-map-unavailable = This layout can’t be previewed.
+input-map-drawing = Drawing the keyboard…
 input-map-apply = Use this layout
 input-map-extra-levels = Show levels 5–8 when the layout has them
 input-map-dead-keys = Dead keys use a dotted circle.
