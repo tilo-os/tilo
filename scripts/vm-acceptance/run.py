@@ -227,8 +227,13 @@ def renderer(vm: TiloVm, without_3d: bool = False) -> tuple[str, dict]:
 def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
     helptext = vm.run("slot", "create", "--help", slot=False)
     args = ["slot", "create", vm.slot, "--headful", "--outputs", ",".join(outputs)]
-    # A throwaway test identity where this tilo-vm can mint one (`slot create --identity`).
-    if "--identity" in helptext:
+    # The run's VM is fresh and disposable: its slot is the VM's person, made through the
+    # session's own onboarding as a device's first login does, so the machine's device key is
+    # certified and fs runs (`slot create --identity device`). A tilo-vm without it mints a
+    # throwaway test identity in a private root instead (`--identity`), where fs never runs.
+    if "--identity device" in helptext:
+        args += ["--identity", "device"]
+    elif "--identity" in helptext:
         args.append("--identity")
     if locale:
         args += ["--locale", locale]
