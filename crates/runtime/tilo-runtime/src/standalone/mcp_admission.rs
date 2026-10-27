@@ -215,7 +215,7 @@ impl Joined {
             // material is compared; a retired run stays retired. Custody
             // that could not be read is retried by the next pass, as the
             // announced change stays pending.
-            if let Err(Refusal::Ended) = admission.check_original_custody(self) {
+            if admission.check_original_custody(self) == Err(Refusal::Ended) {
                 result = Err(Refusal::Ended.message());
             }
         }

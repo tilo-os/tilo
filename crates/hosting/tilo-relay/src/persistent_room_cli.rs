@@ -2018,6 +2018,17 @@ impl OnlineWatch {
     }
 }
 
+/// How often idle members are looked for: a quarter of the horizon, so
+/// nobody stays much past it, and not more often than a minute.
+fn prune_interval(governance: &Governance) -> tokio::time::Interval {
+    tokio::time::interval(Duration::from_secs(
+        governance
+            .inactive_after_mins
+            .saturating_mul(15)
+            .clamp(60, 3600),
+    ))
+}
+
 async fn serve_operator(
     context: &PersistentRoom,
     governance: &Governance,
@@ -2039,14 +2050,7 @@ async fn serve_operator(
     };
     let mut online_tick =
         tokio::time::interval(Duration::from_secs(room_operator::ONLINE_EVERY_SECS));
-    // A quarter of the horizon, so nobody stays much past it, and not more
-    // often than a minute.
-    let mut prune_tick = tokio::time::interval(Duration::from_secs(
-        governance
-            .inactive_after_mins
-            .saturating_mul(15)
-            .clamp(60, 3600),
-    ));
+    let mut prune_tick = prune_interval(governance);
     // The operator's roles file, looked at every few seconds: a role it
     // grants or takes back reaches the room without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
