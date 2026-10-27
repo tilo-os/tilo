@@ -1905,6 +1905,7 @@ mod local_document_report_tests {
     use super::*;
     use crate::local_document_action::{CapturedAction, PublishedInvocation};
     use std::sync::{Arc, Mutex};
+    use tilo_lock::MutexRecover as _;
 
     type Reports = Arc<Mutex<Vec<(Option<RouteSpec>, u64, Vec<u8>)>>>;
     struct CaptureTransport(Reports);
@@ -1985,7 +1986,7 @@ mod local_document_report_tests {
                 .report_local_document_action_to_route(route, request_id, captured.clone())
                 .unwrap();
         }
-        let reports = reports.lock().unwrap();
+        let reports = reports.lock_recover();
         assert_eq!(reports.len(), 3);
         for ((route, request_id, bytes), (expected_route, expected_id)) in
             reports
@@ -2032,7 +2033,7 @@ mod local_document_report_tests {
         let mut manager =
             CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
         assert!(manager.report_local_document_action(2, missing).is_err());
-        assert!(reports.lock().unwrap().is_empty());
+        assert!(reports.lock_recover().is_empty());
     }
 }
 
@@ -2100,6 +2101,7 @@ mod late_primary_route_tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
+    use tilo_lock::MutexRecover as _;
 
     /// A broker connection whose primary-route answers the test hands out,
     /// recording the `Hello`s it was sent.
@@ -2114,13 +2116,13 @@ mod late_primary_route_tests {
         }
         fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError> {
             if let TransportCommand::Primary(CollabRequest::Hello { .. }) = command {
-                *self.hellos.lock().unwrap() += 1;
+                *self.hellos.lock_recover() += 1;
             }
             Ok(())
         }
         fn drain(&mut self, _: &mut Vec<CollabEvent>) {}
         fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
-            self.answers.lock().unwrap().pop_front()
+            self.answers.lock_recover().pop_front()
         }
         fn take_action_directory_requests(&mut self, _: &mut Vec<ActionDirectoryRequest>) {}
     }
@@ -2155,22 +2157,21 @@ mod late_primary_route_tests {
         );
         assert!(!manager.sync_lost());
         assert_eq!(
-            *hellos.lock().unwrap(),
+            *hellos.lock_recover(),
             1,
             "the late route is joined again at once"
         );
 
         // That join misses its deadline too: still up, joining once more.
         answers
-            .lock()
-            .unwrap()
+            .lock_recover()
             .push_back(Err(broker::PRIMARY_ROUTE_TIMED_OUT.into()));
         manager.poll();
         assert_eq!(manager.state(), CollaborationState::Connecting);
-        assert_eq!(*hellos.lock().unwrap(), 2);
+        assert_eq!(*hellos.lock_recover(), 2);
 
         // The route answers: the app joins it, with nothing to do on its part.
-        answers.lock().unwrap().push_back(Ok(route));
+        answers.lock_recover().push_back(Ok(route));
         manager.poll();
         assert_eq!(manager.state(), CollaborationState::Ready);
         assert!(
@@ -2178,7 +2179,7 @@ mod late_primary_route_tests {
             "joined: the connecting note clears"
         );
         assert_eq!(
-            *hellos.lock().unwrap(),
+            *hellos.lock_recover(),
             2,
             "a joined route is not announced again"
         );
@@ -2197,7 +2198,7 @@ mod late_primary_route_tests {
         let answers = Arc::clone(&transport.answers);
         let mut manager =
             CollaborationManager::with_transport(Box::new(transport)).joining_late(hello);
-        answers.lock().unwrap().push_back(Err("refused".into()));
+        answers.lock_recover().push_back(Err("refused".into()));
         manager.poll();
         assert!(matches!(manager.state(), CollaborationState::Offline(_)));
     }
