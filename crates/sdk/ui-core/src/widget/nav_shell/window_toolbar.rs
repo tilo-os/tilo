@@ -516,7 +516,9 @@ impl NavShell {
     }
 
     /// What the window shows, for the bar's location: the title of the
-    /// column in front. Sidebar and inspector titles label their columns.
+    /// column in front. Every column in front names the window, the sidebar
+    /// included: pushed, the sidebar is the window, not a fold of the
+    /// content, so the bar names the navigation it shows.
     fn shell_location(&self) -> Option<ToolbarLocation> {
         let title = |column: Column| at(&self.headers, column).title.title.clone();
         let front = if self.geometry.stack.len() > 1 {
@@ -525,7 +527,7 @@ impl NavShell {
             NavPane::Content
         };
         let label = match front {
-            NavPane::Sidebar => None,
+            NavPane::Sidebar => title(Column::Sidebar),
             NavPane::Overview => title(Column::Overview),
             NavPane::Content => title(Column::Content).or_else(|| title(Column::Overview)),
         }?;
