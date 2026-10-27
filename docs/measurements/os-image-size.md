@@ -39,7 +39,7 @@ measures main's newest image for both architectures and records
 
 - **Growth.** More than 5 % above the median of the last five nights fails on
   the second run in a row. To land intended growth, run
-  `t dispatch perf-scheduled --ref main --input accept=<KPI ids>` once the image has it.
+  `t dispatch perf-publish --publish --ref main --input accept=<KPI ids>` once the image has it.
 - **Ceiling.** Compressed bytes and unique content are held to an enforced
   ceiling, set 5 % over the image #4003 measured and lowered by what each
   later size change saved, so slow creep fails too. It may only be lowered,

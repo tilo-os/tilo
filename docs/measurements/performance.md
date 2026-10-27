@@ -3,10 +3,13 @@
 Performance KPIs (what Tilo markets, and how each is measured; their targets are
 the `source` lines of `tools/perf/kpi-budgets.toml`) are measured by t's scheduled
 performance run: one `perf-<group>` check per group (`tools/ci/perf-scheduled.sh`)
-and `perf-scheduled`, which compares and publishes them, on each new head of `stable` and
-by `t dispatch perf-scheduled`. It is not a required check and never runs per push.
-`perf-scheduled` runs whatever its groups' outcome: the records of the groups that passed are
-compared and published, and the groups that failed fail the run. Every result is
+and `perf-scheduled`, which compares them, on each release candidate of `stable` and by
+`t dispatch perf-scheduled`; `perf-publish` compares them again and publishes them where the
+run holds the store's token (`t dispatch perf-publish --publish`). It is not a required check
+and never runs per push. Both run whatever their groups' outcome: the records of the groups
+that passed are compared (and published), and the groups that failed fail the run. A group
+whose packages and scripts are unchanged returns its earlier result and records from t's
+cache; a record the store already holds keeps the verdict it got and is not published again. Every result is
 one JSON record (`tools/perf/record.py`): KPI id, unit, n, nearest-rank
 p50/p95/p99/max, commit, build profile, renderer, virtualization, runner class
 and hardware. `tools/perf/compare.py` compares each record only with stored
