@@ -311,21 +311,23 @@ impl SlideZoom {
     }
 
     /// One step larger, or smaller, than `current`, within the steps.
-    pub(crate) fn step(self, current: f64, forward: bool) -> Self {
+    pub(crate) fn step(current: f64, forward: bool) -> Self {
         let steps = Self::STEPS;
         let found = if forward {
             steps
                 .iter()
                 .copied()
                 .find(|step| *step > current + 0.001)
-                .unwrap_or(steps[steps.len() - 1])
+                .or_else(|| steps.last().copied())
+                .unwrap_or(current)
         } else {
             steps
                 .iter()
                 .rev()
                 .copied()
                 .find(|step| *step < current - 0.001)
-                .unwrap_or(steps[0])
+                .or_else(|| steps.first().copied())
+                .unwrap_or(current)
         };
         Self::Pinned(found)
     }
@@ -1115,7 +1117,7 @@ impl SlidesApp {
             return;
         }
         let current = self.compute_chrome().scale;
-        self.slide_zoom = self.slide_zoom.step(current, direction > 0.0);
+        self.slide_zoom = Self::step(current, direction > 0.0);
         self.clamp_slide_pan();
     }
 
