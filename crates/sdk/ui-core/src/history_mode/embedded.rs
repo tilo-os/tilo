@@ -380,7 +380,7 @@ pub(crate) fn invoke_door(
 /// Run one History door control on `history` exactly as its own History
 /// control does: resolved against the door this History serves now.
 pub(crate) fn run_door_control(
-    history: &mut host::HistoryHost,
+    history: &mut dyn host::HistoryChromeApi,
     intent: &tilo_actions::ControlInvocation,
 ) -> Result<(), tilo_actions::DoorError> {
     let resources = [history.door_resource()];
