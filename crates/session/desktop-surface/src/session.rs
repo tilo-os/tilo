@@ -69,11 +69,44 @@ pub fn launched_record(launch: &str) -> Option<(&str, &str)> {
         .filter(|(app, record)| !app.is_empty() && !record.is_empty())
 }
 
-/// An app a window asked to open, on one of its records or on its own,
-/// waiting for the desktop.
+/// The launch a [`crate::TileSource`] reads as opening `app` with the
+/// content whose hash is `hash`: `{CONTENT_LAUNCH}{app}:{hash}`
+/// ([`content_launch`]).
+pub const CONTENT_LAUNCH: &str = "content:";
+
+/// The launch that opens `app` with the content whose hash is `hash`, as
+/// the workspace broker opens an app with content another app handed over
+/// (a capture, a recording).
+#[must_use]
+pub fn content_launch(app: &str, hash: &str) -> String {
+    format!("{CONTENT_LAUNCH}{app}:{hash}")
+}
+
+/// The app and content hash a [`content_launch`] names, or `None` for any
+/// other launch.
+#[must_use]
+pub fn launched_content(launch: &str) -> Option<(&str, &str)> {
+    launch
+        .strip_prefix(CONTENT_LAUNCH)?
+        .split_once(':')
+        .filter(|(app, hash)| !app.is_empty() && content_hash(hash))
+}
+
+/// Whether `hash` is a content address: 64 lowercase hex digits.
+fn content_hash(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// An app a window asked to open, on one of its records, with content, or
+/// on its own, waiting for the desktop.
 struct Opening {
     app: String,
     record: Option<String>,
+    /// The content the app opens, by hash, which the asking window holds.
+    content: Option<String>,
     /// The resource the open names in the record, which the app's window
     /// is to show once it is open.
     resource: Option<String>,
@@ -223,23 +256,23 @@ pub fn serve(room: impl Into<String>, woken: Arc<AtomicBool>) -> (Arc<DesktopSes
 }
 
 impl DesktopSession {
-    /// The app `request` opens in this desktop's workspace, and the record
-    /// it opens it on (`None` for the app's own).
+    /// The app `request` opens in this desktop's workspace, the record it
+    /// opens it on (`None` for the app's own), and the content it opens in
+    /// it, by hash.
     ///
     /// # Errors
     /// A request for another workspace, for something other than an app's
-    /// action, or with content to open in it, which a desktop hosting
-    /// windows in process cannot hand over yet.
+    /// action, or with anything but a content hash to open in it.
     fn app_to_open<'a>(
         &self,
         caller: &Caller,
         request: &'a InvokeRequest,
-    ) -> Result<(&'a str, Option<&'a str>), ActionHostError> {
+    ) -> Result<(&'a str, Option<&'a str>, Option<&'a str>), ActionHostError> {
         let address = &request.target.address;
         if let Some((room, app)) = application_provider(&request.target.provider) {
             return self
                 .record_to_open(caller, request, room)
-                .map(|record| (app, record));
+                .map(|record| (app, record, None));
         }
         let app = address
             .resource
@@ -256,12 +289,15 @@ impl DesktopSession {
                 reason: "That workspace isn't open here".into(),
             });
         }
-        if !matches!(request.argument, InvokeArgument::None) {
-            return Err(ActionHostError::Refused {
-                reason: "Opening something in another app isn't available here yet".into(),
-            });
+        // As the broker: the argument is the content to open, by hash
+        // (`ApplicationLaunch::argument`).
+        match &request.argument {
+            InvokeArgument::None => Ok((app, None, None)),
+            InvokeArgument::Text(hash) if content_hash(hash) => Ok((app, None, Some(hash))),
+            _ => Err(ActionHostError::Refused {
+                reason: "That isn't something an app can open".into(),
+            }),
         }
-        Ok((app, None))
     }
 
     /// The record an action of a resource in `room` names, `None` for the
@@ -344,8 +380,12 @@ impl ActionHost for DesktopSession {
             self.woken.store(true, Ordering::Release);
             return receipt;
         }
-        let (app, record) = match self.app_to_open(caller, &request) {
-            Ok((app, record)) => (app.to_owned(), record.map(str::to_owned)),
+        let (app, record, content) = match self.app_to_open(caller, &request) {
+            Ok((app, record, content)) => (
+                app.to_owned(),
+                record.map(str::to_owned),
+                content.map(str::to_owned),
+            ),
             Err(error) => return Pending::ready(Err(error)),
         };
         // An action of an app's resource names the resource; an app's own
@@ -354,6 +394,7 @@ impl ActionHost for DesktopSession {
             .map(|_| request.target.address.resource.clone());
         let arguments = match request.argument {
             InvokeArgument::None => serde_json::Map::new(),
+            InvokeArgument::Text(_) if content.is_some() => serde_json::Map::new(),
             InvokeArgument::Json(arguments) => arguments,
             InvokeArgument::Text(_) => {
                 return Pending::ready(Err(ActionHostError::Refused {
@@ -365,6 +406,7 @@ impl ActionHost for DesktopSession {
         self.asked.lock_recover().push(Opening {
             app,
             record,
+            content,
             resource,
             action: request.target.address.action,
             arguments,
@@ -432,6 +474,7 @@ impl Openings {
         for Opening {
             app,
             record,
+            content,
             resource,
             action,
             arguments,
@@ -450,9 +493,10 @@ impl Openings {
                         arguments,
                     });
                 }
-                let app = match record {
-                    Some(record) => record_launch(&app, &record),
-                    None => app,
+                let app = match (record, content) {
+                    (Some(record), _) => record_launch(&app, &record),
+                    (None, Some(hash)) => content_launch(&app, &hash),
+                    (None, None) => app,
                 };
                 handle
                     .dispatch(
