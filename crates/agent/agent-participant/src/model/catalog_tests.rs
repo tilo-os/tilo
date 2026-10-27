@@ -449,7 +449,7 @@ fn agent_context(apps: &[&str], open: &[&str], task: &str, catalog: Catalog) -> 
         catalog,
         app_names: if catalog == Catalog::Relevant {
             apps.iter()
-                .filter_map(|app| Some(((*app).to_owned(), native.get(app)?.title.to_owned())))
+                .filter_map(|app| Some(((*app).to_owned(), native.get(app)?.title.to_string())))
                 .collect()
         } else {
             Vec::new()

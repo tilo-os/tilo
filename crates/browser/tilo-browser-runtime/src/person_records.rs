@@ -153,14 +153,15 @@ mod tests {
 
     static CHAT: std::sync::LazyLock<ApplicationDefinition> =
         std::sync::LazyLock::new(|| ApplicationDefinition {
-            app_id: APP,
-            title: "Chat",
+            app_id: APP.into(),
+            title: "Chat".into(),
             icon: ui::IconDescriptor::Glyph("C"),
             record_kind: RecordKind::new("chat"),
             required: vec![],
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: unused,
         });
 
