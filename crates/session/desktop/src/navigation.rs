@@ -155,13 +155,7 @@ impl DesktopSurface {
     /// Hosts call this after applying local intents. The tree owns the local
     /// selection; this compositor-independent layer only presents it.
     pub fn sync_navigation(&mut self, tree: &DesktopTree) {
-        let active_strip = tree.active_workspace().and_then(|workspace| {
-            tree.active_strip
-                .get(&workspace.id)
-                .copied()
-                .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
-                .or_else(|| workspace.strips.first().map(|strip| strip.id))
-        });
+        let active_strip = tree.active_strip_id();
         if self.navigation.active_strip != active_strip
             && let Some(strip) = active_strip
         {
