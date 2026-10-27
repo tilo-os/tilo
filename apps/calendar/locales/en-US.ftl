@@ -154,3 +154,31 @@ calendar-repeat-failed = Couldn’t move the events: { $error }
 calendar-contact-attendees = Invite from Contacts
 calendar-contact-attendee = { $person } <{ $email }>
 calendar-contact-add = Add as guest
+
+## The one-line quick add: what it asks for, and what it will write
+
+calendar-quick-title = Add an event
+calendar-quick-placeholder = Lunch with Sam on Friday at 1pm
+calendar-quick-field = What to add
+calendar-quick-add = Add
+calendar-quick-cancel = Cancel
+
+## The keys this window answers to
+
+calendar-help-title = Keyboard shortcuts
+calendar-help-month = Month view
+calendar-help-week = Week view
+calendar-help-day = Day view
+calendar-help-agenda = Agenda view
+calendar-help-today = Go to today
+calendar-help-previous = Previous period
+calendar-help-next = Next period
+calendar-help-previous-day = Previous day
+calendar-help-next-day = Next day
+calendar-help-previous-week = Previous week
+calendar-help-next-week = Next week
+calendar-help-new-event = New event, in full
+calendar-help-quick-add = Add an event in one line
+calendar-help-delete = Delete the selected item
+calendar-help-close = Close the editor or card
+calendar-help-shortcuts = This list of keys
