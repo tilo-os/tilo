@@ -65,6 +65,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(sha2::Sha256::digest(bytes))
 }
 
+/// How long a window may take to close when its app is asked to let it go.
+const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// One session the tool drives.
 pub(crate) struct Peer {
     pub(crate) state: PathBuf,
@@ -197,22 +200,45 @@ impl Peer {
         .map(drop)
     }
 
-    /// Whether a window of `app` is open.
-    pub(crate) fn is_open(&self, bin: &Path, app: &str) -> bool {
-        output(
-            self.command(&bin.join("tilo-control")).arg("windows"),
+    /// The tabs showing a window of `app`: each as its group and tab id.
+    fn tabs_of(&self, bin: &Path, app: &str) -> Result<Vec<(u64, u64)>, String> {
+        let listed = output(
+            self.command(&bin.join("tilo-control"))
+                .args(["windows", "--json"]),
             "listing windows",
-        )
-        .is_ok_and(|windows| windows.contains(&format!("\"{app}\"")))
+        )?;
+        let windows: Vec<serde_json::Value> =
+            serde_json::from_str(&listed).map_err(|error| format!("listing windows: {error}"))?;
+        Ok(windows
+            .iter()
+            .filter(|window| window["app_id"] == app)
+            .filter_map(|window| Some((window["group"].as_u64()?, window["tab"].as_u64()?)))
+            .collect())
     }
 
-    /// Start `app` again in its place: its window to the front, closed, and reopened where it
-    /// was, which relaunches it as a session restore does: on the installed package and the
-    /// runtime it names, with its data.
+    /// Whether a window of `app` is open.
+    pub(crate) fn is_open(&self, bin: &Path, app: &str) -> bool {
+        self.tabs_of(bin, app).is_ok_and(|tabs| !tabs.is_empty())
+    }
+
+    /// Start every window of `app` again in its place: each brought to the front, closed, and
+    /// reopened where it was, which relaunches it as a session restore does: on the installed
+    /// package and the runtime it names, with its data.
     pub(crate) fn restart(&self, bin: &Path, app: &str) -> Result<(), String> {
-        self.open(bin, app)?;
-        self.invoke(bin, "actions", "tab.close")?;
-        self.invoke(bin, "actions", "tab.reopen")
+        for (group, tab) in self.tabs_of(bin, app)? {
+            self.invoke(bin, "desktop-windows", &format!("tab.focus:{group}:{tab}"))?;
+            self.invoke(bin, "actions", "tab.close")?;
+            // A window closes when its app has let it go: the tab is reopenable once it is gone.
+            let asked = std::time::Instant::now();
+            while self.tabs_of(bin, app)?.contains(&(group, tab)) {
+                if asked.elapsed() > CLOSE_WAIT {
+                    return Err(format!("{app} did not close its window"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            self.invoke(bin, "actions", "tab.reopen")?;
+        }
+        Ok(())
     }
 }
 
