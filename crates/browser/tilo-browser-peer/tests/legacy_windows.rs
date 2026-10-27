@@ -108,6 +108,9 @@ fn typing(text: &str) -> Vec<wire::InputEvent> {
     events
 }
 
+/// The workspace layout's tab the native window is in.
+const WINDOW_TAB: u64 = 0x93;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_window_reaches_browser_and_only_granted_input_returns() {
     Box::pin(native_window_scenario()).await;
@@ -223,7 +226,7 @@ async fn native_window_scenario() {
             hdr_static_metadata: None,
             bit_depth: 0,
             app_id: "org.chromium.Chromium".into(),
-            tab: 0,
+            tab: WINDOW_TAB,
         },
     );
     let encoded = [0, 0, 0, 1, 0x65, 0x88, 0x84];
@@ -243,7 +246,9 @@ async fn native_window_scenario() {
         format!("ops/{}", hex::encode(record.digest()))
     };
     let mut index = MemberOps::follow(&live, &path, &track(&wire::index_record()));
-    let expected = wire::Stream::new(7, "org.chromium.Chromium", "h264", 640, 480);
+    // The browser shows the stream in the layout's tab holding the window.
+    let expected =
+        wire::Stream::new(7, "org.chromium.Chromium", "h264", 640, 480).with_tab(WINDOW_TAB);
     tilo_test_env::within("the stream index", async {
         while next_frame(&mut index).await != wire::Frame::Index(vec![expected.clone()]) {}
     })
