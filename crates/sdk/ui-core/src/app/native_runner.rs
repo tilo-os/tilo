@@ -3760,7 +3760,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
                 window.request_redraw();
             }
-            #[cfg(target_os = "android")]
             UserEvent::SafeAreaChanged => sync_safe_area(&mut self.app, &window),
             UserEvent::Wake(_)
             | UserEvent::NativeScenarioInput(_)
