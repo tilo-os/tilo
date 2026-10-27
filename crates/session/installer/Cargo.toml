@@ -46,6 +46,9 @@ tilo-actions = { path = "../../collab/actions" }
 console-control = { path = "../console-control" }
 install-profile-model = { path = "../install-profile-model" }
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
+# The hardware probe and its report schema, shared with Tilo Imager so both
+# doors observe a machine the same way and say the same thing about it.
+imager-backend = { path = "../../platform/imager-backend" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
