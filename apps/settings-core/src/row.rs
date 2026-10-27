@@ -20,7 +20,8 @@ use ui::widget::{Button, Dropdown, Segment, Slider, Toggle, ToggleGroup};
 use crate::effects::SettingsEffect;
 use crate::host::{Followed, PaneCx, Section};
 use crate::widgets::{
-    El, Item, choice_row_stacked, field_row_described, setting_row, setting_row_described,
+    El, Item, choice_row_stacked, field_row_described, nested_setting_row, setting_row,
+    setting_row_described,
 };
 
 /// One labelled row of a settings card ([`PaneCx::row`]).
@@ -32,6 +33,8 @@ pub struct Row<'a> {
     id: Option<String>,
     name: Option<String>,
     stacked: bool,
+    /// Indented under the row above it ([`Row::nested`]).
+    nested: bool,
     /// Whether its control takes input: off while a setting it depends on
     /// is off ([`Row::enabled`]).
     enabled: bool,
@@ -47,6 +50,7 @@ impl PaneCx {
             id: None,
             name: None,
             stacked: false,
+            nested: false,
             enabled: true,
         }
     }
@@ -79,6 +83,13 @@ impl Row<'_> {
         self
     }
 
+    /// Indented under the row above it: an option that refines the one
+    /// above and that the pane shows only while that one is on.
+    pub fn nested(mut self) -> Self {
+        self.nested = true;
+        self
+    }
+
     /// With its control disabled unless `enabled`: a setting that only
     /// matters while another is on. The pane says why in the row's
     /// description.
@@ -89,6 +100,9 @@ impl Row<'_> {
 
     /// The row around `control`, which the pane bound itself.
     pub fn control(self, control: El) -> Item {
+        if self.nested && !self.stacked {
+            return nested_setting_row(&self.label, self.description.as_deref(), control);
+        }
         match (&self.description, self.stacked) {
             (Some(description), true) => field_row_described(&self.label, description, control),
             (None, true) => choice_row_stacked(&self.label, control),

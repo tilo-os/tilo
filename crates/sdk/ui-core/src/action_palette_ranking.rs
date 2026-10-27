@@ -6,7 +6,7 @@
 //! self-contained order over [`SearchResult`]s, not a step in resolving an
 //! action.
 
-use super::PER_GROUP_CAP;
+use super::{ACTIONS_KIND, PER_GROUP_CAP};
 use crate::search::{SearchGroup, SearchResult, result_relevance};
 
 /// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
@@ -35,5 +35,11 @@ pub(super) fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<Search
             });
         }
     }
-    groups
+    // An app's search is about what the app holds: its resources lead, and
+    // what can be done follows them, however well an action's name matched.
+    let (actions, mut held): (Vec<SearchGroup>, Vec<SearchGroup>) = groups
+        .into_iter()
+        .partition(|group| group.kind == ACTIONS_KIND);
+    held.extend(actions);
+    held
 }

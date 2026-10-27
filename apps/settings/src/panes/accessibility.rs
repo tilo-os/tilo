@@ -212,7 +212,11 @@ pub(crate) fn statuses(speech: bool) -> Vec<EffectStatus> {
             effect(AccessibilityEffect::SET_SPEECH_VOICE).id,
         ] {
             statuses.push(EffectStatus::unavailable(
-                ActionRef::<SettingsEffect, ()>::new(unavailable, &[]),
+                ActionRef::<SettingsEffect, ()>::new(
+                    unavailable,
+                    &[],
+                    <SettingsEffect as ui::tilo_resource::Effect>::kind(),
+                ),
                 "not_installed",
                 t("a11y-screen-reader-missing"),
             ));
@@ -302,90 +306,117 @@ impl AccessibilityPane {
         assist(&self.cx, &self.access, label, id, path)
     }
 
-    // --- Vision: high contrast, reduce motion, text size.
+    // --- Vision: high contrast, reduce motion, text size, the magnifier
+    // and, while it magnifies, how.
     fn build_vision_card(&self) -> SettingsSection {
-        let access = AccessibilitySettings::paths();
-        section(
-            &t("a11y-vision-title"),
-            rows(vec![
-                high_contrast(&self.cx, &self.appearance),
-                reduce_motion(&self.cx, &self.appearance),
-                text_size(&self.cx, &self.appearance),
-                colour_filter(&self.cx, &self.access),
-                magnifier_zoom(&self.cx, &self.access),
+        let mut content = vec![
+            high_contrast(&self.cx, &self.appearance),
+            reduce_motion(&self.cx, &self.appearance),
+            text_size(&self.cx, &self.appearance),
+            colour_filter(&self.cx, &self.access),
+            magnifier_zoom(&self.cx, &self.access),
+        ];
+        if self.access().magnifier_zoom != magnifier::OFF {
+            content.push(
                 self.cx
                     .row(t("a11y-magnifier-view"))
                     .id("a11y.magnifier_view")
-                    .of(&self.access, access.magnifier_view)
+                    .nested()
+                    .of(&self.access, AccessibilitySettings::paths().magnifier_view)
                     .choose(),
-            ]),
-        )
+            );
+        }
+        section(&t("a11y-vision-title"), rows(content))
     }
 
-    // --- Pointer: mouse keys, large cursor + size.
+    // --- Pointer: mouse keys, a large cursor and, while it is on, its size.
     fn build_pointer_card(&self) -> SettingsSection {
         let access = AccessibilitySettings::paths();
-        section(
-            &t("a11y-pointer-title"),
-            rows(vec![
-                mouse_keys(&self.cx, &self.access),
-                note(&t("a11y-mouse-keys-caption")),
-                large_cursor(&self.cx, &self.access),
-                cursor_size(&self.cx, &self.access),
-                self.assist(
-                    "a11y-pointer-crosshair",
-                    "a11y.cursor_crosshair",
-                    access.cursor_crosshair,
-                )
-                .toggle(),
-                self.assist(
-                    "a11y-thick-caret",
-                    "a11y.thick_text_caret",
-                    access.thick_text_caret,
-                )
-                .toggle(),
-            ]),
-        )
+        let mut content = vec![
+            mouse_keys(&self.cx, &self.access),
+            large_cursor(&self.cx, &self.access),
+        ];
+        if self.access().large_cursor {
+            content.push(
+                self.cx
+                    .row(t("a11y-cursor-size"))
+                    .id("a11y.cursor_size")
+                    .nested()
+                    .of(&self.access, access.cursor_size)
+                    .among(values(AccessibilitySettings::CURSOR_SIZES), |size: &u32| {
+                        AccessibilitySettings::cursor_size_label(*size).to_owned()
+                    }),
+            );
+        }
+        content.extend([
+            self.assist(
+                "a11y-pointer-crosshair",
+                "a11y.cursor_crosshair",
+                access.cursor_crosshair,
+            )
+            .toggle(),
+            self.assist(
+                "a11y-thick-caret",
+                "a11y.thick_text_caret",
+                access.thick_text_caret,
+            )
+            .toggle(),
+        ]);
+        section(&t("a11y-pointer-title"), rows(content))
     }
 
-    // --- Typing.
+    // --- Typing: each key assist, with what tunes it shown under it while
+    // it is on.
     fn build_typing_card(&self) -> SettingsSection {
         let access = AccessibilitySettings::paths();
-        section(
-            &t("a11y-typing-title"),
-            rows(vec![
-                sticky_keys(&self.cx, &self.access),
-                slow_keys(&self.cx, &self.access),
-                bounce_keys(&self.cx, &self.access),
+        let on = self.access();
+        let mut content = vec![
+            sticky_keys(&self.cx, &self.access),
+            slow_keys(&self.cx, &self.access),
+            bounce_keys(&self.cx, &self.access),
+        ];
+        if on.bounce_keys {
+            content.extend([
                 self.cx
                     .row(t("a11y-bounce-delay"))
                     .id("a11y.bounce_delay")
+                    .nested()
                     .of(&self.access, access.bounce_keys_delay_ms)
                     .among(values(AccessibilitySettings::BOUNCE_DELAYS), |ms: &u32| {
                         AccessibilitySettings::bounce_delay_label(*ms).to_owned()
                     }),
-                self.assist(
-                    "a11y-bounce-alert",
-                    "a11y.bounce_keys_alert",
-                    access.bounce_keys_alert,
-                )
-                .toggle(),
-                on_screen_keyboard(&self.cx, &self.access),
-                switch_control(&self.cx, &self.access),
+                self.cx
+                    .row(t("a11y-bounce-alert"))
+                    .described(t("a11y-bounce-alert-desc"))
+                    .id("a11y.bounce_keys_alert")
+                    .nested()
+                    .of(&self.access, access.bounce_keys_alert)
+                    .toggle(),
+            ]);
+        }
+        content.extend([
+            on_screen_keyboard(&self.cx, &self.access),
+            switch_control(&self.cx, &self.access),
+        ]);
+        if on.switch_control {
+            content.extend([
                 self.cx
                     .row(t("a11y-switch-keys"))
                     .id("a11y.switch_keys")
+                    .nested()
                     .of(&self.access, access.switch_key_pair)
                     .choose(),
                 self.cx
                     .row(t("a11y-switch-scan"))
                     .id("a11y.switch_scan")
+                    .nested()
                     .of(&self.access, access.switch_scan_ms)
                     .among(values(&SWITCH_SCANS), |ms: &u16| {
                         switch_scan_label(*ms).to_owned()
                     }),
-            ]),
-        )
+            ]);
+        }
+        section(&t("a11y-typing-title"), rows(content))
     }
 
     // Working cross-application assists stay writable here. Capabilities
@@ -658,10 +689,22 @@ pub(crate) fn visual_alerts(cx: &PaneCx, access: &Followed<AccessibilitySettings
 
 impl Widget for AccessibilityPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        // Controls follow the stored values; the composition itself does not
-        // change with them.
+        // Controls follow the stored values; the composition changes only
+        // when an assist that reveals its own options is turned on or off.
+        let revealed = |access: &AccessibilitySettings| {
+            (
+                access.magnifier_zoom != magnifier::OFF,
+                access.large_cursor,
+                access.bounce_keys,
+                access.switch_control,
+            )
+        };
+        let before = revealed(self.access());
         self.appearance.refresh();
         self.access.refresh();
+        if revealed(self.access()) != before {
+            self.composed.invalidate();
+        }
         self.composed.sync(state, root);
     }
 
@@ -830,6 +873,66 @@ mod tests {
             }
         );
         assert_eq!(section.get("magnifier_last_zoom"), Some(&3.into()));
+    }
+
+    /// An assist's own options show under it only while it is on, and turn
+    /// up as soon as it is turned on elsewhere.
+    #[test]
+    fn an_assist_s_options_show_only_while_it_is_on() {
+        fn ids(widget: &dyn Widget, out: &mut Vec<String>) {
+            if let Some(id) = widget.test_id() {
+                out.push(id.to_owned());
+            }
+            for child in widget.children() {
+                ids(child, out);
+            }
+        }
+        let shown = |pane: &mut AccessibilityPane| {
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+            let mut out = Vec::new();
+            ids(pane, &mut out);
+            out
+        };
+        let options = [
+            "a11y.cursor_size",
+            "a11y.magnifier_view",
+            "a11y.bounce_delay",
+            "a11y.bounce_keys_alert",
+            "a11y.switch_keys",
+            "a11y.switch_scan",
+        ];
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let mut pane = AccessibilityPane::new(cx.clone(), Software::installed());
+        let off = shown(&mut pane);
+        for option in options {
+            assert!(
+                !off.iter().any(|id| id == option),
+                "{option} hides while its assist is off"
+            );
+        }
+        assert!(off.iter().any(|id| id == "a11y.large_cursor"));
+
+        cx.settings::<AccessibilitySettings>()
+            .update(|access| {
+                access.large_cursor = true;
+                access.magnifier_zoom = 2;
+                access.bounce_keys = true;
+                access.switch_control = true;
+            })
+            .unwrap();
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
+        let on = shown(&mut pane);
+        for option in options {
+            assert!(
+                on.iter().any(|id| id == option),
+                "{option} shows once its assist is on"
+            );
+        }
     }
 
     /// The pane shows both sections and follows a change made elsewhere: a

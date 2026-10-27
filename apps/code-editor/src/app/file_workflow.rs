@@ -363,10 +363,13 @@ impl CodeApp {
     /// directory of its own and no manifest field can add more, so a path the
     /// user picked in the portal — which is where the sandbox's file-access
     /// grant is made — is the only way it reaches the rest of the filesystem.
+    ///
+    /// It asks for a folder, to change: the editor saves into the project
+    /// it opens, and the picker gives exactly what it was asked for.
     pub(super) fn request_open_folder(&mut self) {
         self.portal_intent = Some(PortalIntent::OpenFolder);
         self.portal = Some(
-            ui::portal::PickRequest::open("Open a project folder", "Open")
+            ui::portal::PickRequest::writable_directory("Open a project folder", "Open")
                 .thread_name("code-portal-folder")
                 .send(),
         );
@@ -436,9 +439,17 @@ impl CodeApp {
                 self.finish_file_effect(Err("file selection cancelled".into()));
                 return;
             }
-            PortalOutcome::Failed(e) => {
-                self.note(format!("File picker unavailable: {e}"), true);
-                self.finish_file_effect(Err(e));
+            PortalOutcome::Failed(reason) => {
+                // The host's reason is a sentence for the person: what
+                // happened and what to do. The editor says what it was doing.
+                let doing = match intent {
+                    Some(PortalIntent::OpenFolder) => "Couldn't open a folder",
+                    Some(PortalIntent::OpenFile) => "Couldn't open a file",
+                    Some(PortalIntent::SaveAs(_)) => "Couldn't save the file",
+                    None => "Couldn't choose a file",
+                };
+                self.note(format!("{doing}. {reason}"), true);
+                self.finish_file_effect(Err(reason));
                 return;
             }
         };

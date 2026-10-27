@@ -90,6 +90,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::{self, ActionRef, Effect};
+
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     AppModel, Avatar, AvatarSize, Button, ButtonRole, Card, Checkbox, Container, Field, IconWidget,
@@ -5415,7 +5416,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
         for declaration in InstallerPreviewEffect::declarations() {
             if self.demo && !demo::admits_id(declaration.id) {
                 statuses.push(EffectStatus::unavailable(
-                    ActionRef::<InstallerPreviewEffect, ()>::new(declaration.id, &[]),
+                    ActionRef::<InstallerPreviewEffect, ()>::new(
+                        declaration.id,
+                        &[],
+                        InstallerPreviewEffect::kind(),
+                    ),
                     "demo",
                     t("installer-demo-unavailable"),
                 ));
@@ -5423,7 +5428,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             }
             if !self.effect_page_admitted(declaration.id) {
                 statuses.push(EffectStatus::unavailable(
-                    ActionRef::<InstallerPreviewEffect, ()>::new(declaration.id, &[]),
+                    ActionRef::<InstallerPreviewEffect, ()>::new(
+                        declaration.id,
+                        &[],
+                        InstallerPreviewEffect::kind(),
+                    ),
                     "wrong_page",
                     t("installer-preview-wrong-page"),
                 ));
@@ -5442,7 +5451,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
                     if declaration.id != "read-preview" && self.effect_page_admitted(declaration.id)
                     {
                         statuses.push(EffectStatus::unavailable(
-                            ActionRef::<InstallerPreviewEffect, ()>::new(declaration.id, &[]),
+                            ActionRef::<InstallerPreviewEffect, ()>::new(
+                                declaration.id,
+                                &[],
+                                InstallerPreviewEffect::kind(),
+                            ),
                             "exporting",
                             t(self.windows.busy_label()),
                         ));
@@ -5474,7 +5487,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             };
             for action in actions {
                 statuses.push(EffectStatus::unavailable(
-                    ActionRef::<InstallerPreviewEffect, ()>::new(action, &[]),
+                    ActionRef::<InstallerPreviewEffect, ()>::new(
+                        action,
+                        &[],
+                        InstallerPreviewEffect::kind(),
+                    ),
                     "guided_host_unavailable",
                     t("installer-guided-host-unavailable"),
                 ));

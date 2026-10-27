@@ -63,7 +63,7 @@ pub struct PathBar {
     rect: Rect,
     /// What the bar painted, this frame and last, so a frame that left the
     /// trail or the field as they were repaints neither.
-    own: crate::own_paint::OwnPaint,
+    own: ui::own_paint::OwnPaint,
 }
 
 impl PathBar {
@@ -84,7 +84,7 @@ impl PathBar {
             workspace_roots: Vec::new(),
             sink,
             rect: Rect::ZERO,
-            own: crate::own_paint::OwnPaint::default(),
+            own: ui::own_paint::OwnPaint::default(),
         }
     }
 

@@ -1111,8 +1111,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "no app {name}; name a running app by its id or last part, e.g. {}. Running {}; installed {}",
                 running
                     .iter()
-                    .filter_map(|(_, app)| app["app_id"].as_str())
-                    .next()
+                    .find_map(|(_, app)| app["app_id"].as_str())
                     .unwrap_or("<app_id>"),
                 list_or_none(&app_names(
                     &running

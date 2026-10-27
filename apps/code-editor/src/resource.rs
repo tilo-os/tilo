@@ -15,7 +15,7 @@ use ui::framework::{
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::record::RecordId;
-use ui::tilo_resource::{ActionRef, Invoke, SearchEntry};
+use ui::tilo_resource::{ActionRef, Invoke, ResourceKind, SearchEntry};
 use ui::widget::Element;
 
 use crate::app::CodeApp;
@@ -48,8 +48,10 @@ const SCENARIOS: &[&str] = &[
 
 /// A launch naming a folder opens it as the project; naming a file opens it in
 /// a project of its own.
-const OPEN_FOLDER: ActionRef<Project, Option<String>> = ActionRef::new("open-folder", &["path"]);
-const OPEN_FILE: ActionRef<Project, Option<String>> = ActionRef::new("open-file", &["path"]);
+const OPEN_FOLDER: ActionRef<Project, Option<String>> =
+    ActionRef::new("open-folder", &["path"], ResourceKind::of::<Project>());
+const OPEN_FILE: ActionRef<Project, Option<String>> =
+    ActionRef::new("open-file", &["path"], ResourceKind::of::<Project>());
 
 /// The project a capture shows: the bundled sample written to a scratch
 /// folder, opened the way `code-editor FOLDER` opens one.
