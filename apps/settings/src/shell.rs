@@ -1,12 +1,22 @@
 //! The app every host runs: Settings' core shell, with every part of
 //! Settings brought together before it opens ([`crate::install`]).
+//!
+//! It is the app over the resource `settings_core` declares: [`SettingsShell`]
+//! is that crate's own host, and [`definition`] builds it.
 
 use ui::application::ComponentBehaviour;
 use ui::framework::{Fixture, LaunchInput, ResourceApp, ViewCx};
 use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
-use settings_core::resource::{Settings, SettingsShell as Core};
+use app::resource::{Settings, SettingsShell as Core};
+
+/// The app as every host mounts it: the core shell, once every part of
+/// Settings is registered.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    crate::install();
+    ui::built_in_definition!(SettingsShell)
+}
 
 /// Framework app: the settings widget is the surface over [`Settings`].
 pub struct SettingsShell;
