@@ -849,6 +849,12 @@ pub struct ActionSpec {
     /// Stable id within the resource (e.g. `"like"`, `"reply"`).
     pub id: String,
     pub label: String,
+    /// The other words people use for this action, in plain language
+    /// ("mkdir" and "make directory" for New folder): search finds the
+    /// action by them as it does by its label. Declared with the label, so
+    /// every surface that lists the action knows them; never a list kept
+    /// inside a search provider.
+    pub keywords: Vec<String>,
     pub description: Option<String>,
     /// Declared execution locus (mirrors the concrete action's
     /// [`Action::locus`]), so the palette can show/route it before the
@@ -924,6 +930,7 @@ impl Clone for ActionSpec {
         Self {
             id: self.id.clone(),
             label: self.label.clone(),
+            keywords: self.keywords.clone(),
             description: self.description.clone(),
             locus: self.locus,
             kind: self.kind,
@@ -1212,6 +1219,7 @@ impl ActionSpec {
         Self {
             id,
             label,
+            keywords: Vec::new(),
             description: None,
             locus,
             kind,
@@ -1262,6 +1270,7 @@ impl ActionSpec {
         Ok(Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1300,6 +1309,7 @@ impl ActionSpec {
         Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1348,6 +1358,7 @@ impl ActionSpec {
         Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1425,6 +1436,7 @@ impl ActionSpec {
         Ok(Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
@@ -1464,6 +1476,7 @@ impl ActionSpec {
         Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
@@ -1578,6 +1591,7 @@ impl ActionSpec {
         Self {
             id: seed.id,
             label: seed.label,
+            keywords: Vec::new(),
             description: None,
             locus: seed.locus,
             kind: seed.kind,
@@ -1652,6 +1666,15 @@ impl ActionSpec {
             *collects = Collects::Content;
         }
         spec
+    }
+
+    /// Declare the other words people use for this action
+    /// ([`Self::keywords`]): plain words, one phrase each, no repetition of
+    /// the label.
+    #[must_use]
+    pub fn with_keywords<S: Into<String>>(mut self, keywords: impl IntoIterator<Item = S>) -> Self {
+        self.keywords = keywords.into_iter().map(Into::into).collect();
+        self
     }
 
     #[must_use]
@@ -2948,48 +2971,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod history_context_tests {
-    use super::*;
-
-    fn spec() -> ActionSpec {
-        ActionSpec::immediate_encoded(
-            "set-block-text",
-            "Set block text",
-            ExecutionLocus::default(),
-            EncodedAction {
-                type_id: "notes.notebook".into(),
-                payload: Vec::new(),
-            },
-        )
-    }
-
-    /// A nested resource's action is the enclosing record's field edit, so
-    /// its history names the record's kind, which the change's claim is
-    /// decided by, and keeps the body it was addressed through as a facet.
-    #[test]
-    fn a_nested_action_is_named_as_the_resource_whose_action_it_is() {
-        let id = "notes.notebook/pages/p1/body";
-        let own = spec().history_context(id, "tilo.rich-text", "Body");
-        let own_resource = own.resource.expect("a resource");
-        assert_eq!(own_resource.kind, "tilo.rich-text");
-        assert!(own.facets.is_empty());
-
-        let nested = spec()
-            .applied_as("notes.notebook", "Notebook")
-            .history_context(id, "tilo.rich-text", "Body");
-        let resource = nested.resource.expect("a resource");
-        assert_eq!(
-            resource.id, id,
-            "still the resource it was addressed through"
-        );
-        assert_eq!(resource.kind, "notes.notebook");
-        assert_eq!(resource.label, "Notebook");
-        assert_eq!(
-            nested.facets,
-            [crate::ActionFacet::new(NESTED_RESOURCE_FACET, "Body")]
-        );
-    }
-}
+#[path = "resource/history_context_tests.rs"]
+mod history_context_tests;
 
 #[cfg(test)]
 #[path = "resource/effective_invocation_tests.rs"]

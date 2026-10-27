@@ -452,12 +452,14 @@ pub enum InputEffect {
     },
     /// Set the compose key.
     #[effect(idempotent)]
+    #[effect(keywords = "compose, accents, special characters")]
     SetComposeKey {
         #[param("The key", choices = stored_ids(COMPOSE_KEY_CHOICES, COMPOSE_DISABLED))]
         key: String,
     },
     /// Set what the Caps Lock key does.
     #[effect(idempotent)]
+    #[effect(keywords = "caps lock key, remap caps lock")]
     SetCapsLock {
         #[param("What it does", choices = stored_ids(&CAPS_LOCK_CHOICES, CAPS_LOCK_UNCHANGED))]
         behaviour: String,

@@ -108,6 +108,7 @@ pub enum BluetoothEffect {
     RefreshBluetooth,
     /// Pair with a nearby device; the device may ask to confirm a code.
     #[effect(job, row, label = "Pair")]
+    #[effect(keywords = "pair, connect headphones, add bluetooth device")]
     PairDevice {
         #[param("The device's object path")]
         device: String,

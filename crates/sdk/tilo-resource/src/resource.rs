@@ -2041,6 +2041,9 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }
+    if !decl.keywords.is_empty() {
+        spec = spec.with_keywords(decl.keywords.iter().cloned());
+    }
     if decl.destructive {
         spec = spec.destructive();
     }

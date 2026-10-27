@@ -121,3 +121,6 @@ mod a11y_bus;
 
 #[path = "perf_interaction.rs"]
 mod perf_interaction;
+
+#[path = "action_keywords_tests.rs"]
+mod action_keywords_tests;

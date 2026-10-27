@@ -184,6 +184,11 @@ pub struct ActionDescriptor {
     /// The resource's human label, as the app words it.
     pub resource_label: String,
     pub action_label: String,
+    /// The other words people use for the action ([`ActionSpec::keywords`]),
+    /// published with its label so every search ranks them as it ranks the
+    /// label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
     pub description: Option<String>,
     pub locus: ExecutionLocus,
     pub kind: OperationKind,
@@ -385,6 +390,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),
+            keywords: action.keywords.clone(),
             description: action.description.clone(),
             locus: action.locus,
             kind: action.kind,

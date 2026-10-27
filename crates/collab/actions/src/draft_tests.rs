@@ -10,6 +10,7 @@ fn descriptor(action_label: &str, params: Vec<ActionParam>) -> ActionDescriptor 
         resource_kind: "test.kind".into(),
         resource_label: "Inbox".into(),
         action_label: action_label.into(),
+        keywords: Vec::new(),
         description: None,
         locus: ExecutionLocus::ClientLocal,
         kind: OperationKind::Document,

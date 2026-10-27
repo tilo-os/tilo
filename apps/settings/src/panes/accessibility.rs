@@ -146,6 +146,7 @@ fn values<T: Copy>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = 
 pub enum AccessibilityEffect {
     /// Turn the screen reader on or off.
     #[effect(idempotent)]
+    #[effect(keywords = "narrator, voiceover, accessibility, read aloud")]
     SetScreenReader { on: bool },
     /// Set how fast the screen reader speaks.
     #[effect(idempotent)]

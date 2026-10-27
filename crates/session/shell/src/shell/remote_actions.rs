@@ -391,6 +391,7 @@ mod tests {
             resource_kind: "files.entry".into(),
             resource_label: "report".into(),
             action_label: name.into(),
+            keywords: Vec::new(),
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),

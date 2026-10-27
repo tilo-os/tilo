@@ -382,6 +382,7 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
             resource_kind: RESOURCE_KIND.to_string(),
             resource_label: "Web search".to_string(),
             action_label: (*label).to_string(),
+            keywords: Vec::new(),
             description: Some((*description).to_string()),
             locus: ExecutionLocus::ClientLocal,
             kind: OperationKind::Effect,

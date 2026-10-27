@@ -559,6 +559,7 @@ mod tests {
             resource_kind: "word_processor.block".into(),
             resource_label: "Block".into(),
             action_label: action.into(),
+            keywords: Vec::new(),
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::View,
