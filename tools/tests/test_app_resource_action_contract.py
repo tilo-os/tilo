@@ -1128,7 +1128,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             " Button::new().on_click(ui.push(Action::Open));\n"
             " List::new().on_activate(open);\n"
             " Input::new()\n   .on_change(move |text| set(text))\n   .on_submit(submit_handler);\n"
-            " Dialog::new().on_dismiss({ let c = c.clone(); move || c.set(true) });\n"
+            " Tree::new().on_select({ let c = c.clone(); move |node| c.set(node) });\n"
             " Button::new().on_action(binding);\n"
             " Button::new().on_effect(effect);\n"
             " Row::new().on_context_menu(menu);\n"

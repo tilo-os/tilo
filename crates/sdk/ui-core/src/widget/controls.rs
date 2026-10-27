@@ -206,7 +206,7 @@ pub(crate) fn value_control_bindings<I>(
     }]
 }
 
-fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
+pub(crate) fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
     // Read a widget's kept rows where it keeps them, not a copy of each.
     let mut bindings = Vec::new();
     if let Some(shared) = widget.accessibility_shared() {

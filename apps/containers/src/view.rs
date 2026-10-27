@@ -108,9 +108,8 @@ pub(crate) fn section_list(
     let intents = intents.clone();
     NavList::new(vec![NavSection::untitled("sections", items)])
         .selected(place_id(selected))
-        .with_id("containers-sections")
         .with_accessible_name("Sections")
-        .on_select(move |id| {
+        .on_view("containers-sections", move |id| {
             if let Some(place) = Place::parse(&id) {
                 intents.push(Intent::ShowSection(place));
             }

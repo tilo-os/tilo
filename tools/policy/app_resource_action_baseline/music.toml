@@ -1,5 +1,4 @@
 [ratchets.closure_control]
-"apps/music/src/app.rs" = 1
 "apps/music/src/app/media_grid.rs" = 1
 "apps/music/src/app/recommendations.rs" = 2
 "apps/music/src/app/render.rs" = 3

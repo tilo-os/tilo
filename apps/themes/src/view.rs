@@ -426,10 +426,9 @@ fn sidebar(ui: &Ui) -> Element {
         }
     };
     NavList::new(Vec::new())
-        .with_id(NAV_ID)
         .with_accessible_name(crate::APP_TITLE)
         .follow(source)
-        .on_select(select)
+        .on_view(NAV_ID, select)
         .on_section_action(new_theme)
         .on_delete(delete)
         .into_widget()
