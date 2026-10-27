@@ -19,6 +19,7 @@ check says so in its numbers and judges the desktop's half alone.
 from __future__ import annotations
 
 import shlex
+import time
 
 from ..core import CheckFailed, check, expect
 from ..vm import wait_until
@@ -27,6 +28,9 @@ AREA = "basics"
 YEAR_S = 366 * 24 * 3600
 FS_UNIT = "fs.service"
 DEVICE_CERT = "/var/lib/tilo/device/cert.bin"
+# fs is watched for a fixed window while the clock is behind: a restart loop shows as
+# restarts within it.
+FS_WATCH_S = 12
 
 
 def _fs(ctx) -> dict:
@@ -83,7 +87,7 @@ def clock_behind_the_certificate(ctx, res):
             res.detail = why
         first = _fs(ctx)
         if with_fs:
-            ctx.settle(12)
+            time.sleep(FS_WATCH_S)
             waiting = _fs(ctx)
             res.metrics["fs_while_behind"] = waiting
             expect(waiting.get("ActiveState") == "active",

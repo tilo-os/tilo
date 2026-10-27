@@ -187,8 +187,9 @@ def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign:
             frames = [(f["app_id"], f.get("frame_seq"), f.get("last_error")) for f in ctx.vm.foreign_frames()]
             raise CheckFailed(f"{label} never presented a first frame within 30 s (foreign frames: {frames})")
         res.metrics["seconds_to_first_frame"] = round(t_group + time.monotonic() - started, 2)
-    ctx.settle(1.5)
-    st = ctx.state()
+    # Bounded: focus elsewhere is what the check reports.
+    wait_until(lambda: core.active_group_id(ctx.state()) == gid, 3, 0.2)
+    st = ctx.wait_still()
     shot = ctx.shot(f"{label}-open")
     g = core.group_by_id(st, gid)
     expect(g is not None, f"{label}'s window group vanished after opening")

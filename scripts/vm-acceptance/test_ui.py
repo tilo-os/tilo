@@ -5,12 +5,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from acceptance.checks.ui import set_theme, theme_contrast_problems  # noqa: E402
+from acceptance.context import Context  # noqa: E402
 from acceptance.vm import TiloVm, VmError  # noqa: E402
 
 
@@ -18,18 +18,20 @@ class ThemeActionsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.ctx = SimpleNamespace(vm=TiloVm("tilo-vm", "test-vm", "test-slot",
-                                           Path(self.tmp.name) / "commands.log"))
+        self.ctx = Context(TiloVm("tilo-vm", "test-vm", "test-slot",
+                                  Path(self.tmp.name) / "commands.log"), Path(self.tmp.name), {})
         self.commands = []
         self.failure = None
         self.launch = patch("acceptance.vm.subprocess.run", side_effect=self.run_command)
         self.launch.start()
         self.addCleanup(self.launch.stop)
-        self.sleep = patch("acceptance.checks.ui.time.sleep")
-        self.sleep.start()
-        self.addCleanup(self.sleep.stop)
 
     def run_command(self, cmd, **kwargs):
+        # Reads of the session (state, frames) are not selections.
+        if "state-dump" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, '{"chrome": {}}', "")
+        if "raw" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, '{"foreign_frames": {"frames": []}}', "")
         self.commands.append(cmd)
         if cmd[-1] == self.failure:
             return subprocess.CompletedProcess(cmd, 1, "", "appearance action refused")

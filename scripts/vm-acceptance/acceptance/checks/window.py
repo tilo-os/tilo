@@ -18,7 +18,7 @@ def _two_windows(ctx):
     ctx.reset()
     g1 = ctx.new_terminal_window()
     g2 = ctx.new_terminal_window()
-    ctx.settle()
+    ctx.wait_still()
     return g1["id"], g2["id"]
 
 
@@ -87,16 +87,22 @@ def move_group(ctx, res):
     ctx.wait_state(lambda s: _order(s).index(g2) > _order(s).index(g1), 5, "window moved back right")
 
 
+def _resized(ctx, gid, reached, timeout: float = 3.0) -> float:
+    """Group `gid`'s width once `reached(width)` holds and its resize has ended, or the
+    latest width after `timeout`."""
+    wait_until(lambda: reached(_group_rect(ctx, gid)[2]), timeout, 0.2)
+    ctx.wait_still()
+    return _group_rect(ctx, gid)[2]
+
+
 @check("W05", AREA, "Super+= / Super+- resize the focused window", needs=("two_windows",))
 def resize(ctx, res):
     _, g2 = ctx.facts["two_windows"]
     w0 = _group_rect(ctx, g2)[2]
     ctx.vm.key("super+equal")
-    ctx.settle(1.0)
-    w1 = _group_rect(ctx, g2)[2]
+    w1 = _resized(ctx, g2, lambda w: w > w0 + 10)
     ctx.vm.key("super+minus")
-    ctx.settle(1.0)
-    w2 = _group_rect(ctx, g2)[2]
+    w2 = _resized(ctx, g2, lambda w: w < w1 - 10)
     res.metrics.update(width_px_before=w0, width_px_wider=w1, width_px_narrower=w2)
     expect(w1 > w0 + 10, f"Super+= widened the window ({w0:.0f} -> {w1:.0f} px)")
     expect(w2 < w1 - 10, f"Super+- narrowed it again ({w1:.0f} -> {w2:.0f} px)")
@@ -162,8 +168,16 @@ def strips(ctx, res):
     n_strips = len(ws0["strips"])
     # The documented chords only move focus between existing strips; try them.
     ctx.vm.key("super+shift+Down")
-    ctx.settle(1.0)
-    ws1 = core.active_workspace(ctx.state())
+
+    def strip_changed():
+        ws = core.active_workspace(ctx.state())
+        moved = any(g in [x["id"] for x in s["window_groups"]] for s in ws["strips"]
+                    if s["id"] != ws0["strips"][0]["id"])
+        return moved or len(ws["strips"]) > n_strips
+
+    # The chord may well do nothing here: bounded.
+    wait_until(strip_changed, 1.0, 0.2)
+    ws1 = core.active_workspace(ctx.wait_still())
     res.metrics.update(strips_before=n_strips, strips_after=len(ws1["strips"]))
     moved = any(g in [x["id"] for x in s["window_groups"]] for s in ws1["strips"]
                 if s["id"] != ws0["strips"][0]["id"])
@@ -274,8 +288,10 @@ def touch(ctx, res):
     for where, y in attempts.items():
         before = strip["scroll_x"]
         ctx.vm.input("touch", "drag", str(int(x_from)), str(int(y)), str(int(x_to)), str(int(y)))
-        ctx.settle(1.2)
-        st = ctx.state()
+        sid = strip["strip"]
+        # A drag over the window may not pan: bounded, then over the tab bar.
+        wait_until(lambda: abs(_strip_scroll(ctx.state(), sid)["scroll_x"] - before) > 20, 2, 0.2)
+        st = ctx.wait_still()
         strip = next(x for x in st["chrome"]["strip_scroll"] if x["strip"] == strip["strip"])
         res.metrics[f"scroll_{where}"] = [round(before, 1), round(strip["scroll_x"], 1)]
         if abs(strip["scroll_x"] - before) > 20:
@@ -372,7 +388,9 @@ def _type_a_word(ctx, k: dict) -> None:
     the height lands on the first letter row and 90 % on the wide Space key."""
     for fx in (0.2, 0.45, 0.7):
         ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * fx)), str(int(k["y"] + k["h"] * 0.55)))
-        ctx.settle(0.4)
+        # The keyboard reports no per-key state to wait on (letters are uncommitted preedit),
+        # so taps are spaced as a person's are.
+        time.sleep(0.4)
     ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * 0.5)), str(int(k["y"] + k["h"] * 0.9)))
 
 
@@ -381,7 +399,9 @@ def _type_a_word(ctx, k: dict) -> None:
 def on_screen_keyboard(ctx, res):
     ctx.reset()
     group, _ = ctx.open_app("so.tilo.scratchpad")
-    ctx.settle(2.0)
+    if ctx.wait_presented("so.tilo.scratchpad", 30) is None:
+        raise CheckFailed("Scratchpad showed no frame within 30 s")
+    ctx.wait_still()
     r = _group_rect(ctx, group["id"])
     # Scratchpad is one multi-line field filling the window under its heading.
     x, y = int(r[0] + r[2] / 2), int(r[1] + r[3] * 0.65)
@@ -438,9 +458,9 @@ def _close_search(ctx) -> None:
             if not (ctx.state()["chrome"].get("palette") or {}).get("visible"):
                 return
             ctx.vm.key("Escape")
+            wait_until(lambda: not (ctx.state()["chrome"].get("palette") or {}).get("visible"), 2, 0.2)
         except (VmError, KeyError, TypeError):
             return
-        ctx.settle(0.4)
 
 
 @check("W20", AREA, "On-screen keyboard in the shell: tapping the search field shows it, and its keys "
@@ -580,10 +600,10 @@ def touch_unlock(ctx, res):
         def tap(name):
             k = keys[name]
             ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] / 2)), str(int(k["y"] + k["h"] / 2)))
-            ctx.settle(0.3)
 
-        for c in passcode:
+        for n, c in enumerate(passcode, 1):
             tap(c)
+            wait_until(lambda: _lock_auth(ctx.state()).get("password_len") == n, 3, 0.1)
         ctx.wait_state(lambda s: _lock_auth(s).get("password_len") == len(passcode), 10,
                        f"{len(passcode)} characters typed on the lock screen's keyboard")
         tap("enter")
@@ -623,8 +643,8 @@ def touchpad(ctx, res):
     dx = 600 if strip["scroll_x"] > strip["max_scroll_x"] / 2 else -600
     before = strip["scroll_x"]
     ctx.vm.control("swipe", "3", str(dx), "0")
-    ctx.settle(1.2)
-    after = _strip_scroll(ctx.state(), sid)["scroll_x"]
+    wait_until(lambda: abs(_strip_scroll(ctx.state(), sid)["scroll_x"] - before) > 20, 3, 0.2)
+    after = _strip_scroll(ctx.wait_still(), sid)["scroll_x"]
     res.metrics["strip_pan"] = {"dx": dx, "scroll_before": round(before, 1), "scroll_after": round(after, 1)}
     expect(abs(after - before) > 20, f"a 3-finger swipe of dx={dx} did not pan the strip "
                                      f"(scroll {before:.1f} -> {after:.1f})")
@@ -633,8 +653,8 @@ def touchpad(ctx, res):
     first = ctx.state()["workspace_tree"]["active"]
     for dy in (-300, 300):
         ctx.vm.control("swipe", "4", "0", str(dy))
-        ctx.settle(1.0)
-        if ctx.state()["workspace_tree"]["active"] != first:
+        # One of the two directions has no workspace to go to: bounded.
+        if wait_until(lambda: ctx.state()["workspace_tree"]["active"] != first, 1.0, 0.2):
             break
     else:
         raise CheckFailed("neither a 4-finger swipe up nor down switched workspace")
@@ -811,7 +831,7 @@ def animations(ctx, res):
     # virtual display, presentation intervals are the host's and are only recorded.
     ctx.reset()
     ctx.new_terminal_window()
-    ctx.settle(1.5)
+    ctx.wait_still(5)
     evidence_mark, cpu_before = core.session_log_mark(ctx), core.cpu_ticks(ctx)
     display = ctx.facts.get("display") or {}
     hardware = bool(display.get("hardware"))
@@ -879,7 +899,6 @@ def typing(ctx, res):
                           "so nothing could read the keys "
                           + (f"({said})" if said else
                              "(W17-ush.txt shows the shell runtime)"))
-    ctx.settle(1.0)
     probe = f"acc-kbd-{int(time.time())}"
     ctx.vm.input("type", f"echo ok > ~/{probe}")
     ctx.vm.key("Return")
