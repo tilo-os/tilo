@@ -1727,7 +1727,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             Expr::Sort { items } => expression::sort(&self.value(items)?)?,
             Expr::First { items } => {
                 let items = self.value(items)?;
-                self.first(&items)?
+                Self::first(&items)?
             }
         }))
     }
@@ -1788,7 +1788,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     }
 
     /// The one element of `items`, refusing a list with none in it.
-    fn first(&mut self, items: &Value) -> Result<Value, StepFailure> {
+    fn first(items: &Value) -> Result<Value, StepFailure> {
         match items {
             Value::Array(elements) => elements.first().cloned().ok_or(StepFailure::Expression {
                 error: expression::ExprError::Empty {},
