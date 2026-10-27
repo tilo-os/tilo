@@ -77,6 +77,8 @@ pub use broker::{
 pub use broker::CommittedDocument;
 #[cfg(feature = "broker-transport")]
 pub(crate) use broker::native_initial;
+#[cfg(all(feature = "broker-transport", feature = "native"))]
+pub(crate) use broker::{NativeJoin, NativeLaunch};
 #[cfg(not(feature = "broker-transport"))]
 pub use portable_committed::CommittedDocument;
 #[cfg(not(feature = "broker-transport"))]

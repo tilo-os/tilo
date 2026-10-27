@@ -47,7 +47,42 @@ pub(crate) fn open_window(
     args: &crate::launch::LaunchArgs,
     pending: PendingWindow,
 ) -> Option<crate::app::App> {
-    let opening = pending.take()?;
+    let mut opening = pending.take()?;
+    // The window's own connection joins its workspace off this thread, so
+    // the process's other windows go on meanwhile; the window is built when
+    // the join is over, handed back to this thread as it first arrived.
+    if opening.joined.is_none()
+        && crate::launch::joins_its_workspace(spec, args)
+        && let Some(reopen) = pending.reopen.clone()
+        && let Some(connection) = opening.collaboration.take()
+    {
+        match crate::launch::join_window_connection(spec, connection) {
+            Ok(join) => {
+                let back = PendingWindow {
+                    slot: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    reopen: Some(std::sync::Arc::clone(&reopen)),
+                };
+                // Told on the join's thread, or at once when it is already
+                // over; either way the window comes back to this thread only
+                // after it is in `back`, below.
+                join.when_done({
+                    let back = back.clone();
+                    move || {
+                        if !reopen(back) {
+                            tracing::warn!("the window's loop ended before its join did");
+                        }
+                    }
+                });
+                opening.joined = Some(join);
+                back.put(opening);
+                return None;
+            }
+            Err(error) => {
+                tracing::error!(%error, "the window the shell asked for could not open");
+                return None;
+            }
+        }
+    }
     building(opening, || crate::launch::dispatch_window(spec, args))
         .map_err(|error| tracing::error!(%error, "the window the shell asked for could not open"))
         .ok()
@@ -82,25 +117,58 @@ mod transport {
         pub request: WindowRequest,
         pub collaboration: Option<Descriptor>,
         pub shell_ui: Option<Descriptor>,
+        /// The window's own connection joining its workspace, off the
+        /// window's thread; the window is built once the join is over.
+        #[cfg(feature = "native")]
+        pub(crate) joined: Option<crate::collaboration::NativeJoin>,
     }
+
+    /// Hand a [`PendingWindow`] to the loop that builds windows; `false`
+    /// once that loop is gone.
+    pub(crate) type Reopen = Arc<dyn Fn(PendingWindow) -> bool + Send + Sync>;
 
     /// One [`WindowOpening`] carried through the event loop, taken once by
     /// the runner that builds its window.
-    #[derive(Clone, Debug)]
-    pub struct PendingWindow(Arc<Mutex<Option<WindowOpening>>>);
+    #[derive(Clone)]
+    pub struct PendingWindow {
+        pub(crate) slot: Arc<Mutex<Option<WindowOpening>>>,
+        /// How the window comes back to its loop, when it went away to
+        /// join (`super::open_window`).
+        pub(crate) reopen: Option<Reopen>,
+    }
+
+    impl std::fmt::Debug for PendingWindow {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("PendingWindow")
+                .field("slot", &self.slot)
+                .finish_non_exhaustive()
+        }
+    }
 
     impl PendingWindow {
         #[must_use]
         pub fn new(opening: WindowOpening) -> Self {
-            Self(Arc::new(Mutex::new(Some(opening))))
+            Self {
+                slot: Arc::new(Mutex::new(Some(opening))),
+                reopen: None,
+            }
         }
 
         #[must_use]
         pub fn take(&self) -> Option<WindowOpening> {
-            self.0.lock().map_or_else(
+            self.slot.lock().map_or_else(
                 |poisoned| poisoned.into_inner().take(),
                 |mut slot| slot.take(),
             )
+        }
+
+        /// Carry `opening` again.
+        pub(crate) fn put(&self, opening: WindowOpening) {
+            match self.slot.lock() {
+                Ok(mut slot) => *slot = Some(opening),
+                Err(poisoned) => *poisoned.into_inner() = Some(opening),
+            }
         }
     }
 
@@ -148,6 +216,8 @@ mod transport {
             request,
             collaboration,
             shell_ui,
+            #[cfg(feature = "native")]
+            joined: None,
         }))
     }
 
@@ -173,11 +243,18 @@ mod transport {
         if let Err(error) = runtime_portal::windows::send_serves(&door) {
             tracing::warn!(%error, "the shell was not told this app opens its windows");
         }
+        let open = Arc::new(Mutex::new(open));
+        let reopen: Reopen = Arc::new(move |pending| match open.lock() {
+            Ok(open) => open(pending),
+            Err(poisoned) => (poisoned.into_inner())(pending),
+        });
         tilo_rt::spawn_thread("tilo-window-door", move || {
             loop {
                 match receive(&door) {
                     Ok(Some(opening)) => {
-                        if !open(PendingWindow::new(opening)) {
+                        let mut pending = PendingWindow::new(opening);
+                        pending.reopen = Some(Arc::clone(&reopen));
+                        if !reopen(pending) {
                             return;
                         }
                     }
@@ -236,6 +313,17 @@ mod transport {
             slot.borrow_mut()
                 .as_mut()
                 .and_then(|opening| opening.collaboration.take())
+        })
+    }
+
+    /// The join of the window being built, once: its own connection, joined
+    /// before it was built (`super::open_window`).
+    #[cfg(feature = "native")]
+    pub(crate) fn take_join() -> Option<crate::collaboration::NativeJoin> {
+        BUILDING.with(|slot| {
+            slot.borrow_mut()
+                .as_mut()
+                .and_then(|opening| opening.joined.take())
         })
     }
 
@@ -318,6 +406,8 @@ mod transport {
                 },
                 collaboration: connection(),
                 shell_ui: None,
+                #[cfg(feature = "native")]
+                joined: None,
             };
             let carried = opening.collaboration.is_some();
             assert_eq!(instance(), None);

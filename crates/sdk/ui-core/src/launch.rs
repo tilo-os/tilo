@@ -24,6 +24,12 @@ pub use capture_settings::capture_appearance;
 mod capture;
 #[cfg(feature = "native")]
 use capture::{capture_directory, capture_font_gate, first_frame};
+#[cfg(feature = "native")]
+mod window_join;
+#[cfg(feature = "native")]
+use window_join::{WindowJoin, join_in_window, live_native};
+#[cfg(feature = "native")]
+pub(crate) use window_join::{join_window_connection, joins_its_workspace, window_gives_place};
 mod scenario;
 pub use scenario::HostSource;
 mod shot_frame;
@@ -918,7 +924,18 @@ fn run_parsed(
         let dispatched = if without_identity {
             dispatch_definition_without_identity(spec, &args)
         } else {
-            dispatch_definition(spec, &args)
+            // The window joins its workspace off this thread and shows its
+            // loading state until it is told the join is over.
+            #[cfg(any(windows, target_os = "linux"))]
+            let joined = join_in_window(spec, &args, |window| {
+                window.with_startup_renderer(renderer.take())
+            });
+            #[cfg(not(any(windows, target_os = "linux")))]
+            let joined = join_in_window(spec, &args, |window| window);
+            match joined {
+                WindowJoin::Closed => return Ok(()),
+                WindowJoin::Joined(joined) => dispatch_definition_joined(spec, &args, joined),
+            }
         };
         let (app, waits) = match dispatched {
             Ok(DefinitionDispatch::Native(app)) => (app, without_identity),
@@ -1061,14 +1078,42 @@ fn dispatch_definition(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<DefinitionDispatch, LaunchError> {
-    dispatch_definition_with_native(spec, args, |component, inputs, native_services| {
-        tilo_startup_metrics::span("app-construct", || {
-            if native_services {
-                App::from_component_with_native_services(component, inputs)
-            } else {
-                App::from_component(component, inputs)
+    dispatch_definition_joined(spec, args, None)
+}
+
+/// [`dispatch_definition`] with the workspace's join `joined` already
+/// started off this thread ([`join_in_window`]), when it was.
+#[cfg(feature = "native")]
+fn dispatch_definition_joined(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    joined: Option<Result<crate::collaboration::NativeLaunch, LaunchError>>,
+) -> Result<DefinitionDispatch, LaunchError> {
+    dispatch_definition_with_manager(spec, args, construct_native, move || match joined {
+        None => native_launch_manager(spec, args),
+        Some(joined) => {
+            crate::collaboration::native_initial::ensure_unoccupied()
+                .map_err(LaunchError::Operation)?;
+            match joined? {
+                crate::collaboration::NativeLaunch::Ready(manager) => Ok(manager),
+                crate::collaboration::NativeLaunch::Joining(join) => join.finish(),
             }
-        })
+        }
+    })
+}
+
+#[cfg(feature = "native")]
+fn construct_native(
+    component: crate::application::AppComponent,
+    inputs: crate::application::ComponentRunnerInputs,
+    native_services: bool,
+) -> Result<App, LaunchError> {
+    tilo_startup_metrics::span("app-construct", || {
+        if native_services {
+            App::from_component_with_native_services(component, inputs)
+        } else {
+            App::from_component(component, inputs)
+        }
     })
 }
 
@@ -1080,20 +1125,9 @@ fn dispatch_definition_without_identity(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<DefinitionDispatch, LaunchError> {
-    dispatch_definition_with_manager(
-        spec,
-        args,
-        |component, inputs, native_services| {
-            tilo_startup_metrics::span("app-construct", || {
-                if native_services {
-                    App::from_component_with_native_services(component, inputs)
-                } else {
-                    App::from_component(component, inputs)
-                }
-            })
-        },
-        || Ok(crate::collaboration::CollaborationManager::disabled()),
-    )
+    dispatch_definition_with_manager(spec, args, construct_native, || {
+        Ok(crate::collaboration::CollaborationManager::disabled())
+    })
 }
 
 /// What a live launch does while its workspace has no identity selected.
@@ -1129,7 +1163,7 @@ fn identity_window(spec: &LaunchSpec) -> App {
     App::without_workspace(|| Box::new(identity_window_root(spec)))
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", test))]
 fn dispatch_definition_with_native(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1161,13 +1195,7 @@ fn dispatch_definition_with_manager(
         || args.first_frame)
         .then(selected_local_construction)
         .transpose()?;
-    let live_native = spec.component_native_services
-        && args.headless.is_none()
-        && args.shots.is_none()
-        && args.responsive_matrix.is_none()
-        && !args.native_audit
-        && !args.first_frame;
-    let scope = live_native.then(crate::wake::WakeScope::new);
+    let scope = live_native(spec, args).then(crate::wake::WakeScope::new);
     let _wake_entry = scope.as_ref().map(crate::wake::WakeScope::enter);
     let construction = scope
         .map(|scope| {

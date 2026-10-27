@@ -153,7 +153,9 @@ impl NativeConstruction {
             // Applying the capture releases its token before the independent RPC
             // worker confirms the next current read. Wait for that confirmation;
             // a fast component factory must not race the real owner recheck.
-            let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
+            // No clock ends the wait: the confirming read is the broker's
+            // answer, which under load takes what it takes. The worker's
+            // end, the route's failure and the answer each end it.
             loop {
                 let seen = bridge.progress();
                 bridge.check()?;
@@ -164,7 +166,7 @@ impl NativeConstruction {
                 if bridge.publishable(&requested.channel_id()) {
                     break;
                 }
-                if crate::time::now() >= deadline {
+                if let Some(error) = bridge.unreadable(&requested.channel_id()) {
                     #[cfg(feature = "broker-transport")]
                     {
                         let phase = bridge
@@ -172,6 +174,7 @@ impl NativeConstruction {
                             .document_reads
                             .readiness_diagnostic(&requested.channel_id());
                         tracing::warn!(
+                            %error,
                             primary_route_matches = requested == current.route,
                             phase_available = phase.is_some(),
                             required = ?phase.as_ref().map(|phase| phase.required),
@@ -181,12 +184,12 @@ impl NativeConstruction {
                             "native component history confirmation unavailable before factory"
                         );
                     }
-                    return Err(
-                        "native component history was not confirmed before its factory".into(),
-                    );
+                    return Err(format!(
+                        "native component history was not confirmed before its factory: {error}"
+                    ));
                 }
-                // The confirming read wakes this; the bound re-checks the
-                // worker's health and the deadline.
+                // The confirming read wakes this; the bound only re-checks
+                // that the worker still runs.
                 bridge.wait_progress(seen, crate::time::Duration::from_millis(10));
             }
         }
@@ -504,21 +507,17 @@ impl InitialReadBridge {
         ) {
             return Err("native initialization queue unavailable".into());
         }
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
+        // No clock ends the wait: the worker answers once the broker has
+        // committed the initialization, or it failed. A worker that ends
+        // drops the reply unanswered; the bound only re-checks custody.
         loop {
             self.check()?;
-            // Wait on the actual worker reply rather than polling and sleeping
-            // the caller's thread. The bounded interval still revalidates
-            // original custody and observes the construction deadline.
             match received.recv_timeout(crate::time::Duration::from_millis(10)) {
                 Ok(result) => return result.map(|_| ()),
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("native initialization reply ended".into());
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            }
-            if crate::time::now() >= deadline {
-                return Err("native initialization commit timed out".into());
             }
         }
     }
@@ -556,6 +555,10 @@ impl InitialReadBridge {
     }
     fn publishable(&self, channel: &str) -> bool {
         self.state.document_reads.publishable(channel)
+    }
+    /// Why no read of `channel` is coming, once none is.
+    fn unreadable(&self, channel: &str) -> Option<String> {
+        self.state.document_reads.unreadable(channel)
     }
     fn apply_prepared_capture(
         &self,
@@ -784,6 +787,9 @@ impl InitialReadBridge {
         match self.never {}
     }
     fn publishable(&self, _channel: &str) -> bool {
+        match self.never {}
+    }
+    fn unreadable(&self, _channel: &str) -> Option<String> {
         match self.never {}
     }
     fn progress(&self) -> u64 {

@@ -34,7 +34,7 @@
 //!   end decided about the latest primary `Hello`; it is never an optimistic
 //!   local echo.
 
-use crate::time::{Duration, Instant};
+use crate::time::Instant;
 use std::sync::mpsc;
 
 use super::{ActionDirectoryRequest, CollabEvent, CollabRequest, RouteSpec};
@@ -166,15 +166,11 @@ pub trait CollabTransport: Send {
     }
 
     /// Like [`Self::take_primary_route_result`], but a transport that can
-    /// block its caller may wait up to `timeout` for the result. A transport
-    /// that timed the `Hello` from a deadline it shares with its remote end
-    /// waits for that deadline instead, so both sides give up together. Used
-    /// only by blocking constructors; poll-driven transports keep the default.
-    fn wait_primary_route_result(
-        &mut self,
-        timeout: Duration,
-    ) -> Option<Result<RouteSpec, String>> {
-        let _ = timeout;
+    /// block its caller waits for the remote end's decision, or for the end
+    /// of whatever would have delivered it (`None`). No clock ends the
+    /// wait. Used only by blocking constructors, never on a window's thread;
+    /// poll-driven transports keep the default, which does not wait.
+    fn wait_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         self.take_primary_route_result()
     }
 

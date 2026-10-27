@@ -60,6 +60,11 @@ use key_schedule::{KeyRound, KeySchedule, KeySignal};
 mod managed_sender_transport;
 #[path = "native_initial.rs"]
 pub(crate) mod native_initial;
+#[cfg(feature = "native")]
+#[path = "broker_native_join.rs"]
+mod native_join;
+#[cfg(feature = "native")]
+pub(crate) use native_join::{NativeJoin, NativeLaunch};
 #[path = "native_media.rs"]
 mod native_media;
 pub use committed_document::CommittedDocument;
@@ -85,23 +90,6 @@ use tokio::task::LocalSet;
 /// than allow an unbounded cross-thread queue to become a memory `DoS`.
 const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
 
-/// How long an app waits for the collab connect path to report before
-/// opening without it, spent on the main thread ahead of the first frame.
-/// Every step before the report is a local syscall, so reaching this means
-/// something upstream is wedged.
-const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long a primary `Hello` may take once the worker starts the join. The
-/// worker publishes that deadline and abandons the join at it; a blocking
-/// owner waits for the published deadline plus [`PRIMARY_ROUTE_REPLY_SLACK`],
-/// so the worker always decides first and dropping a failed manager always
-/// closes its owned transports.
-const SDK_PRIMARY_ROUTE_TIMEOUT: Duration = Duration::from_millis(4_500);
-/// How long past the shared primary-route deadline the owner waits for the
-/// worker's answer to arrive.
-const PRIMARY_ROUTE_REPLY_SLACK: Duration = Duration::from_millis(500);
-/// The one error a primary route that missed its deadline reports, whichever
-/// side noticed.
-const PRIMARY_ROUTE_TIMED_OUT: &str = "collaboration primary route timed out";
 /// Whether the identity service answered and declined to sign, as opposed
 /// to being unreachable: it reports a refusal as permission denied.
 fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
@@ -381,9 +369,6 @@ pub(super) struct BrokerTransport {
     /// Reply slot of the latest [`TransportCommand::ConfirmPrimaryRoute`],
     /// answered by the shovel once it has processed every earlier command.
     pending_primary: Option<mpsc::Receiver<Result<RouteSpec, String>>>,
-    /// Deadline of the latest primary `Hello`, published by the shovel when
-    /// it starts the join.
-    primary_deadline: Option<PrimaryDeadline>,
     /// The shovel dropped a primary-route reply unanswered: it has exited.
     worker_stopped: bool,
     /// Whether [`wifi_continuity_command`] has been pointed at this
@@ -635,20 +620,15 @@ impl CollabTransport for BrokerTransport {
                 record,
                 record_kind,
                 handle,
-            }) => {
-                let deadline = PrimaryDeadline::default();
-                self.primary_deadline = Some(deadline.clone());
-                SdkCommand::Hello(PrimaryHello {
-                    route: RouteSpec {
-                        app_id,
-                        cluster_id,
-                        record,
-                    },
-                    record_kind,
-                    handle,
-                    deadline,
-                })
-            }
+            }) => SdkCommand::Hello(PrimaryHello {
+                route: RouteSpec {
+                    app_id,
+                    cluster_id,
+                    record,
+                },
+                record_kind,
+                handle,
+            }),
             TransportCommand::Primary(request) => SdkCommand::Primary(request),
             TransportCommand::ToRoute(route, request) => SdkCommand::ToRoute(route, request),
             TransportCommand::Join(route) => SdkCommand::Join(route, None),
@@ -716,51 +696,19 @@ impl CollabTransport for BrokerTransport {
             }
         };
         self.pending_primary = None;
-        self.primary_deadline = None;
         result
     }
 
-    fn wait_primary_route_result(
-        &mut self,
-        timeout: Duration,
-    ) -> Option<Result<RouteSpec, String>> {
-        // `timeout` bounds how long the worker may take to start the join;
-        // once it has, it answers by the deadline it published, and waiting
-        // past that by the slack means this side never gives up while the
-        // worker still may.
-        let start_by = crate::time::now()
-            .checked_add(timeout)
-            .unwrap_or_else(crate::time::now);
-        let result = loop {
-            let end = self
-                .primary_deadline
-                .as_ref()
-                .and_then(PrimaryDeadline::get)
-                .map_or(start_by, |deadline| {
-                    deadline
-                        .checked_add(PRIMARY_ROUTE_REPLY_SLACK)
-                        .unwrap_or(deadline)
-                });
-            let remaining = end.saturating_duration_since(crate::time::now());
-            if remaining.is_zero() {
-                return None;
-            }
-            // Wake to notice a deadline published after this wait began.
-            match self
-                .pending_primary
-                .as_ref()?
-                .recv_timeout(remaining.min(PRIMARY_DEADLINE_POLL))
-            {
-                Ok(result) => break Some(result),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    self.worker_stopped = true;
-                    break None;
-                }
-            }
-        };
+    fn wait_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+        // No clock ends this wait. The worker answers once the broker has
+        // answered the join, or the join failed; under load that takes what
+        // it takes. A worker that stops drops the reply unanswered, which
+        // ends the wait at once.
+        let result = self.pending_primary.as_ref()?.recv().ok();
+        if result.is_none() {
+            self.worker_stopped = true;
+        }
         self.pending_primary = None;
-        self.primary_deadline = None;
         result
     }
 
@@ -933,7 +881,7 @@ enum SdkCommand {
         request: runtime_collab::committed_document::Request,
         reply: mpsc::SyncSender<Result<[u8; 32], String>>,
     },
-    /// Announce the primary route; the shovel abandons the join at `deadline`.
+    /// Announce the primary route.
     Hello(PrimaryHello),
     Primary(CollabRequest),
     /// Join a route, naming the resource kind of its record when known.
@@ -991,31 +939,6 @@ struct PrimaryHello {
     route: RouteSpec,
     record_kind: Option<String>,
     handle: Option<String>,
-    /// Filled by the shovel when it starts the join, so the owner waits for
-    /// the very deadline the shovel enforces.
-    deadline: PrimaryDeadline,
-}
-
-/// How often a blocked owner looks for the deadline the shovel published.
-const PRIMARY_DEADLINE_POLL: Duration = Duration::from_millis(50);
-
-/// The primary-route deadline one `Hello`'s join runs under, shared between
-/// the shovel that sets it and the owner that waits for it.
-#[derive(Clone, Default)]
-struct PrimaryDeadline(Arc<std::sync::Mutex<Option<Instant>>>);
-
-impl PrimaryDeadline {
-    fn start(&self) -> Instant {
-        let deadline = crate::time::now()
-            .checked_add(SDK_PRIMARY_ROUTE_TIMEOUT)
-            .unwrap_or_else(crate::time::now);
-        *self.0.lock_recover() = Some(deadline);
-        deadline
-    }
-
-    fn get(&self) -> Option<Instant> {
-        *self.0.lock_recover()
-    }
 }
 
 impl SdkCommand {
@@ -2819,6 +2742,10 @@ pub struct HostSessionConnector {
     /// it reaches are up, or will not come ([`Self::once_ready`]).
     ready: Option<Box<dyn FnOnce() -> HostReadyFuture + Send>>,
     identity_exchange_timeout: Duration,
+    /// The worker's clock starts paused, so it runs ahead whenever the
+    /// worker waits: a test of what no clock may decide.
+    #[cfg(test)]
+    paused_clock: bool,
 }
 
 type HostReadyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
@@ -2851,7 +2778,8 @@ impl HostSessionConnector {
     /// factory and its captures cross threads; its future and streams may be
     /// !Send. It must authenticate both endpoints and enforce the requested
     /// route. Shared code frames and bounds every identity exchange async.
-    /// Async setup is bounded by the existing shovel initialization timeout.
+    /// The manager waits for the factory's own outcome: a factory that
+    /// cannot connect returns why.
     ///
     /// Merely returning metadata does not establish authentication. Do not use
     /// this constructor as a replacement for host transport/grant validation.
@@ -2875,6 +2803,8 @@ impl HostSessionConnector {
             }),
             ready: None,
             identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
+            #[cfg(test)]
+            paused_clock: false,
         }
     }
 
@@ -2904,6 +2834,8 @@ impl HostSessionConnector {
             }),
             ready: None,
             identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
+            #[cfg(test)]
+            paused_clock: false,
         }
     }
 }
@@ -2912,9 +2844,9 @@ impl HostSessionConnector {
     /// Connect only once `ready` resolves: when the host says the services
     /// this connection reaches are listening, or that their start is over.
     /// A host showing an app while it is still starting those services
-    /// (a session restoring its tabs before it binds its broker) is not
-    /// wedged, so this wait is not under the bound on the connect itself;
-    /// connecting before then finds no socket and leaves the app offline.
+    /// (a session restoring its tabs before it binds its broker) waits for
+    /// them; connecting before then finds no socket and leaves the app
+    /// offline.
     /// `ready` must resolve once the host's start is over, whatever its
     /// outcome.
     #[must_use]
@@ -2924,6 +2856,13 @@ impl HostSessionConnector {
         Fut: std::future::Future<Output = ()> + 'static,
     {
         self.ready = Some(Box::new(move || Box::pin(ready()) as HostReadyFuture));
+        self
+    }
+
+    /// Run the worker on a paused clock (see `paused_clock`).
+    #[cfg(test)]
+    fn on_paused_clock(mut self) -> Self {
+        self.paused_clock = true;
         self
     }
 }
@@ -3327,24 +3266,29 @@ fn await_primary_route_on(
             ),
         ));
     }
-    match transport.wait_primary_route_result(SHOVEL_INIT_TIMEOUT) {
+    match transport.wait_primary_route_result() {
+        // The broker answered the join, or the join failed: either way with
+        // the broker's own reason.
         Some(result) => primary_route.accept(result).map_err(|error| {
-            let kind = if error == PRIMARY_ROUTE_TIMED_OUT {
-                std::io::ErrorKind::TimedOut
-            } else {
-                std::io::ErrorKind::ConnectionRefused
-            };
-            runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(kind, error))
-        }),
-        None if transport.status().is_open() => {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(
-                std::io::Error::new(std::io::ErrorKind::TimedOut, PRIMARY_ROUTE_TIMED_OUT),
+            runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                error,
             ))
-        }
+        }),
         None => Err(runtime_portal::NotAvailable::ConnectionFailed(
             std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
-                "collaboration setup thread ended before reporting route readiness",
+                match transport.status() {
+                    // The worker stopped before it answered: why it stopped.
+                    TransportStatus::Closed(reason) => {
+                        format!(
+                            "collaboration setup ended before the primary route joined: {reason}"
+                        )
+                    }
+                    // A transport that answers only when polled cannot be
+                    // waited on.
+                    _ => "collaboration transport cannot wait for its primary route".into(),
+                },
             ),
         )),
     }
@@ -3539,7 +3483,9 @@ impl CollaborationManager {
     }
 
     /// The window's manager for a native launch: connected to its route,
-    /// or disabled where no service was configured.
+    /// or disabled where no service was configured. Waits for the join on
+    /// the calling thread; a window's own thread starts it with
+    /// [`Self::begin_native_launch`] instead and is told when it is done.
     ///
     /// # Errors
     ///
@@ -3551,6 +3497,23 @@ impl CollaborationManager {
     pub(crate) fn for_native_launch(
         kind: &crate::record::RecordKind,
     ) -> Result<Self, crate::launch::LaunchError> {
+        match Self::begin_native_launch(kind)? {
+            NativeLaunch::Ready(manager) => Ok(manager),
+            NativeLaunch::Joining(join) => join.finish(),
+        }
+    }
+
+    /// Start a native launch's join: the window's manager at once where
+    /// there is nothing to join, else the join running off this thread.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::launch::LaunchError::Operation`] where a configured service
+    /// is unavailable or the join cannot start.
+    #[cfg(feature = "native")]
+    pub(crate) fn begin_native_launch(
+        kind: &crate::record::RecordKind,
+    ) -> Result<NativeLaunch, crate::launch::LaunchError> {
         if crate::host::environment()
             .identity
             .collab_service_configured
@@ -3558,31 +3521,17 @@ impl CollaborationManager {
             media::audio_output::require_governed();
         }
         // A window the shell opened in this running process has a
-        // connection of its own (`crate::window_door`); the one the launcher
-        // handed the process is its first window's.
+        // connection of its own (`crate::window_door`), which the door
+        // joined before building the window; the one the launcher handed
+        // the process is its first window's.
         if crate::window_door::is_building() {
+            if let Some(join) = crate::window_door::take_join() {
+                return Ok(NativeLaunch::Joining(join));
+            }
             let Some(connection) = crate::window_door::take_collaboration() else {
-                return Ok(Self::disabled());
+                return Ok(NativeLaunch::Ready(Self::disabled()));
             };
-            let (app, room) = auto_hello_env();
-            // The window joins as the person this launch is, as the
-            // launch's own connection does.
-            let identity =
-                sdk_join_identity(room).map_err(|error| native_launch_refusal(&error))?;
-            return Self::connect_route_kind(
-                SdkConnectSource::Fd(runtime_portal::windows::into_raw(connection)),
-                RouteSpec {
-                    app_id: app,
-                    cluster_id: room,
-                    record: None,
-                },
-                Some(kind.as_str().to_owned()),
-                presence_handle_env(),
-                Some(identity),
-                "person",
-            )
-            .map(Self::from_connected)
-            .map_err(|error| native_launch_refusal(&error));
+            return Self::join_window_connection(connection, kind).map(NativeLaunch::Joining);
         }
         if runtime_portal::service_fd("collab").is_none() {
             if crate::host::environment()
@@ -3593,34 +3542,54 @@ impl CollaborationManager {
                     "configured native collaboration service is unavailable".into(),
                 ));
             }
-            return Ok(Self::disabled());
+            return Ok(NativeLaunch::Ready(Self::disabled()));
         }
         let (app, room) = auto_hello_env();
         super::channel_settings::install(&app);
-        Self::connect_native_launch(SdkConnectSource::Env, app, room, kind)
+        let route = RouteSpec {
+            app_id: app,
+            cluster_id: room,
+            record: None,
+        };
+        let kind = Some(kind.as_str().to_owned());
+        let handle = presence_handle_env();
+        NativeJoin::start(move || {
+            Self::connect_route_kind(SdkConnectSource::Env, route, kind, handle, None, "person")
+        })
+        .map(NativeLaunch::Joining)
     }
 
+    /// Join a window's own `connection` (`crate::window_door`) off the
+    /// calling thread, as the person this launch is, as the launch's own
+    /// connection does.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::launch::LaunchError::Operation`] where the join cannot start.
     #[cfg(feature = "native")]
-    fn connect_native_launch(
-        source: SdkConnectSource,
-        app: String,
-        room: Uuid,
+    pub(crate) fn join_window_connection(
+        connection: runtime_portal::windows::Descriptor,
         kind: &crate::record::RecordKind,
-    ) -> Result<Self, crate::launch::LaunchError> {
-        Self::connect_route_kind(
-            source,
-            RouteSpec {
-                app_id: app,
-                cluster_id: room,
-                record: None,
-            },
-            Some(kind.as_str().to_owned()),
-            presence_handle_env(),
-            None,
-            "person",
-        )
-        .map(Self::from_connected)
-        .map_err(|error| native_launch_refusal(&error))
+    ) -> Result<NativeJoin, crate::launch::LaunchError> {
+        let (app, room) = auto_hello_env();
+        let route = RouteSpec {
+            app_id: app,
+            cluster_id: room,
+            record: None,
+        };
+        let kind = Some(kind.as_str().to_owned());
+        let handle = presence_handle_env();
+        NativeJoin::start(move || {
+            let identity = sdk_join_identity(room)?;
+            Self::connect_route_kind(
+                SdkConnectSource::Fd(runtime_portal::windows::into_raw(connection)),
+                route,
+                kind,
+                handle,
+                Some(identity),
+                "person",
+            )
+        })
     }
 
     #[cfg(test)]
@@ -4203,7 +4172,6 @@ impl CollaborationManager {
             action_directory_rx,
             action_directory_tx,
             pending_primary: None,
-            primary_deadline: None,
             worker_stopped: false,
             wifi_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
@@ -4214,7 +4182,7 @@ impl CollaborationManager {
         Ok((transport, init_rx))
     }
 
-    /// [`Self::start_sdk`], then wait (bounded) for the shovel to connect.
+    /// [`Self::start_sdk`], then wait for the shovel to connect or fail.
     /// Only for the explicit, fallible headless constructors, whose callers
     /// asked for a connected manager or an error.
     fn spawn_sdk(
@@ -4223,29 +4191,17 @@ impl CollaborationManager {
     ) -> Result<BrokerTransport, runtime_portal::NotAvailable> {
         let (mut transport, init_rx) = Self::start_sdk(source, SdkIdentitySource::Ready(identity))?;
 
-        // A wedged connect costs a timeout, never a caller that waits forever.
-        let status = match init_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
-            Ok(status) => status,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                tracing::warn!(
-                    "collab: the connect path did not report within {SHOVEL_INIT_TIMEOUT:?}"
-                );
-                return Err(runtime_portal::NotAvailable::ConnectionFailed(
-                    std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "collab connect did not report in time",
-                    ),
-                ));
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                tracing::warn!("collab: the connect path ended without reporting");
-                return Err(runtime_portal::NotAvailable::ConnectionFailed(
-                    std::io::Error::new(
-                        std::io::ErrorKind::BrokenPipe,
-                        "collab connect ended without reporting",
-                    ),
-                ));
-            }
+        // No clock ends this wait: loading the join identity is an IPC round
+        // trip to the identity service, and connecting one to the broker.
+        // Each answers or fails, and a shovel that ends drops its reporter.
+        let Ok(status) = init_rx.recv() else {
+            tracing::warn!("collab: the connect path ended without reporting");
+            return Err(runtime_portal::NotAvailable::ConnectionFailed(
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "collab connect ended without reporting",
+                ),
+            ));
         };
 
         match status {
@@ -4326,10 +4282,13 @@ fn run_shovel(
     };
     // Building `current_thread` is fallible (can OOM); surface as
     // Disabled — no service means the app runs local-only.
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let mut runtime = tokio::runtime::Builder::new_current_thread();
+    runtime.enable_all();
+    #[cfg(test)]
+    if matches!(&source, SdkConnectSource::Host(connector, _) if connector.paused_clock) {
+        runtime.start_paused(true);
+    }
+    let rt = match runtime.build() {
         Ok(rt) => rt,
         Err(e) => {
             report_init(
@@ -4352,8 +4311,11 @@ fn run_shovel(
                 if let Some(ready) = connector.ready {
                     ready().await;
                 }
-                match tokio::time::timeout(SHOVEL_INIT_TIMEOUT, (connector.connect)(route)).await {
-                    Ok(Ok((collaboration_stream, identity_stream, lane))) => {
+                // The host's handoff ends when the host has connected the
+                // session or says why it could not; no clock here guesses
+                // that it never will.
+                match (connector.connect)(route).await {
+                    Ok((collaboration_stream, identity_stream, lane)) => {
                         let identity =
                             runtime_identity::AsyncBrokerSigningIdentity::from_connected_io(
                                 identity_stream,
@@ -4380,13 +4342,7 @@ fn run_shovel(
                             Err(error) => Err(error),
                         }
                     }
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Err(runtime_portal::NotAvailable::ConnectionFailed(
-                        std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            "host session handoff timed out",
-                        ),
-                    )),
+                    Err(error) => Err(error),
                 }
             }
             source => source.build_client().and_then(|connection| {
@@ -4616,34 +4572,32 @@ async fn drive_shovel(
                 route: spec,
                 record_kind,
                 handle,
-                deadline,
             }) => {
                 participant_handle = handle;
                 let key = spec.channel_id();
-                primary_result = match tokio::time::timeout_at(
-                    tokio::time::Instant::from_std(deadline.start()),
-                    ensure_sdk_route(
-                        &SdkJoinContext {
-                            asks_channel_keys,
-                            key_signals: &key_signals,
-                            client: &client,
-                            presentation: &presentation,
-                            person: person.as_ref(),
-                            participant_handle: participant_handle.as_deref(),
-                            participant_kind,
-                            inbound_tx: &inbound_tx,
-                            media_routes: &media_routes,
-                        },
-                        &mut routes,
-                        &spec,
-                        record_kind.as_deref().unwrap_or(""),
-                    ),
+                // The join ends when the broker answers it or it fails, with
+                // the broker's reason; a broker that goes away fails it. No
+                // clock guesses that an answer is not coming: under load
+                // the broker's join, and the room's host behind it, take
+                // what they take.
+                primary_result = ensure_sdk_route(
+                    &SdkJoinContext {
+                        asks_channel_keys,
+                        key_signals: &key_signals,
+                        client: &client,
+                        presentation: &presentation,
+                        person: person.as_ref(),
+                        participant_handle: participant_handle.as_deref(),
+                        participant_kind,
+                        inbound_tx: &inbound_tx,
+                        media_routes: &media_routes,
+                    },
+                    &mut routes,
+                    &spec,
+                    record_kind.as_deref().unwrap_or(""),
                 )
                 .await
-                {
-                    Ok(result) => result.map(|()| spec),
-                    Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
-                };
+                .map(|()| spec);
                 crate::person_chat::invalidate();
                 primary = primary_result.is_ok().then_some(key);
                 // The startup file splits the owner's wait for `PrimaryReady`.
@@ -9526,7 +9480,7 @@ mod tests {
             let (stop_tx, stop_rx) = mpsc::channel();
             let calls = Arc::new(AtomicUsize::new(0));
             let (connector, release) =
-                host_join_gate_connector(false, calls.clone(), attempt_tx, stop_tx);
+                host_join_gate_connector(false, calls.clone(), attempt_tx, stop_tx, || {});
             let cluster_id = Uuid::new_v4();
             let result = CollaborationManager::for_route_host_blocking(
                 connector,
@@ -9556,8 +9510,11 @@ mod tests {
         }
     }
 
+    /// A host's handoff ends with the host's own outcome, however late: the
+    /// worker's clock is paused and runs a minute ahead while the handoff
+    /// is pending, and the host's reason is what the caller hears.
     #[test]
-    fn host_connector_pending_handoff_times_out_and_drops_its_future() {
+    fn host_connector_waits_for_the_hosts_handoff_and_reports_its_reason() {
         struct PendingHandoff(mpsc::Sender<()>);
         impl Drop for PendingHandoff {
             fn drop(&mut self) {
@@ -9565,19 +9522,23 @@ mod tests {
             }
         }
 
-        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (minute_tx, minute_rx) = mpsc::sync_channel(1);
+        let (fail_tx, fail_rx) = tokio::sync::oneshot::channel::<()>();
         let (dropped_tx, dropped_rx) = mpsc::channel();
         let connector = HostSessionConnector::new(move |_| async move {
             let _handoff = PendingHandoff(dropped_tx);
-            started_tx.send(()).unwrap();
-            std::future::pending::<
-                Result<
-                    (tokio::io::DuplexStream, tokio::io::DuplexStream),
-                    runtime_portal::NotAvailable,
-                >,
-            >()
-            .await
-        });
+            tokio::task::spawn_local(async move {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                let _ = minute_tx.send(());
+            });
+            let _ = fail_rx.await;
+            Err::<(tokio::io::DuplexStream, tokio::io::DuplexStream), _>(
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::other(
+                    "the host could not reach its broker",
+                )),
+            )
+        })
+        .on_paused_clock();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let caller = thread::spawn(move || {
             let result = CollaborationManager::for_route_host_blocking(
@@ -9589,34 +9550,59 @@ mod tests {
             );
             let _ = result_tx.send(result.map(drop));
         });
-        tilo_test_env::recv("the fixture broker to start", &started_rx);
-        let result = tilo_test_env::recv(
-            "the caller to give up on the pending host handoff",
-            &result_rx,
+        tilo_test_env::recv(
+            "a minute to pass on the worker's clock while the handoff is pending",
+            &minute_rx,
         );
+        assert!(
+            matches!(result_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "the caller still waits for the host"
+        );
+        fail_tx.send(()).unwrap();
+        let result = tilo_test_env::recv("the host's outcome to reach the caller", &result_rx);
         caller.join().unwrap();
         match result {
             Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+                assert!(
+                    error
+                        .to_string()
+                        .contains("the host could not reach its broker"),
+                    "the caller hears the host's reason: {error}"
+                );
             }
-            _ => panic!("a pending handoff cannot produce a connected session"),
+            _ => panic!("a failed handoff cannot produce a connected session"),
         }
         tilo_test_env::recv(
-            "timed-out async handoff must release its owned resources",
+            "the failed handoff releases its owned resources",
             &dropped_rx,
         );
     }
 
+    /// A primary join waits for the broker's answer, however late. The
+    /// worker's clock is paused and runs a minute ahead while the broker
+    /// holds the join, far past any deadline a clock could have set; the
+    /// broker's answer then opens the manager. Nothing is retried meanwhile.
     #[test]
-    fn host_connector_unacknowledged_primary_join_obeys_timeout_without_fallback() {
+    fn a_primary_join_waits_for_a_late_broker_answer() {
         let (attempt_tx, attempt_rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel();
         let calls = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (minute_tx, minute_rx) = mpsc::sync_channel(1);
         let (connector, release) =
-            host_join_gate_connector(true, calls.clone(), attempt_tx, stop_tx);
+            host_join_gate_connector(true, calls.clone(), attempt_tx, stop_tx, move || {
+                // On the worker's paused clock: a minute once the broker
+                // holds the join.
+                tokio::task::spawn_local(async move {
+                    if entered_rx.await.is_ok() {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        let _ = minute_tx.send(());
+                    }
+                });
+            });
+        let connector = connector.on_paused_clock();
         let cluster_id = Uuid::new_v4();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
-        let started = crate::time::now();
         let caller = thread::spawn(move || {
             let result = CollaborationManager::for_route_host_blocking(
                 connector,
@@ -9625,56 +9611,101 @@ mod tests {
                 Some("note".into()),
                 None,
             );
-            // Drop any erroneously successful manager on its own caller thread.
-            let result = result.map(|manager| {
-                drop(manager);
-            });
-            let _ = result_tx.send(result);
+            let _ = result_tx.send(result.map(|manager| {
+                manager
+                    .primary_route()
+                    .map(|witness| witness.route.record.clone())
+            }));
         });
-        // The route deadline itself is asserted below; this bound only turns
-        // a caller that never returns into a failure.
-        let result = result_rx.recv_timeout(tilo_test_env::hang_bound());
-        let elapsed = started.elapsed();
-        if result.is_err() {
-            // A broken worker-side deadline must not leave this test's broker
-            // wedged while reporting the regression.
-            drop(release);
-            // Do not turn an observed timeout regression into an unbounded
-            // join. Give the released fixture a bounded chance to shut down.
-            if result_rx.recv_timeout(Duration::from_secs(2)).is_ok() || caller.is_finished() {
-                caller.join().expect("fixture caller after gate release");
-            }
-            panic!(
-                "gave up waiting for the manager to return from an unacknowledged primary join after {:?}",
-                tilo_test_env::hang_bound()
-            );
-        }
-        caller.join().expect("bounded fixture caller");
-        match result.expect("the manager returned") {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-                assert_eq!(error.to_string(), PRIMARY_ROUTE_TIMED_OUT);
-            }
-            _ => panic!("unacknowledged Hello must never return a connected manager"),
-        }
-        assert!(
-            elapsed >= SDK_PRIMARY_ROUTE_TIMEOUT,
-            "must wait for the worker-side route deadline"
-        );
         assert_eq!(
             tilo_test_env::recv("the primary join attempt", &attempt_rx),
             channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
         );
+        entered_tx.send(()).unwrap();
+        tilo_test_env::recv(
+            "a minute to pass on the worker's clock while the broker holds the join",
+            &minute_rx,
+        );
+        assert!(
+            matches!(result_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "the join still waits for the broker's answer"
+        );
+        drop(release);
+        let joined = tilo_test_env::recv("the broker's late answer", &result_rx);
+        caller
+            .join()
+            .expect("the caller returns once the broker answered");
+        match joined {
+            Ok(route) => assert_eq!(route, Some(Some("note".into()))),
+            Err(error) => panic!("a late answer opens the manager, not {error}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            attempt_rx.try_recv().is_err(),
+            "must not retry another route"
+        );
+        tilo_test_env::recv("the fixture broker stops once the manager closes", &stop_rx);
+    }
+
+    /// A primary join the broker fails ends the caller's wait with the
+    /// broker's reason as soon as it fails, after any delay.
+    #[test]
+    fn a_failed_primary_join_reports_its_reason_at_once() {
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (minute_tx, minute_rx) = mpsc::sync_channel(1);
+        let (connector, release) =
+            host_join_gate_connector(true, calls.clone(), attempt_tx, stop_tx, move || {
+                tokio::task::spawn_local(async move {
+                    if entered_rx.await.is_ok() {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        let _ = minute_tx.send(());
+                    }
+                });
+            });
+        let connector = connector.on_paused_clock();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let caller = thread::spawn(move || {
+            let result = CollaborationManager::for_route_host_blocking(
+                connector,
+                "so.tilo.notes",
+                Uuid::new_v4(),
+                Some("note".into()),
+                None,
+            );
+            let _ = result_tx.send(result.map(drop));
+        });
+        tilo_test_env::recv("the primary join attempt", &attempt_rx);
+        entered_tx.send(()).unwrap();
+        tilo_test_env::recv(
+            "a minute to pass on the worker's clock while the broker holds the join",
+            &minute_rx,
+        );
+        // The broker fails the join it held.
+        release.fail();
+        let result = tilo_test_env::recv("the failed join to reach the caller", &result_rx);
+        caller.join().unwrap();
+        match result {
+            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+                assert!(
+                    error.to_string().contains("fixture gate dropped"),
+                    "the caller hears the broker's reason: {error}"
+                );
+            }
+            _ => panic!("a failed join never returns a connected manager"),
+        }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(
             attempt_rx.try_recv().is_err(),
             "must not retry another route"
         );
         tilo_test_env::recv(
-            "timed-out primary join must cancel and close the fixture broker",
+            "the fixture broker stops after the failed manager",
             &stop_rx,
         );
-        drop(release);
     }
 
     // Wrap the existing successful broker, changing only its join response.
@@ -9722,6 +9753,12 @@ mod tests {
 
     // Releasing on unwind also lets the worker finish if an assertion fails.
     struct HostJoinRelease(Option<tokio::sync::oneshot::Sender<()>>);
+    impl HostJoinRelease {
+        /// Fail the held join instead of answering it.
+        fn fail(mut self) {
+            drop(self.0.take());
+        }
+    }
     impl Drop for HostJoinRelease {
         fn drop(&mut self) {
             if let Some(sender) = self.0.take() {
@@ -9730,15 +9767,18 @@ mod tests {
         }
     }
 
+    /// `on_worker` runs on the manager's worker as it connects.
     fn host_join_gate_connector(
         delayed: bool,
         calls: Arc<AtomicUsize>,
         attempted: mpsc::Sender<String>,
         stopped: mpsc::Sender<()>,
+        on_worker: impl FnOnce() + Send + 'static,
     ) -> (HostSessionConnector, HostJoinRelease) {
         let (release, wait) = tokio::sync::oneshot::channel();
         let connector = HostSessionConnector::new(move |_| async move {
             calls.fetch_add(1, Ordering::SeqCst);
+            on_worker();
             let (identity, _) = host_identity_fixture(
                 Some(b"fixture certificate".to_vec()),
                 vec![runtime_identity::wire::Response::Signature(vec![7; 64])],
@@ -10004,7 +10044,6 @@ mod tests {
             action_directory_rx,
             action_directory_tx,
             pending_primary: None,
-            primary_deadline: None,
             worker_stopped: false,
             wifi_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
@@ -11058,7 +11097,6 @@ mod tests {
             action_directory_rx,
             action_directory_tx,
             pending_primary: None,
-            primary_deadline: None,
             worker_stopped: false,
             wifi_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
