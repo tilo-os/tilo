@@ -66,7 +66,12 @@ fn walk(steps: &[Step], out: &mut ProgramRequirements) {
                 walk(otherwise, out);
             }
             StepKind::ForEach { body, .. } => walk(body, out),
-            StepKind::SetVar { .. } | StepKind::Ask { .. } => {}
+            StepKind::Repeat { body, .. } => walk(body, out),
+            StepKind::While { body, .. } => walk(body, out),
+            StepKind::SetVar { .. }
+            | StepKind::Compute { .. }
+            | StepKind::Return { .. }
+            | StepKind::Ask { .. } => {}
         }
     }
 }

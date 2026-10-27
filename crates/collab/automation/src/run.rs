@@ -40,6 +40,8 @@ use uuid::Uuid;
 
 use crate::StepPolicy;
 use crate::catalog::{ResourceTarget, find_row};
+use crate::check::FILTER_ITEM;
+use crate::expression::{self, Expr, Member, Op};
 use crate::grant::{
     EDIT_PARAM, FIELD_EDIT, StepGrant, edit_reach, grant_answer, step_node, step_node_at,
 };
@@ -86,6 +88,10 @@ pub const STEP_FAILURE_CODES: &[&str] = &[
     "abandoned",
     "stopped",
     "timeout",
+    "returned",
+    "loop_bound",
+    "loop_exhausted",
+    "expression",
 ];
 
 /// The longest wait between two attempts of a retried step.
@@ -298,6 +304,17 @@ pub enum StepFailure {
     Stopped { reason: String },
     #[error("the step did not finish within {seconds} s")]
     TimedOut { seconds: u64 },
+    /// A [`Return`](StepKind::Return) step finished the run there. It is not
+    /// a failure: it never leaves the step it returns from, and the run
+    /// completes.
+    #[error("the run returned at this step")]
+    Returned,
+    #[error("a loop may run at most {limit} times, and this one asks for more")]
+    LoopBound { limit: u64 },
+    #[error("the loop's limit of {limit} passes ran out while its condition still held")]
+    LoopExhausted { limit: u64 },
+    #[error("expression: {error}")]
+    Expression { error: crate::expression::ExprError },
 }
 
 impl StepFailure {
@@ -357,7 +374,17 @@ impl StepFailure {
             Self::Abandoned => "abandoned",
             Self::Stopped { .. } => "stopped",
             Self::TimedOut { .. } => "timeout",
+            Self::Returned => "returned",
+            Self::LoopBound { .. } => "loop_bound",
+            Self::LoopExhausted { .. } => "loop_exhausted",
+            Self::Expression { .. } => "expression",
         }
+    }
+}
+
+impl From<crate::expression::ExprError> for StepFailure {
+    fn from(error: crate::expression::ExprError) -> Self {
+        Self::Expression { error }
     }
 }
 
@@ -680,8 +707,18 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         stopped: None,
         degraded: Vec::new(),
         failed: BTreeMap::new(),
+        finished_with: None,
     };
     let finished = runner.block(&shortcut.steps, StepPath::root()).await;
+    // A step may have returned a value, which is the run's output whether or
+    // not the shortcut declares one; a declared output is read otherwise.
+    let finished = match finished {
+        Err((_, StepFailure::Returned)) => {
+            report.output = runner.finished_with.take();
+            Ok(())
+        }
+        other => other,
+    };
     let finished = finished.and_then(|()| match &shortcut.output {
         Some(output) => runner
             .evaluate(output)
@@ -703,6 +740,11 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
 /// How long a step may run before the run stops waiting for it, when the
 /// shortcut names no [`Shortcut::step_timeout_secs`].
 pub const DEFAULT_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The most times any one loop of a shortcut may run its body in a single
+/// pass. A shortcut's loops are bounded so that one that cannot finish fails
+/// visibly instead of holding the run, and whoever started it, for ever.
+pub const MAX_REPEAT: u64 = 10_000;
 
 type Stop = (StepPath, StepFailure);
 type Block<'s> = Pin<Box<dyn Future<Output = Result<(), Stop>> + Send + 's>>;
@@ -732,6 +774,9 @@ struct Runner<'a, H, K> {
     /// stand as no value. A later step reading one of them is not skipped
     /// quietly: it runs, and fails saying which step it depends on.
     failed: BTreeMap<String, FailedStep>,
+    /// What a [`Return`](StepKind::Return) step finished the run with, when
+    /// one did.
+    finished_with: Option<Value>,
 }
 
 /// A step that did not succeed, as later steps see it.
@@ -837,6 +882,28 @@ fn reads(step: &Step) -> Vec<String> {
         }
         StepKind::SetVar { value, .. } => binding(value),
         StepKind::Ai { input, .. } => input.as_ref().into_iter().for_each(&mut binding),
+        StepKind::Repeat { count, body, .. } => {
+            binding(count);
+            for inner in body {
+                out.extend(reads(inner));
+            }
+        }
+        StepKind::While { cond, body, .. } => {
+            let mut condition = |c: &Condition| collect_condition_reads(c, &mut out);
+            condition(cond);
+            for inner in body {
+                out.extend(reads(inner));
+            }
+        }
+        StepKind::Compute { expr } => {
+            let mut expr_reads = |value: &Expr| collect_expression_reads(value, &mut out);
+            expr_reads(expr);
+        }
+        StepKind::Return { value } => {
+            if let Some(value) = value {
+                binding(value);
+            }
+        }
         StepKind::Ask { .. } | StepKind::Task { .. } => {}
     }
     if let StepPolicy::Fallback { steps } = &step.on_error {
@@ -861,7 +928,56 @@ fn collect_reads(binding: &Binding, out: &mut Vec<String>) {
                 }
             }
         }
+        Binding::Expression(expr) => collect_expression_reads(expr, out),
         Binding::Literal(_) | Binding::Input(_) | Binding::Var(_) => {}
+    }
+}
+
+fn collect_expression_reads(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Value { binding } => collect_reads(binding, out),
+        Expr::Compare { left, right, .. }
+        | Expr::Logic { left, right, .. }
+        | Expr::Math { left, right, .. } => {
+            collect_expression_reads(left, out);
+            collect_expression_reads(right, out);
+        }
+        Expr::Negate { value }
+        | Expr::Truthy { value }
+        | Expr::Not { value }
+        | Expr::Length { value }
+        | Expr::Field { value, .. } => collect_expression_reads(value, out),
+        Expr::Replace {
+            text,
+            find,
+            replace,
+        } => {
+            collect_expression_reads(text, out);
+            collect_expression_reads(find, out);
+            collect_expression_reads(replace, out);
+        }
+        Expr::Split { text, separator } => {
+            collect_expression_reads(text, out);
+            if let Some(separator) = separator {
+                collect_expression_reads(separator, out);
+            }
+        }
+        Expr::Take { items, count } => {
+            collect_expression_reads(items, out);
+            collect_expression_reads(count, out);
+        }
+        Expr::Object { members } => {
+            for member in members {
+                collect_expression_reads(&member.value, out);
+            }
+        }
+        Expr::Filter { items, test } => {
+            collect_expression_reads(items, out);
+            collect_expression_reads(test, out);
+        }
+        Expr::Map { items, .. } | Expr::Sort { items } | Expr::First { items } => {
+            collect_expression_reads(items, out);
+        }
     }
 }
 
@@ -872,6 +988,7 @@ fn collect_condition_reads(condition: &Condition, out: &mut Vec<String>) {
             collect_reads(left, out);
             collect_reads(right, out);
         }
+        Condition::Holds(expr) => collect_expression_reads(expr, out),
         Condition::Not(inner) => collect_condition_reads(inner, out),
         Condition::All(all) | Condition::Any(all) => {
             for inner in all {
@@ -991,7 +1108,13 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         }
         done.attempts = sent;
         if done.result.is_ok() {
-            return self.record(step, &path, done, Recovered::Stopped);
+            self.record(step, &path, done, Recovered::Stopped)?;
+            // A return that took effect ends the run here, and with it every
+            // block it sits in: the value it named is already the run's.
+            if matches!(step.kind, StepKind::Return { .. }) {
+                return Err((path, StepFailure::Returned));
+            }
+            return Ok(());
         }
         let (attempt, failed) = self.retry(step, &path, &mut done).await?;
         if failed.is_none() {
@@ -1158,6 +1281,9 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             Ok(output) => {
                 let shown = output.as_ref().map(|value| redacted(step, value));
                 if let Some(value) = output {
+                    if matches!(step.kind, StepKind::Return { .. }) {
+                        self.finished_with = Some(value.clone());
+                    }
                     self.outputs.insert(step.id.clone(), value);
                 }
                 (
@@ -1358,6 +1484,26 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 Ok(Done::local(result))
             }
             StepKind::Ask { param } => Ok(Done::local(self.ask(step, path, param).await)),
+            // A loop records itself, counts its passes as it goes and answers
+            // an empty record: what it does is its body's, one pass at a
+            // time.
+            StepKind::Repeat { count, index, body } => {
+                self.repeat(step, path.clone(), count, index, body).await?;
+                Ok(Done::recorded())
+            }
+            StepKind::While { cond, max, body } => {
+                self.while_loop(step, path.clone(), cond, *max, body)
+                    .await?;
+                Ok(Done::recorded())
+            }
+            StepKind::Compute { expr } => Ok(Done::local(self.expression(expr))),
+            StepKind::Return { value } => {
+                let result = match value {
+                    Some(value) => self.evaluate(value),
+                    None => Ok(None),
+                };
+                Ok(Done::local(result))
+            }
         }
     }
 
@@ -1407,6 +1553,243 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         Ok(())
     }
 
+    /// A counted repeat: run `body` once per whole number from 0 below
+    /// `count`, binding the number to `index`, and restore what `index` named
+    /// afterwards.
+    async fn repeat(
+        &mut self,
+        step: &'a Step,
+        path: StepPath,
+        count: &Binding,
+        index: &str,
+        body: &'a [Step],
+    ) -> Result<(), Stop> {
+        let count = self.whole(count).and_then(|count| {
+            if count > MAX_REPEAT {
+                Err(StepFailure::LoopBound { limit: MAX_REPEAT })
+            } else {
+                Ok(count)
+            }
+        });
+        let reported = count.as_ref().map(|count| Some(Value::from(*count)));
+        self.record_block(step, &path, Done::local(reported.map_err(Clone::clone)));
+        let count = count.unwrap_or_default();
+        let shadowed = self.vars.get(index).cloned();
+        let shadowed_secret = self.secret_vars.contains(index);
+        // A counter is a number the program made up: it is never a secret,
+        // whatever the variable or binding it shadows was.
+        self.secret_vars.remove(index);
+        let iterations = usize::try_from(count).unwrap_or(usize::MAX);
+        for iteration in 0..iterations {
+            self.vars
+                .insert(index.to_owned(), Value::from(iteration as u64));
+            self.block(body, path.repeat(Some(iteration))).await?;
+        }
+        if shadowed_secret {
+            self.secret_vars.insert(index.to_owned());
+        }
+        match shadowed {
+            Some(value) => self.vars.insert(index.to_owned(), value),
+            None => self.vars.remove(index),
+        };
+        Ok(())
+    }
+
+    /// A while loop: run `body` while `cond` holds, at most `max` times. A
+    /// loop still ready for another pass when the limit is reached fails its
+    /// step, so a condition that never becomes false is seen rather than
+    /// waiting for ever.
+    async fn while_loop(
+        &mut self,
+        step: &'a Step,
+        path: StepPath,
+        cond: &Condition,
+        max: u64,
+        body: &'a [Step],
+    ) -> Result<(), Stop> {
+        let limit = max.min(MAX_REPEAT);
+        let mut iterations = 0_usize;
+        loop {
+            let holds = self.condition(cond);
+            let taken = holds.as_ref().ok().copied().unwrap_or(false);
+            // What the loop step records is the number of passes it made,
+            // unless reading the condition is itself what failed.
+            if let Err(failure) = holds {
+                self.record_block(step, &path, Done::local(Err(failure)));
+                return Ok(());
+            }
+            if !taken {
+                let passes = u64::try_from(iterations).unwrap_or(u64::MAX);
+                self.record_block(step, &path, Done::local(Ok(Some(Value::from(passes)))));
+                return Ok(());
+            }
+            let passes = u64::try_from(iterations).unwrap_or(u64::MAX);
+            if passes >= limit {
+                let failure = StepFailure::LoopExhausted { limit };
+                self.record_block(step, &path, Done::local(Err(failure)));
+                return Ok(());
+            }
+            // The record of a loop that fails in its body is the body's own;
+            // what this step does is counted when it finishes.
+            self.block(body, path.while_loop(Some(iterations))).await?;
+            iterations = iterations.saturating_add(1);
+        }
+    }
+
+    /// A whole number the program asked for: `count`, when it is one.
+    fn whole(&mut self, count: &Binding) -> Result<u64, StepFailure> {
+        match self.evaluate(count)? {
+            Some(Value::Number(number)) => number.as_u64().ok_or_else(|| StepFailure::Binding {
+                reason: format!("a repeat needs a whole number of times, and {number} is not one"),
+            }),
+            Some(other) => Err(StepFailure::Binding {
+                reason: format!(
+                    "a repeat needs a whole number of times, and {} is not one",
+                    expression::type_name(&other)
+                ),
+            }),
+            None => Err(StepFailure::Binding {
+                reason: "the repeat's count has no value".into(),
+            }),
+        }
+    }
+
+    /// The value of `expr` now, refusing what the operation is not defined
+    /// for rather than guessing a value for it.
+    fn expression(&mut self, expr: &Expr) -> Result<Option<Value>, StepFailure> {
+        Ok(Some(match expr {
+            Expr::Value { binding } => {
+                self.evaluate(binding)?
+                    .ok_or_else(|| StepFailure::Binding {
+                        reason: "the expression reads a value the run was not given".into(),
+                    })?
+            }
+            Expr::Compare { op, left, right } => {
+                expression::compare(*op, &self.value(left)?, &self.value(right)?)?
+            }
+            Expr::Logic { op, left, right } => Value::Bool(self.logic(*op, left, right)?),
+            Expr::Math { op, left, right } => {
+                expression::arithmetic(*op, &self.value(left)?, &self.value(right)?)?
+            }
+            Expr::Negate { value } => expression::negate(&self.value(value)?)?,
+            Expr::Truthy { value } => Value::Bool(expression::truthy(&self.value(value)?)),
+            Expr::Not { value } => Value::Bool(!expression::truthy(&self.value(value)?)),
+            Expr::Length { value } => expression::length(&self.value(value)?)?,
+            Expr::Replace {
+                text,
+                find,
+                replace,
+            } => {
+                let text = self.value(text)?;
+                let find = self.value(find)?;
+                let replace = self.value(replace)?;
+                expression::replace(&text, &find, &replace)?
+            }
+            Expr::Split { text, separator } => {
+                let text = self.value(text)?;
+                let separator = match separator {
+                    Some(separator) => Some(self.value(separator)?),
+                    None => None,
+                };
+                expression::split(&text, separator.as_ref())?
+            }
+            Expr::Take { items, count } => {
+                expression::take(&self.value(items)?, &self.value(count)?)?
+            }
+            Expr::Field { value, field } => expression::field(&self.value(value)?, field)?,
+            Expr::Object { members } => self.dictionary(members)?,
+            Expr::Filter { items, test } => {
+                let items = self.value(items)?;
+                let Value::Array(elements) = items else {
+                    return Err(StepFailure::Expression {
+                        error: expression::ExprError::Type {
+                            what: "filter needs a list".into(),
+                        },
+                    });
+                };
+                Value::Array(self.keep(elements, test)?)
+            }
+            Expr::Map { items, field } => expression::map_field(&self.value(items)?, field)?,
+            Expr::Sort { items } => expression::sort(&self.value(items)?)?,
+            Expr::First { items } => {
+                let items = self.value(items)?;
+                self.first(&items)?
+            }
+        }))
+    }
+
+    /// The value `expr` reads, or the failure reading it met.
+    fn value(&mut self, expr: &Expr) -> Result<Value, StepFailure> {
+        self.expression(expr)?.ok_or_else(|| StepFailure::Binding {
+            reason: "the expression reads a value the run was not given".into(),
+        })
+    }
+
+    /// Whether `left` and `right` decide a conjunction or a disjunction. A
+    /// right side that would fail is never read when the left side already
+    /// decides the answer.
+    fn logic(&mut self, op: Op, left: &Expr, right: &Expr) -> Result<bool, StepFailure> {
+        let holds = expression::truthy(&self.value(left)?);
+        match op {
+            Op::And if !holds => Ok(false),
+            Op::Or if holds => Ok(true),
+            Op::And | Op::Or => Ok(expression::truthy(&self.value(right)?)),
+            other => Err(StepFailure::Expression {
+                error: expression::ExprError::Type {
+                    what: format!("`{}` is not a logical operation", other.as_str()),
+                },
+            }),
+        }
+    }
+
+    /// The dictionary an object expression builds, its members already read.
+    fn dictionary(&mut self, members: &[Member]) -> Result<Value, StepFailure> {
+        let mut entries = Vec::with_capacity(members.len());
+        for member in members {
+            entries.push((member.name.clone(), self.value(&member.value)?));
+        }
+        Ok(expression::object(entries))
+    }
+
+    /// The elements of `elements` its `test` holds for, with [`FILTER_ITEM`]
+    /// bound to each in turn and whatever it named restored afterwards.
+    fn keep(&mut self, elements: Vec<Value>, test: &Expr) -> Result<Vec<Value>, StepFailure> {
+        let shadowed = self.vars.get(FILTER_ITEM).cloned();
+        let shadowed_secret = self.secret_vars.remove(FILTER_ITEM);
+        let mut kept = Vec::new();
+        for element in elements {
+            self.vars.insert(FILTER_ITEM.to_owned(), element.clone());
+            if expression::truthy(&self.value(test)?) {
+                kept.push(element);
+            }
+        }
+        self.vars.remove(FILTER_ITEM);
+        if shadowed_secret {
+            self.secret_vars.insert(FILTER_ITEM.to_owned());
+        }
+        if let Some(value) = shadowed {
+            self.vars.insert(FILTER_ITEM.to_owned(), value);
+        }
+        Ok(kept)
+    }
+
+    /// The one element of `items`, refusing a list with none in it.
+    fn first(&mut self, items: &Value) -> Result<Value, StepFailure> {
+        match items {
+            Value::Array(elements) => elements.first().cloned().ok_or(StepFailure::Expression {
+                error: expression::ExprError::Empty,
+            }),
+            other => Err(StepFailure::Expression {
+                error: expression::ExprError::Type {
+                    what: format!(
+                        "first needs a list, and {} is not one",
+                        expression::type_name(other)
+                    ),
+                },
+            }),
+        }
+    }
+
     async fn ask(
         &self,
         step: &Step,
@@ -1442,7 +1825,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     /// output is what the agent is asked for, and what its answer is held to
     /// as well as the published result spec.
     async fn ai(
-        &self,
+        &mut self,
         step: &Step,
         path: &StepPath,
         transform: &AiTransform,
@@ -1463,7 +1846,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     }
 
     async fn invoke(
-        &self,
+        &mut self,
         step: &Step,
         path: &StepPath,
         key: &ActionKey,
@@ -1497,7 +1880,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     /// The appearance `binding` evaluates to, in the exact form a door
     /// admits: a value that breaks a rule fails the step rather than being
     /// cleaned up, so what readers see is what the program asked for.
-    fn appearance(&self, binding: &Binding) -> Result<tilo_actions::Appearance, StepFailure> {
+    fn appearance(&mut self, binding: &Binding) -> Result<tilo_actions::Appearance, StepFailure> {
         let refused = |reason: String| StepFailure::Arguments { reason };
         let value = self
             .evaluate(binding)?
@@ -1513,7 +1896,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     /// Everything up to the invocation itself: resolve the target, check the
     /// grant, bind the arguments and obtain any confirmation.
     async fn prepare(
-        &self,
+        &mut self,
         step: &Step,
         path: &StepPath,
         key: &ActionKey,
@@ -1920,9 +2303,18 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             .unwrap_or(Ok(()))
     }
 
-    fn condition(&self, condition: &Condition) -> Result<bool, StepFailure> {
+    fn condition(&mut self, condition: &Condition) -> Result<bool, StepFailure> {
         Ok(match condition {
-            Condition::Truthy(value) => self.evaluate(value)?.as_ref().is_some_and(truthy),
+            Condition::Truthy(value) => self
+                .evaluate(value)?
+                .as_ref()
+                .is_some_and(expression::truthy),
+            // An expression that answers a boolean gives it; any other value
+            // no comparison produced is judged by its truthiness.
+            Condition::Holds(expr) => match self.value(expr)? {
+                Value::Bool(flag) => flag,
+                other => expression::truthy(&other),
+            },
             Condition::Equals { left, right } => self.evaluate(left)? == self.evaluate(right)?,
             Condition::Not(inner) => !self.condition(inner)?,
             Condition::All(all) => {
@@ -1946,7 +2338,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
 
     /// The value of `binding` now; `None` for an optional input the run was
     /// not given, which leaves the argument it feeds unset.
-    fn evaluate(&self, binding: &Binding) -> Result<Option<Value>, StepFailure> {
+    fn evaluate(&mut self, binding: &Binding) -> Result<Option<Value>, StepFailure> {
         let missing = |reason: String| StepFailure::Binding { reason };
         match binding {
             Binding::Literal(value) => Ok(Some(value.clone())),
@@ -2019,6 +2411,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 .map(|item| Ok(self.evaluate(item)?.unwrap_or(Value::Null)))
                 .collect::<Result<Vec<_>, _>>()
                 .map(|items| Some(Value::Array(items))),
+            Binding::Expression(expr) => self.expression(expr),
         }
     }
 
@@ -2042,6 +2435,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             Binding::Var(name) => self.secret_vars.contains(Binding::named_part(name).0),
             Binding::Object(members) => members.values().any(|member| self.is_secret(member)),
             Binding::List(items) => items.iter().any(|item| self.is_secret(item)),
+            Binding::Expression(expr) => expr.reads(&|binding| self.is_secret(binding)),
             Binding::Literal(_) | Binding::Template(_) => false,
         }
     }
@@ -2095,15 +2489,4 @@ fn transformed(output: Option<&Value>, value: Option<Value>) -> Result<Option<Va
         None => {}
     }
     Ok(Some(value))
-}
-
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(flag) => *flag,
-        Value::Number(number) => number.as_f64().is_some_and(|n| n != 0.0),
-        Value::String(text) => !text.is_empty(),
-        Value::Array(items) => !items.is_empty(),
-        Value::Object(fields) => !fields.is_empty(),
-    }
 }

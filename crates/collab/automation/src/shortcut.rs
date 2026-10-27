@@ -13,6 +13,7 @@ use tilo_actions::ActionKey;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::params::{ActionParam, ParamType};
 
+use crate::expression::Expr;
 use crate::{
     AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
     AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION, AGENT_TRANSFORM_KIND,
@@ -197,6 +198,33 @@ pub enum StepKind {
     },
     /// Bind a variable for later steps.
     SetVar { name: String, value: Binding },
+    /// Answer an expression and keep its value as this step's output, so a
+    /// later step can name it as it names any other step's. Pure: nothing is
+    /// invoked and nothing is recorded as an action.
+    Compute { expr: Expr },
+    /// Run `body` once per whole number from 0 below `count` (at most
+    /// [`MAX_REPEAT`](crate::run::MAX_REPEAT) times), with the iteration
+    /// number bound to the variable `index`.
+    Repeat {
+        count: Binding,
+        #[serde(default = "default_index")]
+        index: String,
+        body: Vec<Step>,
+    },
+    /// Run `body` while `cond` holds, at most `max` times (at most
+    /// [`MAX_REPEAT`](crate::run::MAX_REPEAT)). A `max` of zero repeats
+    /// nothing: no loop in a shortcut is unbounded.
+    While {
+        cond: Condition,
+        max: u64,
+        body: Vec<Step>,
+    },
+    /// Stop the run there, reporting `value` as its output: a step inside a
+    /// branch or a loop can finish a run that has nothing left to do.
+    Return {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<Binding>,
+    },
     /// Ask the person running the shortcut for one value. The answer is this
     /// step's output. Unattended runs cannot ask and fail here.
     Ask { param: ActionParam },
@@ -230,6 +258,10 @@ pub enum StepKind {
 
 fn default_item() -> String {
     "item".into()
+}
+
+fn default_index() -> String {
+    "index".into()
 }
 
 impl StepKind {
@@ -299,6 +331,10 @@ pub enum Binding {
     Object(BTreeMap<String, Binding>),
     /// A JSON array of bound values, `null` where a binding has no value.
     List(Vec<Binding>),
+    /// The value of an expression: arithmetic, a comparison, a text, list or
+    /// dictionary operation ([`Expr`]).
+    #[serde(rename = "expr")]
+    Expression(Box<Expr>),
 }
 
 impl Binding {
@@ -333,6 +369,11 @@ pub enum Condition {
         left: Binding,
         right: Binding,
     },
+    /// An expression that answers a truth value: an ordering comparison, a
+    /// bare boolean, or a value judged by its truthiness. A comparison is
+    /// refused here before anything runs when its two sides cannot be
+    /// compared.
+    Holds(Expr),
     Not(Box<Condition>),
     All(Vec<Condition>),
     Any(Vec<Condition>),
@@ -443,6 +484,7 @@ tilo_resource::value_model!(
     Selector,
     Binding,
     Condition,
+    Expr,
     AiTransform,
     TriggerSpec,
     StepPolicy

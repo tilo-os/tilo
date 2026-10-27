@@ -345,7 +345,12 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
                 collect(otherwise, catalog, out);
             }
             StepKind::ForEach { body, .. } => collect(body, catalog, out),
-            StepKind::SetVar { .. } | StepKind::Ask { .. } => {}
+            StepKind::Repeat { body, .. } => collect(body, catalog, out),
+            StepKind::While { body, .. } => collect(body, catalog, out),
+            StepKind::SetVar { .. }
+            | StepKind::Compute { .. }
+            | StepKind::Return { .. }
+            | StepKind::Ask { .. } => {}
         }
     }
 }
@@ -556,7 +561,12 @@ fn step_keys(steps: &[Step], out: &mut Vec<ActionKey>) {
                 step_keys(otherwise, out);
             }
             StepKind::ForEach { body, .. } => step_keys(body, out),
-            StepKind::SetVar { .. } | StepKind::Ask { .. } => {}
+            StepKind::Repeat { body, .. } => step_keys(body, out),
+            StepKind::While { body, .. } => step_keys(body, out),
+            StepKind::SetVar { .. }
+            | StepKind::Compute { .. }
+            | StepKind::Return { .. }
+            | StepKind::Ask { .. } => {}
         }
     }
 }

@@ -40,6 +40,7 @@
 pub mod catalog;
 pub mod check;
 pub mod dispatch;
+pub mod expression;
 pub mod grant;
 pub mod path;
 pub mod program;
@@ -61,12 +62,13 @@ pub use check::{
     BindingOption, CheckError, CheckErrorKind, NoShortcuts, ShortcutResolver, binding_options,
     check, check_bot, values_at,
 };
+pub use expression::{Expr, ExprError, Member, Op};
 pub use grant::{StepGrant, action_rule, edit_reach, grant_answer, step_node, step_node_at};
 pub use path::StepPath;
 pub use run::{
     AskRequest, ConfirmationRequest, DEFAULT_BACKOFF_MS, DEFAULT_STEP_TIMEOUT, MAX_BACKOFF_MS,
-    Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger, STEP_FACET,
-    StepFailure, StepOutcome, StepRecord, StepStatus, StopWatch, invocation_id, run,
+    MAX_REPEAT, Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger,
+    STEP_FACET, StepFailure, StepOutcome, StepRecord, StepStatus, StopWatch, invocation_id, run,
 };
 pub use scenario::{
     Assert, DOOR_CODES, FormatError, Holds, Input, Invocation, SCENARIO_FORMAT_VERSION, Scenario,

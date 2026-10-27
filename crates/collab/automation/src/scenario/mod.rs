@@ -124,6 +124,10 @@ impl Scenario {
                 }))),
                 StepKind::If { .. }
                 | StepKind::ForEach { .. }
+                | StepKind::Repeat { .. }
+                | StepKind::While { .. }
+                | StepKind::Compute { .. }
+                | StepKind::Return { .. }
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
@@ -503,6 +507,10 @@ impl StepKind {
             Self::Invoke { .. } => "invoke",
             Self::If { .. } => "if",
             Self::ForEach { .. } => "for_each",
+            Self::Repeat { .. } => "repeat",
+            Self::While { .. } => "while",
+            Self::Compute { .. } => "compute",
+            Self::Return { .. } => "return",
             Self::SetVar { .. } => "set_var",
             Self::Ask { .. } => "ask",
             Self::Ai { .. } => "ai",
@@ -538,7 +546,11 @@ fn collect(steps: &[Step], path: &StepPath, out: &mut Vec<ScenarioStep>) {
                 collect(otherwise, &here.else_branch(), out);
             }
             StepKind::ForEach { body, .. } => collect(body, &here.each(None), out),
+            StepKind::Repeat { body, .. } => collect(body, &here.repeat(None), out),
+            StepKind::While { body, .. } => collect(body, &here.while_loop(None), out),
             StepKind::SetVar { .. }
+            | StepKind::Compute { .. }
+            | StepKind::Return { .. }
             | StepKind::Ask { .. }
             | StepKind::Ai { .. }
             | StepKind::Task { .. } => {}

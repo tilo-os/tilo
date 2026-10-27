@@ -40,9 +40,25 @@ impl StepPath {
     /// A loop body; `iteration` is known at run time only.
     #[must_use]
     pub fn each(&self, iteration: Option<usize>) -> Self {
+        self.numbered_loop("each", iteration)
+    }
+
+    /// A counted repeat's body; `iteration` is known at run time only.
+    #[must_use]
+    pub fn repeat(&self, iteration: Option<usize>) -> Self {
+        self.numbered_loop("repeat", iteration)
+    }
+
+    /// A while loop's body; `iteration` is known at run time only.
+    #[must_use]
+    pub fn while_loop(&self, iteration: Option<usize>) -> Self {
+        self.numbered_loop("while", iteration)
+    }
+
+    fn numbered_loop(&self, name: &str, iteration: Option<usize>) -> Self {
         match iteration {
-            Some(index) => self.join(&format!("each[{index}]")),
-            None => self.join("each"),
+            Some(index) => self.join(&format!("{name}[{index}]")),
+            None => self.join(name),
         }
     }
 
