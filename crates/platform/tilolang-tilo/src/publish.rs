@@ -408,25 +408,86 @@ impl Whole {
     fn build(&self, snapshot: &crate::store::Snapshot) -> Built {
         let root = tilolang_runtime::value::ResourceRef::root(&self.doc, self.type_id.clone());
         let named = snapshot.first_text(&root);
+        let schema = crate::schema::lookup(&self.type_id);
         let label = named.as_ref().map_or_else(
             || {
-                crate::schema::lookup(&self.type_id).map_or_else(
+                schema.map_or_else(
                     || self.type_name.clone(),
                     |schema| self.types.untitled(schema),
                 )
             },
             |(text, _)| text.clone(),
         );
-        let tree = match snapshot.record(&self.doc) {
-            Ok(record) => publish_tree(&self.types, &record, &self.type_name, &self.doc, &label),
-            Err(_) => publish_record(&self.types, &self.type_name, &self.doc, &label),
-        };
+        let view = snapshot
+            .record_of(&self.doc)
+            .and_then(|(app, _)| snapshot.view(app));
+        let mut tree = publish_record(&self.types, &self.type_name, &self.doc, &label);
+        if let (Some(view), Some(schema)) = (view, schema) {
+            for child in indexed_items(&self.types, &view, &self.doc, schema) {
+                tree = tree.with_child(child);
+            }
+        }
         Built {
             doc: self.doc.clone(),
             tree,
             named_by: named.map(|(_, at)| at),
         }
     }
+}
+
+/// The items of the collections of the resource at `parent` (of `schema`), as the index holds
+/// them, each published with its own items.
+fn indexed_items(
+    types: &ActionTypes,
+    view: &crate::index::view::View<'_>,
+    parent: &str,
+    schema: &crate::schema::TypeSchema,
+) -> Vec<Resource> {
+    let mut out = Vec::new();
+    for field in schema
+        .fields
+        .iter()
+        .filter(|f| f.kind == crate::schema::MergeKind::Collection)
+    {
+        let Ok(items) = view.list(parent, &field.id) else {
+            continue;
+        };
+        for index in 0..items.len() {
+            let Some(id) = items.get(index) else {
+                break;
+            };
+            let path = crate::index::view::child(parent, &field.id, &id);
+            if let Some(item) = indexed_item(types, view, &path, field.record.as_deref()) {
+                out.push(item);
+            }
+        }
+    }
+    out
+}
+
+/// The item at `path`, as the index holds it, published with its type's actions and its own
+/// items; `item_type` is its collection's item type, for an item the index holds no type of.
+fn indexed_item(
+    types: &ActionTypes,
+    view: &crate::index::view::View<'_>,
+    path: &str,
+    item_type: Option<&str>,
+) -> Option<Resource> {
+    let ty = view.type_of(path).ok().flatten();
+    let schema = ty
+        .as_deref()
+        .or(item_type)
+        .and_then(crate::schema::lookup)?;
+    let label = view
+        .first_text(path, schema)
+        .ok()
+        .flatten()
+        .map_or_else(|| schema.name.clone(), |(text, _)| text);
+    let mut resource = types.resource(&schema.name, path, label, false);
+    for child in indexed_items(types, view, path, schema) {
+        resource = resource.with_child(child);
+    }
+    Some(resource)
 }
 
 impl Publications {
@@ -1058,11 +1119,12 @@ impl Published<'_> {
         Some(node)
     }
 
-    /// The item at `path`, read from the store and published.
+    /// The item at `path`, read from the index and published.
     fn item(&self, path: &str) -> Option<Resource> {
-        let at = self.at(path)?;
-        let item = self.store.record_at(&at).ok()?;
-        Some(item_resource(self.types, &item, path))
+        let schema = self.schema_at(path)?;
+        let snapshot = self.store.snapshot();
+        let view = snapshot.view(&self.types.meta().app)?;
+        indexed_item(self.types, &view, path, Some(&schema.id))
     }
 }
 

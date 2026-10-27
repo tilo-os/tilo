@@ -29,6 +29,10 @@ pub trait MetaExt {
     /// The record schemas of every declared type, ready to register.
     fn schemas(&self) -> Vec<TypeSchema>;
 
+    /// The record schemas of every declared type, written out: what an index of the package's
+    /// records was built for, and is built anew when it differs.
+    fn schema_text(&self) -> String;
+
     /// Register the schemas of every declared type; peers that replay this package's actions
     /// resolve its records through them.
     fn register_schemas(&self);
@@ -111,6 +115,10 @@ impl MetaExt for Meta {
                 schema
             })
             .collect()
+    }
+
+    fn schema_text(&self) -> String {
+        format!("{:?}", self.schemas())
     }
 
     fn register_schemas(&self) {
