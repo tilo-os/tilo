@@ -1,5 +1,5 @@
-//! The bar's status chips: "Controls your desktop", "Dev build · by …" and
-//! "Shared with …".
+//! The bar's status chips: "Controls your desktop", "Dev build · by …",
+//! "Shared with …" and, on a window someone else shared, "Ana's window".
 //!
 //! A program running in an app (`tilo action` typed in a terminal) works in
 //! that app's workspace without asking; once the person lets it reach the
@@ -56,11 +56,47 @@ impl SharedWith {
     }
 }
 
-/// The bar's "Shared with …" mark: the windows shared with their workspace,
-/// and where the mark was last painted.
+/// Whose a window is that someone else shared with the workspace, as the
+/// bar of the window it opens here says while the window is in front: their
+/// name, "Ana's window", with their face.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedBy {
+    /// The person who shared it, by presence id, with their name.
+    pub sharer: (crate::permissions::UserId, String),
+}
+
+/// A window's share mark: shared by this person with whom, or shared with
+/// them by whom. A window is one or the other, never both.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ShareMark {
+    With(SharedWith),
+    By(SharedBy),
+}
+
+impl ShareMark {
+    /// What the chip says.
+    fn label(&self) -> String {
+        match self {
+            Self::With(with) => with.label(),
+            Self::By(by) => crate::i18n!("tab-held-by", "name" => by.sharer.1.as_str()),
+        }
+    }
+
+    /// Whose faces stand after the chip: who sees the window, or whose it is.
+    fn people(&self) -> &[(crate::permissions::UserId, String)] {
+        match self {
+            Self::With(with) => &with.people,
+            Self::By(by) => std::slice::from_ref(&by.sharer),
+        }
+    }
+}
+
+/// The bar's share mark ("Shared with …", "Ana's window"): the windows
+/// shared with their workspace or shared with this person, and where the
+/// mark was last painted.
 #[derive(Debug, Default)]
 pub(super) struct SharedChip {
-    marks: std::collections::HashMap<u64, SharedWith>,
+    marks: std::collections::HashMap<u64, ShareMark>,
     /// Where the mark was last painted.
     painted: Option<Rect>,
 }
@@ -73,60 +109,132 @@ impl TabBar {
     /// `shared` names, or clear the mark. `true` when that changed what the
     /// bar shows.
     pub fn set_shared(&mut self, id: u64, shared: Option<SharedWith>) -> bool {
-        match shared {
-            Some(shared) => self.shared.marks.insert(id, shared.clone()) != Some(shared),
-            None => self.shared.marks.remove(&id).is_some(),
-        }
+        self.set_share_mark(id, shared.map(ShareMark::With), |mark| {
+            matches!(mark, ShareMark::With(_))
+        })
     }
 
     /// Who can see the window `id`, while it is shared.
     pub fn shared_with(&self, id: u64) -> Option<&SharedWith> {
-        self.shared.marks.get(&id)
+        match self.shared.marks.get(&id)? {
+            ShareMark::With(with) => Some(with),
+            ShareMark::By(_) => None,
+        }
     }
 
-    /// Where the "Shared with …" mark of the window in front stands, with
-    /// its label: the chip, then the faces of the people who see the window.
-    /// After the bar's other status chips. `None` when the window in front
-    /// is not shared, its app put slots in the row, a tab is being dragged,
-    /// or the run is too short for it.
+    /// Mark `id` as a window someone else shared with the workspace,
+    /// whose `shared` names, or clear the mark. `true` when that changed
+    /// what the bar shows.
+    pub fn set_shared_by(&mut self, id: u64, shared: Option<SharedBy>) -> bool {
+        self.set_share_mark(id, shared.map(ShareMark::By), |mark| {
+            matches!(mark, ShareMark::By(_))
+        })
+    }
+
+    /// Whose the window `id` is, while someone else shares it here.
+    pub fn shared_by(&self, id: u64) -> Option<&SharedBy> {
+        match self.shared.marks.get(&id)? {
+            ShareMark::By(by) => Some(by),
+            ShareMark::With(_) => None,
+        }
+    }
+
+    /// Set `id`'s share mark to `mark`, or clear it when it is of the kind
+    /// `ours` says.
+    fn set_share_mark(
+        &mut self,
+        id: u64,
+        mark: Option<ShareMark>,
+        ours: impl Fn(&ShareMark) -> bool,
+    ) -> bool {
+        match mark {
+            Some(mark) => self.shared.marks.insert(id, mark.clone()) != Some(mark),
+            None if self.shared.marks.get(&id).is_some_and(ours) => {
+                self.shared.marks.remove(&id).is_some()
+            }
+            None => false,
+        }
+    }
+
+    /// Where the share mark of the window in front stands, with its label:
+    /// the chip, then the faces of the people who see the window, or of the
+    /// person whose it is.
+    /// After the bar's other status chips, or, where the window's app put
+    /// its slots in the bar, right after its location. `None` when the
+    /// window in front is not shared, a tab is being dragged, or there is
+    /// no room for it.
     pub fn shared_chip(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<(Rect, String)> {
         let shared = self.shared.marks.get(&self.active_id)?;
-        if self.active_slots().is_some()
-            || self.pending_drag.is_some()
-            || self.tab_rects.len() != self.tabs.len()
-        {
+        if self.pending_drag.is_some() || self.tab_rects.len() != self.tabs.len() {
             return None;
         }
         let label = shared.label();
-        let tab_row = self.tab_row();
-        let x0 = match (
-            self.dev_build_chip(tr, theme),
-            self.desktop_control_chip(tr, theme),
-        ) {
-            (Some((before, _)), _) | (None, Some((before, _))) => before.x1 + TOOLBAR_LEAD_GAP,
-            (None, None) => self.status_chips_start() + TOOLBAR_LEAD_GAP,
+        let (x0, limit, cy) = match self.share_mark_room() {
+            Some(room) => room,
+            None if self.active_slots().is_some() => return None,
+            None => {
+                let tab_row = self.tab_row();
+                let x0 = match (
+                    self.dev_build_chip(tr, theme),
+                    self.desktop_control_chip(tr, theme),
+                ) {
+                    (Some((before, _)), _) | (None, Some((before, _))) => {
+                        before.x1 + TOOLBAR_LEAD_GAP
+                    }
+                    (None, None) => self.status_chips_start() + TOOLBAR_LEAD_GAP,
+                };
+                (x0, self.tab_row_limit(tab_row), tab_row.center().y)
+            }
         };
-        let limit = self.tab_row_limit(tab_row);
-        let faces = if shared.people.is_empty() {
+        let tab_row = self.tab_row();
+        let people = shared.people();
+        let faces = if people.is_empty() {
             0.0
         } else {
-            TOOLBAR_LEAD_GAP / 2.0 + SHARED_FACES.width(shared.people.len())
+            TOOLBAR_LEAD_GAP / 2.0 + SHARED_FACES.width(people.len())
         };
         let width = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme);
         let height = ChipFace::height(theme).max(SHARED_FACES.width(1).min(tab_row.height()));
         (x0 + width + faces <= limit).then(|| {
             (
-                Rect::from_origin_size(
-                    Point::new(x0, tab_row.center().y - height / 2.0),
-                    (width + faces, height),
-                ),
+                Rect::from_origin_size(Point::new(x0, cy - height / 2.0), (width + faces, height)),
                 label,
             )
         })
     }
 
+    /// Where the share mark may stand in the window in front whose app put
+    /// its slots in the bar: right after what its location shows ("Agenda
+    /// · Ana's window"), before whatever stands after the location, on the
+    /// location's line. `None` without slots, while the location is edited,
+    /// or with no location to follow.
+    fn share_mark_room(&self) -> Option<(f64, f64, f64)> {
+        self.active_slots()?;
+        if self.toolbar_row.is_editing() {
+            return None;
+        }
+        let shown = self.toolbar_row.location_content_end()?;
+        let slots = self.toolbar_row.slots();
+        let location = slots.location;
+        let after = slots
+            .views
+            .iter()
+            .chain(&slots.actions)
+            .chain(&slots.reactions)
+            .chain([&slots.views_menu, &slots.overflow, &slots.reaction_add])
+            .filter(|rect| rect.area() > 0.0 && rect.x0 >= location.x1)
+            .map(|rect| rect.x0)
+            .fold(self.toolbar_row_rect().x1, f64::min);
+        Some((
+            shown + TOOLBAR_LEAD_GAP,
+            after - TOOLBAR_LEAD_GAP,
+            location.center().y,
+        ))
+    }
+
     /// Paint the mark where it stands: the chip naming the workspace, and
-    /// the faces of the people in it, each as they look everywhere.
+    /// the faces of the people in it (or naming the person whose the window
+    /// is, and their face), each as they look everywhere.
     pub(super) fn draw_shared_chip(
         &mut self,
         scene: &mut Scene,
@@ -149,10 +257,10 @@ impl TabBar {
             (chip_width, chip_height),
         );
         ChipFace::new(chip, &label).paint(scene, transform, tr, theme);
-        if !shared.people.is_empty() {
-            let (shown, more) = SHARED_FACES.split(shared.people.len());
-            let faces: Vec<crate::presence::Face<'_>> = shared
-                .people
+        let people = shared.people();
+        if !people.is_empty() {
+            let (shown, more) = SHARED_FACES.split(people.len());
+            let faces: Vec<crate::presence::Face<'_>> = people
                 .iter()
                 .take(shown)
                 .map(|(user, name)| {
@@ -179,22 +287,19 @@ impl TabBar {
     }
 
     /// The mark as an assistive technology reads it: what it says, and who
-    /// sees the window.
+    /// sees the window. Whose window it is the label says already.
     pub(super) fn shared_access(&self) -> Option<AccessNode> {
         let rect = self.shared.painted?;
         let shared = self.shared.marks.get(&self.active_id)?;
         let node = AccessNode::new(crate::a11y::Role::Label)
             .with_name(shared.label())
             .with_bounds(rect);
-        Some(if shared.people.is_empty() {
-            node
-        } else {
-            let names: Vec<&str> = shared
-                .people
-                .iter()
-                .map(|(_, name)| name.as_str())
-                .collect();
-            node.with_description(names.join(", "))
+        Some(match shared {
+            ShareMark::With(with) if !with.people.is_empty() => {
+                let names: Vec<&str> = with.people.iter().map(|(_, name)| name.as_str()).collect();
+                node.with_description(names.join(", "))
+            }
+            ShareMark::With(_) | ShareMark::By(_) => node,
         })
     }
 
