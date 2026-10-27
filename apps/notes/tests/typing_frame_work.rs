@@ -81,12 +81,12 @@ fn notes_windows(
 /// The frames a host draws after an input, until it is at rest or `limit`;
 /// how many of them solved the layout.
 fn settle(harness: &mut FrameHarness, limit: usize) -> usize {
-    let mut measured = 0;
+    let mut measured = 0_usize;
     for _ in 0..limit {
         if !harness.poll_frame().unwrap() {
             break;
         }
-        measured += usize::from(harness.last_relayout().measured);
+        measured = measured.saturating_add(usize::from(harness.last_relayout().measured));
     }
     measured
 }
@@ -111,7 +111,7 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
         let mut harness = notes_windows(&f, &checkout, if open.is_some() { 1 } else { 2 });
         if let Some(open) = open {
             let row = component_support::page_rect(&harness, open(&f));
-            harness.click_at(row.x0 + 12.0, (row.y0 + row.y1) / 2.0);
+            harness.click_at(row.x0 + 12.0, f64::midpoint(row.y0, row.y1));
             settle(&mut harness, 6);
         }
         let editor = harness
@@ -133,7 +133,7 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
                 harness.relayout_frames() != frames && harness.last_relayout().measured,
             );
             let stats = harness.last_relayout();
-            measured += settle(&mut harness, 10);
+            measured = measured.saturating_add(settle(&mut harness, 10));
             assert!(
                 measured <= 1,
                 "a keystroke solved the layout in {measured} frames, asked by {:?}",
@@ -160,7 +160,9 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
         // (a caret blink, a timer) repaint at most; none of them measures.
         let start = ui::time::now();
         for step in 1..=8u64 {
-            let at = start + ui::time::Duration::from_millis(step * 400);
+            let at = start
+                .checked_add(ui::time::Duration::from_millis(step.saturating_mul(400)))
+                .unwrap();
             ui::time::testing::with_monotonic_time(at, || {
                 let measured = settle(&mut harness, 4);
                 assert_eq!(

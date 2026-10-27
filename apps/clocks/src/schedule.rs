@@ -151,16 +151,9 @@ pub struct Tick {
     pub finished_alarms: Vec<Id>,
 }
 
-/// Ring what is due at `now_utc` (`now_local` on this device's clock), each
-/// deadline once, and update `delivery` to match.
-pub fn tick(
-    clocks: &Clocks,
-    delivery: &mut Delivery,
-    now_utc: DateTime<Utc>,
-    now_local: DateTime<Local>,
-) -> Tick {
-    let mut found = Tick::default();
-    let now_ms = now_utc.timestamp_millis();
+/// Ring the snoozes whose time has come, and drop the ones whose alarm is
+/// gone or was rescheduled since.
+fn ring_snoozes(clocks: &Clocks, delivery: &mut Delivery, now_ms: i64, found: &mut Tick) {
     let mut snoozed_due = Vec::new();
     delivery.snoozes.retain(|id, snooze| {
         let Some(alarm) = clocks.alarms.get(&Id::from_raw(id.as_str())) else {
@@ -187,6 +180,19 @@ pub fn tick(
             native_scheduled: false,
         });
     }
+}
+
+/// Ring what is due at `now_utc` (`now_local` on this device's clock), each
+/// deadline once, and update `delivery` to match.
+pub fn tick(
+    clocks: &Clocks,
+    delivery: &mut Delivery,
+    now_utc: DateTime<Utc>,
+    now_local: DateTime<Local>,
+) -> Tick {
+    let mut found = Tick::default();
+    let now_ms = now_utc.timestamp_millis();
+    ring_snoozes(clocks, delivery, now_ms, &mut found);
     delivery
         .alarms
         .retain(|id, _| clocks.alarms.contains(&Id::from_raw(id.as_str())));

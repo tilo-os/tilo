@@ -19,8 +19,10 @@ pub(crate) fn in_text(text: &str, query: &str, options: FindOptions) -> Vec<Find
         found
             .into_iter()
             .filter(|found| {
-                let before = text[..found.start].chars().next_back();
-                let after = text[found.end..].chars().next();
+                let before = text
+                    .get(..found.start)
+                    .and_then(|head| head.chars().next_back());
+                let after = text.get(found.end..).and_then(|tail| tail.chars().next());
                 !before.is_some_and(is_word) && !after.is_some_and(is_word)
             })
             .collect()
@@ -74,7 +76,10 @@ mod tests {
             },
         );
         assert_eq!(cased.len(), 1, "match case finds the capitalised one");
-        assert_eq!(&source[cased[0].start..cased[0].end], "Text");
+        assert_eq!(
+            source.get(cased[0].start..cased[0].end).unwrap_or_default(),
+            "Text"
+        );
         assert!(in_text(source, "", FindOptions::default()).is_empty());
         let words = in_text(
             source,
@@ -95,6 +100,9 @@ mod tests {
         let source = "Straße IST gross";
         let found = in_text(source, "ist", FindOptions::default());
         assert_eq!(found.len(), 1);
-        assert_eq!(&source[found[0].start..found[0].end], "IST");
+        assert_eq!(
+            source.get(found[0].start..found[0].end).unwrap_or_default(),
+            "IST"
+        );
     }
 }

@@ -1,6 +1,9 @@
 //! The source and view a review capture stages before it draws.
 
-use super::*;
+use super::{
+    CaptureAwaits, DEMO_POSITION_MS, DEMO_QUEUE, DEMO_TITLE, DecoderMetadata, LibraryTab,
+    LocalMediaEntry, PlayerApp, demo_source, source_for_argument, source_title,
+};
 
 impl PlayerApp {
     /// Stage a capture of `scenario` (`None` for a plain `--shots`): the
@@ -17,7 +20,7 @@ impl PlayerApp {
     /// A player staged as a capture of `scenario` over the demo clip.
     #[cfg(test)]
     pub(crate) fn for_shot_open(launch: Option<&str>, scenario: Option<&str>) -> Self {
-        let mut app = Self::new(RunMode::Capture);
+        let mut app = Self::new(super::RunMode::Capture);
         app.stage_capture(launch, scenario);
         app
     }

@@ -590,9 +590,11 @@ impl FirewallApp {
             draft: &self.draft,
             adding: self.adding,
             applying: self.applying.is_some(),
-            blocked: self.blocked.as_ref(),
-            blocked_error: self.blocked_error.as_deref(),
-            blocked_loading: self.blocked_loading,
+            blocked: view::BlockedRead::of(
+                self.blocked_loading,
+                self.blocked_error.as_deref(),
+                self.blocked.as_ref(),
+            ),
             wide: self.wide,
         };
         let page = view::zone_page(&model, &self.intents, &self.switches, &self.scroll);

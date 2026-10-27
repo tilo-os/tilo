@@ -1,6 +1,6 @@
 //! The view a review capture stages against the document, applied once the window has the layout it needs.
 
-use super::*;
+use super::{Edits, SettingsPanel, SheetsApp, Staged, Widget, a1_to_addr};
 
 impl SheetsApp {
     /// Stage a screenshot scenario's view state over the sample workbook its
