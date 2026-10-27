@@ -36,10 +36,10 @@ use tilo_actions::remote::workspace_provider;
 use tilo_actions::remote::{Confirmation, Pending, pending};
 use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
-    ActionCatalog, AskRequest, ConfirmationRequest, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, RunHooks,
-    RunId, RunMode, RunOutcome, RunReport, RunTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION,
-    SHORTCUTS_APP_ID, Schedule, Shortcut, StopWatch, TriggerSpec, shortcut_id_of,
-    shortcut_resource_id,
+    ActionCatalog, AskRequest, Binding, ConfirmationRequest, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE,
+    RunHooks, RunId, RunMode, RunOutcome, RunReport, RunTrigger, SHORTCUT_RESOURCE_KIND,
+    SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Shortcut, StopWatch, TriggerSpec,
+    shortcut_id_of, shortcut_resource_id,
 };
 use tilo_desktop_model::Workspace;
 
@@ -203,30 +203,62 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         resource_kind: SHORTCUT_RESOURCE_KIND.into(),
         resource_label: shortcut.name.clone(),
         action_label: format!("Run {}", shortcut.name),
-        keywords: Vec::new(),
+        // A shortcut is found by the words its inputs and its name use, so a
+        // caller choosing a tool among many sees what it asks for.
+        keywords: shortcut
+            .inputs
+            .iter()
+            .map(|input| input.name.to_string())
+            .collect(),
         icon: None,
         description: Some(run_description(shortcut)),
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
         contract: ActionContract {
             kind: ActionKind::Read,
-            result: if shortcut.output.is_some() {
-                ResultSpec::Json {
-                    schema: serde_json::json!({}),
-                }
-            } else {
-                ResultSpec::None
-            },
+            result: output_result(shortcut),
             ..ActionContract::default()
         },
         input: InputSpec::None,
+        // The inputs are the parameters; what the run answers is `output`.
         params: shortcut.inputs.clone(),
         view: None,
     }
 }
 
-/// What `run` on `shortcut` says about itself: its steps, what starts it
-/// on its own, and which confirmations its saver gave in advance.
+/// What a run of `shortcut` answers: the schema its `output` binds a value
+/// of, so a caller is handed the shortcut's own typed result rather than an
+/// unconstrained one. A shortcut that binds nothing answers nothing.
+fn output_result(shortcut: &Shortcut) -> ResultSpec {
+    shortcut.output.as_ref().map_or(ResultSpec::None, |output| {
+        // The value a binding produces is known type by type; one that reads
+        // an earlier step is held to that step's own result when the shortcut
+        // is saved, and read as text here.
+        let schema = match output {
+            Binding::Literal(serde_json::Value::Object(_)) | Binding::Object(_) => {
+                serde_json::json!({"type": "object"})
+            }
+            Binding::Literal(serde_json::Value::Array(_)) | Binding::List(_) => {
+                serde_json::json!({"type": "array"})
+            }
+            Binding::Literal(serde_json::Value::Null) => serde_json::json!({"type": "null"}),
+            Binding::Literal(serde_json::Value::Bool(_)) => {
+                serde_json::json!({"type": "boolean"})
+            }
+            Binding::Literal(serde_json::Value::Number(number)) if number.is_i64() => {
+                serde_json::json!({"type": "integer"})
+            }
+            Binding::Literal(serde_json::Value::Number(_)) => {
+                serde_json::json!({"type": "number"})
+            }
+            _ => serde_json::json!({"type": "string"}),
+        };
+        ResultSpec::Json { schema }
+    })
+}
+
+/// What `run` on `shortcut` says about itself: its inputs, its steps, what
+/// starts it on its own, and which confirmations its saver gave in advance.
 #[must_use]
 pub fn run_description(shortcut: &Shortcut) -> String {
     let mut description = format!(
@@ -235,6 +267,23 @@ pub fn run_description(shortcut: &Shortcut) -> String {
         shortcut.steps.len(),
         if shortcut.steps.len() == 1 { "" } else { "s" }
     );
+    let inputs: Vec<String> = shortcut
+        .inputs
+        .iter()
+        .map(|input| {
+            format!(
+                "`{}` ({}{}): {}",
+                input.name,
+                input.ty.label(),
+                if input.required { "" } else { ", optional" },
+                input.description
+            )
+        })
+        .collect();
+    if !inputs.is_empty() {
+        description.push_str(". Takes ");
+        description.push_str(&inputs.join(", "));
+    }
     let triggers: Vec<String> = shortcut.triggers.iter().map(trigger_summary).collect();
     if !triggers.is_empty() {
         description.push_str(". Runs by itself ");
@@ -1289,6 +1338,56 @@ mod tests {
         assert_eq!(run.params, workspace.shortcuts[0].inputs);
         assert!(matches!(run.contract.result, ResultSpec::Json { .. }));
         assert_eq!(run_target(&run.address), Some("tidy"));
+    }
+
+    /// What a task chooses a tool by: the words its inputs and its name use,
+    /// what it answers, and what it says it takes.
+    #[test]
+    fn a_shortcut_reads_as_a_typed_tool_with_its_inputs_and_output() {
+        let folder = ActionParam::required("folder", ParamType::Text, "Where the receipts are");
+        let limit = ActionParam::optional("week", ParamType::Integer, "Which week, 0 for this one");
+        let tidy = shortcut(serde_json::json!({
+            "id": "file-receipts",
+            "name": "File receipts",
+            "inputs": [folder, limit],
+            "steps": [],
+            "output": {"literal": {"filed": 3}}
+        }));
+        let run = run_descriptor(&tidy);
+        assert_eq!(
+            run.params,
+            vec![folder, limit],
+            "its declared inputs, typed"
+        );
+        assert_eq!(run.keywords, vec!["folder".to_owned(), "week".to_owned()]);
+        assert_eq!(
+            run.contract.result,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"})
+            },
+            "a caller is promised the shape the shortcut answers"
+        );
+        let description = run.description.expect("a shortcut says what it offers");
+        assert!(description.contains("`folder` (text)"), "{description}");
+        assert!(
+            description.contains("Where the receipts are"),
+            "{description}"
+        );
+        assert!(
+            description.contains("`week` (integer, optional)"),
+            "{description}"
+        );
+
+        let silent = shortcut(serde_json::json!({
+            "id": "tidy",
+            "name": "Tidy",
+            "steps": []
+        }));
+        assert_eq!(
+            run_descriptor(&silent).contract.result,
+            ResultSpec::None,
+            "a shortcut that binds no output answers none"
+        );
     }
 
     #[test]
