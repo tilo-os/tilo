@@ -52,18 +52,28 @@ impl FrameHarness {
     }
 
     /// Where the window's sidebar stands now: what the bar's button shows,
-    /// what the window's shell holds and what its frame lays out. `None`
-    /// while the bar has no sidebar button or no shell with a sidebar is
+    /// what the window's shell holds and what its frame lays out.
+    ///
+    /// # Errors
+    /// While the bar has no sidebar button or no shell with a sidebar is
     /// laid out.
-    #[must_use]
-    pub fn window_sidebar_shown(&mut self) -> Option<SidebarShown> {
+    pub fn window_sidebar_shown(&mut self) -> Result<SidebarShown, String> {
         let width = f64::from(self.viewport.0);
-        let bar = self
+        let toolbar = self
             .painted_window_bar(width)
             .toolbar_row()
-            .toolbar()?
-            .sidebar?;
-        let shell = window_sidebar_shell(self.root.as_ref())?;
+            .toolbar()
+            .cloned()
+            .ok_or("the window bar shows none of the app's slots")?;
+        let bar = toolbar
+            .sidebar
+            .ok_or_else(|| format!("the window bar shows no sidebar button: {toolbar:?}"))?;
+        let shell = window_sidebar_shell(self.root.as_ref()).ok_or_else(|| {
+            format!(
+                "no nav shell with a sidebar is laid out under the bar: {}",
+                widget_outline(self.root.as_ref(), 4)
+            )
+        })?;
         let geometry = shell.geometry();
         let frame = match geometry.sidebar {
             SidebarPlacement::None => false,
@@ -72,7 +82,7 @@ impl FrameHarness {
                 geometry.sidebar_column.width() > 0.5
             }
         };
-        Some(SidebarShown {
+        Ok(SidebarShown {
             bar,
             shell: shell.is_sidebar_open(),
             frame,
@@ -92,11 +102,7 @@ impl FrameHarness {
     ) -> Result<Vec<SidebarShown>, String> {
         let _landed = crate::motion::testing::settled();
         self.relayout_until_still();
-        let read = |harness: &mut Self| {
-            harness
-                .window_sidebar_shown()
-                .ok_or_else(|| "the window shows no sidebar button over a sidebar".to_owned())
-        };
+        let read = |harness: &mut Self| harness.window_sidebar_shown();
         let mut states = vec![read(self)?];
         for _ in 0..presses {
             self.click_window_sidebar_button()?;
@@ -157,4 +163,18 @@ fn window_sidebar_shell(widget: &dyn Widget) -> Option<&NavShell> {
         return Some(shell);
     }
     widget.children().into_iter().find_map(window_sidebar_shell)
+}
+
+/// The names of `widget` and its descendants `depth` levels down, for a
+/// failure that found no shell.
+fn widget_outline(widget: &dyn Widget, depth: usize) -> String {
+    let children = widget.children();
+    if depth == 0 || children.is_empty() {
+        return widget.name().to_owned();
+    }
+    let inner: Vec<String> = children
+        .into_iter()
+        .map(|child| widget_outline(child, depth - 1))
+        .collect();
+    format!("{}[{}]", widget.name(), inner.join(", "))
 }

@@ -2422,7 +2422,7 @@ mod tests {
     #[test]
     fn the_window_bars_sidebar_button_flips_the_sidebar() {
         ui::framework::testing::check_window_sidebar_button(
-            ui::framework::testing::TestApp::<DbClientShell>::new,
+            ui::framework::testing::TestApp::<crate::DbClientShell>::new,
         )
         .unwrap_or_else(|error| panic!("{error}"));
     }
