@@ -154,7 +154,8 @@ def _session(ctx) -> dict:
     if "agent_session" not in ctx.facts:
         ctx.reset()
         ctx.open_app("so.tilo.notes")
-        ctx.settle(2.0)
+        if ctx.wait_presented("so.tilo.notes", 30) is None:
+            raise CheckFailed("Notes showed no frame within 30 s")
         title = f"Acceptance agent note {int(time.time())}"
         try:
             granted = ctx.vm.raw(GRANT)

@@ -2790,6 +2790,7 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             request_id,
             request,
         } => super::page::encode_request(request_id, &request),
+        WebViewCommand::CancelPage => json!({ "op": "page_cancel" }),
         WebViewCommand::PaintCapture { request_id } => json!({
             "op": "paint_capture",
             "request_id": request_id,

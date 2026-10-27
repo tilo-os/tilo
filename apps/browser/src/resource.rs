@@ -495,6 +495,11 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
         match self.page_mut().admit(invocation, effect.operation())? {
             Effected::Pending => {
                 let reply = cx.reply();
+                // The window keeps the answer, not a job of this effect, so
+                // the reply's own job is what hears the caller give up: a
+                // page action nobody waits for any more is stopped rather
+                // than left holding its tab.
+                cx.cancel_by(reply.progress().cancellation_signal());
                 self.page_mut().answer_later(invocation, reply);
                 Ok(Effected::Pending)
             }

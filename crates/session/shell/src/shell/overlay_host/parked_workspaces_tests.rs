@@ -238,12 +238,12 @@ impl tilo_desktop::resolver::ComponentContextSource for WakingApps {
                 views: self.views.clone(),
                 device_id: "device".into(),
                 instance_id: request.tab.id,
-                permissions: std::rc::Rc::new(std::cell::RefCell::new(
+                permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::member(
                         "author",
                         ui::permissions::Role::Owner,
                     ),
-                )),
+                ),
                 author: ui::permissions::UserId("author".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },

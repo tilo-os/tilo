@@ -3,7 +3,7 @@
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 use tilo_desktop::composition::{DesktopSurface, SurfaceChrome};
 use tilo_desktop::resolver::{ApplicationCatalogTileResolver, ComponentContextSource, TileRequest};
 use tilo_desktop_model::{
@@ -39,10 +39,12 @@ impl ComponentContextSource for Host {
                 views: self.views.clone(),
                 device_id: "device".into(),
                 instance_id: request.tab.id,
-                permissions: Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-                    "author",
-                    ui::permissions::Role::Owner,
-                ))),
+                permissions: ui::permissions::SharedPermissions::new(
+                    ui::permissions::PermissionContext::member(
+                        "author",
+                        ui::permissions::Role::Owner,
+                    ),
+                ),
                 author: ui::permissions::UserId("author".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },

@@ -72,7 +72,7 @@ pub(crate) struct Attachment {
     /// What the mount's apps may offer their person: set to the role the
     /// room answers they hold, so an app does not offer what the room
     /// would refuse.
-    pub permissions: Rc<RefCell<ui::permissions::PermissionContext>>,
+    pub permissions: ui::permissions::SharedPermissions,
 }
 
 struct Replica {
@@ -715,13 +715,14 @@ impl Room {
         self.followed = self.standing.code();
         for mounted in self.mounts.values() {
             let attachment = &mounted.attachment;
-            *attachment.permissions.borrow_mut() =
-                self.permitted.iter().filter(|(_, (_, may))| *may).fold(
+            attachment
+                .permissions
+                .set(self.permitted.iter().filter(|(_, (_, may))| *may).fold(
                     ui::permissions::PermissionContext::member(attachment.author.clone(), role),
                     |context, (node, _)| {
                         context.permitted_at(node, ui::permissions::KindSet::UNDOABLE)
                     },
-                );
+                ));
             // Its windows sync again, so what they offer (a bar's "View
             // only", an editor that takes typing) follows at once rather
             // than at the next change of their record.

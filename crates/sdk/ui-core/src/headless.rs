@@ -13024,10 +13024,12 @@ mod tests {
                 };
                 assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
                 observed.enqueue("run");
-                *binding.permissions.borrow_mut() = crate::permissions::PermissionContext::member(
-                    "reader",
-                    collab_types::role::Role::Viewer,
-                );
+                binding
+                    .permissions
+                    .set(crate::permissions::PermissionContext::member(
+                        "reader",
+                        collab_types::role::Role::Viewer,
+                    ));
                 let before = owner
                     .records
                     .read(&binding.checkout.id, automerge::AutoCommit::base_heads)

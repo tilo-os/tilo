@@ -155,9 +155,9 @@ impl App {
     ///
     /// Each walk of the whole tree here runs only when what it reads moved
     /// since it last ran ([`super::runtime::TreeWalks`]): a frame only an
-    /// animation asked for walks nothing. History asks every frame for
-    /// what other threads deliver to it, so a tree holding History surfaces
-    /// is walked every frame.
+    /// animation asked for walks nothing. What other threads deliver to a
+    /// History surface is news ([`crate::history_mode::news`]), as is a
+    /// request its controls queued.
     pub(super) fn refresh_framework_history(&mut self, width: f64) {
         self.restore_failed_document_publications();
         let tree = self.tree_generation();
@@ -174,13 +174,20 @@ impl App {
             self.layout.walks.routes = Some(routes);
         }
         let status = self.window_status();
-        let walked = self
+        let surfaces = super::runtime::HistorySurfaceInputs {
+            news: crate::history_mode::news(),
+            document: crate::doc::settle_mark(&self.state.doc),
+            narrow: width < 600.0,
+        };
+        let mut walked = self
             .layout
             .walks
             .history
             .take()
             .filter(|walk| walk.tree == tree && walk.status == status);
-        let embedded = walked.as_ref().is_none_or(|walk| walk.embedded);
+        let embedded = walked
+            .as_ref()
+            .is_none_or(|walk| walk.surfaces_owed(&surfaces));
         // A status that only changes the text where it already shows repaints
         // that text; it is no reason to rebuild History or the app.
         #[cfg(test)]
@@ -196,7 +203,7 @@ impl App {
         {
             history.set_sync_status_in_place(status.as_ref(), self.root_widget.as_mut());
         }
-        let (nested, found) = if embedded {
+        let found = if embedded {
             crate::history_mode::embedded::surfaces_need_refresh(
                 self.root_widget.as_ref(),
                 &self.state.doc,
@@ -204,8 +211,14 @@ impl App {
                 status.as_ref(),
             )
         } else {
-            (false, false)
+            // Nothing they read moved since the last walk found them at rest.
+            crate::history_mode::embedded::SurfacesWalk {
+                found: walked.as_ref().is_some_and(|walk| walk.embedded),
+                due: walked.as_mut().and_then(|walk| walk.due.take()),
+                ..Default::default()
+            }
         };
+        let nested = found.needed;
         #[cfg(test)]
         drop(walk);
         // The window's own History found its root in this same tree.
@@ -221,8 +234,11 @@ impl App {
         self.layout.walks.history = Some(super::runtime::HistoryWalk {
             tree,
             status: status.clone(),
-            embedded: found,
+            embedded: found.found,
             root_valid,
+            surfaces,
+            needed: found.needed,
+            due: found.due,
         });
         if !nested
             && !invalid

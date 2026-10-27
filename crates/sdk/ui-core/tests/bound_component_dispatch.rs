@@ -1468,7 +1468,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
             "ordinary FrameHarness paint did not reach the permission-aware root"
         );
-        *permissions.borrow_mut() = tilo_ui::permissions::PermissionContext::permissive();
+        permissions.set(tilo_ui::permissions::PermissionContext::permissive());
         EXPECTED_WRITE.set(true);
         CAPTURES.with_borrow_mut(Vec::clear);
         driver.relayout();
@@ -2376,9 +2376,9 @@ fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
     let host = ProbeHost::new();
     let definition = definition(action_probe_factory);
     let driver = |instance, role| {
-        let permissions = std::rc::Rc::new(std::cell::RefCell::new(
+        let permissions = tilo_ui::permissions::SharedPermissions::new(
             PermissionContext::member("probe-author", role).at_unix_time(100),
-        ));
+        );
         let context = host
             .prepare_with_permissions(&definition, instance, &LaunchTarget::New, permissions)
             .unwrap();
@@ -2440,13 +2440,13 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         use crate::support::application::{action_probe_factory, existing, operation_observations};
         let host = ProbeHost::new();
         let definition = definition(action_probe_factory);
-        let permissions = std::rc::Rc::new(std::cell::RefCell::new(
+        let permissions = tilo_ui::permissions::SharedPermissions::new(
             tilo_ui::permissions::PermissionContext::member(
                 "probe-author",
                 tilo_ui::permissions::Role::Owner,
             )
             .at_unix_time(100),
-        ));
+        );
         let first = definition
             .instantiate(
                 host.prepare_with_permissions(
@@ -2555,7 +2555,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             let mut records = Vec::new();
             for instance in 11..13 {
                 let allowed = instance < 11_u64.saturating_add(authorized);
-                let permissions = std::rc::Rc::new(std::cell::RefCell::new(
+                let permissions = tilo_ui::permissions::SharedPermissions::new(
                     if allowed {
                         tilo_ui::permissions::PermissionContext::member(
                             "probe-author",
@@ -2565,7 +2565,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                         tilo_ui::permissions::PermissionContext::stranger("probe-author")
                     }
                     .at_unix_time(100),
-                ));
+                );
                 let component = definition
                     .instantiate(
                         host.prepare_with_permissions(

@@ -748,9 +748,10 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         );
         assert_eq!(revision(&f, &checkout), 2);
         let stale = id;
-        *f.authority.borrow_mut() =
+        f.authority.set(
             ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
-                .at_unix_time(100);
+                .at_unix_time(100),
+        );
         let before = f
             .records
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
@@ -1358,9 +1359,10 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         })
         .unwrap();
     a.relayout();
-    *f.authority.borrow_mut() =
+    f.authority.set(
         ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
-            .at_unix_time(100);
+            .at_unix_time(100),
+    );
     assert!(
         a.invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {

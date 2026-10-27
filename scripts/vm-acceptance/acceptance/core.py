@@ -429,9 +429,14 @@ def dismiss_surfaces(ctx) -> str:
     with none of them. Returns how it went; never raises."""
     for _ in range(DISMISS_ESCAPES):
         try:
+            before = open_surfaces(ctx.state())
+            if not before:
+                return "the harness closed it with Escape"
             ctx.vm.key("Escape")
-            time.sleep(0.6)
-            if not open_surfaces(ctx.state()):
+            # Escape closes the top surface; the next press is for what is still open.
+            now = wait_until(lambda: (left,) if (left := open_surfaces(ctx.state())) != before else None,
+                             3, 0.2)
+            if now is not None and not now[0]:
                 return "the harness closed it with Escape"
         except (VmError, KeyError, TypeError):
             break

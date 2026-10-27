@@ -370,7 +370,9 @@ fn publisher_on(
                     views,
                     device_id: apps.device_id.clone(),
                     instance_id: 1,
-                    permissions: Rc::new(RefCell::new(admission.permissions.clone())),
+                    permissions: ui::permissions::SharedPermissions::new(
+                        admission.permissions.clone(),
+                    ),
                     author: apps.author.clone(),
                     action_context: tilo_actions::ActionContext::default(),
                 },
