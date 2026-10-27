@@ -41,6 +41,12 @@ impl Pane {
     pub fn content_mut(&mut self) -> &mut Element {
         &mut self.inner
     }
+
+    /// What the pane shows.
+    #[must_use]
+    pub fn content(&self) -> &Element {
+        &self.inner
+    }
 }
 
 impl Decorator for Pane {

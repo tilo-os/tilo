@@ -2270,6 +2270,9 @@ impl crate::widget::Decorator for MenuButton {
     }
 }
 
+mod component;
+pub use component::{MenuButtonProps, MenuItemProps};
+
 #[cfg(test)]
 mod a11y_tests {
     use super::*;

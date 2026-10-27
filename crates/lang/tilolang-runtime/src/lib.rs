@@ -30,6 +30,7 @@ pub mod ids;
 mod live;
 pub mod meta;
 mod num;
+pub mod platform;
 pub mod project;
 pub mod registry;
 mod render;

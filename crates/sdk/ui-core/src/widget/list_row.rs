@@ -3964,4 +3964,4 @@ mod control_row_tests {
 }
 
 mod component;
-pub use component::ListRowProps;
+pub use component::{ListRowProps, SwipeActionProps};

@@ -42,13 +42,15 @@ flow morning_cleanup(list: todo.TodoList, nb: notes.Notebook) -> Int {
 /// The board's window: a card per app it points at, holding that app's resources as rows that
 /// open them: the open todos, the pinned notes, the conversations.
 view board(b: Board) {
-    canvas {
-        match b.todos {
-            .some(todos) => match b.notebook {
-                .some(nb) => button(morning_cleanup(todos, nb)) as morning,
+    std.page(b, canvas: true, empty: b.todos == .none and b.notebook == .none and b.chats == .none) {
+        header: {
+            match b.todos {
+                .some(todos) => match b.notebook {
+                    .some(nb) => button(morning_cleanup(todos, nb)) as morning,
+                    .none => {}
+                },
                 .none => {}
-            },
-            .none => {}
+            }
         }
         grid(min: 22rem) {
             match b.todos {

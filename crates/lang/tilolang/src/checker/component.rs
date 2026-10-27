@@ -268,7 +268,9 @@ impl Checker<'_> {
                 self.typed_prop(n, d, name, inner, doc, value);
             }
             Type::Option(inner) => {
-                let v = self.expr(value, None);
+                let held = lang_type(inner);
+                let want = (!held.is_error()).then(|| Ty::Option(Box::new(held)));
+                let v = self.expr(value, want.as_ref());
                 match &v.ty {
                     Ty::Error => {}
                     Ty::Option(held) if fits(inner, held) => {
@@ -487,9 +489,13 @@ impl Checker<'_> {
         for s in block {
             match &s.kind {
                 UiKind::Slot { node, name, body } => self.slot_content(n, d, *node, name, body),
-                UiKind::On { event, action } => {
-                    if d.event(&event.name).is_some() {
-                        let act = self.expr_as(action, &Ty::Action);
+                UiKind::On {
+                    event,
+                    param,
+                    action,
+                } => {
+                    if let Some(e) = d.event(&event.name) {
+                        let act = self.event_action(d, e, param.as_ref(), action);
                         if !act.ty.is_error() {
                             self.emit(host(
                                 Imp::UiOn,
@@ -536,6 +542,88 @@ impl Checker<'_> {
         self.child_block("slot", &content, n);
     }
 
+    /// What an event does: an action reference. An event that carries a value names it
+    /// (`on select(x: Note): open(x)`), and the action takes it as one of its arguments as it
+    /// is: the reference holds its place, and the host puts the value there when the event
+    /// happens. It is data still, never a closure.
+    fn event_action(
+        &mut self,
+        d: &Description,
+        e: &tilo_ui_graph::component::Event,
+        param: Option<&ast::EventParam>,
+        action: &ast::Expr,
+    ) -> Ex {
+        let Some(param) = param else {
+            return self.expr_as(action, &Ty::Action);
+        };
+        let Some(carried) = &e.value else {
+            self.err(
+                "E063",
+                param.name.span,
+                format!(
+                    "{}'s `{}` carries no value; write `on {}: action(...)`",
+                    shown(d),
+                    e.name,
+                    e.name
+                ),
+            );
+            return Ex::error();
+        };
+        let ty = match &param.ty {
+            Some(te) => {
+                let types = self.st.types.clone();
+                self.type_in(te, &types)
+            }
+            None => lang_type(carried),
+        };
+        if ty.is_error() && param.ty.is_none() {
+            self.err(
+                "E063",
+                param.name.span,
+                format!(
+                    "{}'s `{}` carries {}; name its type: `on {}({}: T): ...`",
+                    shown(d),
+                    e.name,
+                    carried.show(),
+                    e.name,
+                    param.name.name
+                ),
+            );
+            return Ex::error();
+        }
+        if !fits(carried, &ty) && !ty.is_error() {
+            let t = self.show(&ty);
+            self.err(
+                "E020",
+                param.name.span,
+                format!(
+                    "{}'s `{}` carries {}, not {t}",
+                    shown(d),
+                    e.name,
+                    carried.show()
+                ),
+            );
+            return Ex::error();
+        }
+        if !passed_as_is(action, &param.name.name) {
+            self.err(
+                "E063",
+                action.span,
+                format!(
+                    "the value `{}` carries is passed to the action as it is, as one of its arguments: `{}(...)` with `{}` among them",
+                    e.name, "action", param.name.name
+                ),
+            );
+            return Ex::error();
+        }
+        self.push_sink();
+        let local = self.declare(&param.name.name, ty.clone());
+        self.emit(Stmt::Set(local, Ex::host(Imp::EventValue, Vec::new(), ty)));
+        let act = self.expr_as(action, &Ty::Action);
+        let stmts = self.pop_sink();
+        Ex::new(crate::ir::Ek::Seq(stmts, Box::new(act)), Ty::Action)
+    }
+
     /// `name: { ... }`: a `slot` node of `n`, named, holding the content.
     fn slot_content(
         &mut self,
@@ -570,7 +658,7 @@ impl Checker<'_> {
             Imp::UiPropH,
             vec![s_ex.clone(), Ex::str("name"), Ex::str(&slot.name)],
         ));
-        self.child_block("slot", body, s);
+        self.child_block_of("slot", body, s, true);
         self.emit(host(Imp::UiChild, vec![Ex::local(n, Ty::View), s_ex]));
     }
 
@@ -647,6 +735,27 @@ impl Checker<'_> {
             }
         }
     }
+}
+
+/// Whether the action `e` takes `name` only as one of its arguments, as it is: `open(x)`,
+/// `check(item, x)`, `set(filter, x)`.
+fn passed_as_is(e: &ast::Expr, name: &str) -> bool {
+    let ExprKind::Call { callee, args } = &e.kind else {
+        return false;
+    };
+    let names = [name];
+    if super::native::mentions(callee, &names).is_some() {
+        return false;
+    }
+    let mut passed = false;
+    for a in args {
+        match &a.value.kind {
+            ExprKind::Ident(n) if n == name => passed = true,
+            _ if super::native::mentions(&a.value, &names).is_some() => return false,
+            _ => {}
+        }
+    }
+    passed
 }
 
 /// The language's type of a description's scalar type, for checking literals against it.

@@ -2,18 +2,16 @@
 //!
 //! The window runs the package's root view, and the view of the resource `open(r)` (or a row of
 //! a list) went to. They are consecutive windows of one package in the lane, and they render as
-//! the columns of one [`NavShell`]:
+//! the columns of one shell ([`shell`]): each view builds its own (`ui.NavShell`; `std` builds
+//! one for every frame), and the window shows the root's sidebar and overview beside the
+//! content and header of the window after it. On a narrow screen the columns become push
+//! navigation with Back, by the shell's rules. Everything in the shell is the views' own,
+//! built through the one adapter: the window adds no frame, header or list of its own.
 //!
-//! - the root view's frame decides the shell: a `list` is the overview column when its items
-//!   open into windows of their own (the next column shows the open one), else the content; a
-//!   `document`, `page` or `canvas` is the content; its `sidebar {}` and `inspector(r) {}` are
-//!   the shell's sidebar and inspector;
-//! - the header of each column comes from the platform: the resource's title, the list's count,
-//!   the actions on the resource (the primary one as the Primary button) and search;
-//! - an enum window state a list sorts or filters by becomes the sort menu in the header and the
-//!   filter list with counts in the sidebar.
-//!
-//! On a narrow screen the columns become push navigation with Back, by the shell's rules.
+//! What holds for every window is the platform's, and so the window's: the overview's
+//! selection is the window shown after it; the lenses on each resource are what presence
+//! reports; a destructive action a person runs offers Undo; a primary action a person runs
+//! shows what it made.
 //!
 //! Each frame the window
 //!
@@ -23,18 +21,12 @@
 //! 4. hands what the runtime planned to the door, as an invocation of the host's `commit`
 //!    action, so the change is attributed, undoable and replayed by every peer.
 
-/// The kinds of the toolkit's components the window reads in a view's tree.
-const BUTTON: &str = "ui.Button";
-const CARD: &str = "ui.Card";
-const LIST_ROW: &str = "ui.ListRow";
-const TEXT_INPUT: &str = "ui.TextInput";
-
 mod describe;
-mod list;
 pub(crate) mod pane;
+pub(crate) mod rows;
+pub(crate) mod shell;
 #[cfg(test)]
 mod tests;
-mod transcript;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -44,55 +36,32 @@ use std::sync::Arc;
 use serde_json::Value as Json;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
+use tilolang_tilo::runtime::handles::Retained;
 use tilolang_tilo::runtime::{
-    ActionInfo, BindTarget, Decision, EditOutcome, InvokeOutcome, OutsideSink, Patch, Principal,
-    Resolution, ResourceRef, Suggestion, UiNode, Value, ViewEvent, ViewInstance,
+    ActionInfo, ActionRef, BindTarget, Decision, EditOutcome, InvokeOutcome, OutsideSink, Patch,
+    Principal, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewEvent, ViewInstance,
 };
 use tilolang_tilo::sink::LogSink;
 use tilolang_tilo::upgrade::Upgrade;
 use tilolang_tilo::{HostEffect, OpenEffect};
 use ui::framework::{ResourceSurface, RunMode};
-use ui::icons::Icon;
 use ui::tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
 use ui::tokens::{MotionSource, Rhythm, TextRole};
 use ui::widget::arrange::{Fit, Row, Slot, Stack};
 use ui::widget::controls::ControlResult;
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    Absent, AppModel, Button, ButtonRole, ContentKind, Element, EmptyState, MenuItem, ModelPath,
-    NavItem, NavList, NavPane, NavSection, NavShell, Scrollable, Spacer, Text, Widget,
+    Absent, AppModel, Button, ButtonRole, DescribedList, Element, ModelPath, NavPane, NavShell,
+    Text, Widget,
 };
-
-pub use list::{RowAction, RowData, in_avatar_column, shows_avatar};
 
 use crate::i18n::{t, t_args};
 use crate::names::Names;
 use crate::reconcile::{EventSink, Reconciler, UiEvent};
 use crate::resource::{Live, Room, RoomState, caller_of};
-use list::{Empty, ListPane, Peers, RowSource};
 use pane::Pane;
-use transcript::{Thread, ThreadSource};
-
-/// What the shell's controls ask of the window.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Request {
-    /// Fire `event` of the node `key` of the root view (a sort or filter case).
-    Fire { key: String, event: String },
-    /// The row `key` of the list was selected: show its item in the next column.
-    Select(String),
-    /// The row `key` was activated: show its item and bring it to the front.
-    Activate(String),
-    /// Run a published action.
-    Invoke {
-        action: RowAction,
-        /// What the action was run on, for the undo notice.
-        title: String,
-    },
-    /// Back from the window shown in place of the root's content.
-    Back,
-}
-
-pub(crate) type Requests = Rc<RefCell<Vec<Request>>>;
+use rows::{HostRows, Registry};
+use shell::DETAIL;
 
 /// An answer to the Ask bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,15 +75,27 @@ enum Answer {
 /// made it, when one did: the framework applies it for the invoker the door admitted.
 type Outgoing = Rc<RefCell<VecDeque<(ControlInvocation, Option<InvocationId>)>>>;
 
+/// The retained event the composed shell's Back carries: the window answers it itself.
+const BACK_EVENT: Retained = Retained(u64::MAX);
+
 /// Hand everything the runtime committed under a ticket of `first` or later to the door.
-fn queue_commits(host: &Host, outgoing: &Outgoing, first: u64, origin: Option<InvocationId>) {
+/// Returns the tickets handed over.
+fn queue_commits(
+    host: &Host,
+    outgoing: &Outgoing,
+    first: u64,
+    origin: Option<InvocationId>,
+) -> Vec<u64> {
+    let mut tickets = Vec::new();
     for committed in host.take_committed_from(first) {
         let mut arguments = serde_json::Map::new();
         arguments.insert("ticket".to_owned(), Json::from(committed.ticket));
         if let Some(invocation) = ControlInvocation::from_parts(HOST_RESOURCE, COMMIT, arguments) {
             outgoing.borrow_mut().push_back((invocation, origin));
+            tickets.push(committed.ticket);
         }
     }
+    tickets
 }
 
 /// A sink the window holds as a trait object, handed to the runtime.
@@ -161,105 +142,45 @@ fn door_endpoints(
     (Box::new(endpoint), Box::new(open_endpoint))
 }
 
-// ----- frames ------------------------------------------------------------------------------
-
-/// What a view's frame is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Frame {
-    List,
-    Document,
-    Page,
-    Canvas,
-}
-
-impl Frame {
-    fn of(node: &UiNode) -> Option<Self> {
-        Some(match node.kind.as_str() {
-            "list" => Self::List,
-            "document" => Self::Document,
-            "page" => Self::Page,
-            "canvas" => Self::Canvas,
-            _ => return None,
-        })
-    }
-
-    fn content_kind(self) -> ContentKind {
-        match self {
-            Self::List => ContentKind::List,
-            Self::Document => ContentKind::Document,
-            Self::Page | Self::Canvas => ContentKind::Page,
-        }
-    }
-}
-
-/// The icon the app `app` declares, which its empty states show as native apps show theirs.
-fn app_icon(host: &Host, app: &str) -> Option<ui::icons::Icon> {
-    host.package(app)?
-        .meta
-        .icon
-        .as_deref()
-        .and_then(list::icon_named)
-}
-
-/// The frame of a view's tree: its root, or the first frame under the containers that hold it.
-fn frame_of(tree: &UiNode) -> Option<&UiNode> {
-    if Frame::of(tree).is_some() {
-        return Some(tree);
-    }
-    tree.children.iter().find_map(frame_of)
-}
-
-/// The frame of a view's tree as the window composes it: a page inside it drawn as a stack
-/// ([`crate::reconcile::normalize`]), and a `list` without its rows, which the list column
-/// reads from the view as it shows them.
-fn composed_frame(tree: &UiNode) -> Option<UiNode> {
-    let frame = frame_of(tree)?;
-    if frame.kind == "list" {
-        return Some(UiNode {
-            children: Vec::new(),
-            ..frame.clone()
-        });
-    }
-    Some(crate::reconcile::normalize(frame))
-}
-
-/// The keys from the root of `tree` to its node `key`, as patches name a place.
-fn key_path(tree: &UiNode, key: &str) -> Option<Vec<String>> {
-    if tree.key == key {
-        return Some(vec![tree.key.clone()]);
-    }
-    tree.children.iter().find_map(|child| {
-        let mut path = key_path(child, key)?;
-        path.insert(0, tree.key.clone());
-        Some(path)
-    })
-}
-
-/// Render every row of the lists of `view` but those of `skip` (the list column's and a
-/// transcript's, which render the rows they show): a list inside a page is drawn whole, one in a card as its preview (the rows
-/// the runtime built for it).
 /// What moves a column the person's last input brings to the front: a click or a tap slides it
 /// in; a key, an agent's action through the door, or nothing the person just did lands it.
 fn by_input() -> MotionSource {
     ui::motion::recent_input(ui::time::now()).unwrap_or(MotionSource::Action)
 }
 
-fn show_content_rows(view: &mut ViewInstance, skip: &[Option<&str>]) {
-    fn lists(node: &UiNode, skip: &[Option<&str>], out: &mut Vec<String>) {
+/// The virtual lists of a view's tree, by key, with their keys from the root.
+fn virtual_lists(tree: &UiNode) -> Vec<(String, Vec<String>)> {
+    fn walk(node: &UiNode, path: &mut Vec<String>, out: &mut Vec<(String, Vec<String>)>) {
+        path.push(node.key.clone());
+        if tilolang_tilo::runtime::view::is_virtual(&node.kind) {
+            out.push((node.key.clone(), path.clone()));
+        }
+        for child in &node.children {
+            walk(child, path, out);
+        }
+        path.pop();
+    }
+    let mut out = Vec::new();
+    walk(tree, &mut Vec::new(), &mut out);
+    out
+}
+
+/// Render every row of the lists of `view` that no virtual list renders as it shows them: a
+/// list inside content is drawn whole, one in a card as its preview (the rows the runtime built
+/// for it).
+fn show_content_rows(view: &mut ViewInstance) {
+    fn lists(node: &UiNode, out: &mut Vec<String>) {
         if node.kind == "list" {
-            if skip.contains(&Some(node.key.as_str())) {
-                return;
-            }
             out.push(node.key.clone());
         }
         for child in &node.children {
-            lists(child, skip, out);
+            lists(child, out);
         }
     }
     let mut shown = HashSet::new();
     loop {
         let mut found = Vec::new();
-        lists(view.tree(), skip, &mut found);
+        lists(view.tree(), &mut found);
         found.retain(|key| !shown.contains(key));
         if found.is_empty() {
             return;
@@ -275,261 +196,10 @@ fn show_content_rows(view: &mut ViewInstance, skip: &[Option<&str>]) {
     }
 }
 
-fn part<'a>(frame: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
-    frame.children.iter().find(|child| child.kind == kind)
-}
-
-/// A frame's content as the page the content column shows: everything in it but its sidebar and
-/// inspector, at the readable measure (or the full width, for a canvas).
-fn content_page(frame: &UiNode) -> UiNode {
-    let bare = |kind: &str, key: String| UiNode {
-        kind: kind.to_owned(),
-        key,
-        props: std::collections::BTreeMap::new(),
-        binding: None,
-        events: std::collections::BTreeMap::new(),
-        anchor: None,
-        children: Vec::new(),
-    };
-    // The frame's parts stand a section apart, as the sections of a native page do.
-    let mut body = bare("stack", format!("{}~body", frame.key));
-    body.props
-        .insert("gap".to_owned(), Value::Text("section".to_owned()));
-    let source = if frame.kind == "canvas" {
-        without_frame_buttons(frame)
-    } else {
-        frame.clone()
-    };
-    body.children = source
-        .children
-        .into_iter()
-        .filter(|child| !matches!(child.kind.as_str(), "sidebar" | "inspector" | "composer"))
-        .collect();
-    let mut page = bare("page", frame.key.clone());
-    // A transcript spans its column, as a native conversation does, rather than a reading
-    // measure.
-    if frame.kind == "canvas" || part(frame, "composer").is_some() {
-        page.props.insert("full".to_owned(), Value::Int(1));
-    }
-    page.children = vec![body];
-    page
-}
-
-/// A sidebar's or inspector's content, as a stack.
-fn side_stack(node: &UiNode) -> UiNode {
-    UiNode {
-        kind: "stack".to_owned(),
-        ..node.clone()
-    }
-}
-
-fn scrolling(body: Element) -> Element {
-    Box::new(ui::widget::Scrollable::new_vertical().with_child(body))
-}
-
-/// A frame's composer as the page under its content: the same readable measure, so the two
-/// share one content edge.
-fn composer_page(frame: &UiNode) -> Option<UiNode> {
-    let mut composer = side_stack(part(frame, "composer")?);
-    iconic_buttons(&mut composer);
-    let mut props = std::collections::BTreeMap::new();
-    props.insert("full".to_owned(), Value::Int(1));
-    Some(UiNode {
-        kind: "page".to_owned(),
-        key: format!("{}~composer", frame.key),
-        props,
-        binding: None,
-        events: std::collections::BTreeMap::new(),
-        anchor: None,
-        children: vec![composer],
-    })
-}
-
-/// A composer's buttons that have an icon show only it, as a native composer's Send does.
-fn iconic_buttons(node: &mut UiNode) {
-    if node.kind == BUTTON && node.props.contains_key("icon") {
-        node.props.insert("icon_only".to_owned(), Value::Bool(true));
-    }
-    for child in &mut node.children {
-        iconic_buttons(child);
-    }
-}
-
-/// The transcript of a frame whose content is one list ([`transcript::thread_list`]): where its
-/// rows come from, and the reconciler that builds them.
-struct ThreadOf {
-    source: Rc<ThreadSource>,
-    reconciler: Reconciler,
-}
-
-/// The thread the transcript `element` shows, when it shows one.
-fn thread_in(element: &mut Element) -> Option<&mut Thread> {
-    element
-        .as_any_mut()?
-        .downcast_mut::<Stack>()?
-        .child_mut(0)?
-        .as_any_mut()?
-        .downcast_mut::<Thread>()
-}
-
-/// Reconcile what the scroll view `scroll` shows, built for `old`, with `new` in place: the
-/// content keeps its widgets and the view its scroll position. Whether `scroll` is a scroll
-/// view.
-fn reconcile_scrolled(
-    reconciler: &mut Reconciler,
-    scroll: &mut Element,
-    old: &UiNode,
-    new: &UiNode,
-) -> bool {
-    let Some(scroll) = scroll
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<Scrollable>())
-    else {
-        return false;
-    };
-    let Some(content) = scroll.child_mut() else {
-        return false;
-    };
-    if let Some(replaced) = reconciler.update_in(content, old, new) {
-        scroll.replace_child(replaced);
-    }
-    true
-}
-
-/// Reconcile a [`transcript`] in place: its content, built for `old_content`, with
-/// `content`, and its composer, built for `old_composer`, with `composer`. Whether `element`
-/// is a transcript.
-fn reconcile_transcript(
-    reconciler: &mut Reconciler,
-    element: &mut Element,
-    (old_content, content): (&UiNode, &UiNode),
-    (old_composer, composer): (&UiNode, &UiNode),
-    thread: Option<&ThreadOf>,
-) -> bool {
-    let shown = thread_in(element)
-        .map(|shown| thread.is_some_and(|thread| shown.model().reads(&thread.source)));
-    let Some(stack) = element
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<Stack>())
-    else {
-        return false;
-    };
-    if stack.len() != 2 {
-        return false;
-    }
-    // A thread takes its rows' changes as they come (`apply_polled`): it stays while it shows
-    // the same list. A scrolled content is reconciled in place.
-    let kept = match (shown, thread) {
-        (Some(same), _) => same,
-        (None, Some(_)) => false,
-        (None, None) => stack
-            .child_mut(0)
-            .is_some_and(|scroll| reconcile_scrolled(reconciler, scroll, old_content, content)),
-    };
-    if !kept {
-        return false;
-    }
-    let replaced = stack
-        .child_mut(1)
-        .and_then(|footer| reconciler.update_in(footer, old_composer, composer));
-    if let Some(replaced) = replaced {
-        stack.replace(1, replaced);
-    }
-    true
-}
-
-/// Bring the pane up to date with `node` and the frame's composer `composer`: a frame with a
-/// composer is a transcript ([`transcript`]); one without scrolls as a page.
-fn fill_framed(
-    pane: &mut Pane,
-    reconciler: &mut Reconciler,
-    built: (&mut Option<UiNode>, &mut Option<UiNode>),
-    (node, composer): (&UiNode, Option<&UiNode>),
-    thread: Option<ThreadOf>,
-) {
-    let (built_content, built_composer) = built;
-    let Some(composer) = composer else {
-        if built_composer.take().is_some() {
-            *built_content = None;
-        }
-        fill(pane, reconciler, built_content, node);
-        return;
-    };
-    let same = |old: &Option<UiNode>, new: &UiNode| {
-        old.as_ref()
-            .is_some_and(|old| old.key == new.key && old.kind == new.kind)
-    };
-    let kept = match (built_content.as_ref(), built_composer.as_ref()) {
-        (Some(old_content), Some(old_composer))
-            if same(built_content, node) && same(built_composer, composer) =>
-        {
-            reconcile_transcript(
-                reconciler,
-                pane.content_mut(),
-                (old_content, node),
-                (old_composer, composer),
-                thread.as_ref(),
-            )
-        }
-        _ => false,
-    };
-    if !kept {
-        let footer = reconciler.build(composer);
-        pane.set(match thread {
-            Some(ThreadOf { source, reconciler }) => {
-                transcript::above_composer(Box::new(transcript::thread(source, reconciler)), footer)
-            }
-            None => transcript::scrolled(reconciler.build(node), footer),
-        });
-    }
-    *built_content = Some(node.clone());
-    *built_composer = Some(composer.clone());
-}
-
-/// Bring the pane up to date with `node`: reconcile what it shows in place when it was built
-/// from the same node, else build it.
-fn fill(pane: &mut Pane, reconciler: &mut Reconciler, built: &mut Option<UiNode>, node: &UiNode) {
-    let kept = match built.as_ref() {
-        Some(old) if old.key == node.key && old.kind == node.kind => {
-            old == node || reconcile_scrolled(reconciler, pane.content_mut(), old, node)
-        }
-        _ => false,
-    };
-    if !kept {
-        pane.set(scrolling(reconciler.build(node)));
-    }
-    *built = Some(node.clone());
-}
-
-/// A choice an enum window state gives a list: its cases with their labels, the one chosen, and
-/// for a filter how many items each case holds.
-#[derive(Clone, Debug, PartialEq)]
-struct Choice {
-    cases: Vec<crate::reconcile::Case>,
-    selected: Option<String>,
-    counts: HashMap<String, i64>,
-}
-
-/// What a `list` frame shows.
-struct Listing {
-    key: String,
-    empty: Empty,
-    sort: Option<Choice>,
-    filter: Option<Choice>,
-    /// Whether the items open into windows of their own: their type has a default view.
-    opens_items: bool,
-    /// What an item is called ("note").
-    noun: String,
-}
-
-/// The parts of the shell, which decide whether it is built again.
-#[derive(Clone, Debug, PartialEq)]
-struct Shape {
-    frame: Frame,
-    overview: bool,
-    filter_sidebar: bool,
-    view_sidebar: bool,
-    content: ContentKind,
+fn slot(element: Element, fit: Fit) -> Slot {
+    let mut slot = Slot::new(element);
+    slot.fit = fit;
+    slot
 }
 
 /// One window of the lane: a resource shown through a view.
@@ -538,19 +208,15 @@ struct Lane {
     /// The view `open(r, view: v)` named, when it named one; the default view of the type
     /// otherwise.
     with: Option<String>,
-    /// The view, shared with the list column, which renders the rows it shows.
+    /// The view, shared with the rows of its virtual lists, which render what they show.
     view: Rc<RefCell<ViewInstance>>,
-    /// The `list` frame whose rows the list column shows: the root's, when its frame is one.
-    list: Option<String>,
-    /// The `list` a frame with a composer shows as its transcript, rendering the rows it shows.
-    thread: Option<String>,
-    events: EventSink,
-    reconciler: Reconciler,
-    /// What was built into the content, sidebar and inspector panes from it.
-    content: Option<UiNode>,
-    sidebar: Option<UiNode>,
-    /// The composer built under the content, when the frame has one.
-    composer: Option<UiNode>,
+}
+
+/// What a person's action, run from a control, is waiting for the door to commit: the notice of
+/// a destructive one, which offers Undo once it is committed.
+#[derive(Default)]
+struct Pending {
+    undo: HashMap<u64, String>,
 }
 
 /// The window. See the module docs.
@@ -566,17 +232,20 @@ pub struct Window {
     live: Option<Live>,
     names: Names,
     names_changed: Cell<bool>,
-    /// Who else is at which resource of the package, as presence last reported it.
-    peers: Peers,
-    peers_changed: bool,
+    /// The lenses on each resource of the package, as presence last reported them.
+    lenses: HashMap<String, Vec<(Principal, bool)>>,
+    lenses_changed: bool,
     root: Option<Lane>,
     /// The window `open(r)` or a row went to: the next column, or the content in place of the
-    /// root's when the root is not a list.
+    /// root's when the root has no overview.
     detail: Option<Lane>,
-    requests: Requests,
-    shape: Option<Shape>,
-    /// The headers last given to the shell, so unchanged ones keep their controls.
-    headers: HashMap<&'static str, String>,
+    /// Builds the composed shell and reconciles it, reporting what its controls do.
+    reconciler: Rc<RefCell<Reconciler>>,
+    events: EventSink,
+    /// The composed shell last built.
+    built: Option<UiNode>,
+    /// The rows of the views' virtual lists.
+    rows: Registry,
     /// The shell, the Ask bar and the door's endpoints.
     body: Element,
     structure_dirty: bool,
@@ -591,12 +260,7 @@ pub struct Window {
     device: Option<String>,
     /// Where the indexes of the rooms this window shows are kept: `None` keeps them in memory.
     indexes: Option<std::path::PathBuf>,
-    /// The destructive actions handed to the door and not yet answered, by action id, with the
-    /// notice their undo shows.
-    destructive: HashMap<String, String>,
-    /// The primary actions handed to the door and not yet answered, by action id: what each
-    /// makes opens when it is answered.
-    making: HashSet<String>,
+    pending: Pending,
     undo: ui::undo::UndoAccess,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
@@ -636,192 +300,6 @@ fn used_packages(host: &Host, app: &str) -> Vec<tilolang_tilo::host::Package> {
         .collect()
 }
 
-/// Mark each input of a document's page with the role of the field it edits (`title`, `body`),
-/// so the document draws its title as its large title and its body as running text, both in
-/// place, as a native document does. Whether the page edits its title.
-fn mark_field_roles(host: &Host, node: &mut UiNode) -> bool {
-    let mut titled = false;
-    if node.kind == TEXT_INPUT
-        && let Some((target, field)) = node.binding.as_ref().and_then(|binding| binding.field())
-        && let Some(role) = describe::type_of(host, &target.ty).and_then(|(_, ty)| {
-            ty.fields
-                .iter()
-                .find(|declared| declared.id == *field)
-                .and_then(|declared| declared.role.clone())
-        })
-    {
-        titled = role == "title";
-        // A document's title is its large title, edited in place (the `TextInput`'s `title`);
-        // its body is the block editor.
-        if titled {
-            node.props.insert("title".to_owned(), Value::Bool(true));
-        }
-        node.props
-            .insert("field_role".to_owned(), Value::Text(role));
-    }
-    for child in &mut node.children {
-        titled |= mark_field_roles(host, child);
-    }
-    titled
-}
-
-/// Name each card of `node` after the resource it shows, and count what it lists when the view
-/// gave no count: the head a dashboard card has natively (a title with a count pill).
-fn mark_cards(host: &Host, node: &mut UiNode) {
-    if node.kind == CARD {
-        if !node.props.contains_key("title")
-            && let Some(Value::Ref(reference)) = node.props.get("item")
-        {
-            let title = describe::title_of(host, &reference.target);
-            node.props.insert("title".to_owned(), Value::Text(title));
-        }
-        if !node.props.contains_key("count") {
-            let rows = rows_in(node);
-            if rows > 0 {
-                node.props.insert(
-                    "count".to_owned(),
-                    Value::Int(i64::try_from(rows).unwrap_or(i64::MAX)),
-                );
-            }
-        }
-    }
-    if node.kind == LIST_ROW
-        && !node.props.contains_key("title")
-        && let Some(Value::Ref(reference)) = node.props.get("item")
-    {
-        let target = reference.target.clone();
-        node.props.insert(
-            "title".to_owned(),
-            Value::Text(describe::title_of(host, &target)),
-        );
-        if !node.props.contains_key("icon")
-            && let Some((meta, _)) = describe::type_of(host, &target.ty)
-            && let Some(icon) = meta.icon
-        {
-            node.props.insert("icon".to_owned(), Value::Text(icon));
-        }
-    }
-    for child in &mut node.children {
-        mark_cards(host, child);
-    }
-}
-
-/// Whether `node` shows nothing: it holds containers only, no text, control or card.
-fn shows_nothing(node: &UiNode) -> bool {
-    node.children.iter().all(|child| {
-        matches!(
-            child.kind.as_str(),
-            "stack" | "column" | "fragment" | "row" | "grid" | "page" | "layers" | "spacer"
-        ) && shows_nothing(child)
-    })
-}
-
-/// How many rows the lists under `node` hold: every row, shown or not (a card shows a preview).
-fn rows_in(node: &UiNode) -> usize {
-    node.children
-        .iter()
-        .map(|child| {
-            if child.kind == "list" {
-                child.items_total()
-            } else if child.kind == LIST_ROW {
-                1
-            } else {
-                rows_in(child)
-            }
-        })
-        .sum()
-}
-
-/// The labels of the action buttons `node` draws in its content.
-fn content_buttons<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
-    if node.kind == BUTTON
-        && node.events.contains_key("press")
-        && let Some(Value::Text(label)) = node.props.get("label")
-    {
-        out.push(label);
-    }
-    for child in &node.children {
-        content_buttons(child, out);
-    }
-}
-
-/// The buttons a canvas holds outside its cards: its own actions and flows, which a dashboard
-/// offers in its header rather than as buttons floating over its cards.
-fn frame_buttons(frame: &UiNode) -> Vec<UiNode> {
-    fn walk(node: &UiNode, out: &mut Vec<UiNode>) {
-        for child in &node.children {
-            match child.kind.as_str() {
-                BUTTON => out.push(child.clone()),
-                "fragment" => walk(child, out),
-                _ => {}
-            }
-        }
-    }
-    let mut out = Vec::new();
-    if frame.kind == "canvas" {
-        walk(frame, &mut out);
-    }
-    out
-}
-
-/// `node` without the buttons [`frame_buttons`] lifted into the header.
-fn without_frame_buttons(node: &UiNode) -> UiNode {
-    let mut node = node.clone();
-    node.children = node
-        .children
-        .into_iter()
-        .filter(|child| child.kind != BUTTON)
-        .map(|child| {
-            if child.kind == "fragment" {
-                without_frame_buttons(&child)
-            } else {
-                child
-            }
-        })
-        .collect();
-    node
-}
-
-/// The actions of `actions` on `subject` a header offers beside `frame`: those the content does
-/// not already show, as its own buttons or as a control bound to the state an action toggles
-/// (a "Done" switch for "Check"), so no action stands twice in one window.
-fn outside(actions: &[RowAction], frame: &UiNode, subject: &ResourceRef) -> Rc<[RowAction]> {
-    let mut shown = Vec::new();
-    content_buttons(frame, &mut shown);
-    let mut bound = Vec::new();
-    bound_fields(frame, subject, &mut bound);
-    actions
-        .iter()
-        .filter(|action| !shown.contains(&action.label.as_str()))
-        .filter(|action| {
-            action
-                .toggles
-                .as_ref()
-                .is_none_or(|field| !bound.contains(&field))
-        })
-        .cloned()
-        .collect::<Vec<_>>()
-        .into()
-}
-
-/// The fields of `subject` that controls in `node` are bound to.
-fn bound_fields<'a>(node: &'a UiNode, subject: &ResourceRef, out: &mut Vec<&'a String>) {
-    if let Some((target, field)) = node.binding.as_ref().and_then(|binding| binding.field())
-        && target == subject
-    {
-        out.push(field);
-    }
-    for child in &node.children {
-        bound_fields(child, subject, out);
-    }
-}
-
-fn slot(element: Element, fit: Fit) -> Slot {
-    let mut slot = Slot::new(element);
-    slot.fit = fit;
-    slot
-}
-
 impl Window {
     /// The window of the package `app` for the participant `me`.
     #[must_use]
@@ -836,25 +314,50 @@ impl Window {
             .fill_width()
             .fill_height()
             .gap(Rhythm::Tight)
-            .push_slot(slot(Box::new(NavShell::new()), Fit::fill(1.0)))
+            .push_slot(slot(
+                Box::new(Pane::new(Box::new(NavShell::new()))),
+                Fit::fill(1.0),
+            ))
             .push_slot(slot(Box::new(Absent::new()), Fit::hug()))
             .push_slot(slot(endpoint, Fit::hug()))
             .push_slot(slot(open_endpoint, Fit::hug()));
+        let names = Names::new(&me);
+        let events: EventSink = Rc::default();
+        let rows: Registry = Rc::default();
+        let reconciler = {
+            let field_names = Self::field_names(&host);
+            let cases = Self::case_lookup(&host);
+            let people = {
+                let names = names.clone();
+                Rc::new(move |id: &str| names.label(id)) as crate::reconcile::People
+            };
+            let registry = Rc::clone(&rows);
+            let rows_of: crate::adapter::RowsOf = Rc::new(move |key: &str| {
+                registry
+                    .borrow()
+                    .get(key)
+                    .map(|rows| Rc::clone(rows) as ui::component::SharedRows)
+            });
+            Reconciler::new(Rc::clone(&events), field_names)
+                .with_lookups(cases, people)
+                .with_rows(rows_of)
+        };
         Self {
-            names: Names::new(&me),
+            names,
             app,
             me,
             mode,
             host,
             live: None,
             names_changed: Cell::new(false),
-            peers: Peers::default(),
-            peers_changed: false,
+            lenses: HashMap::new(),
+            lenses_changed: false,
             root: None,
             detail: None,
-            requests: Rc::default(),
-            shape: None,
-            headers: HashMap::new(),
+            reconciler: Rc::new(RefCell::new(reconciler)),
+            events,
+            built: None,
+            rows,
             body: Box::new(body),
             structure_dirty: true,
             outgoing,
@@ -867,8 +370,7 @@ impl Window {
             sink: RefCell::new(Some(Box::new(LogSink::dev()))),
             device: None,
             indexes: None,
-            destructive: HashMap::new(),
-            making: HashSet::new(),
+            pending: Pending::default(),
             undo: ui::undo::UndoAccess::new(),
             staged: None,
             started: false,
@@ -957,6 +459,14 @@ impl Window {
                 .format("%Y-%m-%dT%H:%M:%SZ")
                 .to_string()
         });
+        // The platform's phrases, which the standard library's frames say.
+        host.runtime().set_phrases(|id, args| {
+            let args: Vec<(&str, ui::i18n::ArgValue)> = args
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str().into()))
+                .collect();
+            t_args(id, &args)
+        });
         if let Some(sink) = self.sink.borrow_mut().take() {
             host.runtime().set_sink(BoxedSink(sink));
         }
@@ -982,8 +492,8 @@ impl Window {
     }
 
     /// The name a bound control is announced by: the field or view state it edits.
-    fn field_names(&self) -> crate::reconcile::FieldNames {
-        let shared = Rc::clone(&self.host);
+    fn field_names(host: &Rc<RefCell<Option<Host>>>) -> crate::reconcile::FieldNames {
+        let shared = Rc::clone(host);
         Rc::new(move |binding: &tilolang_tilo::runtime::Binding| {
             let (target, field) = match &binding.target {
                 BindTarget::State { name, .. } => return describe::sentence(name),
@@ -1003,8 +513,8 @@ impl Window {
         })
     }
 
-    fn case_lookup(&self) -> crate::reconcile::Cases {
-        let shared = Rc::clone(&self.host);
+    fn case_lookup(host: &Rc<RefCell<Option<Host>>>) -> crate::reconcile::Cases {
+        let shared = Rc::clone(host);
         Rc::new(move |id: &str| {
             shared
                 .borrow()
@@ -1014,49 +524,14 @@ impl Window {
         })
     }
 
-    fn people(&self) -> crate::reconcile::People {
-        let names = self.names.clone();
-        Rc::new(move |id: &str| names.label(id))
-    }
-
-    /// The window of `target` through `view`; the root's (`root`) shows the rows of its `list`
-    /// frame in the list column.
-    fn lane(&self, target: ResourceRef, mut view: ViewInstance, root: bool) -> Lane {
-        let events: EventSink = Rc::default();
-        let list = frame_of(view.tree())
-            .filter(|frame| root && frame.kind == "list")
-            .map(|frame| frame.key.clone());
-        let thread = frame_of(view.tree())
-            .and_then(transcript::thread_list)
-            .map(|list| list.key.clone());
-        show_content_rows(&mut view, &[list.as_deref(), thread.as_deref()]);
+    /// The window of `target` through `view`.
+    fn lane(target: ResourceRef, mut view: ViewInstance) -> Lane {
+        show_content_rows(&mut view);
         Lane {
             target,
             with: None,
             view: Rc::new(RefCell::new(view)),
-            list,
-            thread,
-            reconciler: Reconciler::new(Rc::clone(&events), self.field_names())
-                .with_lookups(self.case_lookup(), self.people()),
-            events,
-            content: None,
-            sidebar: None,
-            composer: None,
         }
-    }
-
-    /// The transcript of `lane`'s frame `frame`, when its content is one list beside a
-    /// composer: the lane renders that list's rows as the transcript shows them.
-    fn thread_of(&self, lane: &Lane, frame: &UiNode) -> Option<ThreadOf> {
-        let list = transcript::thread_list(frame)?.key.clone();
-        Some(ThreadOf {
-            source: Rc::new(ThreadSource {
-                view: Rc::clone(&lane.view),
-                list,
-            }),
-            // The rows report to the lane's adapter, which the window reads.
-            reconciler: Reconciler::sharing(&lane.reconciler),
-        })
     }
 
     // ----- later builds --------------------------------------------------------------------
@@ -1117,13 +592,14 @@ impl Window {
             tracing::warn!(app = self.app, "the new build has no root to open");
             return;
         };
-        self.root = Some(self.lane(target, view, true));
+        self.root = Some(Self::lane(target, view));
         self.detail = detail.and_then(|(target, with)| {
             let view = host.open_resource(&target, with.as_deref()).ok()?;
-            let mut lane = self.lane(target, view, false);
+            let mut lane = Self::lane(target, view);
             lane.with = with;
             Some(lane)
         });
+        self.lenses_changed = true;
         // What is published and offered follows the new build's declarations.
         if self.live.take().is_some() {
             let wake = ui::wake::WakeHandle::new();
@@ -1140,7 +616,6 @@ impl Window {
         self.live = None;
         self.root = None;
         self.detail = None;
-        self.shape = None;
         *self.host.borrow_mut() = None;
         if self.sink.borrow().is_none() {
             *self.sink.borrow_mut() = Some(Box::new(LogSink::dev()));
@@ -1160,7 +635,7 @@ impl Window {
         };
         match host.open_main(&self.app) {
             Ok(view) => {
-                self.root = Some(self.lane(target, view, true));
+                self.root = Some(Self::lane(target, view));
                 self.detail = None;
                 self.commit_planned();
             }
@@ -1195,9 +670,10 @@ impl Window {
         }
         match host.open_resource(target, with) {
             Ok(view) => {
-                let mut lane = self.lane(target.clone(), view, false);
+                let mut lane = Self::lane(target.clone(), view);
                 lane.with = with.map(str::to_owned);
                 self.detail = Some(lane);
+                self.lenses_changed = true;
                 self.compose();
                 self.commit_planned();
                 if let Some(source) = front {
@@ -1220,6 +696,7 @@ impl Window {
 
     fn close_detail(&mut self) {
         if self.detail.take().is_some() {
+            self.lenses_changed = true;
             self.compose();
         }
     }
@@ -1286,24 +763,21 @@ impl Window {
 
     // ----- the shell -----------------------------------------------------------------------
 
-    fn shell(&mut self) -> Option<&mut NavShell> {
+    /// The pane the shell stands in.
+    fn shell_pane(&mut self) -> Option<&mut Pane> {
         self.body
             .children_mut()
             .into_iter()
             .next()?
             .as_any_mut()?
-            .downcast_mut::<NavShell>()
+            .downcast_mut::<Pane>()
     }
 
-    /// The list column: the overview when the items open beside it, else the content.
-    fn list_pane(&mut self) -> Option<&mut ListPane> {
-        let overview = self.shape.as_ref().is_some_and(|shape| shape.overview);
-        let shell = self.shell()?;
-        if overview {
-            shell.overview_mut::<ListPane>()
-        } else {
-            shell.content_mut::<ListPane>()
-        }
+    fn shell(&mut self) -> Option<&mut NavShell> {
+        self.shell_pane()?
+            .content_mut()
+            .as_any_mut()?
+            .downcast_mut::<NavShell>()
     }
 
     fn set_body_slot(&mut self, index: usize, element: Element, fit: Fit) {
@@ -1326,610 +800,91 @@ impl Window {
         }
     }
 
-    /// The list `frame`'s choice `name` (`sort`, `filter`): its enum's cases, the one chosen
-    /// and how many items each holds.
-    fn choice(host: &Host, frame: &UiNode, name: &str) -> Option<Choice> {
-        let Some(Value::Text(id)) = frame.props.get(&format!("{name}.enum")) else {
-            return None;
-        };
-        let cases = describe::cases(host, id);
-        let selected = frame
-            .props
-            .get(&format!("{name}.selected"))
-            .and_then(describe::case_of);
-        let counts = cases
-            .iter()
-            .filter_map(
-                |case| match frame.props.get(&format!("{name}.count.{}", case.name)) {
-                    Some(Value::Int(count)) => Some((case.name.clone(), *count)),
-                    _ => None,
-                },
-            )
-            .collect();
-        Some(Choice {
-            cases,
-            selected,
-            counts,
-        })
-    }
-
-    /// What the root's `list` frame shows, but its rows: the list column reads those.
-    fn listing(host: &Host, lane: &Lane, frame: &UiNode) -> Listing {
-        let declared_item = match frame.props.get("item_type") {
-            Some(Value::Text(ty)) => Some(ty.clone()),
-            _ => None,
-        };
-        let described = declared_item
-            .as_deref()
-            .and_then(|ty| describe::type_of(host, ty));
-        let opens_items = described
-            .as_ref()
-            .is_some_and(|(meta, ty)| meta.default_view(&ty.id).is_some());
-        let noun = described
-            .as_ref()
-            .map(|(_, ty)| describe::noun(ty))
-            .unwrap_or_default();
-        let filter = Self::choice(host, frame, "filter");
-        let sort = Self::choice(host, frame, "sort");
-        // An empty list offers the frame's primary action when nothing was made yet; one a filter
-        // emptied says only that.
-        let filtered = filter.as_ref().is_some_and(|filter| {
-            filter.selected.is_some()
-                && filter.selected.as_ref() != filter.cases.first().map(|case| &case.name)
+    /// Keep the rows of every virtual list of the views, each read from its view, and drop the
+    /// rows of lists gone.
+    fn track_rows(&self) {
+        let mut wanted: Vec<(String, Rc<RefCell<ViewInstance>>, String, &'static str)> = Vec::new();
+        for (lane, prefix) in [(self.root.as_ref(), ""), (self.detail.as_ref(), DETAIL)] {
+            let Some(lane) = lane else { continue };
+            let lists = virtual_lists(lane.view.borrow().tree());
+            for (list, _) in lists {
+                wanted.push((
+                    format!("{prefix}{list}"),
+                    Rc::clone(&lane.view),
+                    list,
+                    prefix,
+                ));
+            }
+        }
+        let mut registry = self.rows.borrow_mut();
+        registry.retain(|key, rows| {
+            wanted
+                .iter()
+                .any(|(want, view, list, _)| want == key && rows.borrow().reads(view, list))
         });
-        let action = if filtered {
-            None
-        } else {
-            describe::primary(host, &lane.target).or_else(|| {
-                host.package(&lane.view_app(host))
-                    .and_then(|package| describe::package_primary(&package.meta))
-            })
-        };
-        let sentence = frame
-            .props
-            .get("empty")
-            .map(crate::reconcile::display)
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| t("tilolang-empty"));
-        Listing {
-            key: frame.key.clone(),
-            empty: Empty {
-                sentence,
-                icon: app_icon(host, &lane.view_app(host)),
-                action,
-            },
-            sort,
-            filter,
-            opens_items,
-            noun,
-        }
-    }
-
-    /// Header buttons for `actions`, with the header's own controls (`controls`: sort, search)
-    /// placed as native headers place them: the controls first, then the actions with an icon as
-    /// icon buttons, a More menu of those without one, and the primary action last as the
-    /// labelled Primary button, next to History.
-    fn action_buttons(
-        &self,
-        actions: &[RowAction],
-        title: &str,
-        controls: Vec<Element>,
-    ) -> Vec<Element> {
-        let button = |index: usize, action: &RowAction| -> Element {
-            let requests = Rc::clone(&self.requests);
-            let request = Request::Invoke {
-                action: action.clone(),
-                title: title.to_owned(),
-            };
-            let id = format!("tilolang.action.{}.{}", action.action, index);
-            let button = match action.icon {
-                Some(icon) if action.primary => Button::new(&id, &action.label)
-                    .with_icon(icon)
-                    .role(ButtonRole::Primary),
-                Some(icon) => {
-                    Button::icon_only(&id, icon, &action.label).toggled(action.on.unwrap_or(false))
-                }
-                None if action.primary => Button::new(&id, &action.label).role(ButtonRole::Primary),
-                None => Button::new(&id, &action.label).role(ButtonRole::Secondary),
-            };
-            Box::new(button.on_view(move || requests.borrow_mut().push(request.clone())))
-        };
-        let (primary, others): (Vec<_>, Vec<_>) = actions
-            .iter()
-            .enumerate()
-            .partition(|(_, action)| action.primary);
-        let (iconic, labelled): (Vec<_>, Vec<_>) = others
-            .into_iter()
-            .partition(|(_, action)| action.icon.is_some());
-        let mut buttons: Vec<Element> = controls;
-        buttons.extend(
-            iconic
-                .into_iter()
-                .map(|(index, action)| button(index, action)),
-        );
-        if !labelled.is_empty() {
-            let items = labelled
-                .into_iter()
-                .map(|(_, action)| {
-                    let requests = Rc::clone(&self.requests);
-                    let request = Request::Invoke {
-                        action: action.clone(),
-                        title: title.to_owned(),
-                    };
-                    let run = move || requests.borrow_mut().push(request.clone());
-                    if action.destructive {
-                        MenuItem::destructive_action(action.label.clone(), run)
-                    } else {
-                        MenuItem::action(action.label.clone(), run)
-                    }
-                })
-                .collect();
-            buttons.push(Box::new(
-                Button::icon_only("tilolang.more", Icon::MoreHorizontal, &t("tilolang-more"))
-                    .with_menu(items),
-            ));
-        }
-        buttons.extend(
-            primary
-                .into_iter()
-                .map(|(index, action)| button(index, action)),
-        );
-        buttons
-    }
-
-    /// A button of the root's canvas, in the header: pressing it presses the button of the view.
-    fn lifted_button(&self, node: &UiNode) -> Element {
-        let label = node
-            .props
-            .get("label")
-            .map(crate::reconcile::display)
-            .unwrap_or_default();
-        let icon = match node.props.get("icon") {
-            Some(Value::Text(name)) => list::icon_named(name),
-            _ => None,
-        };
-        let primary =
-            matches!(node.props.get("role"), Some(Value::Text(role)) if role == "primary");
-        let id = format!("tilolang.frame.{}", node.key);
-        let button = match icon {
-            Some(icon) if primary => Button::new(&id, &label)
-                .with_icon(icon)
-                .role(ButtonRole::Primary),
-            Some(icon) => Button::icon_only(&id, icon, &label),
-            None if primary => Button::new(&id, &label).role(ButtonRole::Primary),
-            None => Button::new(&id, &label).role(ButtonRole::Secondary),
-        };
-        let enabled = node.events.contains_key("press");
-        let events = self
-            .root
-            .as_ref()
-            .map(|lane| Rc::clone(&lane.events))
-            .unwrap_or_default();
-        let key = node.key.clone();
-        Box::new(
-            button
-                .with_enabled(enabled)
-                .on_view(move || events.borrow_mut().push(UiEvent::Press(key.clone()))),
-        )
-    }
-
-    /// The header's sort menu for `sort` of the list `key`.
-    fn sort_menu(&self, key: &str, sort: &Choice) -> Element {
-        let items = sort
-            .cases
-            .iter()
-            .map(|case| {
-                let requests = Rc::clone(&self.requests);
-                let request = Request::Fire {
-                    key: key.to_owned(),
-                    event: format!("sort.{}", case.name),
-                };
-                MenuItem::action(case.label.clone(), move || {
-                    requests.borrow_mut().push(request.clone());
-                })
-                .with_checked(sort.selected.as_deref() == Some(case.name.as_str()))
-            })
-            .collect();
-        Box::new(
-            Button::icon_only("tilolang.sort", Icon::ArrowUpDown, &t("tilolang-sort"))
-                .with_menu(items),
-        )
-    }
-
-    fn filter_list(&self, key: &str, filter: &Choice) -> NavList {
-        let items = filter
-            .cases
-            .iter()
-            .map(|case| {
-                let mut item = NavItem::new(case.name.clone(), case.label.clone());
-                if let Some(icon) = case.icon {
-                    item = item.icon(icon);
-                }
-                if let Some(count) = filter.counts.get(&case.name) {
-                    item = item.count(u32::try_from(*count).unwrap_or(0));
-                }
-                item
-            })
-            .collect();
-        let requests = Rc::clone(&self.requests);
-        let key = key.to_owned();
-        let mut list = NavList::new(vec![NavSection::untitled("tilolang.filter", items)])
-            .with_id("tilolang.filter")
-            .on_select(move |case| {
-                requests.borrow_mut().push(Request::Fire {
-                    key: key.clone(),
-                    event: format!("filter.{case}"),
-                });
+        for (key, view, list, prefix) in wanted {
+            registry.entry(key).or_insert_with(|| {
+                let reader = Rc::new(RefCell::new(Reconciler::sharing(&self.reconciler.borrow())));
+                Rc::new(RefCell::new(HostRows::of(&view, &list, prefix, reader)))
             });
-        if let Some(selected) = &filter.selected {
-            list = list.selected(selected);
         }
-        list
     }
 
-    /// Give `column` a header, unless it already has this one.
-    fn header(
-        &mut self,
-        column: &'static str,
-        title: &str,
-        signature: &str,
-        actions: impl FnOnce(&Self) -> Vec<Element>,
-    ) {
-        let signature = format!("{title}\u{1f}{signature}");
-        if self.headers.get(column) == Some(&signature) {
-            return;
-        }
-        let actions = actions(self);
-        let Some(shell) = self.shell() else {
-            return;
-        };
-        match column {
-            "sidebar" => shell.set_sidebar_header(title, actions),
-            "overview" => shell.set_overview_header(title, actions),
-            _ => shell.set_content_header(title, actions),
-        }
-        self.headers.insert(column, signature);
-    }
-
-    /// Bring the shell up to date with the windows of the lane.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pass over the shell's columns, in order"
-    )]
+    /// Bring the shell up to date with the windows of the lane: the root's shell with the
+    /// window after it as its content, reconciled into the widgets it was built into.
     fn compose(&mut self) {
         let Some(host) = self.current_host() else {
             return;
         };
+        self.track_rows();
         let Some(root) = self.root.as_ref() else {
             return;
         };
-        let Some(frame) = composed_frame(root.view.borrow().tree()) else {
-            return;
-        };
-        let Some(kind) = Frame::of(&frame) else {
-            return;
-        };
-        let listing = (kind == Frame::List).then(|| Self::listing(&host, root, &frame));
-        let root_target = root.target.clone();
-        let source = listing.as_ref().map(|listing| {
-            Rc::new(RowSource {
-                view: Rc::clone(&root.view),
-                list: listing.key.clone(),
-                host: host.clone(),
-                owner: root_target.clone(),
-                peers: Rc::clone(&self.peers),
-                names: self.names.clone(),
-                adapter: root.reconciler.adapter().clone(),
-            })
+        let root_tree = crate::reconcile::normalize(root.view.borrow().tree());
+        let root_shell = shell::as_shell(&shell::without_rows(&root_tree));
+        let detail_shell = self.detail.as_ref().map(|detail| {
+            let tree = crate::reconcile::normalize(detail.view.borrow().tree());
+            shell::prefixed(&shell::as_shell(&shell::without_rows(&tree)), DETAIL)
         });
-        let detail_frame = self
-            .detail
-            .as_ref()
-            .and_then(|detail| composed_frame(detail.view.borrow().tree()));
-        let overview = listing.as_ref().is_some_and(|listing| listing.opens_items);
-        let view_sidebar = part(&frame, "sidebar").is_some();
-        let shape = Shape {
-            frame: kind,
-            overview,
-            filter_sidebar: listing
-                .as_ref()
-                .is_some_and(|listing| listing.filter.is_some()),
-            view_sidebar,
-            content: if overview || (kind != Frame::List && self.detail.is_some()) {
-                detail_frame
-                    .as_ref()
-                    .and_then(Frame::of)
-                    .map_or(ContentKind::Document, Frame::content_kind)
-            } else {
-                kind.content_kind()
-            },
+        let composed = shell::compose(&root_shell, detail_shell.as_ref(), BACK_EVENT);
+        let composed = {
+            let root_view = root.view.borrow();
+            let detail_view = self.detail.as_ref().map(|detail| detail.view.borrow());
+            let views = shell::Views {
+                root: Some(&root_view),
+                detail: detail_view.as_deref(),
+                host: &host,
+            };
+            shell::header_rules(composed, &views)
         };
-        if self.shape.as_ref() != Some(&shape) {
-            self.build_shell(&shape);
-            self.shape = Some(shape.clone());
-        }
-        let root_title = describe::title_of(&host, &root_target);
-        let root_actions = describe::offered(&host, &root_target);
-        let search: fn() -> Element = || {
-            Box::new(ui::search::search_button(
-                ui::search::SearchRequest::this_app(),
-            ))
-        };
-
-        // The sidebar.
-        if let Some(filter) = listing.as_ref().and_then(|listing| listing.filter.clone()) {
-            let key = listing
-                .as_ref()
-                .map(|listing| listing.key.clone())
-                .unwrap_or_default();
-            let signature = format!("{filter:?}");
-            if self.headers.get("filter") != Some(&signature) {
-                let list = self.filter_list(&key, &filter);
-                if let Some(shell) = self.shell() {
-                    shell.set_sidebar(Some(Box::new(list)));
-                }
-                self.headers.insert("filter", signature);
-            }
-            self.header("sidebar", &root_title, "", |_| Vec::new());
-        } else if let Some(sidebar) = part(&frame, "sidebar") {
-            let node = side_stack(sidebar);
-            let Self { body, root, .. } = self;
-            if let (Some(shell), Some(lane)) = (shell_of(body), root.as_mut())
-                && let Some(pane) = shell.sidebar_mut::<Pane>()
-            {
-                fill(pane, &mut lane.reconciler, &mut lane.sidebar, &node);
-            }
-            self.header("sidebar", &root_title, "", |_| Vec::new());
-        }
-
-        // The list, or the root's content.
-        if let Some(listing) = &listing {
-            let column = if overview { "overview" } else { "content" };
-            let title = listing
-                .filter
-                .as_ref()
-                .and_then(|filter| {
-                    let selected = filter.selected.as_ref()?;
-                    filter
-                        .cases
-                        .iter()
-                        .find(|case| case.name == *selected)
-                        .map(|case| case.label.clone())
-                })
-                .unwrap_or_else(|| root_title.clone());
-            let signature = format!(
-                "{:?}{:?}",
-                root_actions
-                    .iter()
-                    .map(|action| &action.action)
-                    .collect::<Vec<_>>(),
-                listing.sort
-            );
-            let sort = listing.sort.clone();
-            let key = listing.key.clone();
-            let actions = Rc::clone(&root_actions);
-            self.header(column, &title, &signature, |window| {
-                let mut controls = Vec::new();
-                if let Some(sort) = &sort {
-                    controls.push(window.sort_menu(&key, sort));
-                }
-                controls.push(search());
-                window.action_buttons(&actions, &title, controls)
-            });
-            let shown = self.detail.as_ref().map(|detail| detail.target.clone());
-            let empty = listing.empty.clone();
-            let count = self.list_pane().map(|pane| {
-                pane.set_empty(empty);
-                if let Some(source) = &source {
-                    pane.read(source);
-                }
-                let selected = shown.as_ref().and_then(|target| pane.key_of(target));
-                pane.select(selected);
-                pane.len()
-            });
-            if let Some(shell) = self.shell() {
-                if overview {
-                    shell.set_overview_count(count);
-                } else {
-                    shell.set_content_count(count);
-                }
-            }
-        } else if self.detail.is_none() {
-            let mut page = content_page(&frame);
-            let titled = frame.kind == "document" && mark_field_roles(&host, &mut page);
-            mark_cards(&host, &mut page);
-            let root_actions = outside(&root_actions, &frame, &root_target);
-            let signature = format!(
-                "{:?}",
-                root_actions
-                    .iter()
-                    .map(|action| &action.action)
-                    .collect::<Vec<_>>()
-            );
-            let actions = Rc::clone(&root_actions);
-            let title = root_title.clone();
-            let shown = if titled { "" } else { root_title.as_str() };
-            let lifted = frame_buttons(&frame);
-            let signature = format!(
-                "{signature}{:?}",
-                lifted
-                    .iter()
-                    .map(|button| (&button.key, &button.props))
-                    .collect::<Vec<_>>()
-            );
-            self.header("content", shown, &signature, |window| {
-                let mut controls = vec![search()];
-                controls.extend(lifted.iter().map(|button| window.lifted_button(button)));
-                window.action_buttons(&actions, &title, controls)
-            });
-            let composer = composer_page(&frame);
-            let thread = self
-                .root
-                .as_ref()
-                .and_then(|lane| self.thread_of(lane, &frame));
-            if let Some(lane) = self.root.as_mut() {
-                lane.thread = thread.as_ref().map(|thread| thread.source.list.clone());
-            }
-            // A canvas with nothing on it (a board pointing at nothing yet) says so, as a native
-            // app's empty window does, rather than showing a blank page.
-            let blank = frame.kind == "canvas" && composer.is_none() && shows_nothing(&page);
-            let icon = app_icon(&host, &self.app);
-            let Self { body, root, .. } = self;
-            if let (Some(shell), Some(lane)) = (shell_of(body), root.as_mut()) {
-                if blank {
-                    if shell.content_mut::<EmptyState>().is_none() {
-                        let empty = EmptyState::new(t("tilolang-empty"));
-                        let empty = match icon {
-                            Some(icon) => empty.with_icon(icon),
-                            None => empty,
-                        };
-                        shell.set_content(Box::new(empty));
-                        lane.content = None;
-                        lane.composer = None;
-                    }
-                } else {
-                    if shell.content_mut::<Pane>().is_none() {
-                        shell.set_content(Box::new(Pane::new(Box::new(Spacer::fixed(0.0)))));
-                        lane.content = None;
-                        lane.composer = None;
-                    }
-                    if let Some(pane) = shell.content_mut::<Pane>() {
-                        fill_framed(
-                            pane,
-                            &mut lane.reconciler,
-                            (&mut lane.content, &mut lane.composer),
-                            (&page, composer.as_ref()),
-                            thread,
-                        );
+        let old = self.built.take();
+        let reconciler = Rc::clone(&self.reconciler);
+        if let Some(pane) = self.shell_pane() {
+            let mut reconciler = reconciler.borrow_mut();
+            match &old {
+                Some(old) if old.key == composed.key && old.kind == composed.kind => {
+                    if let Some(replaced) = reconciler.update_in(pane.content_mut(), old, &composed)
+                    {
+                        pane.set(replaced);
                     }
                 }
+                _ => pane.set(reconciler.build(&composed)),
             }
         }
-
-        // The window after the root's, in the content column.
-        if overview || kind != Frame::List {
-            if let (Some(detail), Some(detail_frame)) =
-                (self.detail.as_ref(), detail_frame.as_ref())
-            {
-                let target = detail.target.clone();
-                let mut page = content_page(detail_frame);
-                // A document that edits its title shows it as its own large title, which the
-                // header does not repeat (as in Notes).
-                let titled = detail_frame.kind == "document" && mark_field_roles(&host, &mut page);
-                mark_cards(&host, &mut page);
-                let title = if titled {
-                    String::new()
-                } else {
-                    describe::title_of(&host, &target)
-                };
-                let actions = outside(
-                    &describe::offered_in(&host, &target, &root_target),
-                    detail_frame,
-                    &target,
-                );
-                let signature = format!(
-                    "{:?}",
-                    actions
-                        .iter()
-                        .map(|action| &action.action)
-                        .collect::<Vec<_>>()
-                );
-                self.header("content", &title, &signature, |window| {
-                    let controls = if overview { Vec::new() } else { vec![search()] };
-                    window.action_buttons(&actions, &title, controls)
-                });
-                let composer = composer_page(detail_frame);
-                let thread = self
-                    .detail
-                    .as_ref()
-                    .and_then(|lane| self.thread_of(lane, detail_frame));
-                if let Some(lane) = self.detail.as_mut() {
-                    lane.thread = thread.as_ref().map(|thread| thread.source.list.clone());
-                }
-                let Self { body, detail, .. } = self;
-                if let (Some(shell), Some(lane)) = (shell_of(body), detail.as_mut()) {
-                    if shell.content_mut::<Pane>().is_none() {
-                        shell.set_content(Box::new(Pane::new(Box::new(Spacer::fixed(0.0)))));
-                        lane.content = None;
-                        lane.composer = None;
-                    }
-                    if let Some(pane) = shell.content_mut::<Pane>() {
-                        fill_framed(
-                            pane,
-                            &mut lane.reconciler,
-                            (&mut lane.content, &mut lane.composer),
-                            (&page, composer.as_ref()),
-                            thread,
-                        );
-                    }
-                    shell.set_can_go_back(kind != Frame::List);
-                }
-            } else if overview {
-                let noun = listing
-                    .as_ref()
-                    .map(|listing| listing.noun.clone())
-                    .unwrap_or_default();
-                let sentence = t_args("tilolang-none-selected", &[("kind", noun.into())]);
-                let signature = format!("empty\u{1f}{sentence}");
-                if self.headers.get("content-empty") != Some(&signature) {
-                    let placeholder = EmptyState::new(sentence);
-                    let placeholder = match app_icon(&host, &self.app) {
-                        Some(icon) => placeholder.with_icon(icon),
-                        None => placeholder,
-                    };
-                    if let Some(shell) = self.shell() {
-                        shell.set_content(Box::new(placeholder));
-                        shell.set_content_header(String::new(), Vec::new());
-                    }
-                    self.headers.remove("content");
-                    self.headers.insert("content-empty", signature);
-                }
-                return;
-            }
-            self.headers.remove("content-empty");
-        }
+        self.built = Some(composed);
+        self.select_shown();
+        self.refresh_bound();
     }
 
-    /// Build the shell for `shape`, with empty columns the next pass fills.
-    fn build_shell(&mut self, shape: &Shape) {
-        let mut shell = NavShell::new().content_kind(shape.content);
-        if shape.filter_sidebar {
-            shell = shell.sidebar(Box::new(Spacer::fixed(0.0)));
-        } else if shape.view_sidebar {
-            shell = shell.sidebar(Box::new(Pane::new(Box::new(Spacer::fixed(0.0)))));
+    /// Select, in each list of the overview, the row of the window shown after it: the app
+    /// keeps no selection beside it.
+    fn select_shown(&mut self) {
+        let shown = self.detail.as_ref().map(|detail| detail.target.id_string());
+        if let Some(shell) = self.shell()
+            && let Some(list) = shell.overview_mut::<DescribedList>()
+        {
+            list.select_presenting(shown.as_deref());
         }
-        let list = || {
-            Box::new(ListPane::new(
-                &self.requests,
-                self.root.as_ref().map_or_else(
-                    || Reconciler::new(Rc::default(), self.field_names()),
-                    |lane| Reconciler::sharing(&lane.reconciler),
-                ),
-                String::new(),
-            )) as Element
-        };
-        if shape.frame == Frame::List {
-            if shape.overview {
-                shell = shell
-                    .overview(list())
-                    .content(Box::new(EmptyState::new(String::new())));
-            } else {
-                shell = shell.content(list());
-            }
-        } else {
-            shell = shell.content(Box::new(Pane::new(Box::new(Spacer::fixed(0.0)))));
-            let requests = Rc::clone(&self.requests);
-            shell = shell.on_back(|| false, move || requests.borrow_mut().push(Request::Back));
-        }
-        self.headers.clear();
-        if let Some(lane) = self.root.as_mut() {
-            lane.content = None;
-            lane.sidebar = None;
-        }
-        if let Some(lane) = self.detail.as_mut() {
-            lane.content = None;
-        }
-        self.set_body_slot(0, Box::new(shell), Fit::fill(1.0));
     }
 
     /// The Ask bar: trusted chrome naming who asks for what, with the person's choices.
@@ -1943,7 +898,7 @@ impl Window {
                         .actions
                         .iter()
                         .find(|action| action.id == suggestion.action)
-                        .map(describe::label_of)
+                        .map(tilolang_tilo::runtime::platform::label_of)
                 })
             })
             .unwrap_or_else(|| suggestion.action.clone());
@@ -2010,13 +965,13 @@ impl Window {
 
     // ----- the views -----------------------------------------------------------------------
 
-    /// Re-run the views whose reads changed, and sort what changed by where it shows.
-    fn poll_views(&self) -> Polled {
-        let mut polled = Polled::default();
-        for lane in [self.root.as_ref(), self.detail.as_ref()]
-            .into_iter()
-            .flatten()
-        {
+    /// Re-run the views whose reads changed, and bring the rows of their virtual lists and the
+    /// shell up to date with what changed. Whether anything did.
+    fn poll_views(&mut self) -> bool {
+        let mut content = false;
+        let mut rows_changed = false;
+        for (lane, prefix) in [(self.root.as_ref(), ""), (self.detail.as_ref(), DETAIL)] {
+            let Some(lane) = lane else { continue };
             let mut view = lane.view.borrow_mut();
             let patches = match view.poll_patches() {
                 Ok(patches) => patches,
@@ -2028,97 +983,34 @@ impl Window {
             if patches.is_empty() {
                 continue;
             }
-            let list = lane
-                .list
-                .as_deref()
-                .and_then(|list| key_path(view.tree(), list));
-            let thread = lane
-                .thread
-                .as_deref()
-                .and_then(|thread| key_path(view.tree(), thread));
-            let content = polled.content;
-            polled.content = false;
-            let changes = polled.sort(patches, list.as_deref(), thread.as_deref());
-            if polled.content {
+            let lists = virtual_lists(view.tree());
+            let sorted = sort(patches, &lists);
+            if sorted.content {
                 // A list inside the content may have rows the view has not rendered yet.
-                show_content_rows(&mut view, &[lane.list.as_deref(), lane.thread.as_deref()]);
+                show_content_rows(&mut view);
+                content = true;
             }
-            polled.content |= content;
-            if let Some(thread) = &lane.thread
-                && (changes.reread || !changes.is_empty())
-            {
-                polled
-                    .threads
-                    .push((Rc::clone(&lane.view), thread.clone(), changes));
-            }
-        }
-        polled
-    }
-
-    /// Bring the window up to date with what the views changed: rows of the list column in
-    /// place, the columns reconciled when anything else changed. Whether anything did.
-    fn apply_polled(&mut self, polled: Polled) -> bool {
-        let Polled {
-            list:
-                ListChanges {
-                    structure,
-                    rows,
-                    reread,
-                },
-            threads,
-            mut content,
-        } = polled;
-        let mut rows_changed = !structure.is_empty() || !rows.is_empty();
-        for (view, list, changes) in threads {
-            rows_changed |= !changes.is_empty();
-            content |= self.apply_thread(view, list, changes);
-        }
-        if let Some(pane) = self.list_pane() {
-            if reread {
-                pane.forget();
-            } else if rows_changed {
-                pane.changed(&structure, rows);
-            }
-        }
-        if content || reread || !structure.is_empty() {
-            self.compose();
-        }
-        if content || reread {
-            self.refresh_bound();
-        }
-        content || reread || rows_changed
-    }
-
-    /// Apply what the view `view` changed of its transcript's list `list` to the transcript
-    /// the content column shows, when it shows that one. Whether the columns are to be composed
-    /// again: the view replaced the list as a whole, so the transcript is built anew.
-    fn apply_thread(
-        &mut self,
-        view: Rc<RefCell<ViewInstance>>,
-        list: String,
-        changes: ListChanges,
-    ) -> bool {
-        if changes.reread {
-            for lane in [self.root.as_mut(), self.detail.as_mut()]
-                .into_iter()
-                .flatten()
-            {
-                if Rc::ptr_eq(&lane.view, &view) {
-                    lane.content = None;
+            drop(view);
+            let registry = self.rows.borrow();
+            for (list, changes) in sorted.lists {
+                rows_changed = true;
+                let Some(rows) = registry.get(&format!("{prefix}{list}")) else {
+                    content = true;
+                    continue;
+                };
+                let mut rows = rows.borrow_mut();
+                if changes.reread {
+                    rows.reread();
+                } else {
+                    rows.apply(&changes.structure);
+                    rows.changed(changes.rows);
                 }
             }
-            return true;
         }
-        let source = ThreadSource { view, list };
-        let thread = self
-            .shell()
-            .and_then(|shell| shell.content_mut::<Pane>())
-            .and_then(|pane| thread_in(pane.content_mut()))
-            .filter(|thread| thread.model().reads(&source));
-        if let Some(thread) = thread {
-            list::apply_changes(thread, &changes.structure, changes.rows);
+        if content {
+            self.compose();
         }
-        false
+        content || rows_changed
     }
 
     /// The windows the views asked to open.
@@ -2132,25 +1024,63 @@ impl Window {
         }
         for event in opens {
             match event {
-                ViewEvent::Open { target, view } => {
-                    self.open_detail(&target, view.as_deref(), Some(by_input()));
+                ViewEvent::Open {
+                    target,
+                    view,
+                    front,
+                } => {
+                    // A selection the keyboard moves shows the item beside the list without
+                    // bringing it to the front of a narrow window; an activation does.
+                    let front = front.then(by_input);
+                    self.open_detail(&target, view.as_deref(), front);
                 }
             }
         }
     }
 
     /// Show what the bound fields and view state hold now in the controls that edit them: the
-    /// columns' and the rows the list column shows.
-    fn refresh_bound(&mut self) {
-        for lane in [self.root.as_ref(), self.detail.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            visit_bound(lane, lane.view.borrow().tree());
+    /// shell's and the rows its lists show.
+    fn refresh_bound(&self) {
+        if let Some(built) = &self.built {
+            let reconciler = self.reconciler.borrow();
+            let root = self.root.as_ref().map(|lane| lane.view.borrow());
+            let detail = self.detail.as_ref().map(|lane| lane.view.borrow());
+            visit_bound(built, root.as_deref(), detail.as_deref(), &reconciler);
         }
-        if let Some(pane) = self.list_pane() {
-            pane.refresh_shown();
+        for rows in self.rows.borrow().values() {
+            rows.borrow().refresh_bound();
         }
+    }
+
+    /// Bring the lenses the views read up to date with presence: who else is at each resource,
+    /// and the person themselves at the window shown after the root's.
+    fn publish_lenses(&mut self, peers: HashMap<String, String>) {
+        let mut now: HashMap<String, Vec<(Principal, bool)>> = HashMap::new();
+        for (resource, who) in peers {
+            now.entry(resource)
+                .or_default()
+                .push((Principal::new(who), false));
+        }
+        if let Some(detail) = &self.detail {
+            now.entry(detail.target.id_string())
+                .or_default()
+                .push((Principal::new(self.me.clone()), true));
+        }
+        if now == self.lenses {
+            return;
+        }
+        if let Some(host) = self.current_host() {
+            for gone in self.lenses.keys().filter(|key| !now.contains_key(*key)) {
+                host.runtime().set_lenses(gone, &[]);
+            }
+            for (resource, lenses) in &now {
+                if self.lenses.get(resource) != Some(lenses) {
+                    host.runtime().set_lenses(resource, lenses);
+                }
+            }
+        }
+        self.lenses = now;
+        self.lenses_changed = true;
     }
 
     fn take_door_work(&mut self) -> bool {
@@ -2223,16 +1153,18 @@ impl Window {
         }
     }
 
-    fn commit_planned(&mut self) {
+    /// Hand what the runtime committed to the door. Returns the tickets handed over.
+    fn commit_planned(&mut self) -> Vec<u64> {
         // A past version shows what it held; nothing it does is committed.
         if self.mode == RunMode::Past {
-            return;
+            return Vec::new();
         }
         let Some(host) = self.current_host() else {
-            return;
+            return Vec::new();
         };
-        queue_commits(&host, &self.outgoing, 0, None);
+        let tickets = queue_commits(&host, &self.outgoing, 0, None);
         self.settle_due = true;
+        tickets
     }
 
     /// The door answered the oldest commit handed over.
@@ -2243,156 +1175,182 @@ impl Window {
         if let Some(host) = self.current_host() {
             let _ = host.store().take_ticket(ticket);
         }
-        if let Some(error) = error {
-            self.notice(&error);
+        let undo = self.pending.undo.remove(&ticket);
+        match (error, undo) {
+            (Some(error), _) => self.notice(&error),
+            (None, Some(notice)) => {
+                // A destructive action is undone rather than confirmed.
+                if let Some(shell) = self.shell() {
+                    shell.toast_with_action(notice, ToastKind::Info, "undo-2", t("tilolang-undo"));
+                }
+            }
+            (None, None) => {}
         }
     }
 
     // ----- what the person did -------------------------------------------------------------
 
-    fn handle_requests(&mut self) -> bool {
-        let requests = std::mem::take(&mut *self.requests.borrow_mut());
-        let changed = !requests.is_empty();
-        for request in requests {
-            let front = matches!(request, Request::Activate(_)).then(by_input);
-            match request {
-                Request::Fire { key, event } => {
-                    if let Some(lane) = &self.root {
-                        let fired = lane.view.borrow().fire(&key, &event);
-                        if let Err(error) = fired {
-                            tracing::warn!(%error, key, event, "a choice did not apply");
-                        }
-                    }
-                }
-                Request::Select(key) | Request::Activate(key) => {
-                    let target = self
-                        .list_pane()
-                        .and_then(|pane| pane.find(&key))
-                        .map_or_else(
-                            || {
-                                let lane = self.root.as_ref()?;
-                                let view = lane.view.borrow();
-                                match find_kind(view.find(&key)?, "item")?.props.get("item") {
-                                    Some(Value::Ref(reference)) => {
-                                        Some(ResourceRef::clone(&reference.target))
-                                    }
-                                    _ => None,
-                                }
-                            },
-                            |row| Some(row.item),
-                        );
-                    if let Some(target) = target {
-                        let opens = self.shape.as_ref().is_some_and(|shape| shape.overview);
-                        if opens {
-                            self.open_detail(&target, None, front);
-                        }
-                    }
-                }
-                Request::Invoke { action, title } => {
-                    if action.destructive {
-                        let notice = if title.is_empty() {
-                            action.label.clone()
-                        } else {
-                            t_args(
-                                "tilolang-did",
-                                &[
-                                    ("action", action.label.as_str().into()),
-                                    ("title", title.as_str().into()),
-                                ],
-                            )
-                        };
-                        self.destructive.insert(action.action.clone(), notice);
-                    }
-                    if action.primary {
-                        self.making.insert(action.action.clone());
-                    }
-                    let arguments = action
-                        .args
-                        .iter()
-                        .map(|(name, value)| (name.clone(), Json::from(value.clone())))
-                        .collect();
-                    if let Some(invocation) =
-                        ControlInvocation::from_parts(&action.resource, &action.action, arguments)
-                    {
-                        self.outgoing.borrow_mut().push_back((invocation, None));
-                    }
-                }
-                Request::Back => self.close_detail(),
-            }
-        }
-        changed
-    }
-
     fn handle_events(&mut self) -> bool {
-        let mut changed = self.handle_requests();
+        let mut changed = false;
         let answers = std::mem::take(&mut *self.answers.borrow_mut());
         for answer in answers {
             changed = true;
             self.answer(answer);
         }
-        let mut events = Vec::new();
-        for (index, lane) in [self.root.as_ref(), self.detail.as_ref()]
-            .into_iter()
-            .enumerate()
-        {
-            if let Some(lane) = lane {
-                events.extend(
-                    std::mem::take(&mut *lane.events.borrow_mut())
-                        .into_iter()
-                        .chain(lane.reconciler.adapter().take_events())
-                        .map(|event| (index, event)),
-                );
-            }
-        }
-        for (index, event) in events {
+        let mut events: Vec<UiEvent> = std::mem::take(&mut *self.events.borrow_mut());
+        events.extend(self.reconciler.borrow().adapter().take_events());
+        for event in events {
             changed = true;
-            self.event(index, &event);
+            self.event(&event);
         }
         changed
     }
 
-    fn event(&mut self, lane: usize, event: &UiEvent) {
-        let Some(view) = (if lane == 0 {
-            self.root.as_ref()
-        } else {
-            self.detail.as_ref()
-        })
-        .map(|lane| Rc::clone(&lane.view)) else {
+    /// The lane a key of the composed shell is of, and the key in that lane's view.
+    fn lane_of<'k>(&self, key: &'k str) -> Option<(Rc<RefCell<ViewInstance>>, &'k str)> {
+        match key.strip_prefix(DETAIL) {
+            Some(own) => Some((Rc::clone(&self.detail.as_ref()?.view), own)),
+            None => Some((Rc::clone(&self.root.as_ref()?.view), key)),
+        }
+    }
+
+    fn event(&mut self, event: &UiEvent) {
+        if let UiEvent::Fire(key, name, _) = event
+            && *name == shell::BACK
+            && self.built.as_ref().is_some_and(|built| built.key == *key)
+        {
+            self.close_detail();
             return;
+        }
+        let key = match event {
+            UiEvent::Press(key)
+            | UiEvent::Edit(key, _)
+            | UiEvent::Toggle(key, _)
+            | UiEvent::Resolve(key, _)
+            | UiEvent::Fire(key, ..) => Some(key.as_str()),
+            UiEvent::Open(_) => None,
         };
+        let lane = key.and_then(|key| self.lane_of(key));
+        let first = self.current_host().map(|host| host.next_ticket());
+        let mut ran: Option<(ActionRef, Value)> = None;
         // A press and a component's event apply the action reference the view attached: done,
         // denied, or suggested for a person to decide.
-        let fired = match event {
-            UiEvent::Press(key) => Some(view.borrow().press(key)),
-            UiEvent::Fire(key, event) => Some(view.borrow().fire(key, event)),
-            _ => None,
-        };
-        let outcome = match event {
-            UiEvent::Press(_) | UiEvent::Fire(..) => match fired {
-                Some(Ok(InvokeOutcome::Done(_))) | None => Ok(()),
-                Some(Ok(InvokeOutcome::Suggested(suggestion))) => {
-                    self.ask = Some(suggestion);
-                    self.rebuild_ask();
-                    Ok(())
-                }
-                Some(Ok(InvokeOutcome::Denied)) => Err(t("tilolang-ask-denied")),
-                Some(Err(error)) => Err(error.to_string()),
-            },
-            UiEvent::Edit(key, text) => edit(&view.borrow(), key, Value::Text(text.clone())),
-            UiEvent::Toggle(key, checked) => edit(&view.borrow(), key, Value::Bool(*checked)),
-            UiEvent::Resolve(key, approve) => self.resolve(&view.borrow(), key, *approve),
-            UiEvent::Open(target) => {
+        let outcome = match (event, &lane) {
+            (UiEvent::Press(_), Some((view, key))) => self.fire(view, key, "press", None, &mut ran),
+            (UiEvent::Fire(_, name, value), Some((view, key))) => {
+                self.fire(view, key, name, value.as_ref(), &mut ran)
+            }
+            (UiEvent::Edit(_, text), Some((view, key))) => {
+                edit(&view.borrow(), key, Value::Text(text.clone()))
+            }
+            (UiEvent::Toggle(_, checked), Some((view, key))) => {
+                edit(&view.borrow(), key, Value::Bool(*checked))
+            }
+            (UiEvent::Resolve(_, approve), Some((view, key))) => {
+                self.resolve(&view.borrow(), key, *approve)
+            }
+            (UiEvent::Open(target), _) => {
                 let target = target.clone();
                 self.open_detail(&target, None, Some(by_input()));
                 Ok(())
             }
+            _ => Ok(()),
         };
         if let Err(message) = outcome {
             self.notice(&message);
             self.refresh_bound();
         }
-        self.commit_planned();
+        let tickets = self.commit_planned();
+        if let (Some((aref, result)), Some(first)) = (ran, first) {
+            self.after_action(&aref, &result, tickets.into_iter().filter(|t| *t >= first));
+        }
         self.follow_opens();
+    }
+
+    /// Fire the event `name` of the node `key` of `view`, carrying `value`; `ran` takes the
+    /// action it applied and what that returned, when it ran one.
+    fn fire(
+        &mut self,
+        view: &Rc<RefCell<ViewInstance>>,
+        key: &str,
+        name: &str,
+        value: Option<&Value>,
+        ran: &mut Option<(ActionRef, Value)>,
+    ) -> Result<(), String> {
+        let action = view.borrow().event_action(key, name);
+        let fired = view.borrow().fire_with(key, name, value);
+        match fired {
+            Ok(InvokeOutcome::Done(result)) => {
+                *ran = action.map(|action| (action, result));
+                Ok(())
+            }
+            Ok(InvokeOutcome::Suggested(suggestion)) => {
+                self.ask = Some(suggestion);
+                self.rebuild_ask();
+                Ok(())
+            }
+            Ok(InvokeOutcome::Denied) => Err(t("tilolang-ask-denied")),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// What follows an action a person ran from a control: a destructive one offers Undo once
+    /// its commits (`tickets`) are in; what a primary one made is shown.
+    fn after_action(
+        &mut self,
+        aref: &ActionRef,
+        result: &Value,
+        tickets: impl Iterator<Item = u64>,
+    ) {
+        let Some(host) = self.current_host() else {
+            return;
+        };
+        let Some(action) = host.packages().into_iter().find_map(|package| {
+            package
+                .meta
+                .actions
+                .iter()
+                .find(|action| action.id == aref.action)
+                .cloned()
+        }) else {
+            return;
+        };
+        match action.role.as_deref() {
+            Some("destructive") => {
+                let label = tilolang_tilo::runtime::platform::label_of(&action);
+                // What it was run on: the item of a list (`delete(nb, n)`), or the resource.
+                let subject = aref.args.iter().rev().find_map(|arg| match arg {
+                    Value::Ref(subject) => Some(ResourceRef::clone(&subject.target)),
+                    _ => None,
+                });
+                let title = subject
+                    .map(|subject| describe::title_of(&host, &subject))
+                    .unwrap_or_default();
+                let notice = if title.is_empty() {
+                    label
+                } else {
+                    t_args(
+                        "tilolang-did",
+                        &[
+                            ("action", label.as_str().into()),
+                            ("title", title.as_str().into()),
+                        ],
+                    )
+                };
+                if let Some(last) = tickets.max() {
+                    self.pending.undo.insert(last, notice);
+                }
+            }
+            Some("primary") => {
+                // What a primary action made opens beside the list, as the person asked for it.
+                if let Value::Ref(made) = result {
+                    self.open_requests
+                        .borrow_mut()
+                        .push(made.target.id_string());
+                }
+            }
+            _ => {}
+        }
     }
 
     fn resolve(&self, view: &ViewInstance, key: &str, approve: bool) -> Result<(), String> {
@@ -2454,36 +1412,10 @@ impl Window {
     }
 
     /// The door answered an invocation the window handed over: done, or refused with `error`.
-    /// Whether it was the window's own (a commit, or an action its shell ran).
+    /// Whether it was the window's own (a commit).
     fn answered(&mut self, address: &ActionAddress, error: Option<String>) -> bool {
         if address.resource == HOST_RESOURCE && address.action == COMMIT {
             self.door_answered(error);
-            return true;
-        }
-        if let Some(notice) = self.destructive.remove(&address.action) {
-            match error {
-                None => {
-                    if let Some(shell) = self.shell() {
-                        shell.toast_with_action(
-                            notice,
-                            ToastKind::Info,
-                            "undo-2",
-                            t("tilolang-undo"),
-                        );
-                    }
-                }
-                Some(error) => self.notice(&error),
-            }
-            return true;
-        }
-        if self.making.remove(&address.action) && error.is_none() {
-            // What a primary action made opens beside the list, as the person asked for it.
-            if let Some(made) = self
-                .current_host()
-                .and_then(|host| host.take_produced(&address.action))
-            {
-                self.open_requests.borrow_mut().push(made.id_string());
-            }
             return true;
         }
         if let Some(error) = error
@@ -2497,8 +1429,8 @@ impl Window {
 
     // ----- for tests -----------------------------------------------------------------------
 
-    /// The root view's tree, as the window draws it: the rows of its list are those the list
-    /// shows.
+    /// The root view's tree, as the window draws it: the rows of its lists are those the lists
+    /// show.
     #[must_use]
     pub fn root_tree(&self) -> Option<UiNode> {
         self.root
@@ -2514,25 +1446,21 @@ impl Window {
             .map(|lane| crate::reconcile::normalize(lane.view.borrow().tree()))
     }
 
+    /// The composed shell, as the window last built it.
+    #[must_use]
+    pub fn composed(&self) -> Option<&UiNode> {
+        self.built.as_ref()
+    }
+
     /// The resource the window after the root's shows.
     #[must_use]
     pub fn detail_target(&self) -> Option<&ResourceRef> {
         self.detail.as_ref().map(|lane| &lane.target)
     }
 
-    /// Report what a person did to the root view (`detail: false`) or the window after it.
-    pub fn act(&self, detail: bool, event: UiEvent) {
-        let lane = if detail { &self.detail } else { &self.root };
-        if let Some(lane) = lane {
-            lane.events.borrow_mut().push(event);
-        }
-    }
-
-    /// Ask what the shell's controls ask: choose a case, select or activate a row, run an
-    /// action.
-    #[cfg(test)]
-    pub(crate) fn request(&self, request: Request) {
-        self.requests.borrow_mut().push(request);
+    /// Report what a person did: an event of a control of the composed shell, by its key there.
+    pub fn act(&self, event: UiEvent) {
+        self.events.borrow_mut().push(event);
     }
 
     /// The shell.
@@ -2543,7 +1471,15 @@ impl Window {
             .into_iter()
             .next()?
             .as_any()?
+            .downcast_ref::<Pane>()?
+            .content()
+            .as_any()?
             .downcast_ref::<NavShell>()
+    }
+
+    /// The shell, to change it as a person would.
+    pub fn shell_mut(&mut self) -> Option<&mut NavShell> {
+        self.shell()
     }
 
     /// The host, once the window has the record.
@@ -2553,17 +1489,7 @@ impl Window {
     }
 }
 
-/// The first node of `kind` at or under `node`.
-fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
-    if node.kind == kind {
-        return Some(node);
-    }
-    node.children
-        .iter()
-        .find_map(|child| find_kind(child, kind))
-}
-
-/// What a view changed of a list whose rows the window renders as it shows them.
+/// What a view changed of a virtual list it renders as the list shows it.
 #[derive(Default)]
 struct ListChanges {
     /// Rows inserted, removed or moved, in order.
@@ -2574,121 +1500,69 @@ struct ListChanges {
     reread: bool,
 }
 
-impl ListChanges {
-    fn is_empty(&self) -> bool {
-        self.structure.is_empty() && self.rows.is_empty()
-    }
-}
-
-/// Where a patch is, against a list whose rows the window renders.
-enum Place {
-    /// Among the list's own children: a row inserted, removed or moved.
-    Rows,
-    /// Inside the row of this key.
-    Row(String),
-    /// Above the list, changing what holds it.
-    Above,
-    Elsewhere,
-}
-
-impl Place {
-    /// Where a patch at `path` (`structural` when it inserts, removes or moves) is, against the
-    /// list at `list` (its keys from the root).
-    fn of(path: &[String], structural: bool, list: &[String]) -> Self {
-        if structural && path == list {
-            Self::Rows
-        } else if path.len() > list.len() && path.starts_with(list) {
-            path.get(list.len())
-                .map_or(Self::Elsewhere, |row| Self::Row(row.clone()))
-        } else if structural && list.starts_with(path) {
-            Self::Above
-        } else {
-            Self::Elsewhere
-        }
-    }
-
-    /// Take `patch` into `changes` when it is among or inside the list's rows; the patch back
-    /// when it is not.
-    fn take(self, patch: Patch, changes: &mut ListChanges) -> Option<Patch> {
-        match self {
-            Self::Rows => changes.structure.push(patch),
-            Self::Row(row) => {
-                if !changes.rows.contains(&row) {
-                    changes.rows.push(row);
-                }
-            }
-            Self::Above | Self::Elsewhere => return Some(patch),
-        }
-        None
-    }
-}
-
-/// What the views changed, by where it shows.
+/// What a view's patches changed, by where it shows.
 #[derive(Default)]
-struct Polled {
-    /// What the list column's list changed.
-    list: ListChanges,
-    /// What the transcripts' lists changed: the view and list of each.
-    threads: Vec<(Rc<RefCell<ViewInstance>>, String, ListChanges)>,
-    /// Something the columns show besides those rows changed.
+struct Sorted {
+    /// The virtual lists' rows, by list key.
+    lists: std::collections::BTreeMap<String, ListChanges>,
+    /// Something besides those rows changed.
     content: bool,
 }
 
-impl Polled {
-    /// Sort `patches` of a view whose list column shows the list at `list`, and whose
-    /// transcript the list at `thread` (their keys from the root), when it has them. Returns
-    /// what changed of the transcript's list.
-    fn sort(
-        &mut self,
-        patches: Vec<Patch>,
-        list: Option<&[String]>,
-        thread: Option<&[String]>,
-    ) -> ListChanges {
-        let mut threaded = ListChanges::default();
-        for patch in patches {
-            let (path, structural) = match &patch {
-                Patch::SetRoot(_) => {
-                    self.content = true;
-                    self.list.reread |= list.is_some();
-                    threaded.reread |= thread.is_some();
-                    continue;
-                }
-                Patch::Insert { parent, .. }
-                | Patch::Remove { parent, .. }
-                | Patch::Move { parent, .. } => (parent.as_slice(), true),
-                Patch::SetProp { path, .. }
-                | Patch::SetBinding { path, .. }
-                | Patch::SetEvent { path, .. }
-                | Patch::SetAnchor { path, .. } => (path.as_slice(), false),
-            };
-            let at_list = list.map_or(Place::Elsewhere, |list| Place::of(path, structural, list));
-            let at_thread = thread.map_or(Place::Elsewhere, |thread| {
-                Place::of(path, structural, thread)
-            });
-            let above = (
-                matches!(at_list, Place::Above),
-                matches!(at_thread, Place::Above),
-            );
-            let Some(untaken) = at_list.take(patch, &mut self.list) else {
-                continue;
-            };
-            if at_thread.take(untaken, &mut threaded).is_none() {
-                continue;
-            }
-            self.content = true;
-            self.list.reread |= above.0;
-            threaded.reread |= above.1;
-        }
-        threaded
+impl Sorted {
+    fn list(&mut self, key: &str) -> &mut ListChanges {
+        self.lists.entry(key.to_owned()).or_default()
     }
 }
 
-fn shell_of(body: &mut Element) -> Option<&mut NavShell> {
-    body.children_mut()
-        .into_iter()
-        .next()?
-        .as_any_mut()?
-        .downcast_mut::<NavShell>()
+/// Sort a view's `patches` against its virtual lists `lists` (each with its keys from the root):
+/// rows inserted, removed or moved, and rows changed, are their lists'; the rest is content.
+fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
+    let mut sorted = Sorted::default();
+    for patch in patches {
+        let (path, structural) = match &patch {
+            Patch::SetRoot(_) => {
+                sorted.content = true;
+                for (list, _) in lists {
+                    sorted.list(list).reread = true;
+                }
+                continue;
+            }
+            Patch::Insert { parent, .. }
+            | Patch::Remove { parent, .. }
+            | Patch::Move { parent, .. } => (parent.as_slice(), true),
+            Patch::SetProp { path, .. }
+            | Patch::SetBinding { path, .. }
+            | Patch::SetEvent { path, .. }
+            | Patch::SetAnchor { path, .. } => (path.as_slice(), false),
+        };
+        let mut taken = false;
+        for (list, at) in lists {
+            if structural && path == at.as_slice() {
+                sorted.list(list).structure.push(patch.clone());
+                taken = true;
+                break;
+            }
+            if path.len() > at.len() && path.starts_with(at) {
+                if let Some(row) = path.get(at.len()) {
+                    let changes = sorted.list(list);
+                    if !changes.rows.contains(row) {
+                        changes.rows.push(row.clone());
+                    }
+                }
+                taken = true;
+                break;
+            }
+            if structural && at.starts_with(path) {
+                // What holds the list changed: the list may be another now.
+                sorted.list(list).reread = true;
+            }
+        }
+        if !taken {
+            sorted.content = true;
+        }
+    }
+    sorted
 }
 
 fn edit(view: &ViewInstance, key: &str, value: Value) -> Result<(), String> {
@@ -2709,38 +1583,33 @@ fn edit(view: &ViewInstance, key: &str, value: Value) -> Result<(), String> {
     }
 }
 
-fn visit_bound(lane: &Lane, node: &UiNode) {
-    // The rows of the list column are the list's to refresh.
-    if lane.list.as_deref() == Some(node.key.as_str()) {
-        return;
-    }
-    if node.binding.is_some()
-        && let Some(value) = lane.view.borrow().bound_value(&node.key)
-    {
-        match value {
-            Value::Bool(flag) => lane.reconciler.set_flag(&node.key, flag),
-            Value::Int(0) if node.kind == "checkbox" || node.kind == "toggle" => {
-                lane.reconciler.set_flag(&node.key, false);
+/// Show what each control of the composed shell `node` is bound to now, read from its view.
+fn visit_bound(
+    node: &UiNode,
+    root: Option<&ViewInstance>,
+    detail: Option<&ViewInstance>,
+    reconciler: &Reconciler,
+) {
+    if node.binding.is_some() {
+        let (view, key) = match node.key.strip_prefix(DETAIL) {
+            Some(own) => (detail, own),
+            None => (root, node.key.as_str()),
+        };
+        if let Some(value) = view.and_then(|view| view.bound_value(key)) {
+            match value {
+                Value::Bool(flag) => reconciler.set_flag(&node.key, flag),
+                Value::Int(0) if node.kind == "checkbox" || node.kind == "toggle" => {
+                    reconciler.set_flag(&node.key, false);
+                }
+                Value::Int(1) if node.kind == "checkbox" || node.kind == "toggle" => {
+                    reconciler.set_flag(&node.key, true);
+                }
+                other => reconciler.set_text(&node.key, &crate::reconcile::display(&other)),
             }
-            Value::Int(1) if node.kind == "checkbox" || node.kind == "toggle" => {
-                lane.reconciler.set_flag(&node.key, true);
-            }
-            other => lane
-                .reconciler
-                .set_text(&node.key, &crate::reconcile::display(&other)),
         }
     }
     for child in &node.children {
-        visit_bound(lane, child);
-    }
-}
-
-impl Lane {
-    /// The app of the package whose view this is.
-    fn view_app(&self, host: &Host) -> String {
-        describe::type_of(host, &self.target.ty)
-            .map(|(meta, _)| meta.app)
-            .unwrap_or_default()
+        visit_bound(child, root, detail, reconciler);
     }
 }
 
@@ -2881,8 +1750,7 @@ impl Widget for Window {
         } else if let Some(live) = self.live.as_ref().filter(|live| live.pending()) {
             live.update();
         }
-        let polled = self.poll_views();
-        self.apply_polled(polled);
+        self.poll_views();
         self.body.sync(state, path);
     }
 
@@ -2899,17 +1767,11 @@ impl Widget for Window {
                 lane.view.borrow().refresh();
             }
         }
-        // Who is at an item, and what participants are called, show on the rows.
-        let peers = std::mem::take(&mut self.peers_changed);
-        if (peers || renamed)
-            && let Some(pane) = self.list_pane()
-        {
-            pane.refresh_shown();
-        }
-        let changed = self.handle_events() || door || opened || settled || peers || renamed;
+        // Who is at a resource shows wherever a view reads its lenses.
+        let lenses = std::mem::take(&mut self.lenses_changed);
+        let changed = self.handle_events() || door || opened || settled || lenses || renamed;
         if changed {
-            let polled = self.poll_views();
-            self.apply_polled(polled);
+            self.poll_views();
         }
         self.take_toast_undo();
         let child = self.body.update(state, path);
@@ -2958,10 +1820,7 @@ impl Widget for Window {
             self.names_changed.set(true);
         }
         let peers = peers_of(presence, &self.app, &self.me);
-        if peers != *self.peers.borrow() {
-            *self.peers.borrow_mut() = peers;
-            self.peers_changed = true;
-        }
+        self.publish_lenses(peers);
         self.body.draw(scene, transform, text, theme, presence);
         if let Some(undrawn) = self.undrawn.take() {
             let at = std::time::SystemTime::now()

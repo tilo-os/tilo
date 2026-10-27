@@ -18,8 +18,8 @@ use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Principal, ViewInstance};
 
 use super::{
-    Changes, Doc, List, Nested, PAGE, Record, Room, SCROLL_STEP, Shape, Sized, Work, content_lists,
-    execute, item_id, ms, root_id, text_input, with_work,
+    Changes, Doc, List, Nested, PAGE, Record, Room, SCROLL_STEP, Shape, Sized, Work, execute,
+    frame_list, item_id, ms, root_id, text_input, with_work,
 };
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::record::{DynRecord, DynValue};
@@ -140,12 +140,7 @@ impl Thread {
             .host
             .open_resource(item, None)
             .map_err(|e| e.to_string())?;
-        let mut lists = Vec::new();
-        content_lists(view.tree(), &mut lists);
-        let list = lists
-            .into_iter()
-            .next()
-            .ok_or("the item's window shows no list")?;
+        let list = frame_list(view.tree()).ok_or("the item's window shows no list")?;
         let len = view.list_len(&list).unwrap_or(0);
         let shown = len.saturating_sub(PAGE)..len;
         for i in shown.clone() {

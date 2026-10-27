@@ -7,6 +7,13 @@ use crate::ids::{FieldId, ModuleHash};
 use crate::value::{ResourceRef, Value};
 use crate::view_state::StateKey;
 
+/// Whether nodes of `kind` hold a virtual list: rows built only when the host shows them,
+/// absent from the tree until then. The content's `list`, and the toolkit's `VirtualList`.
+#[must_use]
+pub fn is_virtual(kind: &str) -> bool {
+    kind == "list" || kind == "ui.VirtualList"
+}
+
 /// The property of a `list` in a card: how many of its rows it shows (`tilolang::prims::
 /// PREVIEW_ROWS`). Only those are built.
 pub(crate) const PREVIEW: &str = "preview";
@@ -225,7 +232,7 @@ pub(crate) fn diff_with(
 
 /// Whether `node` is a virtual list whose rows are to be read anew.
 fn replaced(lists: &VirtualLists, node: &UiNode) -> bool {
-    node.kind == "list" && matches!(lists.get(&node.key), Some(RowsChange::Replace))
+    is_virtual(&node.kind) && matches!(lists.get(&node.key), Some(RowsChange::Replace))
 }
 
 fn diff_node(
@@ -273,7 +280,7 @@ fn diff_node(
             anchor: new.anchor.clone(),
         });
     }
-    if new.kind == "list"
+    if is_virtual(&new.kind)
         && let Some(RowsChange::Steps(steps)) = lists.get(&new.key)
     {
         virtual_rows(old, new, path, steps, (same_event, lists), out);

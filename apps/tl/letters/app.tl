@@ -65,7 +65,7 @@ fn shelved(desk: Desk, shelf: Shelf) -> List<Draft> {
 /// is the window's.
 view desk(desk: Desk) {
     window shelf: Shelf = .drafts
-    list(shelved(desk, shelf), filter: shelf, empty: "No letters here")
+    std.list(desk, shelved(desk, shelf), filter: shelf, count: s -> shelved(desk, s).len(), empty: "No letters here")
 }
 
 /// One letter in a list: its subject and who it goes to.
@@ -75,7 +75,7 @@ view draft_row(d: Draft) {
 
 /// A letter's window.
 view editor(d: Draft) {
-    document {
+    std.document(d) {
         input(bind: d.to, placeholder: "To")
         input(bind: d.subject, placeholder: "Subject")
         input(bind: d.body, placeholder: "Write your letter", lines: 10)

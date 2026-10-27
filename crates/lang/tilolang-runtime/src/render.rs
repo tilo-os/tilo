@@ -359,7 +359,7 @@ impl Core {
             } else {
                 walk.prefix
             },
-            in_list: n.kind == "list",
+            in_list: crate::view::is_virtual(&n.kind),
             preview: match n.props.get(PREVIEW) {
                 Some(Value::Int(rows)) if n.kind == "list" => usize::try_from(*rows).ok(),
                 _ => None,

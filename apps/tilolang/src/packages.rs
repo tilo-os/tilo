@@ -23,6 +23,8 @@ pub struct Embedded {
 }
 
 /// Every built-in package, in the order they load: a package comes after those it imports.
+/// The last is no app of the platform's: a shelf that composes its own list window from the
+/// toolkit's components, which shows an app can do what the standard library does.
 pub const EMBEDDED: &[Embedded] = &[
     embedded!("counter"),
     embedded!("todo"),
@@ -30,6 +32,11 @@ pub const EMBEDDED: &[Embedded] = &[
     embedded!("letters"),
     embedded!("chat"),
     embedded!("board"),
+    Embedded {
+        dir: "handmade",
+        source: include_str!("../tests/handmade/app.tl"),
+        ids: "",
+    },
 ];
 
 /// The surface of a host running every built-in package.

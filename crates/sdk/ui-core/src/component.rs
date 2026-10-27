@@ -437,6 +437,20 @@ impl Event {
     }
 }
 
+impl Event {
+    /// The event as a command a menu runs each time it is chosen (shared, so a menu that is
+    /// built anew each time it opens can hold it): `None` for [`Event::None`].
+    #[must_use]
+    pub fn command(self) -> Option<std::rc::Rc<dyn Fn()>> {
+        let handler = std::cell::RefCell::new(self.handler()?);
+        Some(std::rc::Rc::new(move || {
+            if let Ok(mut run) = handler.try_borrow_mut() {
+                (*run)();
+            }
+        }))
+    }
+}
+
 /// A two-way binding as a widget takes it: the value through the widget's model-binding path
 /// (a [`LocalState`] its host keeps in step with what it is bound to), and where each edit is
 /// reported, for the host to apply with the binding's merge.
@@ -604,7 +618,68 @@ pub trait Source {
         slot: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String>;
+
+    /// The component each child of the slot `slot` is an instance of, in order: `None` for a
+    /// child that is a view of another kind.
+    fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
+        let _ = slot;
+        Vec::new()
+    }
+
+    /// The rows of the slot `slot` when its host renders them only as they are shown (a loop
+    /// over a collection of any length): the widget reads them from there rather than from
+    /// [`Self::components`].
+    fn rows(&mut self, slot: &str) -> Option<SharedRows> {
+        let _ = slot;
+        None
+    }
 }
+
+/// Rows its host renders only when the widget shows them: a loop over ten thousand items costs
+/// the rows on screen. The host keeps the keys of every row, renders the rows the widget asks
+/// for and forgets the others, and queues what changed (rows inserted, removed or moved, and
+/// rendered rows that show something else now) for the widget to take.
+pub trait RowSource {
+    /// How many rows there are, rendered or not.
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The key of the row at `index`.
+    fn key_at(&self, index: usize) -> Option<String>;
+
+    /// Where the row `key` stands.
+    fn index_of(&self, key: &str) -> Option<usize>;
+
+    /// Render the rows of `range` not rendered yet, and forget those rendered outside it.
+    fn request_range(&mut self, range: std::ops::Range<usize>);
+
+    /// Read the rendered row `key` as an instance of a component: `Ok(false)` when it is not
+    /// rendered.
+    ///
+    /// # Errors
+    /// What `read` returned.
+    fn read(
+        &mut self,
+        key: &str,
+        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<bool, String>;
+
+    /// The key of the row showing the resource `id`, rendered or not.
+    fn key_presenting(&self, id: &str) -> Option<String>;
+
+    /// What changed since it was asked last, each change against the rows the one before it
+    /// left.
+    fn take_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>>;
+
+    /// Whether changes are waiting.
+    fn has_changes(&self) -> bool;
+}
+
+/// Rows a host and the widget showing them share.
+pub type SharedRows = std::rc::Rc<std::cell::RefCell<dyn RowSource>>;
 
 /// A widget's props: the struct its instances are made of. Derive it.
 pub trait Component: Default + Sized {
@@ -749,6 +824,10 @@ pub fn registry() -> &'static [Entry] {
         vec![
             entry::<Text>(),
             entry::<Button>(),
+            entry::<crate::widget::MenuButton>(),
+            entry::<crate::search::SearchButton>(),
+            entry::<crate::widget::Scrollable>(),
+            entry::<crate::widget::Docked>(),
             entry::<TextInput>(),
             entry::<ListRow>(),
             entry::<crate::widget::virtual_list::DescribedList>(),
@@ -789,12 +868,16 @@ pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Resu
 }
 
 /// The components that stand only in a slot of another, which reads their props: a property
-/// list's facts, a navigation list's places.
+/// list's facts, a navigation list's places, a menu's commands, a row's swipe and the items of a
+/// virtual list.
 #[must_use]
-pub fn parts() -> [fn() -> Description; 2] {
+pub fn parts() -> [fn() -> Description; 5] {
     [
         crate::widget::PropertyProps::describe,
         crate::widget::NavItemProps::describe,
+        crate::widget::MenuItemProps::describe,
+        crate::widget::SwipeActionProps::describe,
+        crate::widget::ListItemProps::describe,
     ]
 }
 

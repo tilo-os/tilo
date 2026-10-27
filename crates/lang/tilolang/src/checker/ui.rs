@@ -173,7 +173,11 @@ impl Checker<'_> {
                     let f = self.pop_sink();
                     self.emit(Stmt::If(c, t, f));
                 }
-                UiKind::For { var, iter, body } => self.ui_for(&var.name, iter, body, parent),
+                UiKind::For { var, iter, body } => {
+                    if !self.unrolled_for(&var.name, iter, body, parent) {
+                        self.ui_for(&var.name, iter, body, parent);
+                    }
+                }
                 UiKind::Match { scrutinee, arms } => {
                     self.match_ui(scrutinee, arms, parent, s.span);
                 }
@@ -226,7 +230,8 @@ impl Checker<'_> {
             return;
         };
         let mut fl = self.new_for(list, &elem);
-        let part = if matches!(elem, Ty::Record(_)) {
+        // A resource keys its row by its id; a value (a host value too) by its place.
+        let part = if matches!(&elem, Ty::Record(key) if !crate::host::is_value(key)) {
             Ex::host(
                 Imp::RefId,
                 vec![Ex::local(fl.item_local, elem.clone())],
@@ -266,19 +271,19 @@ impl Checker<'_> {
                     .cloned()
                     .unwrap_or_default();
                 if id.is_empty() {
-                    format!("{}.{}", self.st.view_id, c.node)
+                    format!("{}.{}{}", self.st.view_id, self.st.prefix, c.node)
                 } else {
                     id
                 }
             }
-            None => format!("{}.{}", self.st.view_id, c.node),
+            None => format!("{}.{}{}", self.st.view_id, self.st.prefix, c.node),
         };
         self.keyed(&base)
     }
 
     /// The key of the statement `node` that is not a call (a fact).
     pub(super) fn stmt_key(&self, node: ast::NodeId) -> Ex {
-        self.keyed(&format!("{}.{}", self.st.view_id, node))
+        self.keyed(&format!("{}.{}{}", self.st.view_id, self.st.prefix, node))
     }
 
     /// `base` combined with the identity of the enclosing items.
@@ -306,13 +311,40 @@ impl Checker<'_> {
             .unwrap_or_default()
     }
 
-    fn ui_call(&mut self, c: &UiCall, parent: Option<LocalId>) -> LocalId {
+    pub(super) fn ui_call(&mut self, c: &UiCall, parent: Option<LocalId>) -> LocalId {
         let env = self.env;
         let (callee, args): (&ast::Expr, &[ast::Arg]) = match &c.call.kind {
             ExprKind::Call { callee, args } => (callee, args),
             _ => (&c.call, &[]),
         };
         let span = c.call.span;
+        // A template's parameter that is a view, or a template: they place their nodes
+        // themselves.
+        if let ExprKind::Ident(name) = &callee.kind
+            && let Some(m) = self.st.macros.get(name).cloned()
+            && !matches!(m, super::template::Macro::State(_))
+        {
+            return self.apply_ui(name, &m, c, args, parent);
+        }
+        let template = match &callee.kind {
+            // A primitive's name is the primitive's, in the library too (`page` in `std.page`).
+            ExprKind::Ident(name) if self.lookup(name).is_none() && prims::prim(name).is_none() => {
+                self.template_named(name).cloned()
+            }
+            ExprKind::Field { base, name } => self.template_at(base, &name.name).cloned(),
+            _ => None,
+        };
+        if let Some(t) = template {
+            if self.st.ctx != super::Ctx::View {
+                self.err(
+                    "E061",
+                    span,
+                    format!("`{}` builds UI where a view calls it", t.decl.name.name),
+                );
+                return self.dead_node();
+            }
+            return self.expand(&t, c, args, parent);
+        }
         let node = match &callee.kind {
             ExprKind::Ident(name) => {
                 if let Some((id, ty)) = self.lookup(name) {
@@ -345,8 +377,7 @@ impl Checker<'_> {
                         Some(n) => n,
                         None => self.primitive(p, c, args),
                     }
-                } else if let Some(v) = env.own_callable(name) {
-                    let v = v.clone();
+                } else if let Some(v) = self.own_callable(name).cloned() {
                     self.view_call(&v, c, args, span)
                 } else {
                     let mut views: Vec<&str> = env
@@ -435,7 +466,6 @@ impl Checker<'_> {
     }
 
     pub(super) fn primitive(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> LocalId {
-        self.placement(p.name, c.call.span);
         let key = self.node_key(c);
         let kind = crate::toolkit::prim_component(p.name)
             .map_or_else(|| p.name.to_string(), crate::toolkit::kind);
@@ -475,10 +505,23 @@ impl Checker<'_> {
 
     /// The statements of a primitive's block, as children of `n`.
     pub(super) fn child_block(&mut self, prim: &'static str, block: &[UiStmt], n: LocalId) {
+        self.child_block_of(prim, block, n, false);
+    }
+
+    /// The statements of a block, as children of `n`; `parts` when they are parts of the
+    /// component `n` is (a named slot's).
+    pub(super) fn child_block_of(
+        &mut self,
+        prim: &'static str,
+        block: &[UiStmt],
+        n: LocalId,
+        parts: bool,
+    ) {
         let saved = self.st.ui;
         self.st.ui.parent = prim;
         self.st.ui.list_row_ok = false;
         self.st.ui.in_card |= prim == "card";
+        self.st.ui.parts = parts;
         self.ui_stmts(block, n);
         self.st.ui = saved;
     }
@@ -893,6 +936,22 @@ impl Checker<'_> {
             vec![node.clone(), b, Ex::str(&f.id)],
             Ty::Unit,
         )));
+        // A control bound to the field marked `(title)` or `(body)` edits the resource's title
+        // or its body: a document draws them as its large title and its running text.
+        if let Some(role) = &f.role {
+            self.emit(Stmt::Eval(Ex::host(
+                Imp::UiPropH,
+                vec![node.clone(), Ex::str("field_role"), Ex::str(role)],
+                Ty::Unit,
+            )));
+            if role == "title" && f.ty == Ty::Text {
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiPropI,
+                    vec![node.clone(), Ex::str("title"), Ex::int(1)],
+                    Ty::Unit,
+                )));
+            }
+        }
         Some(f.ty.clone())
     }
 

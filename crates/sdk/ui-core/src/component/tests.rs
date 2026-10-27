@@ -198,3 +198,313 @@ fn a_changed_text_is_taken_in_place_and_another_role_is_built_again() {
     assert_eq!(update("Text", &mut text, &mut titled), Ok(false));
     assert_eq!(text.test_id(), Some("t"));
 }
+
+/// An item of a list as a host renders it: a row titled `title` showing `resource`,
+/// with an avatar when `avatar`, its menu one destructive command.
+struct Item {
+    key: String,
+    title: String,
+    resource: String,
+    avatar: bool,
+}
+
+/// An instance of an item, its parts read as components.
+struct ItemSource<'a> {
+    item: &'a Item,
+    queue: crate::Intents<Fired>,
+}
+
+impl Source for ItemSource<'_> {
+    fn key(&self) -> &str {
+        &self.item.key
+    }
+
+    fn prop(&mut self, name: &str) -> Option<Value> {
+        match name {
+            "item" => Some(Value::Resource(self.item.resource.clone())),
+            _ => None,
+        }
+    }
+
+    fn event(&mut self, _name: &str) -> Event {
+        Event::None
+    }
+
+    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
+        None
+    }
+
+    fn children(&mut self, _slot: &str) -> Vec<Element> {
+        Vec::new()
+    }
+
+    fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
+        match slot {
+            "row" => vec![Some("ListRow".to_owned())],
+            _ => Vec::new(),
+        }
+    }
+
+    fn components(
+        &mut self,
+        slot: &str,
+        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        match slot {
+            "row" => {
+                let mut row = given(
+                    &self.item.key,
+                    &[("title", Value::Text(self.item.title.clone()))],
+                );
+                if self.item.avatar {
+                    row.props.insert("avatar_space".into(), Value::Bool(false));
+                }
+                read(&mut AvatarRow {
+                    row,
+                    avatar: self.item.avatar,
+                })?;
+                Ok(1)
+            }
+            "menu" => {
+                let mut command = given("delete", &[("label", Value::Text("Delete".into()))]);
+                command
+                    .props
+                    .insert("destructive".into(), Value::Bool(true));
+                command.queue = self.queue.clone();
+                command.events.push("choose");
+                read(&mut command)?;
+                Ok(1)
+            }
+            _ => Ok(0),
+        }
+    }
+}
+
+/// A row whose avatar slot holds one when asked.
+struct AvatarRow {
+    row: Given,
+    avatar: bool,
+}
+
+impl Source for AvatarRow {
+    fn key(&self) -> &str {
+        self.row.key()
+    }
+
+    fn prop(&mut self, name: &str) -> Option<Value> {
+        self.row.prop(name)
+    }
+
+    fn event(&mut self, name: &str) -> Event {
+        self.row.event(name)
+    }
+
+    fn binding(&mut self, name: &str) -> Option<BoundValue> {
+        self.row.binding(name)
+    }
+
+    fn children(&mut self, slot: &str) -> Vec<Element> {
+        self.row.children(slot)
+    }
+
+    fn components(
+        &mut self,
+        slot: &str,
+        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        if slot == "avatar" && self.avatar {
+            read(&mut given("who", &[("name", Value::Text("Ada".into()))]))?;
+            return Ok(1);
+        }
+        Ok(0)
+    }
+}
+
+/// Rows a test renders: every one at hand, none rendered until asked.
+struct Rendered {
+    items: Vec<Item>,
+    asked: Vec<std::ops::Range<usize>>,
+    queue: crate::Intents<Fired>,
+}
+
+impl RowSource for Rendered {
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn key_at(&self, index: usize) -> Option<String> {
+        self.items.get(index).map(|item| item.key.clone())
+    }
+
+    fn index_of(&self, key: &str) -> Option<usize> {
+        self.items.iter().position(|item| item.key == key)
+    }
+
+    fn request_range(&mut self, range: std::ops::Range<usize>) {
+        self.asked.push(range);
+    }
+
+    fn read(
+        &mut self,
+        key: &str,
+        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let Some(item) = self.items.iter().find(|item| item.key == key) else {
+            return Ok(false);
+        };
+        read(&mut ItemSource {
+            item,
+            queue: self.queue.clone(),
+        })?;
+        Ok(true)
+    }
+
+    fn key_presenting(&self, id: &str) -> Option<String> {
+        self.items
+            .iter()
+            .find(|item| item.resource == id)
+            .map(|item| item.key.clone())
+    }
+
+    fn take_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>> {
+        Vec::new()
+    }
+
+    fn has_changes(&self) -> bool {
+        false
+    }
+}
+
+/// A list's instance whose rows a host renders.
+struct ListSource {
+    rows: SharedRows,
+    queue: crate::Intents<Fired>,
+}
+
+impl Source for ListSource {
+    fn key(&self) -> &str {
+        "list"
+    }
+
+    fn prop(&mut self, name: &str) -> Option<Value> {
+        match name {
+            "selection_follows_focus" | "in_column" => Some(Value::Bool(true)),
+            _ => None,
+        }
+    }
+
+    fn event(&mut self, name: &str) -> Event {
+        Event::View(Intent::new(&self.queue, "list", name))
+    }
+
+    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
+        None
+    }
+
+    fn children(&mut self, _slot: &str) -> Vec<Element> {
+        Vec::new()
+    }
+
+    fn components(
+        &mut self,
+        _slot: &str,
+        _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        Ok(0)
+    }
+
+    fn rows(&mut self, _slot: &str) -> Option<SharedRows> {
+        Some(std::rc::Rc::clone(&self.rows))
+    }
+}
+
+fn rendered_list(items: Vec<Item>) -> (crate::widget::DescribedList, crate::Intents<Fired>) {
+    let queue = crate::Intents::default();
+    let rows: SharedRows = std::rc::Rc::new(std::cell::RefCell::new(Rendered {
+        items,
+        asked: Vec::new(),
+        queue: queue.clone(),
+    }));
+    let mut source = ListSource {
+        rows,
+        queue: queue.clone(),
+    };
+    let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
+    (
+        <crate::widget::DescribedList as Described>::from_props("list", props),
+        queue,
+    )
+}
+
+fn item(key: &str, title: &str, avatar: bool) -> Item {
+    Item {
+        key: key.into(),
+        title: title.into(),
+        resource: format!("doc/notes:{key}"),
+        avatar,
+    }
+}
+
+#[test]
+fn a_list_of_rendered_rows_reads_them_from_its_host_and_its_menu_from_the_row() {
+    let (mut list, queue) = rendered_list(vec![
+        item("a", "Q3 plan", false),
+        item("b", "Groceries", false),
+    ]);
+    let virtual_list = list.list_mut().expect("the list");
+    assert_eq!(crate::widget::ListModel::len(virtual_list.model()), 2);
+    assert_eq!(
+        crate::widget::ListModel::label(virtual_list.model(), 1).as_deref(),
+        Some("Groceries"),
+        "a row is named by its title, for type-ahead"
+    );
+    assert!(virtual_list.reveal(&"b".to_owned()));
+    let area = list.menu_area_mut().expect("the rows share one menu");
+    assert!(area.open_at(vello::kurbo::Point::ZERO, false));
+    let labels: Vec<Option<&str>> = area
+        .menu()
+        .items()
+        .iter()
+        .map(crate::widget::MenuItem::label)
+        .collect();
+    assert_eq!(labels, vec![Some("Delete")]);
+    // Opening the menu selects its row, reported with the resource it shows.
+    assert!(queue.take().iter().any(|fired| fired.event == "select"
+        && fired.value == Some(Value::Resource("doc/notes:b".into()))));
+    area.choose(0);
+    assert!(
+        queue
+            .take()
+            .iter()
+            .any(|fired| fired.key == "delete" && fired.event == "choose"),
+        "choosing it fires the command's event"
+    );
+    // The list's selection is the row of the resource shown beside it.
+    assert!(list.select_presenting(Some("doc/notes:a")));
+    let selected: Vec<String> = list
+        .list()
+        .unwrap()
+        .selection()
+        .stored_keys()
+        .cloned()
+        .collect();
+    assert_eq!(selected, ["a".to_owned()]);
+    assert!(!list.select_presenting(Some("doc/notes:a")), "already so");
+}
+
+#[test]
+fn an_icon_only_button_is_a_plain_glyph_unless_given_a_role() {
+    let mut source = given(
+        "pin",
+        &[
+            ("label", Value::Text("Pin".into())),
+            ("icon", Value::Icon("pin".into())),
+            ("icon_only", Value::Bool(true)),
+            ("toggled", Value::Bool(true)),
+        ],
+    );
+    let props = crate::widget::ButtonProps::from_source(&mut source).expect("reads");
+    let button = <crate::widget::Button as Described>::from_props("pin", props);
+    assert_eq!(button.role_of(), crate::widget::ButtonRole::Plain);
+    assert!(button.is_toggled());
+}

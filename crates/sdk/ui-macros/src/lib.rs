@@ -295,6 +295,12 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
     }
     let label = option_tokens(head.label.as_deref());
     let presents = option_tokens(head.presents.as_deref());
+    // A component of no parts reads nothing into its props.
+    let binding = if reads.is_empty() {
+        quote!(let _ = source; let props)
+    } else {
+        quote!(let mut props)
+    };
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         impl #impl_generics #k::Component for #ident #ty_generics #where_clause {
@@ -318,7 +324,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
             }
 
             fn from_source(source: &mut dyn #k::Source) -> ::core::result::Result<Self, #k::Error> {
-                let mut props = <Self as ::core::default::Default>::default();
+                #binding = <Self as ::core::default::Default>::default();
                 #(#reads)*
                 Ok(props)
             }

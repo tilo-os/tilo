@@ -1,16 +1,18 @@
-//! What the platform shows of a package's declarations: a resource's title, the actions offered
-//! on it, an enum's case labels.
+//! What the window reads of a package's declarations: a type, a resource's title, an enum's
+//! case labels. What a view shows of them it reads itself (`actions(r)`, `meta(r)`).
 
-use std::rc::Rc;
-
-use tilolang_tilo::MetaExt;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::publish::{package_resource_id, resource_id};
-use tilolang_tilo::runtime::meta::{ActionMeta, Meta, TypeMeta};
-use tilolang_tilo::runtime::{ResourceRef, Value};
+use tilolang_tilo::runtime::ResourceRef;
+use tilolang_tilo::runtime::meta::{Meta, TypeMeta};
+use ui::icons::Icon;
 
-use super::list::{RowAction, icon_named};
 use crate::reconcile::{Case, display};
+
+/// An icon a package names (`.pin`), when the platform has it.
+#[must_use]
+pub fn icon_named(name: &str) -> Option<Icon> {
+    Icon::from_name(&name.replace('_', "-"))
+}
 
 /// The package that declares the type `ty` (an id), with the type.
 #[must_use]
@@ -53,13 +55,6 @@ pub fn sentence(name: &str) -> String {
     })
 }
 
-/// What a type is called in the platform's sentences ("No note selected"): its name, in lower
-/// case words.
-#[must_use]
-pub fn noun(ty: &TypeMeta) -> String {
-    sentence(&ty.name).to_lowercase()
-}
-
 /// The title of a resource: its first `Text` field marked `title`; else, for a package's root,
 /// the package's title; else its type's name.
 #[must_use]
@@ -83,187 +78,6 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
         return meta.title;
     }
     sentence(&ty.name)
-}
-
-/// The label of an action: as the compiler derived it, else its name in sentence case.
-#[must_use]
-pub fn label_of(action: &ActionMeta) -> String {
-    if action.label.is_empty() {
-        sentence(&action.name)
-    } else {
-        action.label.clone()
-    }
-}
-
-/// Whether every one of `params` has a default: an invocation may leave them all out.
-fn all_defaulted(params: &[tilolang_tilo::runtime::meta::ParamMeta]) -> bool {
-    params.iter().all(|param| param.default.is_some())
-}
-
-/// The actions a person can run on a resource of the type `ty` from a menu: those whose subject
-/// is the type and that need nothing else (what else they take has a default, which the
-/// invocation gets). The primary one first.
-#[must_use]
-pub fn actions_on(meta: &Meta, ty: &TypeMeta) -> Vec<ActionMeta> {
-    let mut actions: Vec<ActionMeta> = meta
-        .offered_actions()
-        .filter(|action| {
-            action
-                .params
-                .split_first()
-                .is_some_and(|(_, rest)| all_defaulted(rest))
-        })
-        .filter(|action| {
-            meta.subject_of(&action.params)
-                .is_some_and(|subject| subject.id == ty.id)
-        })
-        .cloned()
-        .collect();
-    actions.sort_by_key(|action| action.role.as_deref() != Some("primary"));
-    actions
-}
-
-/// The actions offered on `resource`, as its row and its window offer them.
-#[must_use]
-pub fn offered(host: &Host, resource: &ResourceRef) -> Rc<[RowAction]> {
-    let Some((meta, ty)) = type_of(host, &resource.ty) else {
-        return Rc::from(Vec::new());
-    };
-    let published = resource_id(&meta.app, &resource.id_string());
-    actions_on(&meta, &ty)
-        .iter()
-        .map(|action| {
-            presented(
-                host,
-                action,
-                resource,
-                RowAction {
-                    label: label_of(action),
-                    icon: action.icon.as_deref().and_then(icon_named),
-                    resource: published.clone(),
-                    action: action.id.clone(),
-                    primary: action.role.as_deref() == Some("primary"),
-                    destructive: action.role.as_deref() == Some("destructive"),
-                    args: Vec::new(),
-                    on: None,
-                    toggles: action.toggles.clone(),
-                },
-            )
-        })
-        .collect::<Vec<_>>()
-        .into()
-}
-
-/// `action` as it presents itself for `subject`: the label, icon and toggled state its
-/// presentation view (`label: if n.pinned { "Unpin" } else { "Pin" }`) gives now, over `base`.
-fn presented(
-    host: &Host,
-    action: &ActionMeta,
-    subject: &ResourceRef,
-    base: RowAction,
-) -> RowAction {
-    let Some(view) = &action.present else {
-        return base;
-    };
-    let opened = host
-        .runtime()
-        .open_view(host.viewer(), view, vec![Value::resource(subject)]);
-    let Ok(instance) = opened else {
-        return base;
-    };
-    let node = instance.tree();
-    let mut shown = base;
-    if let Some(Value::Text(label)) = node.props.get("label") {
-        shown.label.clone_from(label);
-    }
-    if let Some(Value::Text(icon)) = node.props.get("icon") {
-        shown.icon = icon_named(icon).or(shown.icon);
-    }
-    shown.on = match node.props.get("on") {
-        Some(Value::Bool(on)) => Some(*on),
-        Some(Value::Int(on)) => Some(*on != 0),
-        _ => None,
-    };
-    shown
-}
-
-/// The actions offered on the item `item` of a list `owner` shows: its own, and the owner's
-/// that need nothing but the item (`delete(nb: Notebook, n: Note)`), invoked on the owner with
-/// the item.
-#[must_use]
-pub fn offered_in(host: &Host, item: &ResourceRef, owner: &ResourceRef) -> Rc<[RowAction]> {
-    let mut actions: Vec<RowAction> = offered(host, item).to_vec();
-    if let Some((meta, owner_ty)) = type_of(host, &owner.ty) {
-        let published = resource_id(&meta.app, &owner.id_string());
-        for action in meta.offered_actions() {
-            let [first, second, rest @ ..] = action.params.as_slice() else {
-                continue;
-            };
-            if !all_defaulted(rest) {
-                continue;
-            }
-            let on_owner = meta
-                .type_named(&first.ty)
-                .is_some_and(|ty| ty.id == owner_ty.id);
-            let takes_item = meta
-                .type_named(&second.ty)
-                .is_some_and(|ty| ty.id == item.ty);
-            if on_owner && takes_item {
-                actions.push(RowAction {
-                    label: label_of(action),
-                    icon: action.icon.as_deref().and_then(icon_named),
-                    resource: published.clone(),
-                    action: action.id.clone(),
-                    primary: false,
-                    destructive: action.role.as_deref() == Some("destructive"),
-                    args: vec![(second.name.clone(), item.id_string())],
-                    on: None,
-                    toggles: None,
-                });
-            }
-        }
-    }
-    actions.into()
-}
-
-/// The primary action of a resource, when its type declares one.
-#[must_use]
-pub fn primary(host: &Host, resource: &ResourceRef) -> Option<RowAction> {
-    let (meta, ty) = type_of(host, &resource.ty)?;
-    let action = actions_on(&meta, &ty)
-        .into_iter()
-        .find(|action| action.role.as_deref() == Some("primary"))?;
-    let base = RowAction {
-        label: label_of(&action),
-        icon: action.icon.as_deref().and_then(icon_named),
-        resource: resource_id(&meta.app, &resource.id_string()),
-        action: action.id.clone(),
-        primary: true,
-        destructive: false,
-        args: Vec::new(),
-        on: None,
-        toggles: None,
-    };
-    Some(presented(host, &action, resource, base))
-}
-
-/// The primary action of the package itself (one that takes no resource), when it declares one.
-#[must_use]
-pub fn package_primary(meta: &Meta) -> Option<RowAction> {
-    let action = meta.offered_actions().find(|action| {
-        all_defaulted(&action.params) && action.role.as_deref() == Some("primary")
-    })?;
-    Some(RowAction {
-        label: label_of(action),
-        icon: action.icon.as_deref().and_then(icon_named),
-        resource: package_resource_id(&meta.app),
-        action: action.id.clone(),
-        primary: true,
-        destructive: false,
-        args: Vec::new(),
-        on: None,
-        toggles: None,
-    })
 }
 
 /// The cases of the enum `id` with what a control shows for each.
@@ -294,16 +108,6 @@ pub fn cases(host: &Host, id: &str) -> Vec<Case> {
                 })
         })
         .unwrap_or_default()
-}
-
-/// The case a value of an enum holds: its variant's name.
-#[must_use]
-pub fn case_of(value: &Value) -> Option<String> {
-    match value {
-        Value::Text(name) => Some(name.clone()),
-        Value::Enum(value) => Some(value.variant.clone()),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

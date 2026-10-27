@@ -15,8 +15,8 @@ use crate::view_state::{StateKey, StateLayer};
 /// The action id of `set(name, value)`: changes a view state slot. Its arguments are the
 /// window, the person (empty for window state), the declaration id and the value.
 pub const SET_ACTION: &str = "$set";
-/// The action id of `open(r, view: v)`: its arguments are the resource and the view id (empty
-/// for the default view of its type).
+/// The action id of `open(r, view: v, front: f)`: its arguments are the resource, the view id
+/// (empty for the default view of its type) and whether a narrow window brings it in front.
 pub const OPEN_ACTION: &str = "$open";
 
 impl Core {
@@ -121,13 +121,24 @@ impl Core {
     }
 
     fn act_open(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let target = self.ref_arg(a.h(0)?)?;
+        // The resource, or the place of the one an event carries.
+        let target = match self.val(a.h(0)?)? {
+            Value::Ref(target) => Value::Ref(target),
+            Value::Event => Value::Event,
+            other => {
+                return trap(format!(
+                    "expected a resource reference, got {}",
+                    other.kind_name()
+                ));
+            }
+        };
         let view = self.text(a.h(1)?)?;
+        let front = a.h(2)? != 0;
         self.with_view(|_| Ok(()))?;
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::Action(ActionRef {
             action: OPEN_ACTION.to_owned(),
-            args: vec![Value::Ref(target), Value::Text(view)],
+            args: vec![target, Value::Text(view), Value::Bool(front)],
             author,
         }))
     }

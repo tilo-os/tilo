@@ -505,6 +505,31 @@ impl Runtime {
         *self.core.clock.borrow_mut() = Some(Box::new(clock));
     }
 
+    /// What `phrase(id, ...)` reads: the platform's phrases in the person's language. Until
+    /// it is set, a phrase is its id.
+    pub fn set_phrases(&self, phrases: impl Fn(&str, &[(String, String)]) -> String + 'static) {
+        *self.core.phrases.borrow_mut() = Some(Box::new(phrases));
+    }
+
+    /// The lenses on the resource `resource` (its id) now, as presence reports them: who, and
+    /// whether it is the person looking. What `lenses(r)` reads; a view that read the lenses
+    /// on it runs again when they move.
+    pub fn set_lenses(&self, resource: &str, lenses: &[(Principal, bool)]) {
+        let key = crate::platform::lens_key(resource);
+        let value = Value::List(
+            lenses
+                .iter()
+                .map(|(who, mine)| {
+                    Value::Tuple(vec![Value::Principal(who.clone()), Value::Bool(*mine)])
+                })
+                .collect(),
+        );
+        let mut states = self.core.view_states.borrow_mut();
+        if states.get(&key) != Some(&value) {
+            states.set(key, value);
+        }
+    }
+
     /// Where settled outside effects go.
     pub fn set_sink(&self, sink: impl OutsideSink + 'static) {
         *self.core.sink.borrow_mut() = Some(Box::new(sink));
