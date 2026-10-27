@@ -226,10 +226,10 @@ impl LiveFanout<'_> {
         {
             return None;
         }
-        // An on-demand record's changes go to who opened it; a peer relay
-        // keeps all of the room.
+        // An on-demand record's changes go to who opened it; a host this
+        // workspace federates with keeps all of the room.
         if let crate::store::record_sync::Reach::Opened(channel) = self.frame.reach
-            && target.peer.role == crate::auth::PeerRole::Device
+            && !runtime.federated(recipient, sub)
             && !runtime.holds_record(recipient, &channel)
         {
             return None;

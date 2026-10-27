@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tilo_relay_protocol::live::CursorChat;
 use tilo_user_identity::DeviceCapabilities;
 
+use super::failover::hosts_on;
 use super::home_relay::HomeRelay;
 use super::{Device, NOTES, Person, Wakes, hosted_workspace, scratch, until};
 use crate::shell::live_waves::roster_id;
@@ -61,6 +62,17 @@ fn live_frames_cross(devices: &[&Device], from: &Device, to: &Device, room: Room
         neighbour_wire::peer_handle(&from.cert().device_public_key),
         "attributed to the device that said it"
     );
+}
+
+/// Whether `device` hears from the room's host `through` that `other` is
+/// on the live plane of `room`.
+fn live_through(device: &Device, room: RoomId, through: iroh::EndpointId, other: &Device) -> bool {
+    let other = iroh::EndpointId::from_bytes(&other.cert().device_public_key).unwrap();
+    device.net().host_room_members.lock().unwrap().contains(&(
+        crate::shell::network::room_topic_id(room),
+        through,
+        other,
+    ))
 }
 
 #[test]
@@ -147,14 +159,33 @@ fn live_frames_cross_between_two_shells_through_a_room_the_home_relay_hosts() {
         .net()
         .add_hosting_member(room)
         .unwrap_or_else(|error| panic!("the relay is added as a host: {error}"));
+    // The other devices learn the room's new host from its governor: only
+    // a host they know of is one they turn to while it is away.
     until(
         &[&desktop, &laptop, &phone],
-        "the relay to host the room",
-        || relay.retained(room).is_some().then_some(()),
+        "the relay to host the room, and the other devices to know it",
+        || {
+            (relay.retained(room).is_some()
+                && hosts_on(&laptop, room) == 1
+                && hosts_on(&phone, room) == 1)
+                .then_some(())
+        },
     );
 
-    // With the desktop off, only the relay hosts the room.
+    // With the desktop off, only the relay hosts the room. A live frame is
+    // carried only to members on the host's live plane, never kept: the
+    // laptop and the phone wave once each is there, as the other hears.
     desktop.go_offline();
+    let through = relay.relay.node_addr().id;
+    until(
+        &[&laptop, &phone],
+        "the laptop and the phone to meet on the relay's live plane",
+        || {
+            (live_through(&laptop, room, through, &phone)
+                && live_through(&phone, room, through, &laptop))
+            .then_some(())
+        },
+    );
     live_frames_cross(&[&laptop, &phone], &laptop, &phone, room);
     live_frames_cross(&[&laptop, &phone], &phone, &laptop, room);
     drop((desktop, laptop, phone, relay, env));
