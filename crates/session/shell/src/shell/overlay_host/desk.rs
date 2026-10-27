@@ -1042,7 +1042,7 @@ impl ShellOverlayHost {
 
     /// What the widgets show this pass: who is on the team, the music the
     /// player has, the month on view and the monitor's reading.
-    fn desk_content(&mut self, now: Instant, presence: &PresenceCtx) -> DeskContent<'_> {
+    fn desk_content(&mut self, now: Instant, presence: &PresenceCtx) -> DeskContent {
         let team_showing = self.desk.board.form(WidgetId::Team) != Form::Away
             || self
                 .desk
@@ -1067,7 +1067,7 @@ impl ShellOverlayHost {
     /// painted.
     fn paint_slot(
         &mut self,
-        pass: &mut DeskPass<'_, '_>,
+        pass: &mut DeskPass<'_>,
         slot: Slot,
         now: Instant,
         switcher_card: Option<Rect>,
@@ -1270,21 +1270,19 @@ impl ShellOverlayHost {
     }
 }
 
-/// What an open card shows, read once per frame.
-#[derive(Clone, Copy)]
 /// One painting pass of the desk: where it draws (`scene`, `transform`) and
 /// what it draws with (`text`, `theme`) and from (`content`).
-struct DeskPass<'a, 'b> {
+struct DeskPass<'a> {
     scene: &'a mut Scene,
     transform: Affine,
     text: &'a mut TextRenderer,
     theme: &'a Theme,
-    content: &'a DeskContent<'b>,
+    content: &'a DeskContent,
 }
 
 /// What every widget of a pass shows, gathered once so a repeated paint of
 /// the same widget reads the same.
-struct DeskContent<'a> {
+struct DeskContent {
     music: Option<NowPlayingView>,
     month: Month,
     reading: Reading,
@@ -1292,6 +1290,7 @@ struct DeskContent<'a> {
 }
 
 /// What one open card shows, borrowed from [`DeskContent`].
+#[derive(Clone, Copy)]
 struct OpenContent<'a> {
     music: Option<&'a NowPlayingView>,
     members: &'a [TeamMember],
