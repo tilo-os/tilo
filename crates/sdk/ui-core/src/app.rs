@@ -1896,6 +1896,7 @@ impl App {
     /// app closes, so the app's content stays findable whether or not it
     /// runs.
     fn publish_search_index(&mut self) {
+        let _phase = tilo_resource::profiling::Phase::start("ui.publish_search_index");
         let Some(state) = crate::search::capability::search_index_state(self.root_widget.as_ref())
         else {
             return;

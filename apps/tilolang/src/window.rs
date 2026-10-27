@@ -65,6 +65,7 @@ use crate::resource::{Live, Room, RoomState, caller_of};
 use list::{Empty, ListPane, Peers, RowSource};
 use pane::Pane;
 use transcript::{Thread, ThreadSource};
+use ui::tilo_resource::profiling::Phase;
 
 /// What the shell's controls ask of the window.
 #[derive(Clone, Debug, PartialEq)]
@@ -2727,6 +2728,7 @@ impl Widget for Window {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let _phase = Phase::start("tl.sync");
         let (doc, _) = ui::doc::document_ref(state, path);
         let Some(host) = self.host_for(doc) else {
             self.body.sync(state, path);
@@ -2749,12 +2751,15 @@ impl Widget for Window {
         } else if let Some(live) = self.live.as_ref().filter(|live| live.pending()) {
             live.update();
         }
+        let views = Phase::start("tl.views");
         let polled = self.poll_views();
         self.apply_polled(polled);
+        drop(views);
         self.body.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let _phase = Phase::start("tl.update");
         let door = self.take_door_work();
         let opened = self.take_open_requests();
         let settled = self.settle_outbox();
@@ -2774,8 +2779,11 @@ impl Widget for Window {
         {
             pane.refresh_shown();
         }
+        let handled = Phase::start("tl.events");
         let changed = self.handle_events() || door || opened || settled || peers || renamed;
+        drop(handled);
         if changed {
+            let _views = Phase::start("tl.views");
             let polled = self.poll_views();
             self.apply_polled(polled);
         }

@@ -675,6 +675,7 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
     fn publish_action_surface(&mut self) {
+        let _phase = tilo_resource::profiling::Phase::start("ui.publish_action_surface");
         self.actions.action_surface_owed = false;
         if self.collaboration.manager.is_connected() {
             self.refresh_document_routes();
@@ -3738,6 +3739,7 @@ impl App {
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same door/lifecycle as every other caller.
     pub(super) fn dispatch_control_invocations(&mut self) -> usize {
+        let _phase = tilo_resource::profiling::Phase::start("ui.dispatch_controls");
         // What an earlier pass refused and has not said yet is said first.
         self.say_refusals();
         self.service_close_admission();
