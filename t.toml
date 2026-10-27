@@ -5358,12 +5358,12 @@ default = false
 # publish-model-catalog --ref stable` then builds the compiler, signs the reviewed catalog (which
 # must reproduce the checked-in one) and uploads it with the runtime archives it names. Dev images
 # carry model-catalog-dev-<arch>'s catalog instead: the same source with the runtimes of their own
-# tree, signed with a throwaway key their own signature vouches for; main publishes those
-# runtimes' archives (publish-model-runtimes-<arch>) before a dev image naming them. The compiler
-# is built without credentials; only the release signing checks hold
-# TILO_MODEL_CATALOG_SIGNING_KEY and only the publishing ones a package token. Forgejo's generic
-# package registry does not take t's identity tokens, so that one is a stored secret. Checks
-# holding a secret run as micro-VM steps, which t boots on x86_64 only for now.
+# tree, signed with a throwaway key their own signature vouches for; main publishes each runtime's
+# archive (publish-model-runtime-<id>) when t has room. The compiler is built without
+# credentials; only the release signing checks hold TILO_MODEL_CATALOG_SIGNING_KEY and only the
+# publishing ones a package token. Forgejo's generic package registry does not take t's identity
+# tokens, so that one is a stored secret. Checks holding a secret run as micro-VM steps, which t
+# boots on x86_64 only for now.
 [[check]]
 name = "model-catalog-compiler"
 run = "bash tools/release/local-model-catalog.sh compiler /target/model-catalog/bin"
@@ -5426,23 +5426,18 @@ requires = ["arch=x86_64", "disk-100g"]
 cost = "minutes"
 default = false
 
+# Each runtime's archive by itself, so a large one never holds back a small one.
 [[check]]
-name = "publish-model-runtimes-x86_64"
-run = "bash tools/release/local-model-catalog.sh publish-runtimes x86_64"
-inputs = ["tools/release/local-model-catalog.sh", "tools/release/local-model-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"]
-needs = ["local-model-runtime-llama-cpp-cpu-x86_64", "local-model-runtime-llama-cpp-vulkan-x86_64", "local-model-runtime-llama-cpp-cuda-x86_64", "local-model-runtime-vllm-cuda-x86_64"]
+name = "publish-model-runtime-{runtime}"
+run = "bash tools/release/local-model-catalog.sh publish-runtime {runtime}"
+inputs = ["tools/release/local-model-catalog.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"]
+needs = ["local-model-runtime-{runtime}"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 requires = ["arch=x86_64", "disk-100g"]
-on = ["dispatch"]
+on = ["idle", "dispatch"]
 
-[[check]]
-name = "publish-model-runtimes-aarch64"
-run = "bash tools/release/local-model-catalog.sh publish-runtimes aarch64"
-inputs = ["tools/release/local-model-catalog.sh", "tools/release/local-model-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"]
-needs = ["local-model-runtime-llama-cpp-cpu-aarch64", "local-model-runtime-llama-cpp-vulkan-aarch64"]
-secrets = ["TILO_PACKAGES_TOKEN"]
-requires = ["arch=x86_64", "disk-100g"]
-on = ["dispatch"]
+[check.matrix]
+runtime = ["llama-cpp-cpu-x86_64", "llama-cpp-cpu-aarch64", "llama-cpp-vulkan-x86_64", "llama-cpp-vulkan-aarch64", "llama-cpp-cuda-x86_64", "vllm-cuda-x86_64"]
 
 # ---------------------------------------------------------------------------
 # Local model runtimes (tools/release/local-model-runtime.sh, dist/local-models/runtimes): the
@@ -7743,13 +7738,12 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 # tilo-vm:main-<commit7>-ci (an index of the architectures published so far). It runs on main's
 # newest head whenever t has room (and when dispatched: `t dispatch publish-os-dev-x86_64 --ref
 # main`), so a dev device gets main's code as soon as it is built and gated, not a night later.
-# The local model runtimes its catalog names are published first (publish-model-runtimes-{arch}).
 [[check]]
 name = "publish-os-dev-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-publish.sh image {arch} /target/os/{arch}/image /target/publish/os-dev/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-dev-publish.sh", "tools/ci/publish/oci-publish.sh", "os/dev/publish-dev-disk.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
-needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-gate-{arch}", "sign-dev-os-{arch}", "signing-tools", "publish-model-runtimes-{arch}"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-gate-{arch}", "sign-dev-os-{arch}", "signing-tools"]
 id_token = ["registry.tilo.so"]
 git = true
 requires = ["{node}", "disk-100g"]
@@ -7771,7 +7765,7 @@ name = "publish-os-dev-disk-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-publish.sh disk {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-dev-publish.sh", "tools/ci/publish/oci-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
-needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-disk-{arch}", "os-acceptance-{arch}", "sign-dev-os-{arch}", "signing-tools", "publish-model-runtimes-{arch}"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-disk-{arch}", "os-acceptance-{arch}", "sign-dev-os-{arch}", "signing-tools"]
 id_token = ["registry.tilo.so"]
 git = true
 requires = ["{node}", "disk-100g"]
@@ -8218,7 +8212,7 @@ name = "publish-os-board-{board}"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
-needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64", "sign-dev-os-board-{board}", "signing-tools", "publish-model-runtimes-aarch64"]
+needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64", "sign-dev-os-board-{board}", "signing-tools"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
