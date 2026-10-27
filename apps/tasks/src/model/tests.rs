@@ -501,3 +501,143 @@ fn an_issue_reads_its_goal_its_urgency_and_its_cost_and_its_agent_records_what_i
     assert_eq!(run.spend, Some(1_200));
     assert_eq!(run.cost_budget, Some(5_000));
 }
+
+/// Every field of a task lives in the tracker's own document, so it syncs to
+/// the person's other devices, survives a restart, and merges between two
+/// devices working on it as any other collaborative edit.
+#[test]
+fn a_task_syncs_to_another_device_survives_a_restart_and_merges_its_edits() {
+    use crate::model::Area;
+
+    let mut on_laptop = ada();
+    on_laptop
+        .apply(Tracker::CREATE.with(create("Prepare Q3", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&on_laptop, "Prepare Q3");
+    on_laptop
+        .apply(Tracker::PLAN.with(tracker::Plan {
+            issue: issue.clone(),
+            area: Some(Area {
+                resource: "notes/finance/q3".into(),
+                app: "so.tilo.notes".into(),
+                kind: "notes.note".into(),
+                label: "Q3 financials".into(),
+            }),
+            priority: Some(2),
+            cost_budget: Some(5_000),
+            due_ms: Some(1_800_000_000_000),
+        }))
+        .unwrap();
+    // The person's other device joins with the tracker it holds and takes in
+    // the rest: every field of the task is there, from the record alone. Each
+    // device writes its own changes for the person at it, as a host does.
+    let mut on_laptop = on_laptop.as_invoker("ada");
+    let mut on_desktop = on_laptop.fork().as_invoker("ada");
+    on_desktop.sync_with(&mut on_laptop).unwrap();
+    let synced = on_desktop.state().unwrap();
+    let read = synced.issues.get(&issue).unwrap();
+    assert_eq!(read.title, "Prepare Q3");
+    assert_eq!(read.assigned_agent(), Some(AGENT));
+    assert_eq!(read.priority, Some(2));
+    assert_eq!(read.cost_budget, Some(5_000));
+    assert_eq!(
+        read.area.as_ref().map(|area| area.label.as_str()),
+        Some("Q3 financials")
+    );
+
+    // Both work on it at once, off the net: the desktop nests a subtask, the
+    // laptop approves the run and its agent records what it used. Both edits
+    // are ordinary collaborative changes and both survive the merge.
+    on_desktop
+        .apply(Tracker::CREATE.with(create("Gather the ledgers", Some(issue.clone()), None)))
+        .unwrap();
+    on_laptop
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    let mut agent = on_laptop.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+            issue: issue.clone(),
+            spent: 1_200,
+        }))
+        .unwrap();
+    on_laptop.sync_with(&mut agent).unwrap();
+    on_desktop.sync_with(&mut on_laptop).unwrap();
+    for merged in [on_laptop.state().unwrap(), on_desktop.state().unwrap()] {
+        let task = merged.issues.get(&issue).unwrap();
+        assert_eq!(task.spend, Some(1_200), "the run's spend is on both");
+        assert!(
+            merged
+                .issues
+                .iter()
+                .any(|(_, other)| other.title == "Gather the ledgers"),
+            "the subtask made on the other device is on both"
+        );
+    }
+
+    // Restart: the tracker is rebuilt from its own bytes, and every field the
+    // person could read before is still there.
+    let before = on_desktop.state().unwrap();
+    let reopened = Replica::<Tracker>::load(&on_desktop.save()).unwrap();
+    let after = reopened.state().unwrap();
+    assert_eq!(after.issues.len(), before.issues.len());
+    let reopened_issue = after.issues.get(&issue).unwrap();
+    assert_eq!(reopened_issue, before.issues.get(&issue).unwrap());
+    assert_eq!(reopened_issue.spend, Some(1_200));
+    assert_eq!(reopened_issue.priority, Some(2));
+}
+
+/// The task is a published resource of the action registry, and each change
+/// says, typed, which task made it and which person it acted under.
+#[test]
+fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Release the notes", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Release the notes");
+
+    // Published through the registry, with the verbs a surface or an agent
+    // runs, rather than an app-private store.
+    let tree = person.published().unwrap();
+    assert_eq!(tree.kind, crate::model::KIND);
+    let verbs: Vec<&str> = tree
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for verb in ["create", "comment", "send-message", "approve-run", "plan"] {
+        assert!(verbs.contains(&verb), "{verb} is published; got {verbs:?}");
+    }
+
+    // Every change says what it did and for whom, in fields the person reads:
+    // the agent, the kind of actor, and the person it acted under.
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+            issue: issue.clone(),
+            spent: 1_200,
+        }))
+        .unwrap();
+    let versions = agent.versions();
+    let spent = versions
+        .iter()
+        .rev()
+        .find_map(|version| {
+            let context = version.context.as_ref()?;
+            context.what.as_ref()?;
+            Some(context)
+        })
+        .expect("the run's spend is a version with what it did");
+    let invoker = spent.invoker.as_ref().expect("the change names its actor");
+    assert_eq!(invoker.actor, AGENT);
+    assert_eq!(invoker.kind, ui::tilo_actions::ActorKind::Agent);
+    assert_eq!(invoker.on_behalf_of.as_deref(), Some("ada"));
+}
