@@ -82,11 +82,12 @@ use crate::model::{
     ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
+mod window_bar;
+
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
 use crate::reading_settings::{Appearance, ReadingSettings, ReadingSettingsAction};
 use crate::resource::{Ebook, HiPiece, Passage, books};
-use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 use ui::lock::MutexRecover as _;
 
 /// Whether a parsed book should replace the reader's current content or only
@@ -908,9 +909,6 @@ pub struct BooksApp {
     /// foot's band is at least this tall, so the progress slider and its
     /// label never cover text. Refreshed with `header_h`.
     foot_h: f64,
-    /// The reading-appearance button as last painted: where its popover
-    /// opens from.
-    type_button: Rect,
     /// Independent rail offsets.  A book can have hundreds of chapters and a
     /// reader can have years of annotations, so neither rail may silently
     /// truncate at the bottom of the viewport.
@@ -1114,7 +1112,6 @@ pub struct BooksApp {
     shortcut_capture_error: Option<String>,
     /// Library shelf sort/filter cluster. Owns dropdown state, drawing, and
     /// its topmost hit stack; the app persists emitted preference actions.
-    shelf_controls: ShelfControls,
     /// Scheme id currently open in the colour editor, if any.
     editing_scheme: Option<String>,
     /// Whether the "add a system font" family picker is open.
@@ -1272,7 +1269,6 @@ impl BooksApp {
             reader_compact_breakpoint: f64::from(Metrics::BASE.compact_breakpoint),
             selection_hud_h: ui::SelectionHud::height(&Theme::dark()),
             foot_h: foot_control_height(&Theme::dark()),
-            type_button: Rect::ZERO,
             toc_scroll: 0.0,
             toc_max_scroll: 0.0,
             toc_scroll_to_active: true,
@@ -1355,7 +1351,6 @@ impl BooksApp {
             catalogue_kept: None,
             shortcut_capture: None,
             shortcut_capture_error: None,
-            shelf_controls: ShelfControls::default(),
             editing_scheme: None,
             font_picker: false,
             picker_scroll: 0.0,
@@ -3043,13 +3038,19 @@ impl BooksApp {
         });
     }
 
-    fn on_set_sort(&mut self, sort: crate::model::LibrarySort, doc: &mut ui::widget::Edits<'_>) {
+    /// The shelf's sort order, as the window bar's Sort menu chooses it.
+    pub(crate) fn choose_sort(
+        &mut self,
+        sort: crate::model::LibrarySort,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         self.library_prefs.sort = sort;
         self.edit(doc, Ebook::paths().prefs.sort.set(sort));
-        self.shelf_controls.close_sort_menu();
     }
 
-    fn on_toggle_hide_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
+    /// Whether finished books are hidden, as the window bar's Hide finished
+    /// toggle turns it.
+    pub(crate) fn toggle_finished_hidden(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.library_prefs.hide_read = !self.library_prefs.hide_read;
         self.edit(
             doc,
@@ -3058,16 +3059,6 @@ impl BooksApp {
                 .hide_read
                 .set(self.library_prefs.hide_read),
         );
-    }
-
-    fn dispatch_shelf_control(
-        &mut self,
-        action: ShelfControlAction,
-        doc: &mut ui::widget::Edits<'_>,
-    ) {
-        match action {
-            ShelfControlAction::ToggleHideRead => self.on_toggle_hide_read(doc),
-        }
     }
 
     fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut ui::widget::Edits<'_>) {
@@ -4676,6 +4667,9 @@ impl Widget for BooksApp {
     ui::provides!(dyn ui::widget::Continuable, dyn ui::widget::Queryable);
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+        // What the person did in the window's bar is carried out here, where
+        // the document is at hand, through the actions the row's controls ran.
+        self.take_bar_events(edits);
         self.ensure_library_loaded(edits.doc());
         self.drain_import_worker(edits);
         self.commit_pending_share(edits);
@@ -4750,6 +4744,7 @@ impl Widget for BooksApp {
                 self.search_revision = build.generation;
             }
         }
+        self.declare_window_bar();
         if fingerprint != self.search_fingerprint && self.search_worker.is_none() {
             let Some(generation) = self.search_revision.checked_add(1) else {
                 // Never wrap a generation: a stale palette cursor must not
@@ -4812,7 +4807,6 @@ impl Widget for BooksApp {
         self.comment_overlay.begin_frame();
         self.number_controls.begin_frame();
         self.reading_settings.begin_frame();
-        self.shelf_controls.begin_frame();
         self.font_dropdown.begin_frame();
         self.header_h = f64::from(theme.tokens.metrics.header_height);
         self.reader_spacing = theme.tokens.spacing;
@@ -4843,7 +4837,6 @@ impl Widget for BooksApp {
         }
         // The open list of a dropdown lies over everything.
         let window = self.rect;
-        self.shelf_controls.draw_overlay(&mut ctx, window);
         if self.query.facets.is_open() {
             self.query.facets.menu_mut().draw_overlay(
                 ctx.scene,
@@ -5042,12 +5035,6 @@ impl Widget for BooksApp {
         if has_modal {
             controls = modal_controls;
         } else {
-            if self.view == View::Library {
-                controls.extend(
-                    self.shelf_controls
-                        .accessibility_nodes(self.library_prefs, self.semantic_focus.as_deref()),
-                );
-            }
             if self.view == View::Settings
                 && let Some(node) = self.font_dropdown.accessibility()
             {
@@ -5160,17 +5147,6 @@ impl Widget for BooksApp {
             self.dirty = true;
             return true;
         }
-        if let (true, picked) = self
-            .shelf_controls
-            .perform_dropdown_action(target, action, doc, path)
-        {
-            if let Some(sort) = picked {
-                self.on_set_sort(sort, doc);
-            }
-            self.semantic_focus = Some(target.to_string());
-            self.dirty = true;
-            return true;
-        }
         if self.font_dropdown.perform_action(target, action, doc, path) {
             if let Some(id) = self.font_dropdown.take_change() {
                 self.on_set_default_font(&id, doc);
@@ -5179,25 +5155,6 @@ impl Widget for BooksApp {
             self.semantic_focus = Some(target.to_string());
             self.dirty = true;
             return true;
-        }
-        if let Some(shelf_action) = ShelfControls::semantic_action(target) {
-            self.semantic_focus = Some(target.to_string());
-            self.dirty = true;
-            if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
-                return true;
-            }
-            if matches!(
-                action,
-                A11yAction::Activate
-                    | A11yAction::ToggleCheck
-                    | A11yAction::Expand
-                    | A11yAction::Collapse
-            ) {
-                self.dispatch_shelf_control(shelf_action, doc);
-                self.refresh_from_doc(doc);
-                return true;
-            }
-            return false;
         }
         if let Some(settings_action) = self.reading_settings.semantic_action(target) {
             self.semantic_focus = Some(target.to_string());
@@ -5376,15 +5333,14 @@ impl Widget for BooksApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
-            || self.flaps_animating()
-            || self.faces.needs_redraw(ui::motion::frame_now())
-            || self.shelf_controls.needs_redraw()
+        self.dirty || self.flaps_animating() || self.faces.needs_redraw(ui::motion::frame_now())
     }
 
     /// "Try again" beside a failed fetch is pressed between events.
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        self.take_store_retry()
+        let retry = self.take_store_retry();
+        self.declare_window_bar();
+        retry
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -5773,13 +5729,7 @@ impl BooksApp {
     fn forward_dropdown_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
         let mut consumed = false;
         match self.view {
-            View::Library => {
-                let (taken, picked) = self.shelf_controls.handle_event(ctx);
-                consumed = taken;
-                if let Some(sort) = picked {
-                    self.on_set_sort(sort, &mut ctx.state);
-                }
-            }
+            View::Library => {}
             View::Settings => {
                 consumed = self.font_dropdown.handle_event(ctx);
                 if let Some(id) = self.font_dropdown.take_change() {
@@ -5980,13 +5930,8 @@ impl BooksApp {
         // before the app-wide regions so its card cannot fall through
         // to page selection or rail controls underneath.
         let comment_action = self.comment_overlay.hit_test(self.cursor);
-        let shelf_action = if comment_action.is_none() && self.view == View::Library {
-            self.shelf_controls.hit_test(self.cursor)
-        } else {
-            None
-        };
         // Topmost wins: later-recorded hits draw on top.
-        let top = if comment_action.is_none() && shelf_action.is_none() {
+        let top = if comment_action.is_none() {
             self.hits
                 .iter()
                 .rev()
@@ -5995,11 +5940,7 @@ impl BooksApp {
         } else {
             None
         };
-        if comment_action.is_none()
-            && shelf_action.is_none()
-            && top.is_none()
-            && self.turn_page_from_margin(doc)
-        {
+        if comment_action.is_none() && top.is_none() && self.turn_page_from_margin(doc) {
             *handled = true;
             return;
         }
@@ -6033,11 +5974,6 @@ impl BooksApp {
             self.dispatch_comment_action(action, doc);
             self.refresh_from_doc(doc);
             self.persist_progress(doc);
-            self.dirty = true;
-            *handled = true;
-        } else if let Some(action) = shelf_action {
-            self.dispatch_shelf_control(action, doc);
-            self.refresh_from_doc(doc);
             self.dirty = true;
             *handled = true;
         } else if let Some(h) = top {
@@ -6846,15 +6782,6 @@ impl ShelfGrid {
 }
 
 impl BooksApp {
-    /// The header row of a full-width page (library, settings): no fill,
-    /// one hairline under it. Returns the band.
-    fn draw_page_header(&self, ctx: &mut PaintCtx<'_>) -> Rect {
-        let r = self.rect;
-        let band = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.header_h);
-        ui::widget::toolbar::paint_band(ctx.scene, ctx.transform, ctx.theme, band);
-        band
-    }
-
     /// A page's title block at the content gutter: the page name in
     /// `LargeTitle` and, when there is one, a count in `Caption` under it.
     /// Returns the y just below the block.
@@ -6885,20 +6812,10 @@ impl BooksApp {
 
     fn draw_library(&mut self, ctx: &mut PaintCtx<'_>) {
         let lib = self.shelf_books();
-        let r = self.rect;
-        let band = self.draw_page_header(ctx);
-        // An empty shelf offers "Open a book" as its one action, so the
-        // header does not repeat it.
-        self.draw_library_actions(ctx, band, !lib.is_empty());
-        if !lib.is_empty() {
-            let inset = f64::from(ctx.theme.tokens.spacing.s3);
-            let cursor = self.cursor;
-            let prefs = self.library_prefs;
-            self.shelf_controls
-                .draw_bar(ctx, band, band.x0 + inset, cursor, prefs);
-        }
-
-        let body = Rect::new(r.x0, band.y1, r.x1, r.y1);
+        // The shelf begins where the window's bar ends: Open book, the sort
+        // order and Hide finished are the bar's slots ([`crate::app::window_bar`]),
+        // so no row of the app's stands above the covers.
+        let body = self.rect;
         if lib.is_empty() {
             self.draw_empty_library(ctx, body);
             return;
@@ -6907,37 +6824,6 @@ impl BooksApp {
         let order = self.shelf_display_order(&lib);
         self.shelf_order.clone_from(&order);
         self.draw_library_body(ctx, &lib, &order, body);
-    }
-
-    /// The trailing actions of the library header: Settings, and (with
-    /// `open`) the one primary action of the screen, "Open book", a way in
-    /// that does not depend on any folder.
-    fn draw_library_actions(&mut self, ctx: &mut PaintCtx<'_>, band: Rect, open: bool) {
-        let theme = ctx.theme;
-        let height = ButtonFace::height(ControlSize::Regular, theme);
-        let y = band.center().y - height / 2.0;
-        let mut x1 = band.x1 - f64::from(theme.tokens.spacing.s3);
-        if open {
-            let label = "Open book";
-            let width = ButtonFace::new(Rect::ZERO, label)
-                .icon(Icon::Plus)
-                .intrinsic_width(ctx.text, theme);
-            let rect = Rect::new(x1 - width, y, x1, y + height);
-            self.button(
-                ctx,
-                ButtonFace::new(rect, label)
-                    .icon(Icon::Plus)
-                    .role(ButtonRole::Primary),
-                Action::OpenViaPortal,
-            );
-            x1 = rect.x0 - f64::from(theme.tokens.spacing.rhythm.related);
-        }
-        let settings = Rect::new(x1 - height, y, x1, y + height);
-        self.button(
-            ctx,
-            ButtonFace::icon_only(settings, Icon::Settings, "Settings"),
-            Action::OpenSettings,
-        );
     }
 
     /// The scrolling body of a populated shelf: the page title, then the
@@ -7450,8 +7336,10 @@ impl BooksApp {
         draw_progress_label(ctx, label, frac, page_theme.text_dim);
         self.push_hit(slider_rect, Action::SeekProgress);
 
-        // ---- chrome: header row, selection HUD, drawers
-        self.draw_reader_header(ctx, &lib);
+        // ---- chrome: selection HUD and drawers. The reading controls —
+        // Back, the book, the bookmark, the rails and the reading appearance —
+        // are the window bar's slots ([`crate::app::window_bar`]), so the page
+        // itself starts at the top.
         // Floating selection toolbar over the page (under any overlay rail).
         self.draw_selection_hud(ctx, geom);
         self.draw_rails(ctx, &lib);
@@ -7468,12 +7356,13 @@ impl BooksApp {
             &self.annotations,
             self.hi_color,
         );
-        // Reading-settings floats above everything, anchored under its
-        // button, and owns its own modal hit stack.
+        // Reading-settings floats above everything, anchored under the Aa
+        // slot in the window's bar, and owns its own modal hit stack.
+        let appearance_anchor = self.appearance_anchor(ctx.theme);
         self.reading_settings.draw(
             ctx,
             self.rect,
-            self.type_button,
+            appearance_anchor,
             &Appearance {
                 settings: &self.settings,
                 fonts: &self.fonts,
@@ -7495,7 +7384,15 @@ impl BooksApp {
         let column = self.notes_drawer.content_rect();
         let center_x0 = column.x0;
         let center_x1 = column.x1;
-        let body_y0 = r.y0 + self.header_h;
+        // Under a window's bar the page begins at the bar. A window of its
+        // own has no bar to carry the reading controls, so the page keeps the
+        // room the reader's row took there — the frame the reading
+        // typography's pinned references were rendered in.
+        let body_y0 = if ui::window_toolbar::is_hosted() {
+            r.y0
+        } else {
+            r.y0 + self.header_h
+        };
         // The page renders to the window bottom: the reading position is
         // said in the window's bar instead of a permanent strip.
         let body_y1 = r.y1;
@@ -8471,124 +8368,6 @@ impl BooksApp {
                 .paint_panel(ctx.scene, ctx.transform, theme);
             let mut local_ctx = PaintCtx::new(ctx.scene, ctx.transform, ctx.text, &local);
             self.draw_notes(&mut local_ctx, panel);
-        }
-    }
-
-    /// Whether the contents sidebar shows its own header (and with it the
-    /// sidebar toggle): docked and open.
-    fn toc_docked_open(&self) -> bool {
-        self.toc_drawer.is_docked() && self.toc_drawer.reveal() > 0.5
-    }
-
-    /// The content column's header row: the sidebar toggle (when the
-    /// sidebar is hidden), Back, the book's title and author on one
-    /// baseline, and the reading controls at the trailing edge. No fill; one
-    /// hairline under it.
-    fn draw_reader_header(&mut self, ctx: &mut PaintCtx<'_>, lib: &[Arc<Book>]) {
-        let theme = ctx.theme;
-        let content = self.notes_drawer.content_rect();
-        let band = Rect::new(
-            content.x0,
-            self.rect.y0,
-            content.x1,
-            self.rect.y0 + self.header_h,
-        );
-        ui::surface::separator(
-            ctx.scene,
-            ctx.transform,
-            band.x0,
-            band.x1,
-            band.y1,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
-        let spacing = &theme.tokens.spacing;
-        let (inset, gap) = (f64::from(spacing.s3), f64::from(spacing.rhythm.related));
-        let side = ControlSize::Regular.height(theme);
-        let cy = band.center().y;
-
-        let mut x = band.x0 + inset;
-        if !self.toc_docked_open() {
-            let toggle = Rect::new(x, cy - side / 2.0, x + side, cy + side / 2.0);
-            self.toc_drawer.draw_toggle(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                theme,
-                toggle,
-                toggle.contains(self.cursor),
-            );
-            self.push_hit(pointer_target(toggle, theme), Action::ToggleToc);
-            x = toggle.x1 + gap;
-        }
-        let back = self.icon_button(
-            ctx,
-            Point::new(x + side / 2.0, cy),
-            ControlSize::Regular,
-            (Icon::ChevronLeft, "Back to library"),
-            false,
-            Action::Back,
-        );
-        let title_x0 = back.x1 + gap;
-
-        // Trailing, walking in from the edge: annotations, bookmark, type.
-        let mut x1 = band.x1 - inset;
-        let notes = Rect::new(x1 - side, cy - side / 2.0, x1, cy + side / 2.0);
-        self.notes_drawer.draw_toggle(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            notes,
-            notes.contains(self.cursor),
-        );
-        self.push_hit(pointer_target(notes, theme), Action::ToggleNotes);
-        x1 = notes.x0 - gap;
-        let bookmark = Rect::new(x1 - side, cy - side / 2.0, x1, cy + side / 2.0);
-        self.draw_bookmark_button(ctx, bookmark);
-        x1 = bookmark.x0 - gap;
-        let type_w = button_width(ctx, "Aa", None, ControlSize::Regular);
-        let type_rect = Rect::new(x1 - type_w, cy - side / 2.0, x1, cy + side / 2.0);
-        self.button(
-            ctx,
-            ButtonFace::new(type_rect, "Aa")
-                .accessible_name("Reading appearance")
-                .role(ButtonRole::Plain)
-                .pressed(self.reading_settings.is_open()),
-            Action::ToggleTypePopover,
-        );
-        self.type_button = type_rect;
-        let title_x1 = type_rect.x0 - inset;
-
-        if let Some(book) = lib.get(self.book_idx) {
-            Self::draw_title_and_detail(ctx, band, (title_x0, title_x1), &book.title, &book.author);
-        }
-    }
-
-    /// The page bookmark toggle: a plain button with the bookmark glyph,
-    /// filled while the page is bookmarked.
-    fn draw_bookmark_button(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect) {
-        let theme = ctx.theme;
-        let bookmarked = self.page_bookmarked();
-        self.button(
-            ctx,
-            ButtonFace::new(rect, "")
-                .accessible_name("Bookmark this page")
-                .role(ButtonRole::Plain)
-                .pressed(bookmarked),
-            Action::ToggleBookmark,
-        );
-        let glyph = f64::from(theme.tokens.metrics.icon_md);
-        let ink = if bookmarked || rect.contains(self.cursor) {
-            theme.text_primary
-        } else {
-            theme.text_dim
-        };
-        let glyph = Rect::from_center_size(rect.center(), (glyph, glyph));
-        if bookmarked {
-            Icon::Bookmark.draw_filled(ctx.scene, ctx.transform, glyph, ink);
-        } else {
-            Icon::Bookmark.draw(ctx.scene, ctx.transform, glyph, ink);
         }
     }
 
