@@ -876,6 +876,25 @@ impl Widget for ShellOverlayHost {
         "ShellOverlayHost"
     }
 
+    /// The desk's showing widgets are controls like the bar's: Tab reaches
+    /// them while the desk is on screen, and the focused one takes Enter,
+    /// Space and Tab between them.
+    fn is_focusable(&self) -> bool {
+        self.desk_is_focusable()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.set_desk_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.desk_is_focused()
+    }
+
+    fn wants_tab_input(&self) -> bool {
+        self.desk_wants_tab()
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         Some(self.host_accessibility())
     }
@@ -916,6 +935,9 @@ impl Widget for ShellOverlayHost {
                 self.bump_chrome();
                 return true;
             }
+        }
+        if target.starts_with("desk.widget:") {
+            return self.desk_semantic_action(action, target);
         }
         if target.starts_with("participant:") && target.ends_with(":chat") {
             if self.person_cursor_controls_suppressed() {
@@ -1818,6 +1840,15 @@ impl ShellOverlayHost {
                 *ctx.handled = true;
                 return;
             }
+        }
+        // While Tab has reached the desk, its controls own the keys they
+        // act on; the rest still fall through to the window and the shell.
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::ModifiersChanged(_)
+        ) && self.handle_desk_keyboard(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
+            return;
         }
         // Desk widgets above the windows: a press on a showing one is
         // theirs, before the palette reads it as a click away.
