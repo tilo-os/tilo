@@ -801,7 +801,7 @@ fn placed_order(prev: Option<u64>, next_foreign: Option<u64>, index: usize) -> u
 }
 
 /// The `order` the winning copy of `entries` carries, if it has one.
-fn published_order(doc: &impl ReadDoc, entries: &[automerge::ObjId]) -> Option<u64> {
+fn published_order(doc: &AutoCommit, entries: &[automerge::ObjId]) -> Option<u64> {
     let entry = entries.first()?;
     doc.uint_at(entry, "order")
 }
@@ -810,7 +810,7 @@ fn published_order(doc: &impl ReadDoc, entries: &[automerge::ObjId]) -> Option<u
 /// device owns: the upper bound of the gap this device's strip is placed in
 /// ([`placed_order`]).
 fn next_foreign_strip_order(
-    doc: &impl ReadDoc,
+    doc: &AutoCommit,
     strips: &[Strip],
     index: usize,
     mine: &impl Fn(u64) -> bool,
@@ -861,7 +861,7 @@ pub fn retain_owned_strip(
 /// The published order of the nearest group after `index` in `strip` that
 /// another device owns ([`placed_order`]).
 fn next_foreign_group_order(
-    doc: &impl ReadDoc,
+    doc: &AutoCommit,
     groups_all: &[automerge::ObjId],
     strip: &Strip,
     index: usize,
@@ -881,7 +881,7 @@ fn next_foreign_group_order(
 /// The published order of the nearest tab after `index` in `group` that
 /// another device owns ([`placed_order`]).
 fn next_foreign_tab_order(
-    doc: &impl ReadDoc,
+    doc: &AutoCommit,
     tabs_all: &[automerge::ObjId],
     group: &WindowGroup,
     index: usize,
