@@ -1,3 +1,8 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "a relay serves its whole test and is shut down at its end"
+)]
+
 use super::*;
 use std::collections::HashMap;
 use tilo_peer_state::join;
