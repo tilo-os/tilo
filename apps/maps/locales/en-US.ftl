@@ -74,7 +74,6 @@ maps-offline-delete-area = Delete downloaded area
 maps-offline-clear = Clear offline map cache
 maps-offline-clear-short = Clear offline maps
 maps-offline-downloaded-areas = Downloaded areas
-maps-offline-area = Area
 maps-offline-empty = Search for a place, or download what the map shows now.
 maps-offline-progress = Downloading { $done } of { $total } tiles…
 maps-offline-stopped-count = Stopped after { $total } tiles; they stay available offline

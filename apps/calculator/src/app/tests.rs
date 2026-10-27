@@ -345,7 +345,11 @@ fn power_input_focused_calculator_enables_browser_text_editor() {
         .ime_cursor_rect()
         .expect("text entry must enable the browser editor and platform IME");
     assert!(caret.height() > 0.0 && app.area.contains(caret.center()));
-    assert_eq!(app.ime_content(), Some(ui::ime::InputContent::TEXT));
+    // The keypad types it, so no soft keyboard covers the keys.
+    assert_eq!(
+        app.ime_content(),
+        Some(ui::ime::InputContent::TEXT.own_keys())
+    );
     app.set_focus(false);
     assert!(app.ime_cursor_rect().is_none());
     assert_eq!(app.ime_content(), None);
@@ -1217,4 +1221,19 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
             "the clicked stable row is tombstoned rather than a neighbouring index"
         );
     }
+}
+
+#[test]
+fn the_keypad_types_the_expression_without_a_soft_keyboard() {
+    use ui::Widget as _;
+    let own_keys = |app: &CalculatorApp| app.ime_content().map(|content| content.hints.own_keys);
+    let mut app = CalculatorApp::new();
+    app.set_focus(true);
+    assert_eq!(own_keys(&app), Some(true));
+    app.set_mode(Mode::Graph2d);
+    assert_eq!(
+        own_keys(&app),
+        Some(false),
+        "formulas are typed on the keyboard"
+    );
 }

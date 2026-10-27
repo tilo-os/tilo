@@ -1166,7 +1166,13 @@ impl Widget for CalculatorApp {
     }
 
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        self.host_focused.then_some(ui::ime::InputContent::TEXT)
+        // The calculator's keypad types the expression; graph formulas are
+        // typed on the keyboard.
+        let content = match self.model.mode.graph() {
+            None => ui::ime::InputContent::TEXT.own_keys(),
+            Some(_) => ui::ime::InputContent::TEXT,
+        };
+        self.host_focused.then_some(content)
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {

@@ -2011,13 +2011,13 @@ impl ShellDriver {
                 self.scene_app_search(AppKind::FileExplorer, "Files", "wel");
             }
             "app_search_code" => {
-                self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "")
+                self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "");
             }
             "app_search_code_query" => {
                 self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "new");
             }
             "app_search_notes" => {
-                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "")
+                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "");
             }
             "app_search_notes_query" => {
                 self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "note");

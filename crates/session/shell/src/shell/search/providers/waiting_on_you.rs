@@ -130,6 +130,7 @@ fn row(kind: ResourceKind, notification: &Notification, on_screen: bool) -> Sear
         }),
         on_invoke: None,
         on_begin_invoke: None,
+        resource: None,
     }
     .with_facts(who.into_iter().chain(std::iter::once(when)))
 }
