@@ -66,6 +66,104 @@ class BenchTest(unittest.TestCase):
         # 2000 spectators at 50/s outlast 500 guests at 20/s.
         self.assertEqual(room_capacity.run_seconds(caps), 40 + 60 + 60 + 300)
 
+    def test_the_degraded_plan_asks_the_declared_capacity_and_the_cap(self):
+        self.assertEqual([(item.name, item.kind) for item in room_capacity.degraded_plan()],
+                         [("probe-g50", "plain"), ("probe-g100", "degraded"), ("probe-g500", "capped")])
+        capped = room_capacity.degraded_plan()[-1]
+        # More guests than the room may carry, so admission answers instead of
+        # the run waiting on a room that grew past its capacity.
+        self.assertEqual(dict(zip(capped.args[::2], capped.args[1::2]))["--max-guests"],
+                         str(room_capacity.DECLARED_GUESTS))
+
+
+class DegradedRunTest(unittest.TestCase):
+    def test_every_run_hands_the_prefix_the_bench_and_its_own_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "tilo-room-load"
+            # A stand-in bench: it prints a report for the guests it was asked for and records
+            # the command line it was given.
+            binary.write_text(
+                "#!/bin/sh\n"
+                'guests=0; while [ $# -gt 0 ]; do [ "$1" = --guests ] && guests=$2; shift; done\n'
+                'printf \'{"name": "probe-g%s", "guests": %s, "joined": %s, "failures": 0, "host": {},'
+                ' "join_ms": {"p99": 100}, "chat_ms": {"p99": 100}, "spectators": {"joined": 0}}\\n\' "$guests" "$guests" "$guests"\n',
+                encoding="utf-8")
+            binary.chmod(0o755)
+            # The prefix: what stands between the probe and the bench, and what the probe must
+            # hand the bench's whole command line to (tools/ci/perf-room-degraded.sh in a run).
+            prefix = root / "degrade"
+            prefix.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {root / "calls.log"}\nexec "$@"\n',
+                              encoding="utf-8")
+            prefix.chmod(0o755)
+            out = root / "probe"
+            self.assertEqual(room_capacity.degraded([str(prefix)], binary, out), 0)
+            self.assertEqual(sorted(path.stem for path in out.glob("*.json")),
+                             sorted(item.name for item in room_capacity.degraded_plan()))
+            calls = (root / "calls.log").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(calls), len(room_capacity.degraded_plan()), "one process a run")
+            for call, item in zip(calls, room_capacity.degraded_plan()):
+                self.assertTrue(call.startswith(str(binary)), call)
+                self.assertIn("bench", call)
+                self.assertIn(" ".join(item.args), call)
+
+
+def degraded_report(guests: int, join_p99: float, chat_p99: float, cores: float,
+                    egress_bytes_s: float, failures: dict[str, int] | None = None, spectators: int = 0) -> dict:
+    """A bench report of a run under the degraded host."""
+    body = report(guests, 200.0, cores, spectators=spectators, egress=egress_bytes_s, failures=failures)
+    body["join_ms"]["p99"] = join_p99
+    body["chat_ms"]["p99"] = chat_p99
+    body["name"] = f"probe-g{guests}"
+    return body
+
+
+class DegradedProbeTest(unittest.TestCase):
+    def probe(self, at_capacity: dict | None = None, capped: dict | None = None) -> dict:
+        runs = [run("probe-g50", "plain", degraded_report(50, 600.0, 1_500.0, 0.5, 200_000.0)),
+                run("probe-g100", "degraded", at_capacity or degraded_report(100, 9_000.0, 5_500.0, 1.6, 300_000.0)),
+                run("probe-g500", "capped", capped or degraded_report(500, 9_500.0, 5_900.0, 2.6, 350_000.0, spectators=1000))]
+        return room_capacity.judge_probe(runs)
+
+    def test_a_capacity_run_inside_the_service_level_passes(self):
+        budget = self.probe()
+        self.assertTrue(budget["met"], budget["notes"])
+        self.assertEqual(budget["capped_watching"], 1000)
+
+    def test_a_slow_join_at_the_declared_capacity_fails_with_its_own_reason(self):
+        budget = self.probe(at_capacity=degraded_report(100, 12_000.0, 5_000.0, 1.6, 300_000.0))
+        self.assertFalse(budget["met"])
+        self.assertIn("joins at the declared", budget["notes"][0])
+
+    def test_a_slow_conversation_at_the_declared_capacity_fails(self):
+        budget = self.probe(at_capacity=degraded_report(100, 9_000.0, 8_000.0, 1.6, 300_000.0))
+        self.assertFalse(budget["met"])
+        self.assertIn("chat at the declared", budget["notes"][0])
+
+    def test_a_degradation_the_host_never_felt_fails_rather_than_passes(self):
+        # An idle host offers 70 % of nothing: the run measured the machine as
+        # it is, so it says nothing about a host at capacity.
+        budget = self.probe(at_capacity=degraded_report(100, 100.0, 100.0, 0.2, 1_000.0))
+        self.assertFalse(budget["met"])
+        self.assertIn("under the", budget["notes"][0])
+
+    def test_a_room_past_its_cap_must_keep_answering(self):
+        budget = self.probe(capped=degraded_report(500, 60_000.0, 1_000.0, 2.6, 350_000.0))
+        self.assertFalse(budget["met"])
+        self.assertIn("past its cap answered joins", budget["notes"][0])
+
+    def test_a_missing_run_is_named_not_assumed(self):
+        runs = [run("probe-g50", "plain", degraded_report(50, 600.0, 1_500.0, 0.5, 200_000.0))]
+        budget = room_capacity.judge_probe(runs)
+        self.assertFalse(budget["met"])
+        self.assertEqual(budget["missing"], ["probe-g100", "probe-g500"])
+
+    def test_a_failed_session_fails_the_probe(self):
+        budget = self.probe(at_capacity=degraded_report(100, 9_000.0, 5_000.0, 1.6, 300_000.0,
+                                                        failures={"timeout": 3}))
+        self.assertFalse(budget["met"])
+        self.assertIn("3 sessions failed", budget["notes"][0])
+
 
 class SummaryTest(unittest.TestCase):
     prices = tomllib.loads(room_capacity.PRICES.read_text(encoding="utf-8"))

@@ -3894,6 +3894,10 @@ env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS 
 requirement = { cores = 40, memory = "36GiB" }
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/perf/hosting-room/**"]
+# The job's own namespaces: the degraded probe holds the host back through a batch scheduler
+# class and shapes the link in a network namespace of its own (tools/ci/perf-room-degraded.sh),
+# so it needs the user, mount, PID and network namespaces t's job sandbox gives, as uid 1000.
+nested_sandboxes = true
 cache = false
 cost = "heavy"
 timeout_secs = 7200
