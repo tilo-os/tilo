@@ -52,7 +52,11 @@ fn prepare(
         NativeAppOpenAccess::Viewer => return Err(io::ErrorKind::PermissionDenied.into()),
         NativeAppOpenAccess::Author => (),
         NativeAppOpenAccess::Delegate => {
-            let broker = opening.0.upgrade().map_err(io::Error::other)?;
+            let broker = opening
+                .attached()
+                .ok_or_else(|| io::Error::other("native app authorship broker unavailable"))?
+                .upgrade()
+                .map_err(io::Error::other)?;
             let job = broker.change_workspace_membership(
                 &room.to_string(),
                 &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {

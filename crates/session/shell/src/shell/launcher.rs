@@ -4338,9 +4338,46 @@ pub(crate) fn queue_package_open(
     Ok(())
 }
 
-/// The session's existing authenticated broker, attached by its owning host.
-#[derive(Clone)]
-pub(crate) struct NativeAppOpening(pub tilo_action_broker::collab_broker::WeakAppActionBroker);
+/// The session's authenticated broker, which its owning host attaches once
+/// the broker has bound. One slot, shared by the chrome and every launch it
+/// queued: an app opened while the session still starts its services asks
+/// through the broker that comes up, not through none.
+#[derive(Clone, Default)]
+pub(crate) struct NativeAppOpening(
+    Arc<std::sync::RwLock<Option<tilo_action_broker::collab_broker::WeakAppActionBroker>>>,
+);
+
+impl NativeAppOpening {
+    /// The session's broker is `broker` from now on.
+    pub(crate) fn attach(&self, broker: tilo_action_broker::collab_broker::WeakAppActionBroker) {
+        if let Ok(mut slot) = self.0.write() {
+            *slot = Some(broker);
+        }
+    }
+
+    /// The broker attached so far, if any.
+    pub(crate) fn attached(
+        &self,
+    ) -> Option<tilo_action_broker::collab_broker::WeakAppActionBroker> {
+        self.0.read().ok().and_then(|slot| slot.clone())
+    }
+
+    /// The session's broker, once the session's start of its services is
+    /// over ([`super::in_process::SessionServices`]): at once where it is
+    /// attached or no session starts one here, otherwise when the start
+    /// ends, however it went. Blocks: call it off the frame loop.
+    ///
+    /// # Errors
+    /// No broker came up.
+    fn settled(&self) -> Result<tilo_action_broker::collab_broker::WeakAppActionBroker, String> {
+        if let Some(broker) = self.attached() {
+            return Ok(broker);
+        }
+        super::in_process::wait_for_session_services();
+        self.attached()
+            .ok_or_else(|| "native app authorship broker unavailable".into())
+    }
+}
 
 impl std::fmt::Debug for NativeAppOpening {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -4358,7 +4395,7 @@ pub(crate) fn queue_native_authoring_launch(
     app: InstalledApp,
     tree: super::state::WorkspaceTreeHandle,
     room: RoomId,
-    opening: Option<NativeAppOpening>,
+    opening: NativeAppOpening,
 ) -> Result<(), LaunchError> {
     let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
@@ -4390,7 +4427,7 @@ pub(crate) fn queue_native_authoring_launch(
             // A refusal the room gives (an app it does not include, a device
             // it no longer admits, an authorship its host refused) is told in
             // its own words, not as why the identity machinery said no.
-            let access = admit_native_app(&owner, room, &certificate, &package, opening.as_ref())?;
+            let access = admit_native_app(&owner, room, &certificate, &package, &opening)?;
             let workspace = native_launch_workspace(&tree, room).map_err(unavailable)?;
             if access != NativeAppOpenAccess::Delegate {
                 return Ok(native_launch_capabilities(&workspace, &package, access));
@@ -4414,23 +4451,22 @@ pub(crate) fn admit_native_app(
     room: RoomId,
     certificate: &tilo_user_identity::DeviceCert,
     package: &str,
-    opening: Option<&NativeAppOpening>,
+    opening: &NativeAppOpening,
 ) -> Result<NativeAppOpenAccess, LaunchError> {
     let access = native_app_open_access(owner, room, certificate, package)?;
     if access != NativeAppOpenAccess::Delegate {
         return Ok(access);
     }
     let delegate = || -> Result<(), String> {
-        let opening = opening.ok_or("native app authorship broker unavailable")?;
+        let opening = opening.settled()?;
         // A room this device just made or joined has its membership actions
         // published on the broker's next refresh of them: the grant is asked
         // once the broker's loop has looked, never refused for coming first.
         let published = opening
-            .0
             .upgrade()?
             .await_membership_surface(&room.to_string())?;
         let _ = published.recv();
-        let broker = opening.0.upgrade()?;
+        let broker = opening.upgrade()?;
         let job = broker.change_workspace_membership(
             &room.to_string(),
             &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {

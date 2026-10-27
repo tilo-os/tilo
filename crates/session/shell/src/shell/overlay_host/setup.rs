@@ -19,8 +19,10 @@ impl ShellOverlayHost {
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
         if let Some(chrome) = &self.chrome {
-            chrome.borrow_mut().native_app_opening =
-                Some(crate::shell::launcher::NativeAppOpening(broker.downgrade()));
+            chrome
+                .borrow()
+                .native_app_opening
+                .attach(broker.downgrade());
         }
         self.room_activity.attach_task_broker(broker.clone());
         self.shared_window_follow.attach(
