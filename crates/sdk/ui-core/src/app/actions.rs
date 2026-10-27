@@ -678,6 +678,7 @@ impl App {
         let _phase = tilo_resource::profiling::Phase::start("ui.publish_action_surface");
         self.actions.action_surface_owed = false;
         if self.collaboration.manager.is_connected() {
+            let _routes = tilo_resource::profiling::Phase::start("ui.publish.routes");
             self.refresh_document_routes();
         }
         if self.collaboration.manager.take_action_surface_failed() {
@@ -690,6 +691,7 @@ impl App {
         // publish the same surface, so the route carries it already. Each
         // keystroke begins by publishing (an input's edits are attributed
         // to the surface on the route); this keeps that to a comparison.
+        let witness = tilo_resource::profiling::Phase::start("ui.publish.witness");
         let stamp = self.hosted_publication_stamp();
         let unchanged = stamp.as_ref().is_some_and(|stamp| {
             Some(stamp) == self.actions.hosted.publication.as_ref()
@@ -700,6 +702,7 @@ impl App {
                     .try_action_directory_revision()
                     .is_ok_and(|now| now == stamp.revision())
         });
+        drop(witness);
         if unchanged {
             self.settle_held_own_invocations(true);
             return;

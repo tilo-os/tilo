@@ -3256,9 +3256,7 @@ impl AppHandler {
             let key_record = crate::input_frame::submitted(if full_redraw_required {
                 crate::input_frame::Repaint::Full(repaint_why)
             } else {
-                crate::input_frame::Repaint::Damage(
-                    damage_regions.iter().map(KurboRect::area).sum(),
-                )
+                crate::input_frame::Repaint::Damage(&damage_regions)
             });
             let req = RenderRequest::Frame {
                 cpu_frame_id,
@@ -3293,7 +3291,7 @@ impl AppHandler {
                 RenderRequest::Shutdown { .. } => None,
             };
             announce_frame(window);
-            frame_demand::submitted();
+            frame_demand::submitted(full_redraw_required.then_some(repaint_why));
             let (send_result, send_bounds) = crate::render_thread::timing::around(
                 crate::render_thread::timing::enabled(),
                 || render.render_tx.send(req),

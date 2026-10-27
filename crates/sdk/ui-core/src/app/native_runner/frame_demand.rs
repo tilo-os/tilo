@@ -3,8 +3,9 @@
 //! With `RUST_LOG` enabling `tilo::frame_demand=debug`, the event loop names
 //! what asked for each frame or wake it schedules, and once a second while
 //! anything asks, one `FRAME-DEMAND` line on stderr sums it up: frames
-//! submitted, then each asker and how often it asked. A settled window
-//! writes nothing. Off, each call is one thread-local flag read.
+//! submitted, how many repainted the whole window and why (`full:layer=3`),
+//! then each asker and how often it asked. A settled window writes nothing.
+//! Off, each call is one thread-local flag read.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -18,6 +19,7 @@ const EVERY: Duration = Duration::from_secs(1);
 struct Window {
     since: Option<Instant>,
     frames: u32,
+    full: BTreeMap<String, u32>,
     asks: BTreeMap<String, u32>,
 }
 
@@ -52,6 +54,9 @@ pub(super) fn asked(askers: Vec<String>) {
         if now.saturating_duration_since(since) >= EVERY {
             let window = std::mem::take(&mut *window);
             let mut line = format!("FRAME-DEMAND frames={}", window.frames);
+            for (why, count) in &window.full {
+                line.push_str(&format!(" full:{why}={count}"));
+            }
             for (asker, count) in &window.asks {
                 line.push_str(&format!(" {asker}={count}"));
             }
@@ -60,8 +65,9 @@ pub(super) fn asked(askers: Vec<String>) {
     });
 }
 
-/// A frame was handed to the render thread.
-pub(super) fn submitted() {
+/// A frame was handed to the render thread, repainting its whole window
+/// for `full` or only its damage.
+pub(super) fn submitted(full: Option<crate::input_frame::RepaintWhy>) {
     if !enabled() {
         return;
     }
@@ -69,6 +75,9 @@ pub(super) fn submitted() {
         let mut window = window.borrow_mut();
         if window.since.is_some() {
             window.frames = window.frames.saturating_add(1);
+            if let Some(why) = full {
+                *window.full.entry(why.names()).or_default() += 1;
+            }
         }
     });
 }

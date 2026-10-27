@@ -17,7 +17,8 @@
 //!   the key was handled, before the frame, are marked `key:`. Scopes nest,
 //!   so they do not add up;
 //! - `repaint`: `full` with why (`full:structure+presence`), or the pixels
-//!   the frame's damage repaints (`repaint_px`);
+//!   the frame's damage repaints (`repaint_px`), in how many rectangles, and
+//!   the largest;
 //! - `present_us`: the render thread rasterising and presenting it, which
 //!   commits the surface;
 //! - `total_us`: dispatch to present.
@@ -135,9 +136,10 @@ pub(crate) fn frame_started() {
 /// to call once the render thread presented it, which writes the record.
 /// What a frame repaints: the whole window, and why, or the pixels its
 /// damage covers.
-pub(crate) enum Repaint {
+pub(crate) enum Repaint<'a> {
     Full(RepaintWhy),
-    Damage(f64),
+    /// The damage's rectangles, in the frame's pixels.
+    Damage(&'a [vello::kurbo::Rect]),
 }
 
 /// Why a frame repaints its whole window: each reason the frame found, by
@@ -175,7 +177,7 @@ impl RepaintWhy {
         full
     }
 
-    fn names(self) -> String {
+    pub(crate) fn names(self) -> String {
         let names: Vec<&str> = REASONS
             .iter()
             .enumerate()
@@ -187,7 +189,7 @@ impl RepaintWhy {
 }
 
 /// `repaint` says what the frame repaints.
-pub(crate) fn submitted(repaint: Repaint) -> Option<Box<dyn FnOnce() + Send>> {
+pub(crate) fn submitted(repaint: Repaint<'_>) -> Option<Box<dyn FnOnce() + Send>> {
     if !pending() {
         return None;
     }
@@ -208,7 +210,21 @@ pub(crate) fn submitted(repaint: Repaint) -> Option<Box<dyn FnOnce() + Send>> {
     )]
     line.push_str(&match repaint {
         Repaint::Full(why) => format!(" repaint=full:{}", why.names()),
-        Repaint::Damage(pixels) => format!(" repaint_px={}", pixels.max(0.0) as u64),
+        Repaint::Damage(rects) => {
+            let pixels: f64 = rects.iter().map(vello::kurbo::Rect::area).sum();
+            let largest = rects
+                .iter()
+                .max_by(|a, b| a.area().total_cmp(&b.area()))
+                .map_or_else(
+                    || "none".to_owned(),
+                    |rect| format!("{}x{}", rect.width() as u64, rect.height() as u64),
+                );
+            format!(
+                " repaint_px={} rects={} largest={largest}",
+                pixels.max(0.0) as u64,
+                rects.len()
+            )
+        }
     });
     Some(Box::new(move || {
         let presented = crate::time::now();
@@ -263,7 +279,7 @@ mod tests {
         PENDING.with(|pending| *pending.borrow_mut() = None);
         frame_started();
         event_handled();
-        assert!(submitted(Repaint::Damage(0.0)).is_none());
+        assert!(submitted(Repaint::Damage(&[])).is_none());
     }
 
     #[test]
@@ -281,7 +297,7 @@ mod tests {
         tilo_resource::profiling::begin_live();
         event_handled();
         assert!(
-            submitted(Repaint::Damage(0.0)).is_none(),
+            submitted(Repaint::Damage(&[])).is_none(),
             "no frame started yet"
         );
         frame_started();
