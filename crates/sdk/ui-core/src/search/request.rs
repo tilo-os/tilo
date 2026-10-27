@@ -39,6 +39,7 @@ const QUERY_PARAM: &str = "query";
 const SCOPE_PARAM: &str = "scope";
 const SCOPE_LABEL_PARAM: &str = "scope_label";
 const OFFER_PARAM: &str = "offer";
+const ACTION_PARAM: &str = "action";
 
 pub use tilo_resource::{ScopeDecl, scope_contains};
 
@@ -66,6 +67,12 @@ pub struct SearchRequest {
     /// plain search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offer: Option<SearchOffer>,
+    /// One of the app's own published actions, on the resource the scope
+    /// names: search opens on it, asking for its arguments, a parameter
+    /// picked from the workspace on its picker. Nothing runs until the
+    /// person has answered them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 /// A system action an app prepares for the person ([`SearchRequest::offer`]):
@@ -92,7 +99,32 @@ impl SearchRequest {
             scope: SearchRequestScope::Resource(scope),
             query: None,
             offer: None,
+            action: None,
         }
+    }
+
+    /// Open search on `action`, a published action of the resource `scope`
+    /// names, asking for its arguments (see [`SearchRequest::action`]): a
+    /// button whose action needs what the person picks ("Link a note")
+    /// opens straight on the picker.
+    #[must_use]
+    pub fn asking(scope: ScopeDecl, action: impl Into<String>) -> Self {
+        Self {
+            action: Some(action.into()),
+            ..Self::within(scope)
+        }
+    }
+
+    /// The action this request opens search on, by its address
+    /// ([`SearchRequest::asking`]).
+    #[must_use]
+    pub fn asked(&self) -> Option<tilo_actions::ActionAddress> {
+        let scope = self.resource_scope()?;
+        let action = self.action.as_deref()?;
+        Some(tilo_actions::ActionAddress::new(
+            scope.anchor.as_str(),
+            action,
+        ))
     }
 
     /// Open search on the system's action `action`, with `arguments` filled
@@ -148,6 +180,9 @@ impl SearchRequest {
         {
             arguments.insert(OFFER_PARAM.into(), offer.into());
         }
+        if let Some(action) = &self.action {
+            arguments.insert(ACTION_PARAM.into(), action.clone().into());
+        }
         arguments
     }
 
@@ -168,6 +203,7 @@ impl SearchRequest {
             text(SCOPE_LABEL_PARAM),
         )
         .with_offer(text(OFFER_PARAM).as_deref())
+        .with_action(text(ACTION_PARAM))
     }
 
     /// The offer the `offer` argument carries, as its JSON text; a malformed
@@ -189,6 +225,12 @@ impl SearchRequest {
             text(SCOPE_LABEL_PARAM),
         )
         .with_offer(text(OFFER_PARAM).as_deref())
+        .with_action(text(ACTION_PARAM))
+    }
+
+    fn with_action(mut self, action: Option<String>) -> Self {
+        self.action = action;
+        self
     }
 
     fn from_parts(query: Option<String>, anchor: Option<String>, label: Option<String>) -> Self {
@@ -200,6 +242,7 @@ impl SearchRequest {
             scope,
             query,
             offer: None,
+            action: None,
         }
     }
 
@@ -265,6 +308,11 @@ pub(crate) fn search_resource() -> Resource {
                 OFFER_PARAM,
                 ParamType::Text,
                 "A system action the app prepares for the person to confirm, as JSON: {\"action\": id, \"arguments\": {name: text}}",
+            ),
+            ActionParam::optional(
+                ACTION_PARAM,
+                ParamType::Text,
+                "An action of the scoped resource to open on, asking for its arguments",
             ),
         ],
         |args| SearchRequest::from_args(args).encode(),
@@ -361,6 +409,27 @@ impl SearchOpener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_asked_action_round_trips_and_names_its_address() {
+        let request = SearchRequest::asking(
+            ScopeDecl::new("tasks.tracker/issues/1", "This issue"),
+            "link-note",
+        );
+        assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
+        assert_eq!(
+            SearchRequest::decode(&request.encode().payload).unwrap(),
+            request
+        );
+        assert_eq!(
+            request.asked(),
+            Some(tilo_actions::ActionAddress::new(
+                "tasks.tracker/issues/1",
+                "link-note"
+            ))
+        );
+        assert_eq!(SearchRequest::this_app().asked(), None);
+    }
 
     #[test]
     fn an_offered_action_round_trips_and_a_malformed_offer_is_none() {

@@ -2414,6 +2414,16 @@ impl LiveAppActionsProvider {
         ))
     }
 
+    /// The resource and action one result id names, whether the row came
+    /// from a published surface or a directory.
+    #[must_use]
+    pub fn address_of(id: &str) -> Option<(&str, &str)> {
+        let mut parts = id.rsplit(ID_SEPARATOR);
+        let action = parts.next()?;
+        let resource = parts.next()?;
+        Some((resource, action))
+    }
+
     fn result_id(surface: &PublishedSurface, action: &PublishedAction) -> String {
         #[cfg(test)]
         IDS_MINTED.with(|minted| minted.set(minted.get().saturating_add(1)));

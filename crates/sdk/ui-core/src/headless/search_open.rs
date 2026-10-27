@@ -49,6 +49,10 @@ impl FrameHarness {
             palette.set_query(query);
             palette.select_query();
         }
+        // On one of the app's actions: the palette asks for its arguments.
+        if let Some(address) = request.asked() {
+            palette.activate_address(&address.resource, &address.action);
+        }
         self.discard_layout_tree();
         self.focused = None;
         self.action_palette = Some(palette);
