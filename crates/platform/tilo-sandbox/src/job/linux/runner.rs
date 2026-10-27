@@ -1465,7 +1465,7 @@ unsafe fn start_child(
         let arg = std::ptr::from_mut(child).cast::<libc::c_void>();
         // SAFETY: as this function's contract.
         let ret = unsafe { signals_blocked(|| sys::clone3_run(&cfg, pre_exec, arg)) };
-        if ret != -libc::c_long::from(libc::ENOSYS) {
+        if ret != libc::c_long::from(libc::ENOSYS).wrapping_neg() {
             return pid_of(ret, "clone3");
         }
         sys::clone3_missing();
