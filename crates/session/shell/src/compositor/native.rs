@@ -3,6 +3,9 @@
 //! `wayland-2`, …) handed to `DisplayHandle::insert_client`. Doesn't open a
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
+use crate::compositor::shell_text_input::{
+    FieldSituation, KeyboardHolder, SessionState, field_owner,
+};
 use crate::shell::input_policy::{
     is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch,
 };
@@ -12832,9 +12835,6 @@ pub fn run() {
         // session being locked, because a password in a composed script cannot
         // be typed at all otherwise. `field_owner` is that decision, written
         // and tested on its own.
-        use crate::compositor::shell_text_input::{
-            FieldSituation, KeyboardHolder, SessionState, field_owner,
-        };
         let session_locked = session.is_locked();
         let session_state = if session_locked {
             SessionState::Locked {
