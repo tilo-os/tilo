@@ -107,7 +107,7 @@ fn the_keyboard_moves_the_selection_and_skips_headers() {
     let seen = Rc::clone(&chosen);
     let list = NavList::new(mailboxes())
         .selected("sent")
-        .on_select(move |id| seen.borrow_mut().push(id));
+        .on_view("places", move |id| seen.borrow_mut().push(id));
     let mut h = harness(list, Theme::dark());
     focus(&mut h);
     assert!(key(&mut h, Key::Named(NamedKey::ArrowDown)));
@@ -1860,7 +1860,7 @@ fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
         .map(|row| NavItem::new(format!("row-{row}"), format!("Row {row}")))
         .collect();
     let list = NavList::new(vec![NavSection::untitled("all", items)])
-        .on_select(move |id| seen.borrow_mut().push(id));
+        .on_view("places", move |id| seen.borrow_mut().push(id));
     let mut h = harness(list, Theme::dark());
     let seen_row = h.root::<NavList>().row_rect("row-5").expect("row 5 shown");
 
@@ -1969,4 +1969,48 @@ fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element)
             );
         }
     }
+}
+
+/// Choosing a destination is the list's published view action: an agent
+/// choosing one through it sees the list show it and the app hear of it,
+/// as a person's click does; a destination the list does not have is
+/// refused.
+#[test]
+fn an_agent_chooses_a_destination_through_the_published_view_action() {
+    let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
+    let seen = Rc::clone(&chosen);
+    let list = NavList::new(mailboxes())
+        .selected("inbox")
+        .on_view("mail.places", move |id| seen.borrow_mut().push(id));
+    let mut h = harness(list, Theme::dark());
+    let resources = h.resources();
+    let control = resources
+        .iter()
+        .find(|resource| resource.id.0 == "tilo.control:mail.places")
+        .expect("the list publishes its selection");
+    let select = control
+        .actions
+        .iter()
+        .find(|action| action.id == "select")
+        .expect("a select action");
+    assert_eq!(select.kind, tilo_actions::OperationKind::View);
+    let choices: Vec<&str> = select.params()[0]
+        .choices
+        .iter()
+        .map(AsRef::as_ref)
+        .collect();
+    assert_eq!(choices, ["inbox", "sent", "work", "design", "travel"]);
+
+    let destination =
+        |id: &str| serde_json::Map::from_iter([("destination".into(), serde_json::json!(id))]);
+    h.invoke_published("tilo.control:mail.places", "select", &destination("travel"))
+        .expect("an agent chooses a destination");
+    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("travel"));
+    assert_eq!(chosen.borrow().as_slice(), ["travel"]);
+    assert!(
+        h.invoke_published("tilo.control:mail.places", "select", &destination("spam"))
+            .is_err(),
+        "a destination the list does not have is refused"
+    );
+    assert_eq!(chosen.borrow().as_slice(), ["travel"]);
 }

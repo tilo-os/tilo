@@ -131,7 +131,7 @@ CONTROL_CALLBACKS = frozenset(
     {
         "on_activate", "on_activate_entry", "on_change", "on_check",
         "on_chosen_change", "on_clear_filters", "on_click", "on_context_menu_item",
-        "on_delete", "on_dismiss", "on_drop", "on_edit_requested", "on_expand",
+        "on_delete", "on_drop", "on_edit_requested", "on_expand",
         "on_files", "on_header_click", "on_heading_action", "on_move",
         "on_name_group", "on_navigate", "on_open_entry", "on_open_toggle",
         "on_outcome", "on_overflow", "on_remove", "on_rename", "on_retry",
@@ -148,6 +148,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_effect": "activates a published native effect action",
     "on_own_device_effect": "activates a published native effect action",
     "on_view": "activates a published native view action",
+    "on_dismiss": "a dialog's or popover's close control, published as a native view action; "
+    "a banner's follows its published dismiss button",
     "on_back": "answers the navigation shell's Back, a published native view action",
     "on_context": "pointer gesture that places a context menu",
     "on_context_menu": "pointer gesture that places a context menu",

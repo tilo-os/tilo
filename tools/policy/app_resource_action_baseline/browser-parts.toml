@@ -1,4 +1,3 @@
 [ratchets.closure_control]
 "apps/browser-parts/src/address_controls.rs" = 1
 "apps/browser-parts/src/credentials.rs" = 1
-"apps/browser-parts/src/page_dialogs.rs" = 2

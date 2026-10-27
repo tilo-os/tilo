@@ -284,17 +284,6 @@ impl App {
                 );
             }
         }
-        while let Some(command) = self.close_admission.take_command() {
-            // Pointer/keyboard callbacks enter the same declared command as
-            // accessibility and local automation; stale sessions are refused.
-            if self.close_admission.validate(&command) {
-                let address = tilo_actions::ActionAddress::new(
-                    format!("tilo.host.close:{}", command.session),
-                    command.choice.id(),
-                );
-                let _ = self.invoke_history_address_local(&address, None);
-            }
-        }
         if self.close_admission.save_waiting
             && self.close_admission.save_broker_request.is_some()
             && !self.collaboration.manager.is_connected()

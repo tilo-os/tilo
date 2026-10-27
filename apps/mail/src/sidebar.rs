@@ -140,9 +140,8 @@ pub fn sidebar(shared: &Shared) -> NavList {
     let on_section = shared.clone();
     let follow = shared.clone();
     NavList::new(Vec::new())
-        .with_id("mail-mailboxes")
         .with_accessible_name("Mailboxes")
-        .on_select(move |id| {
+        .on_view("mail-mailboxes", move |id| {
             if id == ALL_INBOXES {
                 on_select.borrow_mut().push_command(Command::OpenAllInboxes);
             } else if let Some((account, folder)) = parse_folder_row(&id) {

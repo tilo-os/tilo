@@ -1227,10 +1227,9 @@ fn surface(
             .map(|(id, label, icon)| ui::widget::NavItem::new(id.to_string(), *label).icon(*icon))
             .collect(),
     )])
-    .with_id("clocks.screens")
     .with_accessible_name("Clocks")
     .bind_selection(selection)
-    .on_select(move |id| {
+    .on_view("clocks.screens", move |id| {
         if let Ok(mode) = id.parse::<usize>() {
             mode_state.set(mode);
         }

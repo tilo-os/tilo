@@ -190,9 +190,8 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
     let action_ids = Rc::clone(&ids);
     let section_ids = Rc::clone(&ids);
     let mut list = NavList::new(sections(view))
-        .with_id("api.nav")
         .with_accessible_name("Requests")
-        .on_select(move |id| {
+        .on_view("api.nav", move |id| {
             let cmd = if let Some((ci, ri)) = parse_request(&id) {
                 Cmd::LoadRequest(ci, ri)
             } else if let Some(hi) = id.strip_prefix("history:").and_then(|hi| hi.parse().ok()) {
