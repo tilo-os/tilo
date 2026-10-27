@@ -170,6 +170,57 @@ pub struct PeerStreamStart {
     pub tab: u64,
 }
 
+/// The tab of `tree` a peer's stream of `app_id` starting now mounts into:
+/// exactly the tab `tab` it names, in whichever workspace holds it, as long as
+/// that tab shows another device's window (a [`TileContent::PeerWindow`] or
+/// [`TileContent::HostedWindow`]); for a stream naming none (`0`), the first
+/// such tab of its app in the active workspace. `unclaimed` says whether a
+/// tab is still free of another stream.
+///
+/// [`TileContent::PeerWindow`]: crate::shell::state::TileContent::PeerWindow
+/// [`TileContent::HostedWindow`]: crate::shell::state::TileContent::HostedWindow
+pub(crate) fn stream_tab_in(
+    tree: &crate::shell::state::WorkspaceTree,
+    app_id: &str,
+    tab: u64,
+    unclaimed: impl Fn(u64) -> bool,
+) -> Option<u64> {
+    use crate::shell::state::TileContent;
+    if tab != 0 {
+        return tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|candidate| {
+                candidate.id == tab
+                    && matches!(
+                        candidate.tile,
+                        TileContent::HostedWindow { .. } | TileContent::PeerWindow { .. }
+                    )
+            })
+            .map(|candidate| candidate.id)
+            .filter(|id| unclaimed(*id));
+    }
+    tree.desktop.active_workspace().and_then(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group.tabs.iter().find_map(|tab| match &tab.tile {
+                    TileContent::PeerWindow {
+                        app_id: candidate, ..
+                    }
+                    | TileContent::HostedWindow {
+                        app_id: candidate, ..
+                    } if candidate == app_id && unclaimed(tab.id) => Some(tab.id),
+                    _ => None,
+                })
+            })
+        })
+    })
+}
+
 /// Peer-side widget rendering one shared surface: the decoder, the latest
 /// decoded frame as a peniko image, and the pending-input queue.
 pub struct PeerView {

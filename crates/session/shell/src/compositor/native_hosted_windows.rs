@@ -16,7 +16,9 @@ use super::{DesiredShares, MemberViewers, PersonalViewers, RoomHosts, all_hosts}
 /// them see and control what), so every legacy window of a workspace whose
 /// room has one is shared with it, not only the explicitly shared. A headless
 /// machine's "active" workspace is nobody's screen, so every room counts; a
-/// room's windows go only to that room's hosts.
+/// room's windows go only to that room's hosts. A host republishes what it is
+/// shared to every member of its room, so a room whose layout is personal
+/// shares none of its windows with its hosts either.
 ///
 /// `personal` are the person's other devices showing a tab, by tab: a legacy
 /// window streams to each device showing its tab, in whichever workspace it
@@ -42,6 +44,9 @@ pub(super) fn desired_legacy_shares(
     let mut desired = HashMap::new();
     for workspace in &tree.desktop.workspaces {
         let active = workspace.id == tree.desktop.active;
+        // Each member's windows in a room whose layout is personal stay on
+        // their device: no host or member of the room is shown them.
+        let shared_layout = !tree.room_layout(workspace.room()).is_personal();
         for tab in workspace
             .strips
             .iter()
@@ -60,7 +65,7 @@ pub(super) fn desired_legacy_shares(
             {
                 peers.extend(shared);
             }
-            if let Some(room_hosts) = viewer_hosts.get(&workspace.room()) {
+            if shared_layout && let Some(room_hosts) = viewer_hosts.get(&workspace.room()) {
                 peers.extend(room_hosts);
             }
             let mut decode_limits = HashMap::new();
@@ -71,9 +76,7 @@ pub(super) fn desired_legacy_shares(
                 }
             }
             let mut read_only = std::collections::HashSet::new();
-            if let Some(viewers) = members.get(&tab.id)
-                && !tree.room_layout(workspace.room()).is_personal()
-            {
+            if shared_layout && let Some(viewers) = members.get(&tab.id) {
                 for viewer in viewers
                     .iter()
                     .filter(|viewer| viewer.room == workspace.room())
@@ -370,10 +373,25 @@ mod tests {
             tilo_desktop_model::projection::RoomLayout::Personal.id(),
         )
         .unwrap();
+        let hosts: RoomHosts = [(room, [42].into_iter().collect())].into_iter().collect();
+        assert_eq!(
+            desired_legacy_shares(&tree, true, &hosts, &nobody, &MemberViewers::new())
+                .get(&31)
+                .map(|(share, _)| share.viewers.clone()),
+            Some([42].into()),
+            "a headless session's room host is shared the window while the room shares its layout"
+        );
         tree.room_docs.insert(room, personal);
         assert!(
             desired_legacy_shares(&tree, true, &none, &nobody, &members).is_empty(),
             "a room whose layout is personal streams nothing"
+        );
+        // A host republishes what it is shared to every member of its room
+        // (and a share naming it is sent on the room's topic, which every
+        // member receives), so it is shown none of a personal room's windows.
+        assert!(
+            desired_legacy_shares(&tree, true, &hosts, &nobody, &members).is_empty(),
+            "a room whose layout is personal streams nothing to its hosts either"
         );
     }
 }
