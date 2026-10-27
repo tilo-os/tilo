@@ -123,12 +123,59 @@ An app that wants something `std` doesn't do (a reader, a canvas, a timeline) co
 and its own views directly. It loses nothing native, because the widgets are the native ones.
 Authors who use `std` get the native look with no effort.
 
+## 3.1 Custom widgets: a ladder
+
+Most needs stop at the first or second step. Each step stays native under any theme.
+
+1. **Compose `ui.*`.** Card, Row, Stack, Grid, Overlay, Badge, Avatar, and text by role. A view is
+   a component, and it costs only its boundaries.
+2. **Draw with the design system.** A small declarative drawing vocabulary inside the widget
+   tree:
+   - **Shapes:** rectangles, rounded paths, arcs, lines and gradients.
+   - **Theme only:** colours only by theme role (`.accent`, `.surface`, `.separator`, `.muted`,
+     `.app_tint`), sizes and strokes from tokens, text through text roles, motion through the
+     platform's curves and durations.
+   - **Retained:** nodes are diffed and patched like any other, damage is limited to their own
+     rect, and geometry is cached.
+   - **A semantic role is required** (`role: .progress(0.6)`, `.slider`, `.chart(series)`), so
+     screen readers and agents understand the widget. An undescribed drawing is a compile error.
+   - **Interaction arrives as events** (a drag gives a value), and pressed and hovered states
+     come from the platform.
+
+   A progress ring, a timeline, a custom segmented control or a waveform overview gives an app
+   identity while staying in the person's colours, font and motion. `.app_tint` is an app's
+   signature role, and the person's theme decides how it renders (muted, accented, or ignored in
+   high contrast).
+3. **Render graph.** Declared nodes (WGSL shaders, compositing, colour transforms) over textures
+   and frames, executed by the platform. A video editor's preview and an image editor's layer
+   stack use this.
+4. **A WebGPU-shaped API.** For 3D and other heavy work: handles and naga-validated WGSL,
+   rendering into a texture slot inside the app's own surface, which the toolkit composites.
+   This is the boundary browsers already expose to untrusted pages. It is never raw Vulkan and
+   never draws outside the slot.
+
+Steps 3 and 4 produce a texture placed in the ordinary widget tree, with its own layout, focus
+and accessibility.
+
+## 3.2 Efficiency is enforced, not hoped for
+
+- **Counts, filters and queries are answered by the index,** never by a loop in a view. The
+  compiler warns when a view iterates a whole collection outside a virtual list, and names the
+  index-backed alternative.
+- **Every app gets a performance matrix by default,** derived from its scenarios: open, scroll,
+  keystroke, peer edit and filter, at 1k, 10k and 100k items. It is gated by counted work:
+  boundaries rendered, items built, pages read, structure changes and repainted area.
+  `tilolang dev` shows the author why a gate fails.
+- **Widgets report changes precisely.** They say what changed (repaint, keyed children, layout)
+  and damage only their own rect. The test harness handles structure changes exactly as the live
+  host does, so a widget that over-reports fails its counted tests.
+
 ## 4. What stays out
 
 - **Closures and arbitrary Rust callbacks.** Every event is an action reference or a view-state
   update. This keeps views pure, attributed, replayable and agent-visible.
-- **Direct painting.** A later `canvas` component takes pure draw commands. Until then, custom
-  visuals come from composing components.
+- **Raw painting and raw GPU access.** Custom visuals go through the ladder in §3.1: design-system
+  drawing, then the render graph, then a WebGPU-shaped API.
 - **Colours, sizes and fonts as raw values.** Props use the design system's roles and tokens, as
   ui-core apps already do.
 - **Widgets that are internals,** such as layout helpers that exist only to implement other
