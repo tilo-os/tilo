@@ -3027,7 +3027,9 @@ pub use layout::{
 };
 
 mod button;
-pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors, focus_ring_reach};
+pub use button::{
+    Button, ButtonFace, ButtonInteract, ButtonProps, ButtonRole, face_colors, focus_ring_reach,
+};
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
@@ -3117,7 +3119,7 @@ pub mod window_header;
 pub(crate) mod window_toolbar_row;
 pub use nav_shell::{
     ContentKind, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry, NavMode, NavPane,
-    NavShell, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WindowBarLink,
+    NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WindowBarLink,
 };
 pub use window_header::{
     HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
@@ -3125,8 +3127,8 @@ pub use window_header::{
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemStatus, NavList, NavPerson, NavSearchTerm,
-    NavSection,
+    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
+    NavListProps, NavPerson, NavSearchTerm, NavSection,
 };
 mod document_viewport;
 pub use document_viewport::{
@@ -3136,7 +3138,7 @@ pub use document_viewport::{
 mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
 mod text;
-pub use text::Text;
+pub use text::{Text, TextProps};
 mod spacer;
 pub use spacer::Spacer;
 mod when;
@@ -3156,7 +3158,7 @@ pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep, paint_held_re
 mod text_input;
 pub use text_input::{
     AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
-    TextInputKind, paint_invalid_edge, paint_preedit_underline,
+    TextInputKind, TextInputProps, paint_invalid_edge, paint_preedit_underline,
 };
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
@@ -3346,7 +3348,7 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::{Avatar, AvatarFace, AvatarSize, PresenceStatus, initials_for_name};
+pub use avatar::{Avatar, AvatarFace, AvatarProps, AvatarSize, PresenceStatus, initials_for_name};
 pub mod badge;
 pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
@@ -3430,7 +3432,8 @@ pub use tree_view::{
 };
 pub mod virtual_list;
 pub use virtual_list::{
-    DuplicateListKey, ListEdges, ListModel, RowSelection, VecListModel, VirtualList,
+    DescribedList, DuplicateListKey, ListEdges, ListModel, RowSelection, VecListModel, VirtualList,
+    VirtualListProps,
 };
 mod activation;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
@@ -3466,13 +3469,13 @@ pub mod stepper;
 pub use stepper::{Stepper, StepperFace};
 pub mod property_list;
 pub use property_list::{
-    Property, PropertyColumn, PropertyList, PropertyListFace, PropertyRow, PropertyValue,
-    property_label_column,
+    Property, PropertyColumn, PropertyList, PropertyListFace, PropertyListProps, PropertyProps,
+    PropertyRow, PropertyValue, property_label_column,
 };
 pub mod list_row;
 pub use list_row::{
-    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus,
-    RowValue, SwipeAction, badge_column_width,
+    ControlRow, ListRow, ListRowFace, ListRowProps, RowAction, RowLeading, RowLeadingShape,
+    RowShape, RowStatus, RowValue, SwipeAction, badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{
@@ -3488,7 +3491,7 @@ pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
 pub mod empty_state;
-pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout};
+pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout, EmptyStateProps};
 pub mod find_bar;
 pub use find_bar::{
     FindAbilities, FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable,
@@ -3520,10 +3523,14 @@ pub use conversation::{
 };
 pub mod card;
 mod tone;
-pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
+pub use card::{
+    Actions, Card, CardFace, CardGrid, CardProps, CardWidth, card_column_width, card_columns,
+};
 pub use tone::Tone;
 mod section;
-pub use section::{ObjectHeader, Section, SectionHeader, SectionHeaderFace, StatusLine};
+pub use section::{
+    ObjectHeader, Section, SectionHeader, SectionHeaderFace, SectionProps, StatusLine,
+};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CapturePreview,

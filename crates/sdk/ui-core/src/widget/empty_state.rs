@@ -1380,6 +1380,14 @@ impl EmptyState {
 }
 
 impl Widget for EmptyState {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
@@ -2932,3 +2940,6 @@ mod tests {
         crate::room_sync::set(None);
     }
 }
+
+mod component;
+pub use component::EmptyStateProps;

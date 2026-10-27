@@ -946,6 +946,9 @@ pub struct Section {
     motion: crate::tokens::EffectiveMotion,
     /// Told whether the pointer is over the section.
     pointer: Option<Rc<Cell<bool>>>,
+    /// How its own items changed since the host last read it: inserted, removed or moved by
+    /// key in place.
+    structure: crate::widget::StructureChange,
 }
 
 impl Section {
@@ -962,6 +965,7 @@ impl Section {
             ghosts: crate::widget::Ghosts::default(),
             motion: crate::tokens::EffectiveMotion::default(),
             pointer: None,
+            structure: crate::widget::StructureChange::None,
         }
     }
 
@@ -1182,16 +1186,16 @@ impl Widget for Section {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = false;
+        let mut dirty = std::mem::take(&mut self.structure).rebuilds();
         for child in &mut self.parts.children {
             dirty |= child.take_structure_dirty();
         }
         dirty
     }
 
-    /// No structure of its own: what its parts describe stays described.
+    /// Its items inserted, removed or moved by key, and what its parts describe.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        let mut change = crate::widget::StructureChange::None;
+        let mut change = std::mem::take(&mut self.structure);
         for child in &mut self.parts.children {
             change = change.join(child.take_structure_change());
         }
@@ -1989,3 +1993,6 @@ impl Widget for ObjectHeader {
 #[cfg(test)]
 #[path = "section_tests.rs"]
 mod tests;
+
+mod component;
+pub use component::SectionProps;

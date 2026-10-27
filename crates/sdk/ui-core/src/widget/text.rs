@@ -888,6 +888,14 @@ impl Text {
 }
 
 impl Widget for Text {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
         dyn crate::presence::capability::PublishesPresence
@@ -1973,3 +1981,6 @@ mod tests {
 #[cfg(test)]
 #[path = "text/main_compatibility_tests.rs"]
 mod main_compatibility_tests;
+
+mod component;
+pub use component::TextProps;

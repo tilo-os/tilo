@@ -3955,3 +3955,6 @@ mod tests {
         enabled_follows_its_state_and_bounds_are_spoken();
     }
 }
+
+mod component;
+pub use component::ButtonProps;
