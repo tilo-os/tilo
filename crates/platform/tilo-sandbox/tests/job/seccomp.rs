@@ -166,9 +166,12 @@ done
         s.allow(tilo_sandbox::job::CiAllowance::FileHandleNames);
     });
     assert!(status.success(), "{out}");
+    // Past the filter the kernel's answer depends on the file system (no
+    // handles on some), so only the filter's refusal is looked for.
+    let name = line(&out, "name_to_handle_at");
     assert!(
-        line(&out, "name_to_handle_at").contains("Bad address"),
-        "name_to_handle_at did not reach the kernel when allowed: {out}"
+        !name.is_empty() && !name.contains("Operation not permitted"),
+        "name_to_handle_at was refused when allowed: {out}"
     );
     for name in ["open_by_handle_at", "setns"] {
         assert!(

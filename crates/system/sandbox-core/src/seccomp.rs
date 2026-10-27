@@ -1346,13 +1346,16 @@ mod tests {
                 "{profile:?} with the allowance allowed open_by_handle_at"
             );
         }
-        let setns = under_ci_allowing(CiProfile::Nested, &allowed, || {
-            // SAFETY: an invalid descriptor; the filter answers first.
-            i32::from(
-                errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) }) != libc::EPERM,
-            )
-        });
-        assert_eq!(setns, 0, "the allowance let setns through");
+        for profile in [CiProfile::Standard, CiProfile::Nested] {
+            let setns = under_ci_allowing(profile, &allowed, || {
+                // SAFETY: an invalid descriptor; the filter answers first.
+                i32::from(
+                    errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) })
+                        != libc::EPERM,
+                )
+            });
+            assert_eq!(setns, 0, "{profile:?} with the allowance let setns through");
+        }
         // Inside a sandbox that already refuses it (a CI job), the call never
         // reaches the kernel whatever this filter says.
         if handle_name_errno() == libc::EFAULT {
@@ -1362,6 +1365,32 @@ mod tests {
             assert_eq!(
                 reaches, 0,
                 "name_to_handle_at did not reach the kernel when allowed"
+            );
+        }
+    }
+
+    /// The rules themselves, which say the same wherever the test runs (also
+    /// inside a CI job, whose own filter answers the calls above first): the
+    /// allowance takes exactly name_to_handle_at out and leaves every other
+    /// rule as it was.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_file_handle_allowance_lifts_exactly_one_rule() {
+        for profile in [
+            CiProfile::Standard,
+            CiProfile::Nested,
+            CiProfile::Privileged,
+        ] {
+            let mut plain = ci_rules(profile).unwrap();
+            let allowing = ci_rules_allowing(profile, &[CiAllowance::FileHandleNames]).unwrap();
+            assert!(
+                plain.remove(&libc::SYS_name_to_handle_at).is_some(),
+                "{profile:?} did not refuse name_to_handle_at"
+            );
+            assert_eq!(
+                format!("{plain:?}"),
+                format!("{allowing:?}"),
+                "{profile:?}: the allowance changed more than name_to_handle_at"
             );
         }
     }
