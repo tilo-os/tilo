@@ -6810,6 +6810,7 @@ impl ShellNetwork {
                 Admission::OffLoop => self.dispatch_native_inputs_off_loop(again),
                 Admission::InPlace => self.dispatch_native_inputs(again),
             }
+            self.turn_again_if_owed(&event_rx);
             return;
         }
         // Inbound events read the room's governance from the native owner.
@@ -6859,6 +6860,24 @@ impl ShellNetwork {
             if admits {
                 break;
             }
+        }
+        self.turn_again_if_owed(&event_rx);
+    }
+
+    /// Ask the loop for another turn when this one left inbound work queued:
+    /// events past its bound or behind an admission, or held inputs due
+    /// again. Their arrival woke the loop once, for a turn that took only
+    /// some of them; nothing else wakes an idle loop for the rest. An
+    /// admission still on the worker wakes it when it ends.
+    fn turn_again_if_owed(&self, event_rx: &mpsc::Receiver<NetEvent>) {
+        let owed = !event_rx.is_empty()
+            || self.native_admission.carries()
+            || self.native_admission.owes_again();
+        if owed
+            && !self.native_admission.admitting()
+            && let Some(wake) = self.event_wake.get()
+        {
+            wake();
         }
     }
 
@@ -12449,10 +12468,26 @@ mod tests {
                     .expect("bounded fixture fits the actor event channel");
             }
 
+            let turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let asked = Arc::clone(&turns);
+            let _ = net.event_wake.set(Box::new(move || {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+
             net.tick();
             assert_eq!(net.peer_departures().len(), MAX_NET_EVENTS_PER_TICK);
+            assert_eq!(
+                turns.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "a turn that left events queued asks for the next"
+            );
             net.tick();
             assert_eq!(net.peer_departures().len(), queued);
+            assert_eq!(
+                turns.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "a turn that drained the queue asks for none"
+            );
         }
 
         fn tick_with_no_events_is_noop() {
