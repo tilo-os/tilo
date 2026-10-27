@@ -1954,6 +1954,17 @@ impl State {
         }
     }
 
+    /// The XKB sources the seat keymap was last compiled from, and the active
+    /// one, for the state dump: a settings change has reached the keyboard
+    /// once these match it.
+    pub fn seat_keyboard_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "sources": self.applied_keyboard.source_ids,
+            "active": self.applied_keyboard.active_index,
+            "options": self.applied_keyboard.options,
+        })
+    }
+
     /// Content-free focus metadata read from the live Wayland seat for the
     /// existing state-dump door. Never includes titles, text or held keys.
     pub fn seat_focus_json(&self) -> serde_json::Value {
