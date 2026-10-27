@@ -2701,6 +2701,18 @@ impl NavShell {
         self.set_can_go_back(can);
     }
 
+    /// The parts a frame paints: laid out, and on screen inside the shell.
+    /// A part a push screen holds beside the window (the content behind a
+    /// sidebar that is a screen of its own) is culled when the shell draws,
+    /// so what it would show next waits until it is back on screen: asked
+    /// for, it would keep the window drawing frames that never paint it.
+    fn painted_parts(&self) -> impl Iterator<Item = &dyn Widget> {
+        self.host_parts
+            .iter()
+            .filter_map(|part| self.part(*part))
+            .filter(|part| part.paint_bounds().intersect(self.rect).area() > 0.0)
+    }
+
     /// Snap every animation to its end (deterministic shots and tests).
     pub fn snap(&mut self) {
         {
@@ -4465,10 +4477,7 @@ impl Widget for NavShell {
         self.animating
             || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
-            || self
-                .host_parts
-                .iter()
-                .any(|part| self.part(*part).is_some_and(Widget::needs_animation_frame))
+            || self.painted_parts().any(Widget::needs_animation_frame)
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -4487,10 +4496,7 @@ impl Widget for NavShell {
             || self.animating
             || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
-            || self
-                .host_parts
-                .iter()
-                .any(|part| self.part(*part).is_some_and(Widget::needs_redraw))
+            || self.painted_parts().any(Widget::needs_redraw)
     }
 
     fn mark_drawn(&mut self) {

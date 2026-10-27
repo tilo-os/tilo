@@ -150,12 +150,17 @@ impl FrameHarness {
             || "none laid out".to_owned(),
             |shell| {
                 let geometry = shell.geometry();
+                let mut askers = Vec::new();
+                animation_askers(shell, "NavShell", &mut askers);
                 format!(
-                    "{:?} at {:?}, open {}, animating {}, window {schedule:?}",
+                    "{:?} at {:?}, open {}, animating {} (asked by {askers:?}), motions {:?}, \
+                     owner wakes pending {}, window {schedule:?}",
                     geometry.sidebar,
                     geometry.sidebar_column,
                     shell.is_sidebar_open(),
                     shell.needs_animation_frame(),
+                    crate::motion::frames_wanted_by(crate::time::now()),
+                    self.has_pending_owner_models(),
                 )
             },
         )
@@ -203,6 +208,21 @@ fn window_sidebar_shell(widget: &dyn Widget) -> Option<&NavShell> {
         return Some(shell);
     }
     widget.children().into_iter().find_map(window_sidebar_shell)
+}
+
+/// The paths of the deepest widgets under `widget` that ask for animation
+/// frames, for a failure whose window never comes to rest.
+fn animation_askers(widget: &dyn Widget, path: &str, askers: &mut Vec<String>) {
+    if !widget.needs_animation_frame() {
+        return;
+    }
+    let before = askers.len();
+    widget.for_each_child(&mut |child| {
+        animation_askers(child, &format!("{path}/{}", child.name()), askers);
+    });
+    if askers.len() == before {
+        askers.push(path.to_owned());
+    }
 }
 
 /// The names of `widget` and its descendants `depth` levels down, for a
