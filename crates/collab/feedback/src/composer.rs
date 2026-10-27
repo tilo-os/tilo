@@ -2,7 +2,7 @@
 
 use crate::{
     DeclaredSensitivity, DeliveryState, Destination, Draft, Error, MaskedScreenshot, Outbox,
-    Preview, Receipt, ReviewText, Submission, TextOrigin,
+    Preview, Receipt, Recorded, RecordingScope, ReviewText, Submission, TextOrigin,
 };
 
 #[path = "composer_report.rs"]
@@ -21,6 +21,17 @@ pub struct Subject {
     pub name: String,
     /// The control the person pointed at, as the app named it.
     pub control: Option<Control>,
+    /// The record the window shows, as the desktop knows it: what a
+    /// recording of the window records.
+    pub record: Option<ShownRecord>,
+}
+
+/// The record a window shows: its id in the workspace it is homed in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShownRecord {
+    pub workspace: String,
+    /// The record's id; empty for the app's own record of the workspace.
+    pub record: String,
 }
 
 /// One control of the app's window: its durable semantic id, its role and
@@ -39,6 +50,7 @@ impl Subject {
             app: app.into(),
             name: name.into(),
             control: None,
+            record: None,
         }
     }
 
@@ -80,11 +92,14 @@ impl Subject {
     }
 }
 
-/// Both attachments start off. Opening the composer collects neither.
+/// Every attachment starts off. Opening the composer collects none.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Consent {
     pub context: bool,
     pub screenshot: bool,
+    /// A recording of the window's record over the last
+    /// [`crate::recording::RECORDING_WINDOW_MS`].
+    pub recording: bool,
 }
 
 /// An adapter to an already-admitted workspace and its existing transport.
@@ -110,6 +125,31 @@ pub trait FeedbackHost {
     /// # Errors
     /// Reports local storage that has not durably committed the masked bytes.
     fn persist_screenshot(&mut self, image: &MaskedScreenshot) -> Result<(), Error>;
+    /// What a recording of `subject`'s window would hold, or `None` when
+    /// the window cannot be recorded (no record, or an app that withholds
+    /// itself from captures). Nothing leaves the device.
+    fn recording_scope(&mut self, subject: &Subject) -> Option<RecordingScope> {
+        let _ = subject;
+        None
+    }
+    /// Record `subject`'s window, once the person chose to include it.
+    ///
+    /// # Errors
+    /// Refuses a window that cannot be recorded or a recording past its
+    /// bounds.
+    fn record(&mut self, subject: &Subject) -> Result<Recorded, Error> {
+        let _ = subject;
+        Err(Error::Invalid("recording"))
+    }
+    /// Keep the recording's bytes where the destination's readers fetch
+    /// them, before the report naming them is queued.
+    ///
+    /// # Errors
+    /// Reports local storage that has not kept the bytes.
+    fn persist_recording(&mut self, recording: &Recorded) -> Result<(), Error> {
+        let _ = recording;
+        Err(Error::Invalid("recording"))
+    }
     /// Enqueue on the existing authenticated transport with submission.id as
     /// its business retry identity. Acceptance is never a delivery receipt.
     ///
@@ -135,6 +175,9 @@ pub struct Composer {
     subject: Option<Subject>,
     /// The report about picked parts of the screen, while there is one.
     picked: Option<report::Picked>,
+    /// What a recording of the subject's window would hold, as the host
+    /// said when the subject was named.
+    recording: Option<RecordingScope>,
 }
 
 impl Composer {
@@ -165,6 +208,7 @@ impl Composer {
             active,
             subject: None,
             picked: None,
+            recording: None,
         })
     }
 
@@ -173,8 +217,23 @@ impl Composer {
     pub fn about(&mut self, subject: Option<Subject>) {
         if self.subject != subject {
             self.reviewed = None;
+            self.recording = subject
+                .as_ref()
+                .and_then(|subject| self.host.recording_scope(subject));
             self.subject = subject;
         }
+    }
+
+    /// What a recording of the subject's window would hold, when one can
+    /// be made: the composer offers it only then.
+    pub fn recording_scope(&self) -> Option<&RecordingScope> {
+        self.recording.as_ref()
+    }
+
+    /// The recording of the subject's window, made now.
+    fn record(&mut self) -> Result<Recorded, Error> {
+        let subject = self.subject.as_ref().ok_or(Error::Invalid("recording"))?;
+        self.host.record(subject)
     }
 
     pub fn subject(&self) -> Option<&Subject> {
@@ -212,6 +271,9 @@ impl Composer {
         .preview()?;
         if consent.screenshot {
             preview.attach_screenshot(self.host.capture()?);
+        }
+        if consent.recording {
+            preview.attach_recording(self.record()?);
         }
         self.reviewed = Some((text.to_owned(), consent, preview));
         Ok(())
@@ -264,6 +326,19 @@ impl Composer {
         Ok(())
     }
 
+    /// Leave the recording out of the review before approval.
+    ///
+    /// # Errors
+    /// Refuses a missing preview.
+    pub fn remove_recording(&mut self) -> Result<(), Error> {
+        self.reviewed
+            .as_mut()
+            .ok_or(Error::NotApproved)?
+            .2
+            .remove_recording();
+        Ok(())
+    }
+
     /// Approve exactly the displayed snapshot. Edited issue text or consent
     /// requires fresh review. An accepted queue freezes this id and payload.
     ///
@@ -282,6 +357,9 @@ impl Composer {
         let submission = preview.submission(id.clone(), self.destination.clone())?;
         if let Some(image) = preview.screenshot() {
             self.host.persist_screenshot(image)?;
+        }
+        if let Some(recording) = preview.recording() {
+            self.host.persist_recording(recording)?;
         }
         if let Err(error) = self.outbox.queue(submission) {
             if matches!(error, Error::Store(_)) {
@@ -362,9 +440,32 @@ mod tests {
         captures: usize,
         sent: Vec<Submission>,
         receipt: Option<Receipt>,
+        /// The recording the host makes of a window showing a record.
+        recording: Option<Recorded>,
+        /// Recordings made, and the hashes of those kept for the report.
+        recorded: usize,
+        kept: Vec<String>,
     }
     struct Host(Rc<RefCell<Calls>>);
     impl FeedbackHost for Host {
+        fn recording_scope(&mut self, subject: &Subject) -> Option<RecordingScope> {
+            subject.record.as_ref()?;
+            self.0.borrow().recording.as_ref().map(Recorded::scope)
+        }
+        fn record(&mut self, subject: &Subject) -> Result<Recorded, Error> {
+            subject.record.as_ref().ok_or(Error::Invalid("recording"))?;
+            let mut calls = self.0.borrow_mut();
+            calls.recorded = calls.recorded.saturating_add(1);
+            calls.recording.clone().ok_or(Error::Invalid("recording"))
+        }
+        fn persist_recording(&mut self, recording: &Recorded) -> Result<(), Error> {
+            let mut calls = self.0.borrow_mut();
+            if !calls.sent.is_empty() {
+                return Err(Error::Invalid("recording kept after the report was sent"));
+            }
+            calls.kept.push(recording.reference().hash.clone());
+            Ok(())
+        }
         fn offers_screenshots(&self) -> bool {
             false
         }
@@ -428,6 +529,7 @@ mod tests {
         let attached = Consent {
             context: true,
             screenshot: true,
+            ..Consent::default()
         };
         assert!(matches!(
             composer.submit(id, "The book did not open", attached),
@@ -454,7 +556,107 @@ mod tests {
             app: "so.tilo.notes".into(),
             name: "Notes".into(),
             control: None,
+            record: None,
         }
+    }
+
+    /// Notes, showing a note.
+    fn a_note() -> Subject {
+        Subject {
+            record: Some(ShownRecord {
+                workspace: "demo".into(),
+                record: "note-1".into(),
+            }),
+            ..notes()
+        }
+    }
+
+    #[test]
+    fn a_recording_is_offered_for_a_window_with_a_record_and_sent_only_when_chosen() {
+        let store = Rc::new(MemoryStore::new());
+        let calls = Rc::new(RefCell::new(Calls {
+            recording: Some(crate::recording::tests::recorded()),
+            ..Calls::default()
+        }));
+        let mut composer = composer(store.clone(), calls.clone());
+        composer.about(Some(notes()));
+        assert!(
+            composer.recording_scope().is_none(),
+            "a window that shows no record has nothing to record"
+        );
+        composer.about(Some(a_note()));
+        let scope = composer.recording_scope().unwrap().clone();
+        assert_eq!((scope.app_name.as_str(), scope.steps), ("Notes", 3));
+        assert_eq!(calls.borrow().recorded, 0, "offering records nothing");
+        composer
+            .review("Undo lost a word", Consent::default())
+            .unwrap();
+        assert!(composer.preview().unwrap().feedback().recording.is_none());
+        assert_eq!(calls.borrow().recorded, 0);
+        let with_recording = Consent {
+            recording: true,
+            ..Consent::default()
+        };
+        let id = "0123456789abcdef0123456789abcdef".to_owned();
+        assert!(
+            matches!(
+                composer.submit(id.clone(), "Undo lost a word", with_recording),
+                Err(Error::NotApproved)
+            ),
+            "choosing a recording needs a review that shows it"
+        );
+        composer.review("Undo lost a word", with_recording).unwrap();
+        let reference = composer
+            .preview()
+            .unwrap()
+            .feedback()
+            .recording
+            .clone()
+            .unwrap();
+        assert_eq!(reference.steps, 3);
+        composer
+            .submit(id, "Undo lost a word", with_recording)
+            .unwrap();
+        assert_eq!(calls.borrow().kept, vec![reference.hash.clone()]);
+        commit(&store);
+        composer.pump().unwrap();
+        let sent = calls.borrow().sent.last().unwrap().clone();
+        assert_eq!(sent.feedback.recording, Some(reference));
+        sent.validate().unwrap();
+    }
+
+    #[test]
+    fn a_recording_left_out_of_the_review_is_not_kept_or_sent() {
+        let store = Rc::new(MemoryStore::new());
+        let calls = Rc::new(RefCell::new(Calls {
+            recording: Some(crate::recording::tests::recorded()),
+            ..Calls::default()
+        }));
+        let mut composer = composer(store.clone(), calls.clone());
+        composer.about(Some(a_note()));
+        let with_recording = Consent {
+            recording: true,
+            ..Consent::default()
+        };
+        composer.review("Undo lost a word", with_recording).unwrap();
+        composer.remove_recording().unwrap();
+        let id = "0123456789abcdef0123456789abcdef".to_owned();
+        composer
+            .submit(id, "Undo lost a word", with_recording)
+            .unwrap();
+        commit(&store);
+        composer.pump().unwrap();
+        assert!(calls.borrow().kept.is_empty());
+        assert!(
+            calls
+                .borrow()
+                .sent
+                .last()
+                .unwrap()
+                .feedback
+                .recording
+                .is_none()
+        );
     }
 
     #[test]
@@ -469,7 +671,7 @@ mod tests {
         assert_eq!(calls.borrow().context, 0, "nothing is read without consent");
         let context = Consent {
             context: true,
-            screenshot: false,
+            ..Consent::default()
         };
         composer.review("Saving lost my edit", context).unwrap();
         assert_eq!(calls.borrow().context, 1);
@@ -489,6 +691,7 @@ mod tests {
             app: "so.tilo.files".into(),
             name: "Files".into(),
             control: None,
+            record: None,
         }));
         assert!(
             composer.preview().is_none(),
@@ -515,7 +718,7 @@ mod tests {
         composer.about(Some(subject));
         let consent = Consent {
             context: true,
-            screenshot: false,
+            ..Consent::default()
         };
         composer.review("This page will not open", consent).unwrap();
         let context = &composer.preview().unwrap().feedback().context;
