@@ -2615,6 +2615,20 @@ fn record_and_connector_triggers_round_trip_and_bind_an_event_object() {
         }
     );
     assert_eq!(record.kind(), "record_changed");
+    let app_event: TriggerSpec = serde_json::from_value(json!({
+        "trigger": "app_event",
+        "app_id": "so.tilo.mail",
+        "kind": "mail.message"
+    }))
+    .unwrap();
+    assert_eq!(
+        app_event,
+        TriggerSpec::AppEvent {
+            app_id: "so.tilo.mail".into(),
+            kind: "mail.message".into(),
+        }
+    );
+    assert_eq!(app_event.kind(), "app_event");
     let connector: TriggerSpec = serde_json::from_value(json!({
         "trigger": "connector",
         "app_id": "so.tilo.discord",
@@ -2626,6 +2640,7 @@ fn record_and_connector_triggers_round_trip_and_bind_an_event_object() {
     for trigger in [
         &record,
         &connector,
+        &app_event,
         &TriggerSpec::IncomingMessage {
             app_id: None,
             from: None,
