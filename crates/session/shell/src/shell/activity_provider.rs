@@ -20,7 +20,7 @@ use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ExecutionLocus,
-    InputSpec, OperationKind,
+    IRREVERSIBLE_TAG, InputSpec, OperationKind, RiskLevel,
 };
 
 use crate::shell::i18n::t;
@@ -119,11 +119,35 @@ pub(crate) fn broker_door() -> Arc<dyn HostStepServices> {
 
 struct BrokerDoor;
 
+/// Whether `action` overwrites what documents hold with an earlier state, so
+/// Undo cannot take it back: the changes it drops are in everyone's documents
+/// and its own write is not a change the undo service reverts.
+fn rewrites_history(action: &str) -> bool {
+    [wire::UNDO, wire::RESTORE, wire::UNDO_RUN, wire::UNDO_RECORD].contains(&action)
+}
+
 fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescriptor {
     let contract = if tilo_desktop::activity::is_read(action) {
         ActionContract::live_view(serde_json::json!({ "type": "object" }))
     } else if kind == OperationKind::View {
         ActionContract::view()
+    } else if rewrites_history(action) {
+        // Undoing a run of changes, restoring the room to before one, and
+        // undoing an agent's task all overwrite documents with what they held
+        // before: the changes they drop stay in the record, but Undo does not
+        // bring them back, and they are everybody's, not the caller's. So the
+        // declaration says Undo cannot take it back, and every door asks the
+        // person first (`APP-activity-02`). Narrating a work group (naming,
+        // splitting, merging) writes the activity record alone and stays
+        // undoable, so it runs at once.
+        let mut contract = ActionContract {
+            kind: ActionKind::Undoable,
+            risk: RiskLevel::Destructive,
+            tags: vec![IRREVERSIBLE_TAG.to_owned()],
+            ..ActionContract::default()
+        };
+        contract.settle_confirmation();
+        contract
     } else {
         ActionContract {
             kind: ActionKind::Undoable,
@@ -177,6 +201,11 @@ impl HostStepServices for BrokerDoor {
             (wire::UNDO, "host-activity-action-undo", Document),
             (wire::RESTORE, "host-activity-action-restore", Document),
             (wire::UNDO_RUN, "host-activity-action-undo-run", Document),
+            (
+                wire::UNDO_RECORD,
+                "host-activity-action-undo-record",
+                Document,
+            ),
             (wire::OPEN, "host-activity-action-open", View),
             (
                 wire::CHOOSE_SOURCE,

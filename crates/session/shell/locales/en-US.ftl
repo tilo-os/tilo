@@ -573,6 +573,7 @@ host-activity-action-move-boundary = Move work session boundary
 host-activity-action-undo = Undo changes
 host-activity-action-restore = Restore to before
 host-activity-action-undo-run = Undo agent task
+host-activity-action-undo-record = Undo this change
 host-activity-action-open = Open
 host-activity-action-choose-source = Choose morning source
 host-activity-action-source = Use morning source
