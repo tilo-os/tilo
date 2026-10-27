@@ -2512,8 +2512,9 @@ impl QuickFS {
                 .filter_map(|id| {
                     let path = namespace.path_for_id(&id)?;
                     let ino = namespace.resolve_path_ino(&path)?;
-                    let attr = namespace.getattr(ino)?;
-                    (attr.kind == FileType::RegularFile)
+                    // A symbolic link's record carries its target as content,
+                    // so it is signed with the files around it.
+                    (namespace.structural_kind(ino) == Some(FileType::RegularFile))
                         .then(|| namespace.record_id_for(ino))
                         .flatten()
                 })
@@ -2660,11 +2661,7 @@ impl QuickFS {
         let live_inodes = Self::live_inodes_locked(&mut namespace);
         let regular_file_inodes = live_inodes
             .into_iter()
-            .filter(|ino| {
-                namespace
-                    .getattr(*ino)
-                    .is_some_and(|attr| attr.kind == FileType::RegularFile)
-            })
+            .filter(|ino| namespace.structural_kind(*ino) == Some(FileType::RegularFile))
             .collect();
         drop(namespace);
         regular_file_inodes
@@ -2689,6 +2686,10 @@ impl QuickFS {
     ) -> Option<VersionSnapshot> {
         let record_id = namespace.record_id_for(ino)?;
         let attr = namespace.getattr(ino)?;
+        // A symbolic link is a file record carrying its target as content, so
+        // it signs a version and a content revision like any other file; the
+        // kernel-facing kind in `attr` is not what a version describes.
+        let kind = namespace.structural_kind(ino)?;
         let content_hash = content_override.or_else(|| {
             namespace
                 .hash_for(ino)
@@ -2697,7 +2698,7 @@ impl QuickFS {
         let byte_len = byte_len_override.unwrap_or(attr.size);
         let metadata = VersionMetadataDigest {
             path: namespace.path_for(ino),
-            kind: match attr.kind {
+            kind: match kind {
                 FileType::Directory => 1,
                 FileType::RegularFile => 2,
                 _ => 0,
@@ -2711,7 +2712,7 @@ impl QuickFS {
             content_hash,
             metadata_hash: fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()),
             byte_len,
-            kind: attr.kind,
+            kind,
         })
     }
 

@@ -2555,12 +2555,21 @@ impl Namespace {
         id
     }
 
-    fn attr_for(ino: u64, kind: NodeKind, size: u64, mtime_ms: u64) -> FileAttr {
+    /// The kernel's attributes of `ino`, described by `meta`. The kind and
+    /// mode come from the record's published POSIX attributes: a record whose
+    /// content is a symbolic link's target reads as one, and a record whose
+    /// mode a person set — an executable script, a private key — reports that
+    /// mode rather than a fixed 0644/0755. Ownership stays the local person's.
+    fn attr_for(&self, ino: u64, meta: &NodeMeta) -> FileAttr {
+        let posix = self
+            .posix_attrs(meta.record_id)
+            .unwrap_or_else(|| PosixAttrs::default_for(meta.kind == NodeKind::Dir));
         // Saturates rather than panics: `mtime_ms` is stored CRDT state, not
         // computed here, so an out-of-range value must degrade, not take the mount down.
         let t = UNIX_EPOCH
-            .checked_add(Duration::from_millis(mtime_ms))
+            .checked_add(Duration::from_millis(meta.mtime))
             .unwrap_or(UNIX_EPOCH);
+        let size = meta.size;
         FileAttr {
             ino: INodeNo(ino),
             size,
@@ -2569,12 +2578,14 @@ impl Namespace {
             mtime: t,
             ctime: t,
             crtime: t,
-            kind: kind.to_file_type(),
-            perm: match kind {
-                NodeKind::Dir => 0o755,
-                NodeKind::File => 0o644,
+            kind: match (posix.symlink, meta.kind) {
+                (true, _) => FileType::Symlink,
+                (false, kind) => kind.to_file_type(),
             },
-            nlink: match kind {
+            // `FileAttr::perm` is a `u16`; a replicated mode is masked to
+            // `0o7777` by `PosixAttrs`, so it always fits.
+            perm: u16::try_from(posix.mode).unwrap_or_default(),
+            nlink: match meta.kind {
                 NodeKind::Dir => 2,
                 NodeKind::File => 1,
             },
@@ -2589,13 +2600,13 @@ impl Namespace {
     pub fn getattr(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
-            return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
+            return Some(self.root_attr());
         }
         if !self.reaches_root(id) {
             return None;
         }
         let meta = self.node_meta(id)?;
-        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
+        Some(self.attr_for(ino, &meta))
     }
 
     /// Attribute lookup for a kernel file handle whose directory entry has
@@ -2604,10 +2615,34 @@ impl Namespace {
     pub(crate) fn getattr_including_unlinked(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
-            return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
+            return Some(self.root_attr());
         }
         let meta = self.node_meta(id)?;
-        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
+        Some(self.attr_for(ino, &meta))
+    }
+
+    /// The attributes of the mount's root: a directory this document does not
+    /// describe with a record, at its default mode.
+    fn root_attr(&self) -> FileAttr {
+        let dir = NodeKind::Dir.to_file_type();
+        let t = UNIX_EPOCH;
+        FileAttr {
+            ino: INodeNo(ROOT_INO),
+            size: 0,
+            blocks: 0,
+            atime: t,
+            mtime: t,
+            ctime: t,
+            crtime: t,
+            kind: dir,
+            perm: u16::try_from(DEFAULT_DIR_MODE).unwrap_or_default(),
+            nlink: 2,
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            rdev: 0,
+            blksize: 512,
+            flags: 0,
+        }
     }
 
     /// [`Self::getattr`] and [`Self::hash_for`] of a live node, reading it
@@ -2615,16 +2650,13 @@ impl Namespace {
     pub(crate) fn attr_and_hash(&self, ino: u64) -> Option<(FileAttr, Option<Hash>)> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
-            return Some((Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0), None));
+            return Some((self.root_attr(), None));
         }
         if !self.reaches_root(id) {
             return None;
         }
         let meta = self.node_meta(id)?;
-        Some((
-            Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
-            meta.hash,
-        ))
+        Some((self.attr_for(ino, &meta), meta.hash))
     }
 
     /// Everything one FUSE request asks about `ino`, read in one pass so the
@@ -2640,7 +2672,7 @@ impl Namespace {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
             return Some(InodeView {
-                attr: Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0),
+                attr: self.root_attr(),
                 hash: None,
                 live: true,
                 path: query.path.then(|| "/".to_string()),
@@ -2654,7 +2686,7 @@ impl Namespace {
         let obj = self.node(id)?;
         let meta = self.node_meta_at(id, &obj)?;
         Some(InodeView {
-            attr: Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
+            attr: self.attr_for(ino, &meta),
             hash: meta.hash,
             live,
             path: if live && query.path {
@@ -2686,7 +2718,7 @@ impl Namespace {
         let child = self.child_named(&parent_id, name)?;
         let meta = self.node_meta(&child)?;
         let ino = self.ino_for_id(&child);
-        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
+        Some(self.attr_for(ino, &meta))
     }
 
     pub fn readdir(&mut self, ino: u64) -> Option<Vec<(u64, FileType, FileNameV1)>> {
@@ -2709,19 +2741,31 @@ impl Namespace {
             (parent_ino, FileType::Directory, "..".into()),
         ];
 
-        let mut kids: Vec<(String, FileNameV1, NodeKind)> = self
+        let mut kids: Vec<(String, FileNameV1, FileType)> = self
             .children(&id)
             .into_iter()
             .filter(|c| self.reaches_root(c))
             .filter_map(|c| {
                 let name = self.name_of(&c)?;
-                Some((c.clone(), name, self.kind_of(&c)))
+                // A record whose content is a symbolic link's target is
+                // listed as one, so `find` and `ls -l` see it as the kernel
+                // will report it in `getattr`.
+                let kind = if self
+                    .record_id_for_id(&c)
+                    .and_then(|record| self.posix_attrs(record))
+                    .is_some_and(|posix| posix.symlink)
+                {
+                    FileType::Symlink
+                } else {
+                    self.kind_of(&c).to_file_type()
+                };
+                Some((c.clone(), name, kind))
             })
             .collect();
         kids.sort_by(|a, b| a.1.cmp(&b.1));
         for (cid, name, kind) in kids {
             let cino = self.ino_for_id(&cid);
-            out.push((cino, kind.to_file_type(), name));
+            out.push((cino, kind, name));
         }
         Some(out)
     }
@@ -2729,6 +2773,19 @@ impl Namespace {
     pub fn hash_for(&self, ino: u64) -> Option<Hash> {
         let id = self.ino_to_id.get(&ino)?;
         self.node_meta(id)?.hash
+    }
+
+    /// The kind the document records for `ino`, ignoring whether its content
+    /// is a symbolic link's target: `Directory` or `RegularFile` below the
+    /// root. A version, a metadata digest and the record plane's own
+    /// operations describe a record this way; only what the kernel is told
+    /// ([`Self::getattr`], [`Self::lookup`], [`Self::readdir`]) distinguishes
+    /// a link.
+    pub fn structural_kind(&self, ino: u64) -> Option<FileType> {
+        if ino == ROOT_INO {
+            return Some(FileType::Directory);
+        }
+        Some(self.kind_of(self.ino_to_id.get(&ino)?).to_file_type())
     }
 
     /// `None` only if the document's node map itself has become unwritable
