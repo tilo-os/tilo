@@ -254,6 +254,7 @@ pub fn definition(create: tilo_ui::application::ComponentFactory) -> Application
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create,
     }
 }

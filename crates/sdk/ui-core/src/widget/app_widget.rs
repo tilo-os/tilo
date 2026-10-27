@@ -331,6 +331,14 @@ pub trait AppWidget: Widget {
         None
     }
 
+    /// The component to show in this one's place, built now: what a root shown before its
+    /// record ([`crate::application::HostContext::record_opening`]) answers once the record
+    /// is had. Asked, as a component's own request to show another is, before the window
+    /// syncs, so the window shows this root until it shows the new one.
+    fn take_component_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
+        None
+    }
+
     /// The narrowest window this app is still usable in, in logical px: a
     /// Tilo app's compact layout, a client's `xdg_toplevel` min-size hint.
     /// Resizing a window stops its edge here rather than squeezing the app
@@ -918,6 +926,14 @@ mod component_adapter {
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
+            if binding.records.is_opening(&binding.checkout.id) {
+                // The record is still opening off the frame: the root shows before it
+                // (`HostContext::record_opening`) and reads nothing of it.
+                if let Some(root) = self.component.root.as_deref_mut() {
+                    root.sync(state, &automerge::ROOT);
+                }
+                return;
+            }
             let sync_root = |component: &mut AppComponent| {
                 binding
                     .read_document(state, |document, record_root| {
@@ -964,6 +980,13 @@ mod component_adapter {
             // its draw sees it.
             let permissions = binding.permissions.borrow().clone();
             let update = |component: &mut AppComponent| {
+                if binding.records.is_opening(&binding.checkout.id) {
+                    // Shown before its record, as `sync` does.
+                    return component
+                        .root
+                        .as_deref_mut()
+                        .is_some_and(|root| root.update(state, &automerge::ROOT));
+                }
                 binding
                     .read_document(state, |document, record_root| {
                         component

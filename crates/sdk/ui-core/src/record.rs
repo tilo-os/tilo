@@ -1330,6 +1330,9 @@ pub struct RecordSet {
     /// A hydrated, host-acknowledged browser cache (Cloud portable sessions).
     portable: Option<PortableStorage>,
     pending: HashMap<RecordId, Reserved>,
+    /// Records being opened off the frame ([`RecordStore::begin_opening`]): not open until they
+    /// are taken in.
+    opening: HashMap<RecordId, opening::Opening>,
     /// The records lent out of the set to an action frame
     /// ([`RecordStore::with_action_state`]): their documents are with the
     /// frame, so the other records of the set stay open to it meanwhile.
@@ -1411,6 +1414,7 @@ impl RecordSet {
             backend: None,
             portable: None,
             pending: HashMap::new(),
+            opening: HashMap::new(),
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
@@ -1440,6 +1444,7 @@ impl RecordSet {
             backend: None,
             portable: None,
             pending: HashMap::new(),
+            opening: HashMap::new(),
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: None,
@@ -2066,6 +2071,10 @@ impl RecordSet {
         if self.pending.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
         }
+        // A record opening off the frame is opened by taking it in, once it is decoded.
+        if self.opening.contains_key(&want.id) {
+            self.take_in_opening(&want.id, true)?;
+        }
         if let Some(slot) = self.open.get(&want.id) {
             if slot.kind != want.kind {
                 return Err(RecordOpenError::IdentityMismatch);
@@ -2093,18 +2102,23 @@ impl RecordSet {
                 app_state::DocStore::exclusive(backend, key)?
             };
             let creation = read.clone();
-            let creation_heads = creation_capture_heads(&read)?;
+            // The creation's graph is the snapshot's: its heads are those of the snapshot as it
+            // is decoded to be validated first, never decoded again only to read them.
+            let creation_heads: std::cell::RefCell<Option<Vec<automerge::ChangeHash>>> =
+                std::cell::RefCell::default();
             let (mut doc, autosave) = crate::persist::finish_canonical_created(
                 store,
                 read,
                 |doc| validate_identity(doc, want, &self.home).map_err(|error| error.to_string()),
                 |doc| {
+                    let mut heads = creation_heads.borrow_mut();
+                    let heads = heads.get_or_insert_with(|| doc.base_heads());
                     validate_created_graph(
                         doc,
                         want,
                         &self.home,
                         creation.creation_workspace().map(|scope| scope.id.as_str()),
-                        &creation_heads,
+                        heads,
                     )
                     .map_err(|error| error.to_string())
                 },
@@ -2491,6 +2505,7 @@ impl RecordOwners {
             backend: self.portable.is_none().then(|| Rc::clone(&self.store)),
             portable: self.portable.clone(),
             pending: HashMap::new(),
+            opening: HashMap::new(),
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: (joins_construction && self.portable.is_none())
@@ -4635,6 +4650,8 @@ pub fn tick(
 mod identity_tests;
 
 mod arrival;
+mod opening;
+pub use opening::RecordOpening;
 #[cfg(test)]
 mod replica_merge_tests;
 

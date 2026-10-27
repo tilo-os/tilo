@@ -284,6 +284,18 @@ impl<R: Resource> RecordEnv<R> {
         self.saves.clone()
     }
 
+    /// The room (workspace) the window keeps its records in: what an app keys what it keeps on
+    /// this device for the room by (a cache, an index). `None` in a past version and where the
+    /// window keeps no records in a workspace.
+    pub fn room(&self) -> Option<String> {
+        if self.is_past() {
+            return None;
+        }
+        self.storage
+            .room_store()
+            .map(ui_core::record::RecordStore::home)
+    }
+
     /// What the view is built for: a window someone uses, a past version in
     /// History, or a screenshot. Start work that reaches outside the process
     /// (an engine, a socket, a probe) only when it [is live](RunMode::is_live).

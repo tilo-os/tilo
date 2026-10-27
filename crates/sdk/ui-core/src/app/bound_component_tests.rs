@@ -678,6 +678,7 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: factory,
         };
         let context = HostContext::prepare(
@@ -983,6 +984,7 @@ impl ActionFixture {
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                opens_before_record: false,
                 create,
             };
             let target = if shared && !bindings.is_empty() {
@@ -2605,6 +2607,7 @@ fn a_hosted_components_search_request_becomes_a_host_intent() {
         icon: IconDescriptor::Glyph("P"),
         record_kind: crate::record::RecordKind::new("probe"),
         room_record: true,
+        opens_before_record: false,
         required: vec![],
         optional: vec![],
         opens: &[],
