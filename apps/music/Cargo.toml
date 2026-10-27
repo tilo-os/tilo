@@ -98,7 +98,7 @@ test-http = { path = "../../crates/dev/test-http" }
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 serial_test.workspace = true
 tempfile.workspace = true
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-test-env = { path = "../../crates/dev/test-env", features = ["document"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

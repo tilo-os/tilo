@@ -708,7 +708,12 @@ impl InitialReadBridge {
                 return Err("native initial read queue unavailable".into());
             }
         }
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
+        // No clock ends this wait: the broker answers the read once it can,
+        // which for a record of a sealed room can mean after the room's
+        // host replayed it and the channel's steward admitted this device
+        // to its keys. Each of those is an event the broker waits on; under
+        // load they take what they take. The worker's end, the route's
+        // failure and the broker's answer each wake it.
         loop {
             let seen = self.progress();
             self.check()?;
@@ -718,12 +723,13 @@ impl InitialReadBridge {
             if self.state.document_reads.answered_by_own_channel(&key) {
                 return Ok(None);
             }
-            if crate::time::now() >= deadline {
-                return Err("native initial history unavailable before construction".into());
+            if let Some(error) = self.state.document_reads.unreadable(&key) {
+                return Err(format!("native initial history unavailable: {error}"));
             }
             // The RPC worker has a separate runtime. No lock or application
-            // document borrow crosses this bounded construction wait; staging
-            // the capture ends it at once.
+            // document borrow crosses this construction wait; staging the
+            // capture ends it at once, and the bound only re-checks that the
+            // worker still runs.
             self.wait_progress(seen, crate::time::Duration::from_millis(10));
         }
     }
@@ -1071,8 +1077,10 @@ mod tests {
     fn a_record_the_apps_own_channel_answers_has_no_committed_read() {
         let room = uuid::Uuid::new_v4();
         let checkout = crate::record::RecordCheckout::new(
-            crate::record::RecordId::parse("derived:part.0@derived:messages@derived:default")
-                .expect("a record id"),
+            crate::record::RecordId::parse(
+                "derived:part.0@derived:messages@derived:default@tab:0000000000000000",
+            )
+            .expect("a record id"),
             crate::record::RecordKind::new("chat.part"),
         );
         let route = RouteSpec::record("so.tilo.chat", room, checkout.id.as_str());
@@ -1095,5 +1103,48 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(1),
             "answered without waiting out the read's deadline"
         );
+    }
+
+    /// A read waits for the broker's answer, however long that takes, and
+    /// no longer once none is coming: a route whose join failed says why to
+    /// the read waiting for it, at once.
+    #[test]
+    fn a_read_of_a_route_that_did_not_join_fails_with_its_reason() {
+        let room = uuid::Uuid::new_v4();
+        let checkout = crate::record::RecordCheckout::new(
+            crate::record::RecordId::parse("uuid:00000000-0000-0000-0000-000000000001")
+                .expect("a record id"),
+            crate::record::RecordKind::new("chat.part"),
+        );
+        let route = RouteSpec::record("so.tilo.chat", room, checkout.id.as_str());
+        let state = BridgeState::new();
+        let reads = state.document_reads.clone();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<super::QueuedSdkCommand>(4);
+        // The worker: it takes the read's join and fails it.
+        let worker = std::thread::spawn(move || {
+            let queued = receiver
+                .blocking_recv()
+                .expect("the read asks to join its route");
+            let super::SdkCommand::Join(joined, _) = queued.command else {
+                panic!("the read asks to join its route");
+            };
+            assert_eq!(joined.channel_id(), route.channel_id());
+            reads.join_failed(&joined.channel_id(), "the broker refused the route".into());
+            receiver
+        });
+        let bridge = InitialReadBridge {
+            route: RouteSpec::app("so.tilo.chat", room),
+            commands: sender.downgrade(),
+            state,
+        };
+        let refused = bridge
+            .record("so.tilo.chat", &room.to_string(), &checkout)
+            .expect_err("no read is coming");
+        assert!(
+            refused.contains("the broker refused the route"),
+            "the read says why: {refused}"
+        );
+        drop(worker.join().expect("the worker ran"));
+        drop(sender);
     }
 }

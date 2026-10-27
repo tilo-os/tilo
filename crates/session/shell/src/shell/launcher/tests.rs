@@ -321,6 +321,24 @@ fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
             assert_ne!(notice.body, unavailable);
             assert!(!notice.body.contains("raw detail"));
         }
+        // An app the workspace does not list, opened by a member who may
+        // not add it: said in plain words, with whom to ask, never as the
+        // policy's own wording or an identity failure.
+        let not_listed = launch_event(LaunchEventKind::SpawnFailed {
+            reason: LaunchError::NotListedHere.failure(),
+            detail: LaunchError::NotListedHere.user_message(),
+        })
+        .failure_notice()
+        .unwrap();
+        assert_eq!(
+            not_listed.body,
+            "This app isn't one of this workspace's apps. Ask one of the workspace's administrators to add it."
+        );
+        assert!(!not_listed.body.contains("authorship"));
+        assert_ne!(
+            not_listed.body,
+            crate::shell::i18n::t("launch-error-identity-unavailable")
+        );
         let missing = launch_event(LaunchEventKind::SpawnFailed {
             reason: LaunchError::LauncherBinaryMissing { searched: vec![] }.failure(),
             detail: String::new(),

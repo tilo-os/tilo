@@ -34,6 +34,9 @@ enum Gate {
     Joining,
     Legacy,
     Required(Arc<AtomicBool>, Arc<std::sync::atomic::AtomicU64>),
+    /// The route's join or its first read failed: no read will be staged
+    /// for it. The next read of the route joins it again.
+    Failed(String),
 }
 /// Read-only phase observations for a failed construction barrier. These
 /// independently sampled flags are diagnostic metadata, never admission.
@@ -191,7 +194,7 @@ impl Reads {
             .ok()
             .and_then(|rows| rows.get(key).cloned())
             .is_some_and(|gate| match gate {
-                Gate::Joining => false,
+                Gate::Joining | Gate::Failed(_) => false,
                 Gate::Legacy => true,
                 Gate::Required(ready, _) => ready.load(Ordering::Acquire),
             })
@@ -226,11 +229,41 @@ impl Reads {
         let Ok(mut rows) = self.0.lock() else {
             return false;
         };
-        if self.closed() || rows.contains_key(key) || rows.len() >= 64 {
+        let rejoin = matches!(rows.get(key), Some(Gate::Failed(_)));
+        if self.closed() || (rows.contains_key(key) && !rejoin) || (!rejoin && rows.len() >= 64) {
             return false;
         }
         rows.insert(key.into(), Gate::Joining);
         true
+    }
+    /// The route of `key` could not be joined, or its first read failed,
+    /// with `error`: a reader waiting for its read is told so at once.
+    pub(super) fn join_failed(&self, key: &str, error: String) {
+        let Ok(mut rows) = self.0.lock() else {
+            return;
+        };
+        match rows.get(key) {
+            Some(Gate::Joining) => {}
+            Some(Gate::Required(ready, _)) => ready.store(false, Ordering::Release),
+            _ => return,
+        }
+        rows.insert(key.into(), Gate::Failed(error));
+        drop(rows);
+        self.progressed();
+    }
+    /// Why no read of `key` is coming: its join or first read failed, or it
+    /// was never let join (the reader is closed or holds as many routes as
+    /// it may). `None` while its read is on its way or here.
+    pub(super) fn unreadable(&self, key: &str) -> Option<String> {
+        if self.closed() {
+            return Some("committed document reader closed".into());
+        }
+        let rows = self.0.lock().ok()?;
+        match rows.get(key) {
+            Some(Gate::Failed(error)) => Some(error.clone()),
+            None => Some("committed document route capacity".into()),
+            Some(_) => None,
+        }
     }
     /// Whether the broker answered `key`'s read as served by the app's own
     /// channel ([`Self::legacy`]): no committed read will be staged for it.

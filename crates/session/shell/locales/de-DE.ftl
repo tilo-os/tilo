@@ -1119,6 +1119,7 @@ launch-error-no-display = Der Desktop startet noch. Versuche es gleich noch einm
 launch-error-no-workspace = Wähle einen Arbeitsbereich und versuche es dann erneut.
 launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerelemente.
 launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
+launch-error-not-listed-here = Diese App gehört nicht zu den Apps dieses Arbeitsbereichs. Bitte eine Person, die den Arbeitsbereich verwaltet, sie hinzuzufügen.
 launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
 launch-error-sandbox-supervision = Die Dateiberechtigungen der App konnten nicht überwacht werden. Versuche es erneut.
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
