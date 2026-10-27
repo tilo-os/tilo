@@ -236,13 +236,16 @@ impl MapsApp {
             .route
             .as_ref()
             .and_then(|route| {
-                self.model.route_alternatives.iter().position(|offered| {
-                    offered.duration_s == route.duration_s && offered.distance_m == route.distance_m
-                })
+                self.model
+                    .route_alternatives
+                    .iter()
+                    .position(|offered| offered.is_same_trip(route))
             })
             .unwrap_or(0);
         let next = (shown + 1) % self.model.route_alternatives.len();
-        let route = self.model.route_alternatives[next].clone();
+        let Some(route) = self.model.route_alternatives.get(next).cloned() else {
+            return;
+        };
         self.model.route = Some(route.clone());
         self.perform(Workspace::ACCEPT_ROUTE.with(workspace::AcceptRoute {
             route,

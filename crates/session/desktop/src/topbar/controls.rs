@@ -144,8 +144,7 @@ impl TopBarChrome {
                 .app_tray
                 .iter()
                 .find(|slot| slot.key == key)
-                .map(|slot| slot.title.clone())
-                .unwrap_or_else(|| t("topbar-app-tray-item"));
+                .map_or_else(|| t("topbar-app-tray-item"), |slot| slot.title.clone());
         }
         match target {
             Self::CONTROL_TILO_MARK => t("topbar-tilo-menu"),

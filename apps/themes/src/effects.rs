@@ -62,17 +62,17 @@ fn refused_notice(name: &str, reason: &str) -> String {
 pub(crate) fn install(
     cx: &ViewCx<Studio>,
     notice: &LocalState<String>,
-    page: &LocalState<crate::view::Page>,
-    pane: &LocalState<NavPane>,
+    theme_page: &LocalState<crate::view::Page>,
+    nav_pane: &LocalState<NavPane>,
 ) {
     let notice = notice.clone();
-    let page = page.clone();
-    let pane = pane.clone();
+    let theme_page = theme_page.clone();
+    let nav_pane = nav_pane.clone();
     cx.effects::<ThemesEffect>(move |effect, cx| {
         if effect == ThemesEffect::Import {
             let notice = notice.clone();
-            let page = page.clone();
-            let pane = pane.clone();
+            let theme_page = theme_page.clone();
+            let nav_pane = nav_pane.clone();
             return Ok(cx.choose_file(
                 ui::portal::PickRequest::open(
                     &crate::locales::CATALOG.t("themes-import-title"),
@@ -84,7 +84,7 @@ pub(crate) fn install(
                         .glob("*.json"),
                 )
                 .max_contents_bytes(MAX_THEME_BYTES),
-                move |_, chosen, cx| {
+                move |(), chosen, cx| {
                     let Some(file) = chosen else {
                         return Ok(Effected::done());
                     };
@@ -116,8 +116,8 @@ pub(crate) fn install(
                     let json = serde_json::to_string(&document).unwrap_or_default();
                     cx.submit(Studio::IMPORT_THEME.with((id.clone(), json)));
                     notice.set(imported_notice(&document.name));
-                    page.set(crate::view::Page::Theme(id));
-                    pane.set(NavPane::Content);
+                    theme_page.set(crate::view::Page::Theme(id));
+                    nav_pane.set(NavPane::Content);
                     Ok(Effected::done())
                 },
             ));
