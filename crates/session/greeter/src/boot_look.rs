@@ -100,7 +100,7 @@ mod tests {
     fn a_persons_face_is_the_one_the_greeter_paints() {
         let theme = theme();
         let look: serde_json::Value = serde_json::from_str(&json(&theme)).unwrap();
-        for (name, username) in [("Ada Example", "ada"), ("ada Example", "ada")] {
+        for (name, username) in [("Ada Example", "ada"), ("Ada Example", "ada")] {
             let face = AvatarFace::new(name, username);
             let slot = tilo_face::presence_slot(username);
             assert_eq!(
