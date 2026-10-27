@@ -41,6 +41,10 @@ use crate::shell::i18n::{t, t_args};
 pub(super) const WHO_FIELD: &str = "peer-sync-who";
 /// The join field's address.
 pub(super) const LINK_FIELD: &str = "peer-sync-link";
+/// The row of the invitation the join field holds the text of, and the code
+/// it carries.
+pub(super) const JOIN_INVITE: &str = "peer-sync-join-invite";
+pub(super) const JOIN_CODE: &str = "peer-sync-join-code";
 /// The modal's address; its footer buttons are `<this>.primary` and
 /// `<this>.secondary`.
 pub(super) const SHEET: &str = "peer-sync";
@@ -175,8 +179,14 @@ impl Recipient {
 enum JoinDetail {
     /// Nothing typed: what to type.
     Hint,
-    /// An invitation: what it gives and the code it carries.
-    Invite { access: String, code: String },
+    /// An invitation: the workspace it names, the person it was made for
+    /// when it names one, what it gives, and the code it carries.
+    Invite {
+        workspace: String,
+        invited: Option<String>,
+        access: String,
+        code: String,
+    },
     /// A site or a link the sheet understands.
     Understood(String),
     /// Something that is not a site or a link yet: how it begins and ends,
@@ -191,6 +201,11 @@ impl JoinDetail {
         }
         if let Some(invite) = parse_invite(typed) {
             return Self::Invite {
+                workspace: match invite.invitee_name.clone() {
+                    Some(name) => t_args("peer-sync-invite-for", &[("name", name.into())]),
+                    None => t("peer-sync-invite-workspace"),
+                },
+                invited: invite.invitee_name.clone(),
                 access: role_and_expiry(
                     "peer-sync-received-role-expires",
                     invite.role,
@@ -945,22 +960,33 @@ fn join_detail(detail: &JoinDetail) -> Element {
                 .push(caption(t("peer-sync-token-incomplete")))
                 .push(caption(summary.clone())),
         ),
-        JoinDetail::Invite { access, code } => Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .with_no_padding()
-                .with_rhythm(Rhythm::Related)
-                .push(Box::new(
-                    ListRow::new("peer-sync-join-invite", t("peer-sync-invite-received"))
-                        .icon(ui::icons::Icon::Link)
-                        .secondary(access.clone()),
-                ))
-                .push(Box::new(
-                    ListRow::new("peer-sync-join-code", code.clone())
-                        .icon(ui::icons::Icon::Shield)
-                        .secondary(t("peer-sync-code-check")),
-                )),
-        ),
+        JoinDetail::Invite {
+            workspace,
+            invited,
+            access,
+            code,
+        } => {
+            // Someone the invite names arrives as them; one for whoever
+            // holds it has no one to name.
+            let row = match invited {
+                Some(name) => {
+                    ListRow::new(JOIN_INVITE, name.clone()).avatar(name.clone(), name.clone())
+                }
+                None => ListRow::new(JOIN_INVITE, workspace.clone()).icon(ui::icons::Icon::Link),
+            };
+            Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .with_no_padding()
+                    .with_rhythm(Rhythm::Related)
+                    .push(Box::new(row.secondary(access.clone())))
+                    .push(Box::new(
+                        ListRow::new(JOIN_CODE, code.clone())
+                            .icon(ui::icons::Icon::Shield)
+                            .secondary(t("peer-sync-code-check")),
+                    )),
+            )
+        }
     }
 }
 
