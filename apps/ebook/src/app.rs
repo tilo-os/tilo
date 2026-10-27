@@ -5728,16 +5728,12 @@ impl BooksApp {
     /// took the event.
     fn forward_dropdown_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
         let mut consumed = false;
-        match self.view {
-            View::Library => {}
-            View::Settings => {
-                consumed = self.font_dropdown.handle_event(ctx);
-                if let Some(id) = self.font_dropdown.take_change() {
-                    self.on_set_default_font(&id, &mut ctx.state);
-                    self.refresh_from_doc(ctx.state.doc());
-                }
+        if self.view == View::Settings {
+            consumed = self.font_dropdown.handle_event(ctx);
+            if let Some(id) = self.font_dropdown.take_change() {
+                self.on_set_default_font(&id, &mut ctx.state);
+                self.refresh_from_doc(ctx.state.doc());
             }
-            View::Reader | View::Search => {}
         }
         if consumed {
             self.dirty = true;
