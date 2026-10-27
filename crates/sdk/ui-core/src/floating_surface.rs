@@ -1043,16 +1043,25 @@ impl FloatingSurfaceServiceClient {
 /// Tells a readable watcher ([`spawn_readable_watcher`]) that the app has
 /// read what woke it; dropping it stops the watcher at once.
 #[cfg(all(unix, any(test, feature = "local-daemons")))]
-pub(crate) struct Rearm(OwnedFd);
+pub(crate) struct Rearm {
+    pipe: OwnedFd,
+    /// The watcher woke the app and waits for this rearm: only then does
+    /// a read rearm it, so an app reading while the watcher is armed (every
+    /// frame pumps the connection) never wakes it.
+    parked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 
 #[cfg(all(unix, any(test, feature = "local-daemons")))]
 impl Rearm {
     /// The app has read: the next arrival wakes it again.
     pub(crate) fn rearm(&self) {
         use std::os::fd::AsRawFd as _;
+        if !self.parked.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
         // A full pipe already holds a rearm the watcher has not taken.
         // SAFETY: one byte from a live buffer to a descriptor this owns.
-        let _ = unsafe { libc::write(self.0.as_raw_fd(), [1_u8].as_ptr().cast(), 1) };
+        let _ = unsafe { libc::write(self.pipe.as_raw_fd(), [1_u8].as_ptr().cast(), 1) };
     }
 }
 
@@ -1081,6 +1090,8 @@ fn spawn_readable_watcher(
     }
     // SAFETY: pipe2 succeeded, so both are fresh descriptors owned here alone.
     let (rearms, rearm) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+    let parked_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiting = std::sync::Arc::clone(&parked_flag);
     tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
         let mut armed = true;
         loop {
@@ -1133,16 +1144,23 @@ fn spawn_readable_watcher(
                 }
             }
             if armed && fds[0].revents != 0 {
+                // Parked before the app is woken, so the read the wake
+                // brings rearms the watcher; a read before it at most rearms
+                // it early, for one more wake.
+                waiting.store(true, std::sync::atomic::Ordering::Release);
+                armed = false;
                 wake();
                 if fds[0].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
                     return;
                 }
-                armed = false;
                 parked();
             }
         }
     })?;
-    Ok(Rearm(rearm))
+    Ok(Rearm {
+        pipe: rearm,
+        parked: parked_flag,
+    })
 }
 
 /// Non-Unix hosts cannot receive Tilo session-service file descriptors. Keep
@@ -2892,6 +2910,17 @@ mod tests {
         for _ in 0..2 {
             tilo_test_env::idle::assert_stays_asleep(&tid, "armed watcher with nothing to read");
         }
+        // Every frame pumps the connection; reading while the watcher is
+        // armed does not wake it.
+        let settled = tilo_test_env::idle::asleep_switches(&tid);
+        for _ in 0..10 {
+            assert!(client.pump().unwrap().is_empty());
+        }
+        assert_eq!(
+            tilo_test_env::idle::asleep_switches(&tid),
+            settled,
+            "pumping an armed connection woke its watcher"
+        );
         drop(client);
         tilo_test_env::wait_until("the watcher ends with its client", || {
             !std::path::Path::new(&format!("/proc/self/task/{tid}")).exists()
