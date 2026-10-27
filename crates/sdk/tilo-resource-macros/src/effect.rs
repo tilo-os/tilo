@@ -728,10 +728,9 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
     } else {
         quote!(_arguments)
     };
-    let app_id = match &app {
-        Some(app) => quote!(#app),
-        None => quote!(#krate::kind::DEFAULT_APP),
-    };
+    let app_id = app
+        .as_ref()
+        .map_or_else(|| quote!(#krate::kind::DEFAULT_APP), |app| quote!(#app));
     let row_count = decls.len();
     let rows = decls.into_iter().map(|row| name_self(row, name));
     Ok(quote! {

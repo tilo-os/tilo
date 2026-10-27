@@ -49,6 +49,17 @@ const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `app 
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
      `item_views = path`";
 
+/// The text of a string-literal attribute value, if that is what `value` is.
+fn str_value(value: &Expr) -> Option<String> {
+    match value {
+        Expr::Lit(ExprLit {
+            lit: Lit::Str(text),
+            ..
+        }) => Some(text.value()),
+        _ => None,
+    }
+}
+
 pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<ResourceOptions> {
     let metas = syn::parse::Parser::parse(Punctuated::<Meta, Token![,]>::parse_terminated, attr)?;
     let mut options = ResourceOptions {
@@ -88,28 +99,16 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             .get_ident()
             .map(ToString::to_string)
             .unwrap_or_default();
+        if let Some(text) = str_value(&pair.value) {
+            match key.as_str() {
+                "kind" => kind = Some(text),
+                "label" => label = Some(text),
+                "app" => options.app = Some(text),
+                _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
+            }
+            continue;
+        }
         match (key.as_str(), &pair.value) {
-            (
-                "kind",
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(text),
-                    ..
-                }),
-            ) => kind = Some(text.value()),
-            (
-                "label",
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(text),
-                    ..
-                }),
-            ) => label = Some(text.value()),
-            (
-                "app",
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(text),
-                    ..
-                }),
-            ) => options.app = Some(text.value()),
             ("params", Expr::Path(path)) if path.path.get_ident().is_some() => {
                 options.params = path.path.get_ident().cloned();
             }
@@ -936,10 +935,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     // The app whose `ActionKey`s its actions are published under. A record
     // that names none is the framework app's, whose id replaces the
     // placeholder at registration.
-    let app_id = match &options.app {
-        Some(app) => quote!(#app),
-        None => quote!(#krate::kind::DEFAULT_APP),
-    };
+    let app_id = options
+        .app
+        .as_ref()
+        .map_or_else(|| quote!(#krate::kind::DEFAULT_APP), |app| quote!(#app));
 
     let mut verbs = Vec::new();
     for impl_item in &mut item.items {
