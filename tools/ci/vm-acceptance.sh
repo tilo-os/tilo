@@ -24,8 +24,9 @@
 #   outputs  the slot's outputs
 #   gl       virgl: auto, on or off
 #
-# vm-acceptance runs the suite in t's shards (t.toml `shards`, run.py SHARDS):
-# each shard t gives this job in T_SHARDS (all of them when it gives none) in a
+# vm-acceptance runs the suite in t's shards (t.toml `shards`, run.py SHARDS), and
+# writes the selection it ran beside them, in /target/vm-acceptance/only, for
+# vm-acceptance-perf. Each shard t gives this job in T_SHARDS (all of them when it gives none) in a
 # VM of its own, with its report and performance records in
 # /target/vm-acceptance/<shard>/report, and a `t-shard: <shard> passed|failed`
 # line for t. vm-acceptance-cohort runs the whole suite in one VM, so its swaps
@@ -106,6 +107,10 @@ if [[ -z $only && -z ${T_TRIGGER:-} ]]; then
   mapfile -t paths < <({ git diff --name-only "$(git merge-base main HEAD)" HEAD; git diff --name-only HEAD; } | sort -u)
   (( ${#paths[@]} == 0 )) || only=$(python3 scripts/vm-acceptance/ci_select.py "${paths[@]}")
 fi
+# The checks this run selected, for vm-acceptance-perf: it compares the groups the
+# records come from, so a dispatch of --only A14 owes only A14's measurements.
+printf '%s\n' "$only" > "$reports/only"
+
 gl=${T_INPUT_GL:-auto}
 case $gl in
   auto) compgen -G '/dev/dri/renderD*' >/dev/null && gl=on || gl=off ;;
