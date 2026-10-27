@@ -11010,7 +11010,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bounded-command",
- "futures-util",
  "getrandom 0.4.3",
  "libc",
  "rand_core 0.10.0",
@@ -16794,6 +16793,22 @@ dependencies = [
  "weather",
  "wire-frame",
  "word-processor",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ai-bench"
+version = "0.1.0"
+dependencies = [
+ "regex-lite",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "test-http",
+ "tilo-actions",
+ "tilo-net",
  "workspace-hack",
 ]
 
@@ -25790,6 +25805,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-agent-models",
  "tilo-agent-participant",
+ "tilo-ai-bench",
  "tilo-app",
  "tilo-app-cli",
  "tilo-app-package",
