@@ -752,6 +752,71 @@ fn a_paused_run_takes_no_step_until_a_person_lets_it_go_on_from_its_boundary() {
 }
 
 #[test]
+fn a_run_that_stopped_showing_a_step_is_ended_as_idle_and_leaves_what_it_did() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Tidy the docs", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Tidy the docs");
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    agent.sync_with(&mut person).unwrap();
+    agent
+        .apply(Tracker::REPORT_RUN.with(tracker::ReportRun {
+            issue: issue.clone(),
+            phase: RunPhase::Executing,
+            text: Some("Tidying".into()),
+        }))
+        .unwrap();
+    person.sync_with(&mut agent).unwrap();
+    agent
+        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+            issue: issue.clone(),
+            spent: 900,
+        }))
+        .unwrap();
+    person.sync_with(&mut agent).unwrap();
+
+    let idle = |after_ms: i64| {
+        Tracker::END_IDLE_RUN.with(tracker::EndIdleRun {
+            issue: issue.clone(),
+            after_ms,
+        })
+    };
+    assert!(
+        person.apply(idle(0)).is_err(),
+        "an idle run waits at least a moment"
+    );
+    assert!(
+        person.apply(idle(600_000)).is_err(),
+        "a run that just showed a step is not idle"
+    );
+    assert_eq!(run_of(&person, &issue).phase, RunPhase::Executing);
+
+    // Once it has been quiet for longer than its person allows, it stops.
+    person.set_now_ms(run_of(&person, &issue).updated_ms + 600_000);
+    person.apply(idle(600_000)).unwrap();
+    let state = person.state().unwrap();
+    let ended = state.issues.get(&issue).unwrap();
+    assert_eq!(
+        ended.status,
+        Status::Todo,
+        "it is left to be picked up again"
+    );
+    assert_eq!(
+        ended.spend,
+        Some(900),
+        "what it did before it went quiet stays"
+    );
+    let run = ended.run.as_ref().expect("the run is kept to read");
+    assert_eq!(run.phase, RunPhase::Stopped);
+}
+
+#[test]
 fn stopping_a_paused_run_ends_it_and_leaves_what_it_did() {
     let mut person = ada();
     person
