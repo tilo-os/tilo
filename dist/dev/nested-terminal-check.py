@@ -89,11 +89,10 @@ def terminal(session: Session, operation: str, args: dict | None = None, timeout
         raise Failed(f"Terminal offers no {operation} in room {session.room}; it offers {offered}")
 
 
-def native(session: Session) -> bool:
-    """Whether the session's Home workspace is in a room this device governs,
-    as nested-session.sh's native.log confirms it: apps open there then."""
-    tree = session.state()["workspace_tree"]
-    return session.room in (tree.get("native_authority") or {}).get("rooms", {})
+def native(state: pathlib.Path) -> bool:
+    """Whether nested-session.sh confirmed the Home workspace native: the
+    marker it leaves in the state directory once the shell says so."""
+    return (state / "native-workspace").is_file()
 
 
 def tail(path: pathlib.Path, lines: int = 60):
@@ -146,7 +145,7 @@ def main() -> int:
             return Session("a", control, str(active["room"])) if active and active.get("room") else None
         session = wait_for("the session to answer", up, START)
         print(f"the session is up in {time.monotonic() - began:.0f} s, room {session.room}", flush=True)
-        wait_for("the Home workspace to be native", lambda: native(session), START)
+        wait_for("the Home workspace to be native", lambda: native(state), START)
         print(f"the Home workspace is native {time.monotonic() - began:.0f} s in", flush=True)
 
         try:
