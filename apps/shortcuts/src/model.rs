@@ -441,6 +441,11 @@ fn place<T>(collection: &mut Collection<T>, order: &[Id]) {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Workbench {
     pub drafts: Collection<Draft>,
+    /// The repeated work the person said no to: the sequence of actions
+    /// ([`crate::proposal::Proposal::key`]), so it is not offered again. It
+    /// says nothing about what the person did, only which proposals were
+    /// turned down.
+    pub ignored: Vec<String>,
 }
 
 /// `name`, numbered past the drafts that already go by it: "New shortcut",
@@ -500,6 +505,11 @@ pub fn upgrade(
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ObjType, ReadDoc as _, Value};
     use ui::tilo_resource::evolution::{collection_items, retype_json, retype_json_items};
+    if from == 2 {
+        // Version 3 adds the proposals the person turned down; a workbench
+        // that predates it has turned none down.
+        return Ok(());
+    }
     if from != 1 {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Shortcuts workbench migration from {from}"
@@ -525,10 +535,66 @@ pub fn upgrade(
 #[resource(
     kind = "shortcuts.workbench",
     label = "Shortcuts",
-    version = 2,
+    version = 3,
     migrate = upgrade
 )]
 impl Workbench {
+    /// Open a shortcut the app proposed, named after the work it noticed, as
+    /// an unsaved draft for review. Never arms a trigger.
+    #[action]
+    pub fn draft_proposal(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The shortcut that does the repeated work, as JSON")] shortcut: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        if shortcut.to_string().len() > 16 * 1024 {
+            return Err(Refusal::new("Shortcut draft is too large"));
+        }
+        let shortcut: Shortcut = serde_json::from_value(shortcut)
+            .map_err(|error| Refusal::new(format!("not a shortcut: {error}")))?;
+        if self
+            .drafts
+            .iter()
+            .any(|(_, draft)| draft.name.trim() == shortcut.name.trim())
+        {
+            return Err(Refusal::new(format!(
+                "A draft called “{}” is already open",
+                shortcut.name.trim()
+            )));
+        }
+        let id = cx.id();
+        let draft_id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
+        let program = Program {
+            inputs: shortcut.inputs,
+            steps: shortcut.steps,
+            output: shortcut.output,
+            triggers: Vec::new(),
+            step_timeout_secs: shortcut.step_timeout_secs,
+        };
+        let draft = Draft::new(shortcut.name, draft_id, &program, false, &mut || cx.id());
+        self.drafts.push(id, draft);
+        Ok(())
+    }
+
+    /// Do not offer this repeated work again.
+    #[action]
+    pub fn ignore_proposal(
+        &mut self,
+        #[param("The steps of the proposal, as its key")] key: String,
+    ) {
+        if key.trim().is_empty() {
+            return;
+        }
+        if !self.ignored.contains(&key) {
+            self.ignored.push(key);
+        }
+    }
+
+    /// Offer this repeated work again after all.
+    #[action]
+    pub fn allow_proposal(&mut self, #[param("The proposal's key")] key: String) {
+        self.ignored.retain(|ignored| *ignored != key);
+    }
     /// Start a new shortcut.
     ///
     /// A name another draft already has is numbered ("New shortcut 2"), so
@@ -906,6 +972,28 @@ fn fresh_step_id(steps: &[Step], kind: &StepKind) -> String {
         StepKind::Task { .. } => "task".into(),
     };
     let base = if base.is_empty() { "step".into() } else { base };
+    unique_step_id(steps, &base, "step")
+}
+
+/// `base`, made readable ("letters, digits, - or _"), and numbered past every
+/// step id `steps` (at any depth) already has; `fallback` when it has nothing
+/// left.
+pub(crate) fn unique_step_id(steps: &[Step], base: &str, fallback: &str) -> String {
+    let base: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let base = if base.is_empty() {
+        fallback.to_owned()
+    } else {
+        base
+    };
     let mut taken = Vec::new();
     collect_ids(steps, &mut taken);
     if !taken.contains(&base) {

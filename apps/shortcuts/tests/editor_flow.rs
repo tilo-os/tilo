@@ -404,7 +404,10 @@ fn every_operation_is_a_published_action() {
         .map(|spec| spec.id.as_str())
         .collect();
     effects.sort_unstable();
-    assert_eq!(effects, ["delete", "describe", "refresh", "run", "save"]);
+    assert_eq!(
+        effects,
+        ["delete", "describe", "refine", "refresh", "run", "save"]
+    );
     assert!(
         resources
             .iter()
