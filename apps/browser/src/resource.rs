@@ -537,9 +537,9 @@ mod tests {
     use ui::tilo_resource::Resource as _;
 
     fn find<'a>(
-        resources: &'a [tilo_actions::Resource],
+        resources: &'a [ui::tilo_actions::Resource],
         id: &str,
-    ) -> Option<&'a tilo_actions::Resource> {
+    ) -> Option<&'a ui::tilo_actions::Resource> {
         resources.iter().find_map(|resource| {
             if resource.id.as_str() == id {
                 Some(resource)

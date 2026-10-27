@@ -9,9 +9,9 @@ mod tests {
     use ui::tilo_resource::{Replica, Resource as _};
 
     fn find<'a>(
-        rows: &'a [tilo_actions::Resource],
+        rows: &'a [ui::tilo_actions::Resource],
         id: &str,
-    ) -> Option<&'a tilo_actions::Resource> {
+    ) -> Option<&'a ui::tilo_actions::Resource> {
         rows.iter().find_map(|row| {
             if row.id.as_str() == id {
                 Some(row)
