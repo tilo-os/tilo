@@ -34,11 +34,15 @@ anyhow.workspace = true
 # codecs, and its A1 reference helpers.
 tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }
+# A Notion export arrives as an archive; it is read through the same bounded
+# zip reader as every other untrusted archive.
+bounded-zip = { version = "0.1.0", path = "../../crates/doc/bounded-zip" }
 uuid.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-# Builds real-world-shaped .xlsx/.ods fixtures and inspects exported packages.
+# Builds the export archives the Notion importer is tested against, and
+# real-world-shaped .xlsx/.ods fixtures and inspects exported packages.
 zip.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }

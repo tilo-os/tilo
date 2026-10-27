@@ -301,6 +301,7 @@ impl SheetsApp {
         csv_name: &str,
     ) -> Result<Vec<crate::xlsx::SheetTable>, String> {
         match format {
+            Interchange::Notion => Self::read_notion_tables(bytes),
             Interchange::Xlsx => crate::xlsx::parse_xlsx(bytes).map_err(|error| error.to_string()),
             Interchange::Ods => crate::ods::parse_ods(bytes).map_err(|error| error.to_string()),
             Interchange::Csv => {
@@ -355,6 +356,16 @@ impl SheetsApp {
                 }])
             }
         }
+    }
+
+    /// The tables a Notion export holds, each read the way a CSV file is.
+    pub(super) fn read_notion_tables(bytes: &[u8]) -> Result<Vec<crate::xlsx::SheetTable>, String> {
+        let mut tables = Vec::new();
+        for table in crate::notion::tables(bytes)? {
+            let mut read = Self::read_tables(Interchange::Csv, table.csv.as_bytes(), &table.name)?;
+            tables.append(&mut read);
+        }
+        Ok(tables)
     }
 
     /// `sheets` as the bytes of a spreadsheet file; a CSV holds the first.

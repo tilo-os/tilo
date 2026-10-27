@@ -30,6 +30,14 @@ pub enum SheetsEffect {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
     },
+    /// Import Notion export
+    ///
+    /// Adds every database of a Notion export as a sheet.
+    #[effect(job, cancellable, opens_path = "zip", label = "Import Notion export")]
+    ImportNotion {
+        #[param("Path of the file; omit to choose one")]
+        path: Option<String>,
+    },
     /// Adds every sheet of an `.ods` spreadsheet.
     #[effect(
         job,
