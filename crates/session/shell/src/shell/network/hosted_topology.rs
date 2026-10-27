@@ -315,23 +315,15 @@ impl ShellNetwork {
                 let Ok(bound) = serde_json::from_slice::<BoundCommand>(&request.command) else {
                     continue;
                 };
-                let is_ours = |id| tilo_desktop_model::peer_salt_of(id) == salt;
-                let Ok(command) =
-                    admit(workspace, &bound.source, &mut doc, &bound.command, is_ours)
-                else {
-                    // The window moved on since the request was made. Keep
-                    // it retained, not silently dropped: a later look may
-                    // still be able to apply it.
-                    continue;
-                };
                 // Closing a window is not a layout mutation: this device's
                 // windows close through the one close lifecycle
                 // ([`crate::shell::window_actions::close_tab`]), which asks a
                 // confined client to save and exit first and only then
-                // removes the tab. The request is claimed once that admitted
-                // close has happened — the tab is gone from this workspace —
-                // and stays retained while the client still shows it.
-                if let DesktopCommand::CloseTab { location } = &command {
+                // removes the tab. A request whose window is already gone is
+                // claimed here — the outcome it asked for holds — and one
+                // whose window is still here waits for that lifecycle, even
+                // when the revision it named has moved on since.
+                if let DesktopCommand::CloseTab { location } = &bound.command {
                     if strips_hold_tab(&workspace.strips, location.tab) {
                         tree.request_layout_close(room, location.tab);
                         continue;
@@ -341,6 +333,15 @@ impl ShellNetwork {
                     }
                     continue;
                 }
+                let is_ours = |id| tilo_desktop_model::peer_salt_of(id) == salt;
+                let Ok(command) =
+                    admit(workspace, &bound.source, &mut doc, &bound.command, is_ours)
+                else {
+                    // The window moved on since the request was made. Keep
+                    // it retained, not silently dropped: a later look may
+                    // still be able to apply it.
+                    continue;
+                };
                 match apply_command(
                     workspace,
                     &command,
