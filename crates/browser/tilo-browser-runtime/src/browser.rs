@@ -744,6 +744,34 @@ const CONSERVATIVE_BUMP_BUDGET_BYTES: u64 = 32 << 20;
 /// 256 MB maximum, which opening a photo-heavy app could reach in one frame.
 const CONSERVATIVE_IMAGE_ATLAS_MAX: u32 = 4096;
 
+/// What a frame repainted, for the frame metrics: why it repainted all of
+/// it, or how much of the window its regions cover and the largest ones.
+fn describe_repaint(repaint: &ui::retained_raster::Repaint, window: u64) -> String {
+    match repaint {
+        ui::retained_raster::Repaint::Full(unknown) => format!("full: {unknown:?}"),
+        ui::retained_raster::Repaint::Regions(regions) => {
+            let area: f64 = regions.iter().map(ui::kurbo::Rect::area).sum();
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "a window's pixel count is far below f64's exact range"
+            )]
+            let percent = 100.0 * area / (window.max(1) as f64);
+            let mut largest: Vec<_> = regions.iter().collect();
+            largest.sort_by(|a, b| b.area().total_cmp(&a.area()));
+            let shown: Vec<String> = largest
+                .iter()
+                .take(4)
+                .map(|r| format!("{:.0},{:.0} {:.0}x{:.0}", r.x0, r.y0, r.width(), r.height()))
+                .collect();
+            format!(
+                "{} regions {percent:.1}%: {}",
+                regions.len(),
+                shown.join("; ")
+            )
+        }
+    }
+}
+
 fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
     let encoding = scene.encoding();
     let glyphs = encoding.resources.glyphs.len();
@@ -2325,6 +2353,11 @@ impl Mount {
             (_, 10..=49) => "render:part<50%",
             _ => "render:full:large-damage",
         };
+        if self.metrics.borrow().enabled() {
+            self.metrics
+                .borrow_mut()
+                .damaged(describe_repaint(&repaint, window));
+        }
         gpu.retained.frames.presented(frame.scene, parts, key);
         #[cfg(debug_assertions)]
         check_retained(
@@ -3068,7 +3101,7 @@ pub fn take_frame_metrics() -> Result<String, JsValue> {
             .iter_mut()
             .map(|(id, mount)| {
                 let mut metrics = mount.metrics.borrow_mut();
-                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "measuredBy": metrics.take_measured_by(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
+                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "measuredBy": metrics.take_measured_by(), "damage": metrics.take_damage(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
             })
             .collect();
         serde_json::to_string(&samples).map_err(error)
