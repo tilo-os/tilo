@@ -12835,7 +12835,8 @@ pub fn run() {
         use crate::compositor::shell_text_input::{
             FieldSituation, KeyboardHolder, SessionState, field_owner,
         };
-        let session_state = if session.is_locked() {
+        let session_locked = session.is_locked();
+        let session_state = if session_locked {
             SessionState::Locked {
                 lock_field: lock.ime_field(),
             }

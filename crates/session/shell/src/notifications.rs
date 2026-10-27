@@ -1160,6 +1160,9 @@ fn evict_oldest_remote_if_full(inner: &mut BridgeInner) {
 
 #[cfg(test)]
 mod tests {
+    use super::flatpak::{
+        flatpak_cgroup_matches, systemd_escape, verified_foreign_notification_identity_from,
+    };
     use super::*;
     #[cfg(target_os = "linux")]
     use crate::portal::CallerMap;
