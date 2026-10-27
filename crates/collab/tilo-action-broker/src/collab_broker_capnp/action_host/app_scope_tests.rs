@@ -109,10 +109,10 @@ impl KeyboardShortcutServices for Keys {
     }
     fn apply(
         &self,
-        _: &mut settings_store::hardware::ShortcutConfig,
+        _: &settings_store::hardware::ShortcutConfig,
         _: &ActionAddress,
         _: Option<&str>,
-    ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>> {
+    ) -> Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>> {
         Err(Box::new(tilo_actions::ActionFailure {
             code: "unavailable".into(),
             message: "this test changes no keyboard shortcut".into(),

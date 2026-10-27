@@ -503,12 +503,12 @@ impl crate::services::KeyboardShortcutServices for Keyboard {
     }
     fn apply(
         &self,
-        _: &mut settings_store::hardware::ShortcutConfig,
+        _: &settings_store::hardware::ShortcutConfig,
         _: &tilo_actions::ActionAddress,
         _: Option<&str>,
-    ) -> Result<(tilo_actions::ActionOutput, bool), Box<ActionFailure>> {
+    ) -> Result<tilo_actions::ActionOutput, Box<ActionFailure>> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok((tilo_actions::ActionOutput::default(), false))
+        Ok(tilo_actions::ActionOutput::default())
     }
 }
 

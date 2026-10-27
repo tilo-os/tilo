@@ -10,18 +10,23 @@
 //! strips' scroll where the person left them; only what changed in the tree
 //! while it was away is reconciled.
 //!
-//! Kept content is not laid out or updated, and nothing routes input to it.
-//! It is drawn only as it was laid out: leaving the screen in a workspace
-//! slide (`workspace_slide`) and into a window's picture in picture. Its apps stay mounted, as they would on screen, until the content is
-//! dropped: when more than [`KEPT_WORKSPACES`] are kept, when its workspace is
-//! removed or becomes another room, or when one of its tabs moves to another
-//! workspace (which then mounts the tab itself).
+//! Kept content is not laid out, and nothing routes input to it. It is
+//! updated only when one of its apps woke it
+//! ([`ParkedWorkspaces::service_woken`]), so what an app does in the
+//! background (a collaborator's edit, an action asked of it) is done then,
+//! not left to pile up for the frame that switches back. It is drawn only as
+//! it was laid out: leaving the screen in a workspace slide
+//! (`workspace_slide`) and into a window's picture in picture. Its apps stay
+//! mounted, as they would on screen, until the content is dropped: when more
+//! than [`KEPT_WORKSPACES`] are kept, when its workspace is removed or
+//! becomes another room, or when one of its tabs moves to another workspace
+//! (which then mounts the tab itself).
 
 use std::collections::HashMap;
 
 use tilo_desktop::composition::DesktopSurface;
 use ui::application::ComponentCloseReport;
-use ui::widget::Widget;
+use ui::widget::{AppModel, ModelPath, Widget};
 
 use crate::shell::state::DesktopTree;
 
@@ -61,6 +66,20 @@ pub(super) fn close(contents: Vec<Box<dyn Widget>>) -> Vec<ComponentCloseReport>
 }
 
 impl ParkedWorkspaces {
+    /// Sync and update the kept content whose apps woke it, as the content
+    /// on screen is every tick. What that changes is drawn when the content
+    /// is shown again; it asks no frame of its own.
+    pub(super) fn service_woken(&mut self, doc: &AppModel, path: &ModelPath) {
+        for entry in &mut self.entries {
+            if surface(entry.content.as_ref())
+                .is_some_and(DesktopSurface::has_pending_component_wake)
+            {
+                entry.content.sync(doc, path);
+                let _ = entry.content.update(doc, path);
+            }
+        }
+    }
+
     /// Keep `content`, which was on screen for `workspace` until now.
     /// Returns what it no longer keeps to stay within [`KEPT_WORKSPACES`],
     /// for the caller to [`close`].

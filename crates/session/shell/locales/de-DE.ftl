@@ -217,16 +217,6 @@ shortcut-category-accessibility = Bedienungshilfen
 keyboard-shortcuts-resource = Tastenkürzel
 keyboard-shortcuts-list = Tastenkürzel auflisten
 keyboard-shortcuts-list-description = Jedes Tastenkürzel des Desktops mit Bezeichnung, aktueller und voreingestellter Belegung, Änderbarkeit und Kategorie
-keyboard-shortcuts-reset-all = Alle Tastenkürzel zurücksetzen
-keyboard-shortcuts-reset-all-description = Jedes änderbare Tastenkürzel des Desktops auf seine Voreinstellung zurücksetzen
-keyboard-shortcut-rebind = Tastenkürzel für { $shortcut } ändern
-keyboard-shortcut-rebind-description = { $shortcut } liegt auf { $chords } (Voreinstellung { $defaults }). Gib eine andere Belegung an; eine bereits vergebene wird abgelehnt und ihr Inhaber genannt.
-keyboard-shortcut-reset = Tastenkürzel für { $shortcut } zurücksetzen
-keyboard-shortcut-reset-description = { $shortcut } wieder auf { $defaults } legen
-keyboard-shortcut-conflict = { $chord } ist bereits für „{ $shortcut }“ belegt.
-keyboard-shortcut-invalid = Dieses Tastenkürzel wird nicht unterstützt.
-
-# Tastaturhilfe (F1)
 guide-title = Tastenkürzel
 guide-reopen-hint = Wähle ein Navigationskürzel, um es zu ändern
 guide-chord-row = Diese Tastenkombination ändern, belegt mit { $chord }
@@ -1394,6 +1384,13 @@ search-answer-copied = Kopiert
 search-answer-money-stale = { $amount } = · Kurse { $age }
 search-matches = Passt zu „{ $word }“
 search-answer-open-address = { $address } öffnen
+search-provider-ask-agent = Einen Agenten fragen
+search-kind-agent = Agent
+search-ask-agent = Einen Agenten fragen: { $query }
+search-ask-agent-subtitle = Eine Aufgabe für { $agent }
+search-ask-agent-no-agent = In diesem Workspace arbeitet noch kein Agent. Füge einen hinzu, um zu fragen.
+search-ask-agent-no-model = Der Agent hat kein KI-Modell. Wähle eines in den Einstellungen.
+search-ask-agent-offline = Du bist offline, und das Modell des Agenten liegt im Internet.
 search-provider-web = Web
 search-kind-web = Web
 search-kind-websites = Websites

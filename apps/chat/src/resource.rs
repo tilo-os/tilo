@@ -390,7 +390,11 @@ fn long_thread_posts(me: &str) -> Vec<(Id, crate::record::Message)> {
             let author = if index % 5 == 4 {
                 me
             } else {
-                people[index % people.len()]
+                // `people` is not empty, so the cycle always names one.
+                people
+                    .get(index % people.len())
+                    .copied()
+                    .unwrap_or_default()
             };
             let text = if index % 7 == 3 {
                 format!(
@@ -407,7 +411,7 @@ fn long_thread_posts(me: &str) -> Vec<(Id, crate::record::Message)> {
                     channel: Id::from_raw("c_crit"),
                     author: ui::tilo_resource::Atom(author.to_owned()),
                     ts: newest.saturating_sub(ago),
-                    text: text.into(),
+                    text,
                     ..crate::record::Message::default()
                 },
             )

@@ -1323,26 +1323,24 @@ impl tilo_action_broker::services::KeyboardShortcutServices for NativeKeyboardSh
     fn catalogue_rows(
         &self,
         provider: &str,
-        keymap: &settings_store::hardware::ShortcutConfig,
+        _: &settings_store::hardware::ShortcutConfig,
     ) -> Vec<tilo_actions::remote::CatalogueRow> {
-        super::keyboard_shortcuts::catalogue_rows(provider, keymap)
+        super::keyboard_shortcuts::catalogue_rows(provider)
     }
     fn descriptor(
         &self,
-        keymap: &settings_store::hardware::ShortcutConfig,
+        _: &settings_store::hardware::ShortcutConfig,
         address: &tilo_actions::ActionAddress,
     ) -> Option<tilo_actions::ActionDescriptor> {
-        super::keyboard_shortcuts::descriptor_at(keymap, address)
+        super::keyboard_shortcuts::descriptor_at(address)
     }
     fn apply(
         &self,
-        keymap: &mut settings_store::hardware::ShortcutConfig,
+        keymap: &settings_store::hardware::ShortcutConfig,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-    ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>> {
-        let operation = super::keyboard_shortcuts::decode(keymap, address, argument)?;
-        let output = super::keyboard_shortcuts::apply(keymap, &operation)?;
-        Ok((output, operation.changes()))
+    ) -> Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>> {
+        super::keyboard_shortcuts::apply(keymap, address, argument)
     }
 }
 
