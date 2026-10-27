@@ -37,7 +37,10 @@ SSH, SCP or rsync.
 Choose the channel in **Settings → Updates → Update channel**, or as root with
 `tilo-update-channel`. A dev image offers both channels; a release image follows
 `stable` only, because dev images carry development-only code (an SSH server,
-`dev-overrides` binaries) and a release image's policy refuses them. Choosing
+`dev-overrides` binaries) and a release image's policy refuses them. A dev image's
+local model catalog names the model runtimes of its own tree, so local models run on
+main's runtimes before a release signs them
+(`crates/agent/local-model-service/RELEASE.md`, "Shipping"). Choosing
 `stable` on a dev device installs the release image, which then stays on `stable`.
 
 ```sh

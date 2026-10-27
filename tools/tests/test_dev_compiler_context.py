@@ -48,6 +48,8 @@ class DevCompilerContextTests(unittest.TestCase):
         build = calls[0]
         # No runtime given: an empty one, so the build fails unless the base ships one.
         self.assertIn(f"--build-context dev-env-runtime={output}/no-env-runtime", build)
+        # No model catalog given: an empty one, so the base's stays.
+        self.assertIn(f"--build-context dev-model-catalog={output}/no-model-catalog", build)
         self.assertIn("-f /fixture/os/Containerfile.dev", build)
         self.assertIn(f"--build-context compiled-dev={compiled.resolve()}", build)
         for argument in ("RPMS_REF=registry.tilo.so/tilo/rpms@sha256:fixture",
@@ -63,6 +65,19 @@ class DevCompilerContextTests(unittest.TestCase):
             result, calls, _, _ = self.invoke({"TILO_DEV_ENV_RUNTIME": str(runtime)})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"--build-context dev-env-runtime={runtime.resolve()}", calls[0])
+
+    def test_a_given_model_catalog_is_the_dev_model_catalog_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory)
+            result, calls, _, _ = self.invoke({"TILO_DEV_MODEL_CATALOG": str(catalog)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"--build-context dev-model-catalog={catalog.resolve()}", calls[0])
+
+    def test_the_dev_image_recipe_carries_the_given_model_catalog(self):
+        recipe = (ROOT / "os/Containerfile.dev").read_text()
+        self.assertIn("from=dev-model-catalog", recipe)
+        self.assertIn("/usr/share/tilo/system-extensions/local-model-catalog.json", recipe)
+        self.assertIn("/usr/share/tilo/system-extensions/local-model-keys.json", recipe)
 
     def test_the_dev_image_recipe_ensures_an_env_runtime(self):
         recipe = (ROOT / "os/Containerfile.dev").read_text()
