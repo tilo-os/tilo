@@ -11926,6 +11926,16 @@ pub fn run() {
                 }
                 BackendEvent::Focus(focused) => {
                     if !focused {
+                        // The host took the keyboard: what it held is up here.
+                        state.release_local_keyboard();
+                        if let Some(gesture) = super_tap.let_go() {
+                            frame_builder.host_mut().super_gesture(
+                                gesture,
+                                &test_control_ctx.doc,
+                                &test_control_ctx.root_obj,
+                            );
+                            session_changed = true;
+                        }
                         end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                     }
                 }

@@ -727,6 +727,24 @@ impl State {
         }
     }
 
+    /// The keyboard the session reads lost every held key at once: the host
+    /// compositor of a nested session took keyboard focus away from its
+    /// window (`wl_keyboard.leave`), so each key this session saw go down is
+    /// up for it, and its release goes to another window of the host.
+    ///
+    /// Each local hold is released through the seat as a release would be:
+    /// the focused client gets the release of every key it saw pressed and
+    /// the modifiers that follow, so it neither repeats a key nor reads the
+    /// next one under a modifier nobody holds. Keys a remote participant
+    /// still holds stay down. Keyboard focus does not move.
+    pub fn release_local_keyboard(&mut self) {
+        for code in self.remote_seats.release_local_keys() {
+            self.client_input.early_released_keys.remove(&code);
+            let forward = self.client_input.forwarded_keys.remove(&code);
+            let _ = self.deliver_client_key(code, false, forward);
+        }
+    }
+
     /// Move the seat pointer to `global` and focus it on `target` (`(surface
     /// id, tile origin)`) — smithay derives `enter`/`leave`/`motion` from the focus transition; passing `None` is how the pointer *leaves* a client.
     pub fn forward_client_pointer_motion(
