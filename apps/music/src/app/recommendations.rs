@@ -91,38 +91,57 @@ impl Presentation {
 
 struct Controls<'a> {
     asked: &'a page_part::Asked,
+    actions: Option<&'a ui::framework::Actions<Library>>,
     editable: bool,
 }
 
 fn button(asked: &Controls<'_>, id: &str, key: &str, action: Action) -> Element {
     let enabled = asked.editable || !matches!(action, Action::Recommendation(_));
-    Box::new(
-        Button::new(id, key)
-            .with_enabled(enabled)
-            .on_click(page_part::asking(asked.asked, action)),
-    )
+    Box::new(page_part::press(
+        asked.actions,
+        asked.asked,
+        Button::new(id, key).with_enabled(enabled),
+        action,
+    ))
 }
 
 fn heading(key: &str) -> Element {
     Box::new(Text::new(key).with_role(TextRole::Heading))
 }
 
+/// The switch of `input`, bound to the library edit that turns it on or off;
+/// before the framework attaches, it asks for that edit.
+fn bound_input(toggle: Toggle, input: Input, asked: &Controls<'_>) -> Toggle {
+    match asked
+        .actions
+        .and_then(|actions| actions.field_binding(Preferences::input_path(input)))
+    {
+        Some(binding) => toggle.on_action(binding),
+        None => {
+            let queue = asked.asked.clone();
+            toggle.on_change(move |enabled| {
+                queue.borrow_mut().push(Action::Recommendation(
+                    Preferences::input_path(input).set(enabled),
+                ));
+            })
+        }
+    }
+}
+
 fn inputs(mut content: Column, asked: &Controls<'_>, values: Vec<(Input, bool)>) -> Column {
     for (input, enabled) in values {
-        let queue = asked.asked.clone();
         let id = format!("music-recommendations-input-{}", input.key());
         content = content.push(Box::new(
-            Row::new().push(Box::new(Text::new(&id))).push(Box::new(
-                Toggle::from_state(&ui::LocalState::new(enabled))
-                    .with_id(&id)
-                    .with_enabled(asked.editable)
-                    .with_accessible_name(&input.label())
-                    .on_change(move |enabled| {
-                        queue.borrow_mut().push(Action::Recommendation(
-                            Preferences::input_path(input).set(enabled),
-                        ));
-                    }),
-            )),
+            Row::new()
+                .push(Box::new(Text::new(&id)))
+                .push(Box::new(bound_input(
+                    Toggle::from_state(&ui::LocalState::new(enabled))
+                        .with_id(&id)
+                        .with_enabled(asked.editable)
+                        .with_accessible_name(&input.label()),
+                    input,
+                    asked,
+                ))),
         ));
     }
     content.push(Box::new(Text::new("music-recommendations-privacy")))
@@ -232,9 +251,15 @@ fn feedback(mut content: Column, asked: &Controls<'_>, presentation: Presentatio
     content
 }
 
-fn page(mut presentation: Presentation, details: bool, queue: &page_part::Asked) -> Element {
+fn page(
+    mut presentation: Presentation,
+    details: bool,
+    queue: &page_part::Asked,
+    actions: Option<&ui::framework::Actions<Library>>,
+) -> Element {
     let asked = &Controls {
         asked: queue,
+        actions,
         editable: presentation.editable,
     };
     let mut content = Column::new()
@@ -289,8 +314,9 @@ impl MusicApp {
             .is_some_and(|dispatcher| !dispatcher.read_only());
         let presentation = Presentation::new(&self.lib, details, editable);
         let key = format!("recommendations:{details}:{presentation:?}");
+        let actions = self.actions.clone();
         self.page_part(ctx, span, y, key, move |asked| {
-            page(presentation, details, asked)
+            page(presentation, details, asked, actions.as_ref())
         })
     }
 }

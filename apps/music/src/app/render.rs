@@ -2944,10 +2944,11 @@ impl MusicApp {
                 .push(super::media_grid::MediaGridHost::new());
         }
         let clip = self.body_rect;
+        let actions = self.actions.clone();
         let Some(grid) = self.media_grids.get_mut(index) else {
             return y;
         };
-        grid.update(specs);
+        grid.update(specs, actions.as_ref());
         grid.place(ctx, (body.x0 + look.gutter, body.x1 - look.gutter), y, clip)
     }
 
@@ -3634,6 +3635,7 @@ impl MusicApp {
         // The actions are the toolkit's buttons in a wrapping row.
         let key = format!("{buttons:?}");
         let gap = ui::num::f32_of_f64(look.related);
+        let actions = self.actions.clone();
         let ty = self.page_part(ctx, (tx, right), ty, key, move |asked| {
             let mut row = ui::widget::Row::new().with_gap(gap);
             for (label, role, action) in buttons {
@@ -3647,9 +3649,12 @@ impl MusicApp {
                 } else {
                     Button::new(&id, label).role(role)
                 };
-                row = row.push(Box::new(
-                    button.on_click(super::page_part::asking(asked, action)),
-                ));
+                row = row.push(Box::new(super::page_part::press(
+                    actions.as_ref(),
+                    asked,
+                    button,
+                    action,
+                )));
             }
             Box::new(row)
         });
@@ -4393,14 +4398,16 @@ impl MusicApp {
         let key = format!("{buttons:?}");
         let gap = ui::num::f32_of_f64(look.related);
         let span = (body.x0 + look.gutter, body.x1 - look.gutter);
+        let actions = self.actions.clone();
         y = self.page_part(ctx, span, y, key, move |asked| {
             let mut row = ui::widget::Row::new().with_gap(gap);
             for (label, role, action) in buttons {
-                row = row.push(Box::new(
-                    Button::new(&format!("music.page.{label}"), label)
-                        .role(role)
-                        .on_click(super::page_part::asking(asked, action)),
-                ));
+                row = row.push(Box::new(super::page_part::press(
+                    actions.as_ref(),
+                    asked,
+                    Button::new(&format!("music.page.{label}"), label).role(role),
+                    action,
+                )));
             }
             Box::new(row)
         });

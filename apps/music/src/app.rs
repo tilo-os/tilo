@@ -288,6 +288,72 @@ enum Action {
     None,
 }
 
+/// What an [`Action`] is in Music's published surface, where it is one:
+/// a control pressing it is bound to that, so agents, scripts and the
+/// palette press the same thing.
+enum Published {
+    Effect(crate::actions::MusicEffect),
+    Edit(ui::tilo_resource::Edit<Library>),
+}
+
+impl Action {
+    /// Whether the action only changes what this window shows: a menu, a
+    /// view, where a control lives.
+    fn only_shows(&self) -> bool {
+        matches!(
+            self,
+            Self::Nav(_)
+                | Self::Back
+                | Self::OpenPlaylistMenu(_)
+                | Self::OpenSpotifyPlaylistMenu(_)
+                | Self::OpenTrackMenu { .. }
+                | Self::OpenAddToPlaylist(_)
+                | Self::OpenPlayerMenu(_)
+                | Self::OpenFacet(_)
+                | Self::SetQuery(_)
+                | Self::ShowControl { .. }
+                | Self::ToggleQueue
+        )
+    }
+
+    fn published(&self) -> Option<Published> {
+        use crate::actions::{MusicEffect, Place};
+        let effect = match self {
+            Self::Recommendation(edit) => return Some(Published::Edit(edit.clone())),
+            Self::SpotifyEffect(effect) => effect.clone(),
+            Self::Nav(View::Album(album)) => MusicEffect::OpenAlbum {
+                album: album.clone(),
+            },
+            Self::Nav(View::Artist(artist)) => MusicEffect::OpenArtist {
+                artist: artist.clone(),
+            },
+            Self::Nav(View::Playlist(playlist)) => MusicEffect::Open {
+                place: Place::Playlist(playlist.clone()),
+            },
+            Self::Nav(view) => MusicEffect::Open {
+                place: Place::View(MusicApp::top_level_id(view)?.to_owned()),
+            },
+            Self::TogglePlay => MusicEffect::PlayPause,
+            Self::Next => MusicEffect::Next,
+            Self::Prev => MusicEffect::Previous,
+            Self::ToggleShuffle => MusicEffect::ToggleShuffle,
+            Self::CycleRepeat => MusicEffect::CycleRepeat,
+            Self::ToggleMute => MusicEffect::ToggleMute,
+            Self::ToggleLike(track) => MusicEffect::ToggleLike {
+                track: track.clone(),
+            },
+            Self::AddToQueue(track) => MusicEffect::AddToQueue {
+                track: track.clone(),
+            },
+            Self::PlayNext(track) => MusicEffect::PlayNext {
+                track: track.clone(),
+            },
+            _ => return None,
+        };
+        Some(Published::Effect(effect))
+    }
+}
+
 #[derive(Clone)]
 struct Hit {
     rect: Rect,
@@ -694,6 +760,9 @@ pub struct MusicApp {
     /// each as the participant's attributed, undoable action. `None` until
     /// the surface is attached.
     dispatcher: Option<ui::framework::Dispatcher<crate::model::Library>>,
+    /// The library's published actions and Music's effects, which the page's
+    /// controls are bound to. `None` until the framework attaches.
+    actions: Option<ui::framework::Actions<Library>>,
     // Drop after the audio engine/downloads so test-owned files are no longer open.
     #[cfg(test)]
     _test_cache_dir: tempfile::TempDir,
@@ -999,6 +1068,7 @@ impl MusicApp {
             )),
             #[cfg(not(test))]
             dispatcher: None,
+            actions: None,
             #[cfg(test)]
             _test_cache_dir: test_cache_dir,
         }
@@ -1007,6 +1077,15 @@ impl MusicApp {
     /// Convert a published top-level destination id back to its concrete view.
     /// The resource layer only admits ids from `NAVIGATION_VIEWS`; this router
     /// keeps the final local navigation step equally explicit.
+    /// The published id of a top-level view, as [`Self::top_level_view`]
+    /// reads it back.
+    fn top_level_id(view: &View) -> Option<&'static str> {
+        crate::actions::NAVIGATION_VIEWS
+            .iter()
+            .map(|(id, _)| *id)
+            .find(|id| Self::top_level_view(id).as_ref() == Some(view))
+    }
+
     fn top_level_view(id: &str) -> Option<View> {
         match id {
             "home" => Some(View::Home),
@@ -1247,6 +1326,11 @@ impl MusicApp {
         dispatcher: ui::framework::Dispatcher<crate::model::Library>,
     ) {
         self.dispatcher = Some(dispatcher);
+    }
+
+    /// Bind the page's controls to what the library and Music publish.
+    pub(crate) fn attach_actions(&mut self, actions: ui::framework::Actions<Library>) {
+        self.actions = Some(actions);
     }
 
     /// The context Ctrl+K needs to build Music's resource tree: the user's
