@@ -46,8 +46,9 @@ build_targets=()
 selected_crates=()
 app_profiles=()
 # A runtime bundle's binary (apps/*/tilo-runtime.toml: the tilolang runtime,
-# which every tilolang app's entrypoint executes) links the same runtime as
-# the apps, so it is built in their graph whichever apps are selected.
+# which every tilolang app's entrypoint executes) joins the graph only when
+# BUILD_PACKAGES names it (the nested session, `tilolang dev`): tilolang is
+# experimental, so the image and the app collection are built without it.
 for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; do
     [ -f "$manifest" ] || continue
     dir="$(dirname "$manifest")"
@@ -58,6 +59,9 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; d
     case "$EXCLUDE_PACKAGES" in
         *" $package "*) continue ;;
     esac
+    if [ "${manifest##*/}" = tilo-runtime.toml ] && [[ "$BUILD_PACKAGES" != *" $package "* ]]; then
+        continue
+    fi
     if [ "$INCLUDE_PACKAGES" != "  " ] && [ "${manifest##*/}" = tilo-app.toml ]; then
         case "$INCLUDE_PACKAGES" in
             *" $package "*) ;;
