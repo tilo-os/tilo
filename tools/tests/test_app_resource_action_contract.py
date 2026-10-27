@@ -1163,7 +1163,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         )
         counts: dict[tuple[str, str], int] = {}
         contract.audit(root, counts)
-        self.assertEqual(counts[("closure_action_button", "apps/sample/src/lib.rs")], 4)
+        self.assertEqual(counts[("closure_action_button", "apps/sample/src/lib.rs")], 2)
 
     def test_write_baseline_only_lowers_ceilings_unless_seeding_a_new_ratchet(self):
         root = self.fixture("")

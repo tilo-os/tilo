@@ -1,5 +1,5 @@
 [ratchets.closure_action_button]
-"apps/feeds/src/app.rs" = 5
+"apps/feeds/src/app.rs" = 3
 "apps/feeds/src/sidebar.rs" = 1
 
 [ratchets.closure_control]
