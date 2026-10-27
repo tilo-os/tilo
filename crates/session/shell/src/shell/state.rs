@@ -1343,13 +1343,10 @@ impl WorkspaceTree {
     /// Take `document` as `room`'s admitted document and fold the room's
     /// windows into its workspace, as a held replica's projection
     /// ([`Self::project_native_room`]) does: for tests, which hold no
-    /// replica. Reports whether the workspace's windows changed.
-    #[cfg(test)]
-    pub(crate) fn project_room_document_for_test(
-        &mut self,
-        room: RoomId,
-        document: &AutoCommit,
-    ) -> bool {
+    /// replica, and the `shots` renderer. Reports whether the workspace's
+    /// windows changed.
+    #[cfg(any(test, feature = "hosted-test-control"))]
+    pub fn project_room_document_for_test(&mut self, room: RoomId, document: &AutoCommit) -> bool {
         self.joining_rooms.remove(&room);
         self.room_docs.insert(room, document.clone());
         self.settle_outbox(room);
