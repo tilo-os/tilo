@@ -280,13 +280,12 @@ fn output_schema(output: &Binding, inputs: &[ActionParam]) -> serde_json::Value 
 /// A parameter's type in JSON schema's words.
 fn schema_type(ty: ParamType) -> &'static str {
     match ty {
-        ParamType::Text | ParamType::Secret | ParamType::Resource => "string",
+        ParamType::Text | ParamType::Secret | ParamType::Resource | ParamType::DateTime => "string",
         ParamType::Integer => "integer",
         ParamType::Number => "number",
         ParamType::Boolean => "boolean",
         ParamType::Object => "object",
         ParamType::Array => "array",
-        ParamType::DateTime => "string",
     }
 }
 
