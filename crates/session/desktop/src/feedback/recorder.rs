@@ -20,7 +20,8 @@ use super::transport::Capture;
 /// The saved document of `record` of `app` in `workspace`, as the workspace
 /// committed it, when this device holds it.
 pub type Documents = Box<dyn Fn(&str, &str, &str) -> Option<Vec<u8>>>;
-/// Whether windows of an app are withheld from captures.
+/// Whether an app declares its windows withheld from what leaves the device
+/// (`ComponentBehaviour::capture_protected`): such an app is never recorded.
 pub type Protected = Box<dyn Fn(&str) -> bool>;
 /// Keep bytes where the destination Chat's content lives; their hash.
 pub type Keep = Box<dyn Fn(&[u8]) -> Result<String, String>>;
