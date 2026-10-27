@@ -173,3 +173,18 @@ fn shortcuts_merge_by_id_and_deletions_replicate() {
         vec![shortcut("a", "A"), shortcut("b", "B")]
     );
 }
+
+/// The room's owner holds what they made on its desktop as every member
+/// does: their windows are not released to whoever writes there.
+#[test]
+fn the_rooms_owner_is_among_its_members() {
+    let mut policy = tilo_action_policy::RoomPolicy::new("room", "owner".to_owned());
+    policy
+        .members
+        .insert("ada".into(), tilo_action_policy::Role::Editor);
+    let mut doc = AutoCommit::new();
+    tilo_desktop_model::projection::project_room_policy(&mut doc, &policy).unwrap();
+    let members = tilo_desktop_model::projection::room_members(&doc).unwrap();
+    assert!(members.contains("owner"), "{members:?}");
+    assert!(members.contains("ada"), "{members:?}");
+}
