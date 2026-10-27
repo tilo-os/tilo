@@ -397,7 +397,7 @@ else
 fi
 
 if grep -Fq 'systemctl mask sshd.service' "$containerfile" \
-   && ! grep -Fq 'quickuser:tilo:wheel' "$builder" \
+   && ! grep -Fq 'tester:tilo:wheel' "$builder" \
    && grep -Fq -- '--dev-login requires a non-empty TILO_INSTALLER_DEV_PASSWORD' "$builder" \
    && grep -Fq 'append tilo.install' "$containerfile" \
    && grep -Fq 'show | grep -qw tilo.mode=normal' "$containerfile" \

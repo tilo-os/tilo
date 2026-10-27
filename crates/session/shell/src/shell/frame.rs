@@ -7099,7 +7099,7 @@ mod tests {
             use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
             // A room owned by somebody else, with something in it.
-            let owner = "quinten".to_string();
+            let owner = "ada".to_string();
             let mut host = WorkspaceTree::default();
             let host_ws = host.append_empty_workspace("Shared");
             host.adopt_ownerless_workspaces(&owner);

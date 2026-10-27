@@ -894,7 +894,7 @@ fn the_permissions_pane_draws_every_state_and_fits_its_rows() {
             let shortened = short_id(&long);
             assert!(shortened.chars().count() <= 11);
             assert!(shortened.ends_with('…'));
-            assert_eq!(short_id("quinten"), "quinten");
+            assert_eq!(short_id("ada"), "ada");
         }
     }
 }

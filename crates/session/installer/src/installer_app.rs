@@ -1508,8 +1508,8 @@ impl InstallerApp {
     pub fn for_shot(step: Step) -> Self {
         let mut app = Self::with_disks(sample_disks());
         app.step = step;
-        app.username.set("quinten".to_string());
-        app.full_name.set("Quinten Example".to_string());
+        app.username.set("ada".to_string());
+        app.full_name.set("Ada Example".to_string());
         app.password = Arc::new(Mutex::new("correct horse battery staple".to_string()));
         app.password_confirmation =
             Arc::new(Mutex::new("correct horse battery staple".to_string()));
@@ -1549,8 +1549,8 @@ impl InstallerApp {
             tpm_handoff: None,
             windows_preparation: None,
             hostname: Some("studio".into()),
-            username: Some("quinten".into()),
-            full_name: Some("Quinten Example".into()),
+            username: Some("ada".into()),
+            full_name: Some("Ada Example".into()),
             locale: None,
             keyboard: Some("de".into()),
             timezone: Some("Europe/Berlin".into()),
@@ -4071,12 +4071,12 @@ fn sample_disks() -> Vec<Disk> {
 /// lines that wrap so the status log's wrap-aware tailing is exercised.
 fn sample_install_log() -> Vec<String> {
     vec![
-        "Starting install to /dev/sda for user quinten (btrfs).".to_string(),
+        "Starting install to /dev/sda for user ada (btrfs).".to_string(),
         "==> Copying the running Tilo image into local container storage".to_string(),
         "Copying local image docker://localhost/tilo-installer:latest to containers-storage:localhost/bootc".to_string(),
         "==> Installing Tilo onto /dev/sda (this ERASES the disk)".to_string(),
         "  base system installed.".to_string(),
-        "==> Preparing the 'quinten' account on the installed system".to_string(),
+        "==> Preparing the 'ada' account on the installed system".to_string(),
         "==> Setting hostname 'tilo' and time zone 'UTC'".to_string(),
     ]
 }
@@ -4923,14 +4923,14 @@ mod tests {
         // validate_step: (step, disk, username, hostname, ok).
         let steps = [
             // The keyboard step never blocks forward progress.
-            (Step::Keyboard, Some(0), "quinten", "tilo", true),
+            (Step::Keyboard, Some(0), "ada", "tilo", true),
             // Disk requires a selection.
             (Step::Disk, None, "", "tilo", false),
             (Step::Disk, Some(0), "", "tilo", true),
             // Account requires a valid username.
             (Step::Account, Some(0), "", "tilo", false),
             (Step::Account, Some(0), "   ", "tilo", false),
-            (Step::Account, Some(0), "quinten", "tilo", true),
+            (Step::Account, Some(0), "ada", "tilo", true),
             (Step::Account, Some(0), "lab-user_2", "tilo", true),
             (Step::Account, Some(0), "2bad", "tilo", false),
             (Step::Account, Some(0), "has space", "tilo", false),
@@ -5052,12 +5052,12 @@ mod tests {
             assert_eq!(app.status, "Enter a username");
 
             // Typed fields stay in view state; secrets use external buffers.
-            app.username.set("quinten".to_string());
+            app.username.set("ada".to_string());
             *app.password.lock().unwrap() = "correct horse battery staple".to_string();
             *app.password_confirmation.lock().unwrap() = "correct horse battery staple".to_string();
             activate(&mut app, &mut doc, "Next");
             assert_eq!(app.step, Step::Options);
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
         }
         {
             let mut app = InstallerApp::with_disks(sample());
@@ -5388,7 +5388,7 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
-                username: Some("quinten".into()),
+                username: Some("ada".into()),
                 full_name: None,
                 locale: Some("en_US.UTF-8".into()),
                 keyboard: Some("us".into()),
@@ -6152,7 +6152,7 @@ mod tests {
             let mut app = staged_app();
             assert_eq!(app.selected_disk, Some(0));
             assert_eq!(app.install_method, InstallMethod::Alongside);
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
             assert_eq!(local_text(&app.hostname), "studio");
             assert!(
                 app.status
@@ -7075,8 +7075,8 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
-                username: Some("quinten".into()),
-                full_name: Some("Quinten Example".into()),
+                username: Some("ada".into()),
+                full_name: Some("Ada Example".into()),
                 locale: Some("de_DE.UTF-8".into()),
                 keyboard: Some("de".into()),
                 timezone: Some("Europe/Berlin".into()),
@@ -7086,7 +7086,7 @@ mod tests {
             app.tpm2 = false;
             assert_eq!(app.step, Step::Disk);
             assert_eq!(local_text(&app.hostname), "studio");
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
             assert_eq!(app.keymap(), "German (QWERTZ)");
             assert_eq!(app.filesystem(), "ext4");
 
@@ -7130,8 +7130,8 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: None,
-                username: Some("quinten".into()),
-                full_name: Some("Quinten Example".into()),
+                username: Some("ada".into()),
+                full_name: Some("Ada Example".into()),
                 locale: Some("de_DE.UTF-8".into()),
                 keyboard: Some("de".into()),
                 timezone: Some("Europe/Berlin".into()),
@@ -7140,7 +7140,7 @@ mod tests {
             });
             app.tpm2 = false;
             assert_eq!(app.step, Step::Disk, "sound keyboard is retained");
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
             assert_eq!(app.filesystem(), "ext4");
 
             app.selected_disk = Some(0);
@@ -7164,8 +7164,8 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
-                username: Some("quinten".into()),
-                full_name: Some("Quinten Example".into()),
+                username: Some("ada".into()),
+                full_name: Some("Ada Example".into()),
                 locale: None,
                 keyboard: Some("de".into()),
                 timezone: Some("Europe/Berlin".into()),
@@ -7197,8 +7197,8 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
-                username: Some("quinten".into()),
-                full_name: Some("Quinten Example".into()),
+                username: Some("ada".into()),
+                full_name: Some("Ada Example".into()),
                 locale: Some("de_DE.UTF-8".into()),
                 keyboard: None,
                 timezone: Some("Europe/Berlin".into()),
@@ -7207,7 +7207,7 @@ mod tests {
             });
             assert_eq!(app.step, Step::Keyboard);
             assert_eq!(local_text(&app.hostname), "studio");
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
             assert!(app.status.contains("keyboard layout"));
         }
     }

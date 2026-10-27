@@ -61,7 +61,7 @@ chmod +x "$work/bin/"*
 PATH="$work/bin:$PATH" TILO_DISTROBOX= \
   "$repo/os/dev/disk-image.sh" "code.example/tilo@$digest" "$work/output" \
   --composefs --sealed-source-imgref "127.0.0.1:5000/tilo@$digest" \
-  --user quickuser:test:wheel --size 20G --raw >/dev/null
+  --user tester:test:wheel --size 20G --raw >/dev/null
 
 # Inspect the customization actually sent to root Podman, not an unused helper.
 grep -Fq 'for db in passwd group shadow gshadow; do' "$work/podman-args"

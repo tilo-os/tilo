@@ -86,7 +86,7 @@ fn shoot_in_context(
             Ok(MintedIdentity {
                 fingerprint: "3f7a1c9e40b28d6512ef0a73c8b4d915e26f88a0c3147bd5e9f20a6c7b81d34e"
                     .to_string(),
-                path: PathBuf::from("/home/quinten/.config/tilo/identity/primary.json"),
+                path: PathBuf::from("/home/user/.config/tilo/identity/primary.json"),
             })
         }
     });

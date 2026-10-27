@@ -59,13 +59,13 @@ TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 ./os/dev/vm.sh boot --gl                # GL so the DRM compositor can render
 ./os/dev/vm.sh wait                     # block until the greeter accepts input
 ./os/dev/vm.sh login --passcode-only    # one-account disk: types the passcode (tilo)
-./os/dev/vm.sh login                    # two-field form: types quickuser / tilo
+./os/dev/vm.sh login                    # two-field form: types tester / tilo
 ./os/dev/vm.sh shot desktop             # -> /tmp/tilo-vm/desktop.png
 ./os/dev/vm.sh serial 'greetd|shell|panic'   # grep the boot console
 ./os/dev/vm.sh stop
 ```
 
-Login: **`quickuser` / `tilo`** (from `os/config.toml`).
+Login: **`tester` / `tilo`** (from `os/config.toml`).
 
 ## Display modes
 

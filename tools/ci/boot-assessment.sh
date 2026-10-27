@@ -67,7 +67,7 @@ podman build -q -t localhost/tilo-boot-assessment:update -f "$work/update/Contai
 podman save --format oci-archive -o "$work/update.tar" localhost/tilo-boot-assessment:update
 podman rmi -f localhost/tilo-boot-assessment:update localhost/tilo-vm:ci "$image" >/dev/null 2>&1 || true
 
-export TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER=quickuser TILO_PASS=tilo
+export TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER=tester TILO_PASS=tilo
 export TILO_RUN=$work/run TILO_DISK=$disk
 mkdir -p "$TILO_RUN"
 finish() {

@@ -9745,7 +9745,7 @@ mod tests {
         // and elides before the Resolve and delete buttons, whatever its
         // length, at every text scale, and every piece shares one centre line.
         eprintln!("phase comment_header_never_overlaps_even_with_a_long_name");
-        let long = "quinten.van.der.berg.reviewer@really-long-domain.example.com";
+        let long = "ada.van.der.berg.reviewer@really-long-domain.example.com";
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
             let mut tr = ui::text_render::TextRenderer::new();

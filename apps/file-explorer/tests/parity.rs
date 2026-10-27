@@ -175,8 +175,8 @@ fn paths_and_breadcrumbs_name_home_workspaces_and_root() {
 }
 
 fn format_path_substitutes_home_prefix() {
-    let home = PathBuf::from("/home/quinten");
-    let p = PathBuf::from("/home/quinten/Documents");
+    let home = PathBuf::from("/home/user");
+    let p = PathBuf::from("/home/user/Documents");
     assert_eq!(format_path(&p, Some(&home)), "~/Documents");
     assert_eq!(format_path(&home, Some(&home)), "~");
     assert_eq!(format_path(&PathBuf::from("/etc"), Some(&home)), "/etc");
@@ -187,8 +187,8 @@ use file_explorer::breadcrumbs::breadcrumb_components;
 
 fn breadcrumb_component_click_navigates_to_that_component() {
     crate::common::pin_locale();
-    let home = PathBuf::from("/home/quinten");
-    let cwd = PathBuf::from("/home/quinten/Documents/Projects");
+    let home = PathBuf::from("/home/user");
+    let cwd = PathBuf::from("/home/user/Documents/Projects");
     let comps = breadcrumb_components(&cwd, Some(&home), &[]);
     let labels: Vec<&str> = comps.iter().map(|(l, _)| l.as_str()).collect();
     // Clean text labels — the leading root is drawn as a themed vector icon
@@ -213,7 +213,7 @@ fn breadcrumb_component_click_navigates_to_that_component() {
 fn a_workspace_root_is_named_rather_than_spelled_out() {
     let ws = PathBuf::from("/var/tmp/tilo/workspace");
     let roots = vec![ws.clone()];
-    let home = PathBuf::from("/home/quinten");
+    let home = PathBuf::from("/home/user");
 
     // The root itself: one segment, the workspace's name.
     let comps = breadcrumb_components(&ws, Some(&home), &roots);

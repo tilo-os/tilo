@@ -1129,9 +1129,9 @@ fn items_of_a_nested_collection_are_resources_of_their_own() {
 
 #[test]
 fn a_verb_reads_who_its_invoker_acted_for() {
-    let mut board = Replica::<Board>::new().as_agent_for("claude", "quinten");
+    let mut board = Replica::<Board>::new().as_agent_for("claude", "ada");
     board.apply(Board::ADD_CARD_FOR.with(())).unwrap();
-    assert_eq!(board.state().unwrap().author, "Agent for quinten");
+    assert_eq!(board.state().unwrap().author, "Agent for ada");
 }
 
 #[test]

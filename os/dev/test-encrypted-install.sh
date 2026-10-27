@@ -74,7 +74,7 @@ SSHOPTS=(-F /dev/null -p "${TILO_SSH_PORT:-2222}" -o StrictHostKeyChecking=no
 # Automation must never fall through to the desktop's graphical askpass
 # helper; sshpass owns the one permitted password prompt.
 unset SSH_ASKPASS SSH_ASKPASS_REQUIRE
-GUEST="${TILO_VM_USER:-quickuser}@127.0.0.1"
+GUEST="${TILO_VM_USER:-tester}@127.0.0.1"
 GUEST_PW="${TILO_VM_PASS:-tilo}"
 gssh() { sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" "$@"; }
 # Run a script as root in the guest. The password reaches sudo on stdin and the

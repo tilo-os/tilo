@@ -2100,7 +2100,7 @@ page, the library and the prompt rather than about tabs.
 ### settings
 
 - **`APP-settings-01` — medium — internal file paths are printed in the UI.** The External Accounts
-  page renders `/home/quinten/.config/qos/mail/accounts.json` in monospace directly under the section
+  page renders `/home/user/.config/qos/mail/accounts.json` in monospace directly under the section
   description (confirmed in the committed capture, `apps/settings/shots/settings.png`). Implementation
   leakage in a settings page; it belongs in a "details" disclosure at most.
 - **`APP-settings-02` — medium — connection status is conveyed by colour alone.** "Connected" is green
@@ -2754,7 +2754,7 @@ failure mode F2 records for old captures.
 |---|---|---|
 | file-explorer | **1 fixed, 1 open, 1 wrong** | `APP-file-explorer-01` in `d2bce18b2a` (the window-search filter narrows the open folder). `02` open: widths persist and restore, but `store_widths` is only called from the sort/zoom/view setters — never when a resize drag ends, so a width still dies with the session. `03` **wrong**: the toolbar's sort button is grid-only (`toolbar.rs:316`); list mode has one sort affordance, not two. |
 | terminal | **fixed** | `APP-terminal-01/02` in `acd11489a8` — copy-on-select and OSC 52 are person preferences; BEL rings a visible wash, with a stored Off/Visual choice. Residual: the default is Off, and the window bar still gets no attention hint. |
-| settings | **wrong** | `01` **wrong**: no pane prints a store path — the quoted `/home/quinten/.config/qos/…` predates the qOS→Tilo rename and was never in the tree. `02` **wrong**: connection status is a tinted chip carrying its word ("Up to date", "Offline"), not colour alone. `03` **wrong**: the `VIS-03` cross-reference is to calculator strings, and Settings collapses list↔content with a back arrow at narrow width, asserted by a test. |
+| settings | **wrong** | `01` **wrong**: no pane prints a store path — the quoted `/home/user/.config/qos/…` predates the qOS→Tilo rename and was never in the tree. `02` **wrong**: connection status is a tinted chip carrying its word ("Up to date", "Offline"), not colour alone. `03` **wrong**: the `VIS-03` cross-reference is to calculator strings, and Settings collapses list↔content with a back arrow at narrow width, asserted by a test. |
 | store | **2 fixed, 1 open** | `APP-store-02/03` in `d2bce18b2a` (size on the row and a total; a remove per row). `APP-store-01` open, made honest by `e0a0ed245d`: an operation is a job the whole system sees and the Store stays usable, but `flatpak` is another process, so the Stop that only stopped the watching is gone and the page says the operation finishes anyway. |
 | logs | **fixed** | `APP-logs-01` in `1a0c3ec83e` (Copy message, Copy entry with its provenance). `MOTION-07` ("Follow never follows") was already fixed at the audit's base by `b3ae484fec`'s predecessor work — `view.rs` reveals the newest row while the tail follows. |
 | monitor | **wrong** (one residual) | `01` **wrong** for range and scale: the tiles have always carried "0–100%", "of RAM", a peak and "last 30 s", and the dashboard charts have axis labels; the *hover readout of a past point* is still missing. `02` **wrong**: the tile says "Memory in use" and the column says "Memory (RSS)" — the capture compared two labelled measures. `03` **wrong**: the process card has End and Kill, and `Kill` is a `destructive` effect that the framework confirms. `04` **wrong**: the app draws no clock; the `19:38:39` in that frame is the desktop's own top bar. |

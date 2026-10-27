@@ -245,7 +245,7 @@ pub fn spawn_with_agent_grants(
     }
     // App fixtures use the same agent-only endpoint as Scribe. Device
     // enrollment, room membership, and exact app authority remain separate.
-    for host in ["quinten", "photos", "files"] {
+    for host in ["ada", "photos", "files"] {
         workspace.admit_agent_preset(
             host,
             tilo_action_policy::roles::AgentPreset::Operator,
@@ -256,8 +256,8 @@ pub fn spawn_with_agent_grants(
     // routes. Grant each observed route explicitly: the production capability
     // check deliberately does not alias app authority.
     for (host, app) in [
-        ("quinten", "dev.tilo.word-processor"),
-        ("quinten", "so.tilo.word-processor"),
+        ("ada", "dev.tilo.word-processor"),
+        ("ada", "so.tilo.word-processor"),
         ("photos", "dev.tilo.photos"),
         ("photos", "so.tilo.photos"),
         ("files", "so.tilo.file-explorer"),
@@ -267,7 +267,7 @@ pub fn spawn_with_agent_grants(
     }
     let mut tree = shell::shell::state::WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
-    let trusted_devices = ["quinten", "Scribe", "files", "photos"]
+    let trusted_devices = ["ada", "Scribe", "files", "photos"]
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()
         .collect();

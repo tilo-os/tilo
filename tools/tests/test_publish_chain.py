@@ -855,14 +855,14 @@ class ScriptTests(unittest.TestCase):
         self.board()
         ref = self.tmp / "ref"
         self.env["TILO_DEV_SIGNING"] = "1"
-        result = self.run_script("os-ref.sh", "sign", "lenovo-83ed", str(self.out), str(ref), ref="quinten/Fix_it")
+        result = self.run_script("os-ref.sh", "sign", "lenovo-83ed", str(self.out), str(ref), ref="ada/Fix_it")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('"docker-reference":"registry.tilo.so/tilo/tilo-vm-ref"', (ref / "payload.json").read_text())
-        result = self.run_script("os-ref.sh", "publish", "lenovo-83ed", str(self.out), str(ref), ref="quinten/Fix_it")
+        result = self.run_script("os-ref.sh", "publish", "lenovo-83ed", str(self.out), str(ref), ref="ada/Fix_it")
         self.assertEqual(result.returncode, 0, result.stderr)
         receipt = json.loads((ref / "receipt.json").read_text())
         self.assertEqual(receipt["repository"], "registry.tilo.so/tilo/tilo-vm-ref")
-        self.assertEqual(receipt["tags"], [f"ref-quinten-fix-it-{COMMIT[:7]}-lenovo-83ed"])
+        self.assertEqual(receipt["tags"], [f"ref-ada-fix-it-{COMMIT[:7]}-lenovo-83ed"])
         self.assertTrue(receipt["signed"])
         result = self.run_script("os-ref.sh", "publish", "lenovo-83ed", str(self.out), str(ref), ref="main")
         self.assertIn("publishes from a branch", result.stderr)

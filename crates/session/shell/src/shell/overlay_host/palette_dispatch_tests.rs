@@ -1767,7 +1767,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         }
         assert_eq!(
             h.peer_sync_snapshot().invite_name.as_deref(),
-            Some("Xaver"),
+            Some("Bob"),
             "the field takes the name — the same keys that type a token"
         );
         let mut snapshot = h.peer_sync_snapshot();
@@ -1780,12 +1780,12 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         );
         assert_eq!(
             h.peer_sync_snapshot().invite_token.as_deref(),
-            Some("token-for-Xaver"),
+            Some("token-for-Bob"),
             "the name reached the request, so it can reach the room document"
         );
         assert_eq!(
             h.peer_sync_snapshot().invite_for.as_deref(),
-            Some("Xaver"),
+            Some("Bob"),
             "and the card knows whose invite it is holding"
         );
         assert!(
@@ -1794,7 +1794,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         );
         assert_eq!(
             ui::text_selection::clipboard_paste().as_deref(),
-            Some("token-for-Xaver"),
+            Some("token-for-Bob"),
             "one gesture, one outcome: the token is on the clipboard"
         );
     }
@@ -1898,7 +1898,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
+            invite_name: Some("Bob".to_string()),
             ..PeerSyncSnapshot::default()
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
@@ -2393,7 +2393,7 @@ fn peer_sync_sheet_buttons_fit_their_labels() {
     let mut tr = TextRenderer::new();
     let snapshots = [
         PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
+            invite_name: Some("Bob".to_string()),
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
@@ -2460,11 +2460,11 @@ fn peer_sync_sheets_stay_inside_the_window_at_every_size() {
         .collect();
     let snapshots = [
         PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
+            invite_name: Some("Bob".to_string()),
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
+            invite_name: Some("Bob".to_string()),
             pending_invitations: pending,
             ..PeerSyncSnapshot::default()
         },

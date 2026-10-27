@@ -23,7 +23,7 @@
 //! Signing in with Discord (the REST address serves the consent page at
 //! `/oauth2/authorize`, the token endpoint and `/users/@me`):
 //! - `POST /signin?user=&name=&avatar=` signs that user in to Discord: the
-//!   consent page authorizes their account (default `4242`, `Quik2007`).
+//!   consent page authorizes their account (default `4242`, `qwolff`).
 //! - `POST /cdn?path=avatars/<user>/<hash>.png&type=image/png` with the
 //!   bytes as body serves them on the CDN (an avatar a user carries).
 //!

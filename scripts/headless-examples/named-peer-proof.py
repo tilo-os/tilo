@@ -16,20 +16,20 @@ every member reads it from there. The peer id stays the identity; the
 name is a label on it.
 
 This runs two real compositors with separate identities, separate homes
-and separate device keys. quinten invites xaver **by name**, xaver joins
+and separate device keys. ada invites bob **by name**, bob joins
 with the token, both open the real word processor against their own
-session, and xaver types. The claim is read off quinten's screen.
+session, and bob types. The claim is read off ada's screen.
 
 # What is asserted, and where
 
-- The name is on the wire: a client attached to quinten's broker,
-  announcing the room, receives a roster entry naming xaver — produced
-  by quinten's compositor out of quinten's room document, in response to
-  a presence frame from xaver's machine.
+- The name is on the wire: a client attached to ada's broker,
+  announcing the room, receives a roster entry naming bob — produced
+  by ada's compositor out of ada's room document, in response to
+  a presence frame from bob's machine.
 - The identity is unchanged: that roster entry is keyed by the same
   `peer@<handle>` the presence frames carry, so a peer that gains a name
   does not change colour.
-- And the pixels: quinten's session is snapshotted with xaver's caret in
+- And the pixels: ada's session is snapshotted with bob's caret in
   it. A name that is in the state and not on the screen is the failure
   this exists to catch, so the PNG is the product.
 
@@ -61,10 +61,10 @@ WORD_PROCESSOR = REPO / "target" / "debug" / "word-processor"
 APP_ID = "so.tilo.word-processor"
 ACTIONS = "actions"
 
-# What quinten calls xaver when he invites him. The whole point of the
+# What ada calls bob when he invites him. The whole point of the
 # run is that this string, and nothing derived from a peer id, is what
 # ends up on screen.
-INVITED_AS = "Xaver"
+INVITED_AS = "Bob"
 
 failures: list[str] = []
 gaps: list[str] = []
@@ -475,86 +475,86 @@ def main() -> int:
     os.makedirs(shots, exist_ok=True)
     print(f"\nrun directory: {root}\nscreenshots:   {shots}")
 
-    quinten = Session("quinten", root, runtime_root)
-    xaver = Session("xaver", root, runtime_root)
+    ada = Session("ada", root, runtime_root)
+    bob = Session("bob", root, runtime_root)
     watcher: BrokerClient | None = None
     try:
         step("two sessions come up")
-        for s in (quinten, xaver):
+        for s in (ada, bob):
             if not check(f"{s.name}'s compositor is up", s.wait_up()):
                 return 1
 
-        exported = {f"{a.get('provider')}:{a.get('id')}" for a in quinten.enumerate("")}
+        exported = {f"{a.get('provider')}:{a.get('id')}" for a in ada.enumerate("")}
         if not check("peer-sync is on (peer.invite.named is exported)",
                      f"{ACTIONS}:peer.invite.named" in exported):
             print("     without peer-sync there is no peer to name")
             return 1
 
-        step("xaver says who he is — his own invite names his peer id")
-        xaver_token = mint_invite(xaver)
-        xaver_peer = peer_id_of(xaver_token or "")
-        if not check("xaver's peer id is known", bool(xaver_peer), xaver_peer or ""):
+        step("bob says who he is — his own invite names his peer id")
+        bob_token = mint_invite(bob)
+        bob_peer = peer_id_of(bob_token or "")
+        if not check("bob's peer id is known", bool(bob_peer), bob_peer or ""):
             return 1
 
-        step(f"quinten invites him, as {INVITED_AS!r}")
-        token, resp = mint_named_invite(quinten, xaver_peer, INVITED_AS)
-        check("quinten's invite was accepted by the room he administers",
+        step(f"ada invites him, as {INVITED_AS!r}")
+        token, resp = mint_named_invite(ada, bob_peer, INVITED_AS)
+        check("ada's invite was accepted by the room he administers",
               "err" not in resp, json.dumps(resp.get("err", ""))[:120])
-        if not check("quinten minted an invite token", bool(token)):
+        if not check("ada minted an invite token", bool(token)):
             return 1
 
-        step("xaver joins with it")
-        if not check("xaver joined quinten's room", join(xaver, token)):
+        step("bob joins with it")
+        if not check("bob joined ada's room", join(bob, token)):
             return 1
-        room = quinten.room()
-        check("both sessions address one room", xaver.room() == room, room or "")
+        room = ada.room()
+        check("both sessions address one room", bob.room() == room, room or "")
 
-        step("a client of quinten's broker listens on that room")
+        step("a client of ada's broker listens on that room")
         # Attached before either app starts, so nothing it reports can be
         # a frame it caused.
-        watcher = BrokerClient(quinten.collab_sock, room, "named-peer-proof")
+        watcher = BrokerClient(ada.collab_sock, room, "named-peer-proof")
 
         step("both open the word processor against their own session")
-        for s in (quinten, xaver):
+        for s in (ada, bob):
             if not check(f"{s.name}'s word processor started",
                          s.start_word_processor(room)):
                 gap(f"{s.name} has no Wayland display published, so no app could "
                     f"attach to his session")
                 return 1
-        for s in (quinten, xaver):
+        for s in (ada, bob):
             check(f"{s.name}'s word processor painted", s.app_painted())
         # Both apps have to have announced their address before either
         # types, or the first keystrokes go out to nobody and it reads
         # afterwards as a transport failure.
         time.sleep(8.0)
 
-        step("quinten writes, so there is a document for xaver to stand in")
+        step("ada writes, so there is a document for bob to stand in")
         # Inside the page, not under it. The layout bar sits below the
         # canvas, and a click that lands there focuses chrome — so the
         # text goes somewhere that is not the document and the run reads
         # afterwards exactly like a document that failed to sync.
-        quinten.click_at(600.0, 380.0)
+        ada.click_at(600.0, 380.0)
         time.sleep(1.5)
-        quinten.type_text("The room knows who is in it.")
+        ada.type_text("The room knows who is in it.")
         time.sleep(3.0)
-        quinten.snapshot(os.path.join(shots, "01-quinten-typed.png"))
+        ada.snapshot(os.path.join(shots, "01-ada-typed.png"))
 
-        step("and xaver puts his caret in it")
-        xaver.click_at(600.0, 380.0)
+        step("and bob puts his caret in it")
+        bob.click_at(600.0, 380.0)
         time.sleep(1.5)
-        xaver.type_text(" Xaver was here.")
+        bob.type_text(" Bob was here.")
         time.sleep(4.0)
-        xaver.snapshot(os.path.join(shots, "02-xaver-typed.png"))
+        bob.snapshot(os.path.join(shots, "02-bob-typed.png"))
 
-        step("what reached quinten's session")
+        step("what reached ada's session")
         peers = wait_for(lambda: watcher.presence_peers() or None, timeout=60)
-        check("a peer's presence reached quinten's apps", bool(peers),
+        check("a peer's presence reached ada's apps", bool(peers),
               ", ".join(sorted(set(peers or []))[:2]))
 
         named = wait_for(
             lambda: [p for p in watcher.roster_names() if p[1] == INVITED_AS] or None,
             timeout=60)
-        check(f"quinten's session announces that peer as {INVITED_AS!r}",
+        check(f"ada's session announces that peer as {INVITED_AS!r}",
               bool(named), str(named[0]) if named else "")
 
         if named and peers:
@@ -568,16 +568,16 @@ def main() -> int:
                   named[0][0].startswith("peer@"), named[0][0])
 
         step("the screen")
-        final = os.path.join(shots, "03-quinten-sees-xaver.png")
-        quinten.snapshot(final)
-        check("quinten's screen was captured", os.path.exists(final)
+        final = os.path.join(shots, "03-ada-sees-bob.png")
+        ada.snapshot(final)
+        check("ada's screen was captured", os.path.exists(final)
               and os.path.getsize(final) > 0, final)
         print(f"\n  look at: {final}")
 
     finally:
         if watcher:
             watcher.close()
-        for s in (xaver, quinten):
+        for s in (bob, ada):
             s.stop()
         if not args.keep:
             shutil.rmtree(runtime_root, ignore_errors=True)

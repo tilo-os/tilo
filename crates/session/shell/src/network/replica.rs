@@ -398,7 +398,7 @@ mod tests {
     /// Room A's distinguishing strings, chosen so a substring search can't match them by accident.
     const ROOM_A_NAME: &str = "Design review";
     const ROOM_A_OWNER: &str = "alice-owns-room-a";
-    const ROOM_A_PATH: &str = "/home/quinten/room-a-notes";
+    const ROOM_A_PATH: &str = "/home/user/room-a-notes";
     /// Room B's. Nothing in this list may ever reach the guest.
     const ROOM_B_NAME: &str = "Payroll";
     const ROOM_B_OWNER: &str = "bob-owns-room-b";
@@ -1320,7 +1320,7 @@ mod tests {
             let mut tree = WorkspaceTree::default();
             let ws = tree.append_empty_workspace("Design review");
             let room = tree.room_of(ws).expect("a fresh workspace mints a room");
-            tree.adopt_ownerless_workspaces(&"quinten".to_string());
+            tree.adopt_ownerless_workspaces(&"ada".to_string());
             let mut rep = WorkspaceTreeReplica::new(1, tree.shared());
 
             let guest = iroh::SecretKey::from_bytes(&[7u8; 32]).public();

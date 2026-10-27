@@ -13,8 +13,8 @@ use shell::shell::state::{PeerOrigin, RoomId, TabId, TileContent, WorkspaceId, W
 use shell::shell::tab_binding;
 
 const SETTINGS: &str = "so.tilo.settings";
-const HOST: &str = "quinten";
-const GUEST: &str = "xaver";
+const HOST: &str = "ada";
+const GUEST: &str = "bob";
 /// The collaborator's machine mints ids in another range than this
 /// process's, so the host's windows are a peer's to it.
 const GUEST_SALT: u16 = 0xBEEF;

@@ -1246,7 +1246,7 @@ mod tests {
 
     #[test]
     fn user_names_that_are_not_safe_fall_back() {
-        assert!(is_user_name("quinten"));
+        assert!(is_user_name("ada"));
         for bad in ["", "..", "a/b", "-x", "a b"] {
             assert!(!is_user_name(bad), "{bad:?}");
         }

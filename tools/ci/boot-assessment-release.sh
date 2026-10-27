@@ -206,7 +206,7 @@ fi
 stage "$stage_name" "$release_digest" || fail "the release does not stage as $stage_reference"
 
 # --- the VM -------------------------------------------------------------------
-export TILO_DISTROBOX= TILO_ACCEL=kvm TILO_USER=quickuser TILO_PASS=tilo TILO_VM_ARCH=$arch
+export TILO_DISTROBOX= TILO_ACCEL=kvm TILO_USER=tester TILO_PASS=tilo TILO_VM_ARCH=$arch
 export TILO_RUN=$work/run TILO_DISK=$disk TILO_MEM=6144 TILO_SMP=4 TILO_BOOT_WAIT_SECS=420
 mkdir -p "$TILO_RUN"
 vm=$repo_root/os/dev/vm.sh

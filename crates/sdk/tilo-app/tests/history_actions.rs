@@ -607,7 +607,7 @@ fn ctrl_z_in_a_session_is_the_same_undo_the_published_history_reports() {
 fn an_agents_edit_is_recorded_as_the_agent_acting_for_its_person() {
     let mut app = TestApp::<BoardApp>::new().unwrap();
     let agent = tilo_actions::InteractionActor::new("agent:claude", tilo_actions::ActorKind::Agent)
-        .acting_for("person:quinten");
+        .acting_for("person:ada");
     app.call_by(
         tilo_actions::ActionInvoker::admitted(&agent),
         "test.board",
@@ -623,10 +623,10 @@ fn an_agents_edit_is_recorded_as_the_agent_acting_for_its_person() {
     let invoker = entry.invoker.expect("attributed");
     assert_eq!(invoker.actor, "agent:claude");
     assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
-    assert_eq!(invoker.on_behalf_of.as_deref(), Some("person:quinten"));
+    assert_eq!(invoker.on_behalf_of.as_deref(), Some("person:ada"));
     let listed = newest(&mut app);
     assert_eq!(listed["actor"]["kind"], "agent", "{listed}");
-    assert_eq!(listed["actor"]["for"], "person:quinten", "{listed}");
+    assert_eq!(listed["actor"]["for"], "person:ada", "{listed}");
 }
 
 #[test]

@@ -1422,7 +1422,7 @@ mod tests {
             .with_invoker(
                 ActionInvoker::actor("agent:claude")
                     .with_kind(ActorKind::Agent)
-                    .acting_for("person:quinten"),
+                    .acting_for("person:ada"),
             )
             .with_source_invocation(Some(InvocationId(uuid::Uuid::from_u128(42))));
         let message = entry.change_message().unwrap();
@@ -1431,7 +1431,7 @@ mod tests {
         assert_eq!(read.actor_kind(), ActorKind::Agent);
         assert_eq!(
             read.invoker.as_ref().unwrap().on_behalf_of.as_deref(),
-            Some("person:quinten")
+            Some("person:ada")
         );
         assert_eq!(read.described(), Some(starred()));
 
@@ -1636,16 +1636,14 @@ mod tests {
     #[test]
     fn a_person_acting_for_themselves_records_nobody() {
         assert_eq!(
-            ActionInvoker::actor("quinten")
-                .acting_for("quinten")
-                .on_behalf_of,
+            ActionInvoker::actor("ada").acting_for("ada").on_behalf_of,
             None
         );
         let agent = ActionInvoker::admitted(
-            &crate::InteractionActor::new("agent:claude", ActorKind::Agent).acting_for("quinten"),
+            &crate::InteractionActor::new("agent:claude", ActorKind::Agent).acting_for("ada"),
         );
         assert_eq!(agent.kind, ActorKind::Agent);
-        assert_eq!(agent.on_behalf_of.as_deref(), Some("quinten"));
+        assert_eq!(agent.on_behalf_of.as_deref(), Some("ada"));
     }
 
     #[test]

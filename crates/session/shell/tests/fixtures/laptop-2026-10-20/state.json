@@ -1547,7 +1547,7 @@
             "resource": {
               "id": "terminal:17068107-fad2-4070-9357-b77e2cbbadf3",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -1605,7 +1605,7 @@
             "resource": {
               "id": "terminal:17068107-fad2-4070-9357-b77e2cbbadf3",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -1634,7 +1634,7 @@
             "resource": {
               "id": "terminal:17068107-fad2-4070-9357-b77e2cbbadf3",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -1985,7 +1985,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:6fb80018-e329-4d40-a014-eb562e551d53:54560199-654d-4cef-b862-588e8685bab6:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2014,7 +2014,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:6fb80018-e329-4d40-a014-eb562e551d53:54560199-654d-4cef-b862-588e8685bab6:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2043,7 +2043,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:c627f527-462d-4095-9d6c-e3a3f4b4d84c:d446587f-cc9e-4940-9d6e-2943fa6eeee9:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2072,7 +2072,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:c627f527-462d-4095-9d6c-e3a3f4b4d84c:d446587f-cc9e-4940-9d6e-2943fa6eeee9:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2101,7 +2101,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:b2a892fd-2423-41b9-b4bf-0a93d3ef061b:119cf0b2-2586-443f-9adf-1744012e087e:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2189,7 +2189,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:c49a5bee-581d-48a7-b137-e65e14688170:9c7aefd3-99d6-4e75-b553-e5fdced6e5b6:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2278,7 +2278,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:198b94fa-99b2-436f-86a1-645262f45499:8af447a8-0309-409d-baf2-41bc0aa9af47:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2307,7 +2307,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:198b94fa-99b2-436f-86a1-645262f45499:8af447a8-0309-409d-baf2-41bc0aa9af47:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2426,7 +2426,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:5ad92c3a-37a9-4275-bc17-dcc1d72a7523:69212df3-4c2a-4e4f-a448-ac10eaf9d84c:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2455,7 +2455,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:5ad92c3a-37a9-4275-bc17-dcc1d72a7523:69212df3-4c2a-4e4f-a448-ac10eaf9d84c:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2811,7 +2811,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:63cbbd3c-4269-46f5-8fbd-066bb785f99a:6ea8db2b-3ee6-4aa8-bb34-e902de256833:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -2844,7 +2844,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:63cbbd3c-4269-46f5-8fbd-066bb785f99a:6ea8db2b-3ee6-4aa8-bb34-e902de256833:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -3870,7 +3870,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:d27e1de8-0be7-4e90-a834-7f52fbb3737d:a96ef0b9-50c7-46d7-9f30-ea73ffa88544:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -3903,7 +3903,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:d27e1de8-0be7-4e90-a834-7f52fbb3737d:a96ef0b9-50c7-46d7-9f30-ea73ffa88544:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {
@@ -3937,7 +3937,7 @@
             "resource": {
               "id": "tilo-ui-bound:v1:d27e1de8-0be7-4e90-a834-7f52fbb3737d:a96ef0b9-50c7-46d7-9f30-ea73ffa88544:7465726d696e616c2e73657373696f6e",
               "kind": "terminal.session",
-              "label": "Terminal \u2014 xaver@tilo-yoga:~"
+              "label": "Terminal \u2014 bob@tilo-yoga:~"
             },
             "facets": [
               {

@@ -42,7 +42,7 @@ fn closed_preparation_reopens_exact_identity_photo_and_public_choices_without_se
     );
     let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![12, 34, 56, 255]).unwrap();
     prepared.update_photo(Some(photo.clone())).unwrap();
-    prepared.update_name("Quinten").unwrap();
+    prepared.update_name("Ada").unwrap();
     let before = runtime_identity::load_from_path(custody.join("primary.json"))
         .unwrap()
         .sign(b"restart-proof")
@@ -66,7 +66,7 @@ fn closed_preparation_reopens_exact_identity_photo_and_public_choices_without_se
     assert_eq!(ready.kind(), IdentityKind::New);
     assert_eq!(ready.choices(), &changed);
     let prepared = ready.resume().unwrap();
-    assert_eq!(prepared.metadata().unwrap().display_name, "Quinten");
+    assert_eq!(prepared.metadata().unwrap().display_name, "Ada");
     assert_eq!(prepared.metadata().unwrap().profile_photo, Some(photo));
     let after = runtime_identity::load_from_path(custody.join("primary.json"))
         .unwrap()

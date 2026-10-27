@@ -140,13 +140,13 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let personal = tree.append_empty_workspace("Mine");
         let shared = tree.append_empty_workspace("Together");
-        tree.adopt_ownerless_workspaces(&"quinten".to_string());
+        tree.adopt_ownerless_workspaces(&"ada".to_string());
         tree.desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == shared)
             .expect("the shared workspace")
-            .admit("xaver", tilo_action_policy::Role::Editor);
+            .admit("bob", tilo_action_policy::Role::Editor);
         tree.set_active(shared);
         (tree, personal, shared)
     }
@@ -191,7 +191,7 @@ mod tests {
         let (mut tree, personal, shared) = tree();
         // A second personal workspace, shown: Settings opens right there.
         let other = tree.append_empty_workspace("Also mine");
-        tree.adopt_ownerless_workspaces(&"quinten".to_string());
+        tree.adopt_ownerless_workspaces(&"ada".to_string());
         tree.set_active(other);
         assert_eq!(tree.workspace_for_app(SETTINGS, other), Some(other));
         assert_eq!(tree.workspace_for_app(SETTINGS, shared), Some(other));

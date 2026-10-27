@@ -433,7 +433,7 @@ mod tests {
     fn page(entry: Option<&str>) -> CataloguePage {
         CataloguePage {
             locator: Some(ResourceViewLocator {
-                origin: "https://quinten.tilo.cloud".into(),
+                origin: "https://ada.tilo.cloud".into(),
                 room: ROOM.into(),
                 host_device: "ab".repeat(32),
                 provider: "record:so.tilo.chat:".into(),
@@ -461,13 +461,13 @@ mod tests {
         assert_eq!(
             url(&serde_json::json!({})).unwrap(),
             format!(
-                "https://tilo.so/app/#/@quinten.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA"
+                "https://tilo.so/app/#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA"
             )
         );
         assert_eq!(
             url(&serde_json::json!({"start": 6, "end": 9, "mode": "desktop"})).unwrap(),
             format!(
-                "https://tilo.so/#/@quinten.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA?chars=6-9"
+                "https://tilo.so/#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA?chars=6-9"
             )
         );
         assert!(
@@ -498,7 +498,7 @@ mod tests {
         let minting = minting(&root, &CHAT).unwrap();
         assert_eq!(
             render(&minting, &page(Some("https://tilo.so/"))).unwrap(),
-            format!("https://tilo.so/app/#/@quinten.tilo.cloud/w/{ROOM}/so.tilo.chat/-")
+            format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-")
         );
     }
 }

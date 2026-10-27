@@ -7429,11 +7429,11 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
 
         let mut presence = PresenceCtx::empty();
         presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
-        presence.set_display_name(ui::permissions::UserId(peer.into()), "Xaver");
+        presence.set_display_name(ui::permissions::UserId(peer.into()), "Bob");
 
         let (carets, _) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1);
-        assert_eq!(carets[0].label, "Xaver");
+        assert_eq!(carets[0].label, "Bob");
         assert_eq!(
             carets[0].user.0, peer,
             "the id stays the identity — it is what the caret is coloured by",

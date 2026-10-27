@@ -4861,17 +4861,14 @@ mod provisioned_identity_tests {
     fn first_login_setup_hands_account_owned_workspaces_to_the_new_identity() {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::new(WorkspaceId(5), "Home");
-        workspace.set_owner("quickuser".to_string());
+        workspace.set_owner("tester".to_string());
         let room = workspace.room();
         tree.desktop.workspaces.push(workspace);
         let chrome = ChromeState::new(tree);
         let person = "ab".repeat(32);
         chrome.borrow_mut().act_as(person.clone());
 
-        assert_eq!(
-            chrome.borrow_mut().adopt_provisioned_identity("quickuser"),
-            1
-        );
+        assert_eq!(chrome.borrow_mut().adopt_provisioned_identity("tester"), 1);
 
         let state = chrome.borrow();
         let tree = state.tree();
@@ -4883,13 +4880,10 @@ mod provisioned_identity_tests {
             .expect("workspace");
         assert_eq!(workspace.owner().map(String::as_str), Some(person.as_str()));
         assert_eq!(workspace.role_of(&person), Some(CapRole::Owner));
-        assert_eq!(workspace.role_of("quickuser"), None);
+        assert_eq!(workspace.role_of("tester"), None);
         drop(tree);
         drop(state);
-        assert_eq!(
-            chrome.borrow_mut().adopt_provisioned_identity("quickuser"),
-            0
-        );
+        assert_eq!(chrome.borrow_mut().adopt_provisioned_identity("tester"), 0);
     }
 }
 

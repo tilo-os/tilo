@@ -120,7 +120,7 @@ fn reviewed_item_restore_preserves_peer_work_is_attributed_and_undoable() {
 
     let agent =
         tilo_actions::InteractionActor::new("agent:historian", tilo_actions::ActorKind::Agent)
-            .acting_for("person:quinten");
+            .acting_for("person:ada");
     let restored = app
         .call_by(
             tilo_actions::ActionInvoker::admitted(&agent),
@@ -137,7 +137,7 @@ fn reviewed_item_restore_preserves_peer_work_is_attributed_and_undoable() {
     let entry = newest(&mut app);
     assert_eq!(entry["what"]["op"], "restore");
     assert_eq!(entry["actor"]["id"], "agent:historian");
-    assert_eq!(entry["actor"]["for"], "person:quinten");
+    assert_eq!(entry["actor"]["for"], "person:ada");
     app.call("undo", json!({"by": "agent:historian"})).unwrap();
     assert_eq!(cards(&app), ["storm", "Peer's sea"]);
     assert_eq!(app.state().title, "Peer's title");

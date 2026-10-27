@@ -1449,7 +1449,7 @@ mod tests {
 
     #[test]
     fn open_images_name_themselves_and_size_by_their_edits() {
-        let img = OpenImage::fixture("/var/tmp/tilo/home/quinten/harbour.png", 1, 1);
+        let img = OpenImage::fixture("/var/tmp/tilo/home/user/harbour.png", 1, 1);
         assert_eq!(img.name, "harbour.png");
 
         let img = OpenImage::fixture("/x/harbour.png", 800, 400);

@@ -201,30 +201,30 @@ fn a_task_names_the_person_who_acted_through_it() {
     // the task ran, through the task.
     assert_eq!(
         reader.actor(&Who {
-            actor: "Quinten",
+            actor: "Ada",
             kind: ActorKind::Agent,
-            for_person: Some("Quinten"),
+            for_person: Some("Ada"),
             for_reader: false,
             is_reader: false,
             task: Some(&task),
         }),
-        "Quinten via task ‘Prepare Q3 financials’"
+        "Ada via task ‘Prepare Q3 financials’"
     );
     assert_eq!(
         Reader::new("de-DE").actor(&Who {
-            actor: "Quinten",
+            actor: "Ada",
             kind: ActorKind::Agent,
-            for_person: Some("Quinten"),
+            for_person: Some("Ada"),
             for_reader: false,
             is_reader: false,
             task: Some(&task),
         }),
-        "Quinten über Aufgabe „Prepare Q3 financials“"
+        "Ada über Aufgabe „Prepare Q3 financials“"
     );
     // A task nobody named leaves the actor as it is recorded.
     assert_eq!(
         reader.actor(&Who {
-            actor: "Quinten",
+            actor: "Ada",
             kind: ActorKind::Person,
             for_person: None,
             for_reader: false,
@@ -234,7 +234,7 @@ fn a_task_names_the_person_who_acted_through_it() {
                 label: " ",
             }),
         }),
-        "Quinten"
+        "Ada"
     );
 }
 
@@ -243,18 +243,18 @@ fn actors_are_named_with_the_person_they_act_for() {
     let reader = Reader::new("en-US");
     let agent = ActionInvoker::actor("agent:claude")
         .with_kind(ActorKind::Agent)
-        .acting_for("person:quinten");
+        .acting_for("person:ada");
     assert_eq!(agent.kind, ActorKind::Agent);
     assert_eq!(
         reader.actor(&Who {
             actor: "Claude",
             kind: agent.kind,
-            for_person: Some("Quinten"),
+            for_person: Some("Ada"),
             for_reader: false,
             is_reader: false,
             task: None
         }),
-        "Claude · Software, for Quinten"
+        "Claude · Software, for Ada"
     );
     assert_eq!(
         reader.actor(&Who {
@@ -269,7 +269,7 @@ fn actors_are_named_with_the_person_they_act_for() {
     );
     assert_eq!(
         reader.actor(&Who {
-            actor: "Quinten",
+            actor: "Ada",
             kind: ActorKind::Person,
             for_person: None,
             for_reader: false,
@@ -282,12 +282,12 @@ fn actors_are_named_with_the_person_they_act_for() {
         Reader::new("de-DE").actor(&Who {
             actor: "Morgens",
             kind: ActorKind::Shortcut,
-            for_person: Some("Quinten"),
+            for_person: Some("Ada"),
             for_reader: false,
             is_reader: false,
             task: None
         }),
-        "Morgens · Kurzbefehl, für Quinten"
+        "Morgens · Kurzbefehl, für Ada"
     );
     assert_eq!(
         reader.actor(&Who {

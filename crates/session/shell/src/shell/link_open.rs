@@ -626,7 +626,7 @@ mod tests {
 
     fn block_link(query: &str) -> String {
         format!(
-            "tilo://open#/@quinten.tilo.cloud/w/{ROOM}/so.tilo.word-processor/{RECORD}/{BLOCK}{query}"
+            "tilo://open#/@ada.tilo.cloud/w/{ROOM}/so.tilo.word-processor/{RECORD}/{BLOCK}{query}"
         )
     }
 
@@ -710,7 +710,7 @@ mod tests {
     fn a_link_to_a_members_room_opens_in_place() {
         let (opener, rooms, browser) = opener();
         let uri = format!(
-            "https://tilo.so/app/#/@quinten.tilo.cloud/w/reading~{ROOM}/so.tilo.chat/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/chat.channel:general"
+            "https://tilo.so/app/#/@ada.tilo.cloud/w/reading~{ROOM}/so.tilo.chat/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/chat.channel:general"
         );
         opener.open(&uri).unwrap();
         assert!(browser.opened_uris().is_empty());
@@ -730,7 +730,7 @@ mod tests {
         let (opener, rooms, browser) = opener();
         opener
             .open(&format!(
-                "tilo://open#/@quinten.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.channel:general"
+                "tilo://open#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.channel:general"
             ))
             .unwrap();
         assert!(browser.opened_uris().is_empty());
@@ -744,7 +744,7 @@ mod tests {
     #[test]
     fn links_outside_the_persons_rooms_go_to_the_browser() {
         let (opener, rooms, browser) = opener();
-        let stranger = format!("https://tilo.so/#/@quinten.tilo.cloud/w/{STRANGER}/so.tilo.chat");
+        let stranger = format!("https://tilo.so/#/@ada.tilo.cloud/w/{STRANGER}/so.tilo.chat");
         for uri in [
             "https://example.com/#/me/so.tilo.chat",
             "https://tilo.so/pricing",
@@ -768,13 +768,13 @@ mod tests {
         let (opener, _, browser) = opener();
         opener
             .open(&format!(
-                "tilo://open#/@quinten.tilo.cloud/w/{STRANGER}/so.tilo.chat?invite=AAECAwQF"
+                "tilo://open#/@ada.tilo.cloud/w/{STRANGER}/so.tilo.chat?invite=AAECAwQF"
             ))
             .unwrap();
         assert_eq!(
             browser.opened_uris(),
             [format!(
-                "https://tilo.so/#/@quinten.tilo.cloud/w/{STRANGER}/so.tilo.chat?invite=AAECAwQF"
+                "https://tilo.so/#/@ada.tilo.cloud/w/{STRANGER}/so.tilo.chat?invite=AAECAwQF"
             )]
         );
     }
