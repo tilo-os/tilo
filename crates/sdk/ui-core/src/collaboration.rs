@@ -2138,6 +2138,7 @@ impl CollaborationManager {
     /// A manager whose primary route missed its deadline at launch: the app
     /// opens on its local replica, and `hello` is announced again until the
     /// route answers (see [`Self::rejoin_late_primary_route`]).
+    #[cfg(any(test, feature = "broker-transport"))]
     pub(crate) fn joining_late(mut self, hello: CollabRequest) -> Self {
         self.rejoin_hello = Some(hello);
         self.rejoin_late_primary_route();
