@@ -7,6 +7,7 @@
 mod assets;
 pub mod capability;
 pub mod checked_files;
+pub mod coverage;
 mod files_session;
 pub mod preview;
 pub mod restore;
@@ -21,6 +22,7 @@ pub(crate) mod frozen_root;
 pub use frozen_root::FrozenRootPreview;
 pub(crate) mod host;
 pub mod pending_controls;
+pub use coverage::{BinaryVersion, HistoricalGap, HistoricalSupport, TextRendering, TypeHistory};
 pub use preview::*;
 pub use registration::*;
 

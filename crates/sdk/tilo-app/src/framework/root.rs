@@ -363,8 +363,13 @@ fn read(
                 .clone()
                 .fork_at(&heads)
                 .map_err(|error| error.to_string())?;
-            let past = typed.read(&frozen).map_err(|error| error.to_string())?;
-            let content = typed.read_content(past.as_ref(), &frozen, item)?;
+            // The type's own adapter over the frozen version: its content,
+            // or the exact bytes it holds. A version that does not read as
+            // the type says which of the three ways it does not.
+            let content = typed
+                .historical_content(&frozen, item)
+                .map_err(|gap| gap.to_string())?;
+
             super::history::review::bounded(serde_json::json!({
                 "version": heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("+"),
                 "heads": heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
