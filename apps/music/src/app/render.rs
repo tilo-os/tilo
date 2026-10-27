@@ -530,6 +530,7 @@ impl Widget for MusicApp {
                 .iter()
                 .filter_map(|grid| grid.host.visible().map(|grid| grid as &dyn Widget)),
         );
+        children.extend(self.page_parts.iter().filter_map(PagePart::child));
         let mode = self.source_widget_mode();
         match mode {
             2 | 3 => children.extend(
@@ -570,6 +571,7 @@ impl Widget for MusicApp {
                 .visible_mut()
                 .map(|grid| grid as &mut (dyn Widget + '_))
         }));
+        children.extend(self.page_parts.iter_mut().filter_map(PagePart::child_mut));
         match mode {
             2 | 3 => children.extend(
                 self.source_buttons
@@ -657,6 +659,22 @@ impl Widget for MusicApp {
             self.dirty = true;
         }
         self.drain_table_requests(state);
+        // What the page's own controls asked for through the host (an
+        // agent's press, a control's published effect) is carried out here.
+        let asked = self
+            .page_parts
+            .iter()
+            .flat_map(PagePart::take_asked)
+            .chain(
+                self.media_grids
+                    .iter()
+                    .flat_map(super::media_grid::MediaGridHost::take_asked),
+            )
+            .collect::<Vec<_>>();
+        for action in asked {
+            self.dispatch(action, state);
+            self.dirty = true;
+        }
         // Progress in-flight downloads and re-apply their device-local cache
         // projection on top of the just-reloaded shared library.
         self.advance_downloads(state);
@@ -1154,7 +1172,6 @@ impl Widget for MusicApp {
                     .with_children(list_items),
             );
         }
-        page_content.extend(self.page_parts.iter().flat_map(PagePart::access_nodes));
         let page = AccessNode::new(Role::TabPanel)
             .with_hashed_key(format!("page:{page_name}"))
             .with_name(page_name)
@@ -1180,22 +1197,6 @@ impl Widget for MusicApp {
         state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
-        if let Some(id) = target.strip_prefix("music.page-widget.") {
-            let handled = self
-                .page_parts
-                .iter_mut()
-                .any(|part| part.perform(id, action, state));
-            let asked = self
-                .page_parts
-                .iter()
-                .flat_map(PagePart::take_asked)
-                .collect::<Vec<_>>();
-            for action in asked {
-                self.dispatch(action, state);
-            }
-            self.dirty |= handled;
-            return handled;
-        }
         if !matches!(
             action,
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
@@ -3456,8 +3457,7 @@ impl MusicApp {
         let index = self.page_parts_drawn;
         self.page_parts_drawn += 1;
         if self.page_parts.len() <= index {
-            self.page_parts
-                .push(super::page_part::PagePart::new("music.page-widget."));
+            self.page_parts.push(super::page_part::PagePart::new());
         }
         let clip = self.body_rect;
         let Some(part) = self.page_parts.get_mut(index) else {
