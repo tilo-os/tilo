@@ -11010,6 +11010,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bounded-command",
+ "futures-util",
  "getrandom 0.4.3",
  "libc",
  "rand_core 0.10.0",
