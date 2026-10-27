@@ -71,13 +71,83 @@ fn channel(id: &str, name: &str, handle: &str, subs: u64, verified: bool, desc: 
     }
 }
 
-/// Build the full offline catalogue.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one block of fixture literals per bundled channel/video/comment; splitting it \
-              would only relocate the sample data, not shrink what a reader must trace for \
-              one entry"
-)]
+/// The bundled channels, by name so a fixture video names its uploader.
+struct Channels {
+    blender: Channel,
+    lowlevel: Channel,
+    kurz: Channel,
+    privacy: Channel,
+    polyphonic: Channel,
+    lofi: Channel,
+}
+
+impl Channels {
+    fn new() -> Self {
+        Self {
+            blender: channel(
+                "ch_blender",
+                "Blender Foundation",
+                "@blender",
+                1_780_000,
+                true,
+                "Open-source 3D creation. Free to use for any purpose, forever. Tutorials, Open Movies and release breakdowns.",
+            ),
+            lowlevel: channel(
+                "ch_lowlevel",
+                "Low Level Learning",
+                "@lowlevellearning",
+                742_000,
+                true,
+                "Systems programming, security and how computers actually work, from the metal up.",
+            ),
+            kurz: channel(
+                "ch_kurz",
+                "Kurzgesagt",
+                "@kurzgesagt",
+                22_300_000,
+                true,
+                "Videos explaining things with optimistic nihilism. Science, space and the very big questions, animated.",
+            ),
+            privacy: channel(
+                "ch_techlinked",
+                "Privacy Guides",
+                "@privacyguides",
+                318_000,
+                true,
+                "Non-profit, socially-motivated website that provides information for protecting your data security and privacy.",
+            ),
+            polyphonic: channel(
+                "ch_synth",
+                "Polyphonic",
+                "@polyphonic",
+                980_000,
+                false,
+                "Long-form video essays about the music you love and why it sounds the way it does.",
+            ),
+            lofi: channel(
+                "ch_lofi",
+                "Lo-Fi Garden",
+                "@lofigarden",
+                2_100_000,
+                false,
+                "24/7 beats to relax / study / debug FUSE drivers to.",
+            ),
+        }
+    }
+
+    /// The channels in catalogue order.
+    fn into_list(self) -> Vec<Channel> {
+        vec![
+            self.blender,
+            self.lowlevel,
+            self.kurz,
+            self.privacy,
+            self.polyphonic,
+            self.lofi,
+        ]
+    }
+}
+
 /// The caption tracks the bundled sample videos offer, so a capture or a test
 /// can show the caption control with something to choose. A live video's
 /// tracks come from the source (`api::fetch_captions`).
@@ -146,67 +216,9 @@ pub fn caption_cues(id: &str, language: &str) -> Option<Vec<crate::captions::Cap
     )
 }
 
-pub fn model() -> TubeModel {
-    let chans = vec![
-        channel(
-            "ch_blender",
-            "Blender Foundation",
-            "@blender",
-            1_780_000,
-            true,
-            "Open-source 3D creation. Free to use for any purpose, forever. Tutorials, Open Movies and release breakdowns.",
-        ),
-        channel(
-            "ch_lowlevel",
-            "Low Level Learning",
-            "@lowlevellearning",
-            742_000,
-            true,
-            "Systems programming, security and how computers actually work, from the metal up.",
-        ),
-        channel(
-            "ch_kurz",
-            "Kurzgesagt",
-            "@kurzgesagt",
-            22_300_000,
-            true,
-            "Videos explaining things with optimistic nihilism. Science, space and the very big questions, animated.",
-        ),
-        channel(
-            "ch_techlinked",
-            "Privacy Guides",
-            "@privacyguides",
-            318_000,
-            true,
-            "Non-profit, socially-motivated website that provides information for protecting your data security and privacy.",
-        ),
-        channel(
-            "ch_synth",
-            "Polyphonic",
-            "@polyphonic",
-            980_000,
-            false,
-            "Long-form video essays about the music you love and why it sounds the way it does.",
-        ),
-        channel(
-            "ch_lofi",
-            "Lo-Fi Garden",
-            "@lofigarden",
-            2_100_000,
-            false,
-            "24/7 beats to relax / study / debug FUSE drivers to.",
-        ),
-    ];
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "indexes a fixed, hand-authored literal list a few lines above by a \
-                  literal position at each call site; an out-of-range index here is a \
-                  sample-data authoring bug that should fail loudly during development, \
-                  not a runtime risk from untrusted input"
-    )]
-    let c = |i: usize| &chans[i];
-
-    let videos = vec![
+/// The Rust compositor video.
+fn rust_async_video(chans: &Channels) -> Vec<Video> {
+    vec![
         Video {
             views: 842_000,
             published: "3 days ago".into(),
@@ -262,9 +274,15 @@ pub fn model() -> TubeModel {
                 "vid_rust_async",
                 "I rewrote my window compositor in Rust and it changed EVERYTHING!!!",
                 Some("Rewriting a Wayland compositor in Rust: results and benchmarks"),
-                c(1),
+                &chans.lowlevel,
             )
         },
+    ]
+}
+
+/// The black-hole explainer and the donut tutorial.
+fn science_and_tutorial_videos(chans: &Channels) -> Vec<Video> {
+    vec![
         Video {
             views: 6_400_000,
             published: "1 week ago".into(),
@@ -309,7 +327,7 @@ pub fn model() -> TubeModel {
                 "vid_black_holes",
                 "What If Black Holes ARE The Dark Matter? (You Won't BELIEVE #3)",
                 Some("Could primordial black holes account for dark matter?"),
-                c(2),
+                &chans.kurz,
             )
         },
         Video {
@@ -343,9 +361,15 @@ pub fn model() -> TubeModel {
                 "vid_donut",
                 "The Donut Tutorial That Started It All (Blender 4.2)",
                 None,
-                c(0),
+                &chans.blender,
             )
         },
+    ]
+}
+
+/// The privacy and synthesizer videos.
+fn privacy_and_synth_videos(chans: &Channels) -> Vec<Video> {
+    vec![
         Video {
             views: 1_240_000,
             published: "5 days ago".into(),
@@ -382,7 +406,7 @@ pub fn model() -> TubeModel {
                 "vid_privacy",
                 "STOP Using These Apps RIGHT NOW (they're SPYING on you!!)",
                 Some("Which messaging apps actually protect your metadata — a 2026 comparison"),
-                c(3),
+                &chans.privacy,
             )
         },
         Video {
@@ -417,9 +441,15 @@ pub fn model() -> TubeModel {
                 "vid_synth",
                 "How Daft Punk Engineered The Perfect Robot Voice",
                 None,
-                c(4),
+                &chans.polyphonic,
             )
         },
+    ]
+}
+
+/// The lo-fi stream, the GPU video and the solar video.
+fn lofi_gpu_and_solar_videos(chans: &Channels) -> Vec<Video> {
+    vec![
         Video {
             views: 12_400,
             live: true,
@@ -447,7 +477,7 @@ pub fn model() -> TubeModel {
                 "vid_lofi",
                 "lofi hip hop radio - beats to relax/study to",
                 None,
-                c(5),
+                &chans.lofi,
             )
         },
         Video {
@@ -472,7 +502,7 @@ pub fn model() -> TubeModel {
                 "vid_gpu",
                 "Why Your GPU Is Actually A Tiny Supercomputer",
                 Some("An introduction to GPU architecture and SIMT execution"),
-                c(1),
+                &chans.lowlevel,
             )
         },
         Video {
@@ -497,9 +527,15 @@ pub fn model() -> TubeModel {
                 "vid_solar",
                 "We Were Wrong About The Solar System",
                 None,
-                c(2),
+                &chans.kurz,
             )
         },
+    ]
+}
+
+/// The FUSE, colour and sound-design videos.
+fn fuse_color_and_amp_videos(chans: &Channels) -> Vec<Video> {
+    vec![
         Video {
             views: 188_000,
             published: "6 days ago".into(),
@@ -522,7 +558,7 @@ pub fn model() -> TubeModel {
                 "vid_fuse",
                 "Building a P2P Filesystem in 100 Lines (sort of)",
                 Some("Writing a FUSE driver with content-addressed P2P storage"),
-                c(1),
+                &chans.lowlevel,
             )
         },
         Video {
@@ -544,7 +580,7 @@ pub fn model() -> TubeModel {
                 "vid_color",
                 "The Color That Doesn't Exist",
                 None,
-                c(2),
+                &chans.kurz,
             )
         },
         Video {
@@ -569,9 +605,15 @@ pub fn model() -> TubeModel {
                 "vid_amp",
                 "The Hidden Genius of Stadium Sound Design",
                 None,
-                c(4),
+                &chans.polyphonic,
             )
         },
+    ]
+}
+
+/// The tiling window manager video.
+fn compose_video(chans: &Channels) -> Vec<Video> {
+    vec![
         Video {
             views: 670_000,
             published: "2 days ago".into(),
@@ -595,15 +637,28 @@ pub fn model() -> TubeModel {
                 "vid_compose",
                 "I Tried Every Tiling Window Manager So You Don't Have To",
                 Some("A practical comparison of tiling window managers in 2026"),
-                c(3),
+                &chans.privacy,
             )
         },
-    ];
+    ]
+}
 
+/// Build the full offline catalogue.
+pub fn model() -> TubeModel {
+    let chans = Channels::new();
+    let videos = [
+        rust_async_video(&chans),
+        science_and_tutorial_videos(&chans),
+        privacy_and_synth_videos(&chans),
+        lofi_gpu_and_solar_videos(&chans),
+        fuse_color_and_amp_videos(&chans),
+        compose_video(&chans),
+    ]
+    .concat();
     let settings = Settings::default();
     TubeModel {
         videos,
-        channels: chans,
+        channels: chans.into_list(),
         playlists: vec![crate::model::Playlist {
             id: "pl_systems".into(),
             title: "Systems programming from the metal up".into(),

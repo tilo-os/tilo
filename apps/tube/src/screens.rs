@@ -11,6 +11,7 @@ use ui::TextRole;
 use ui::icons::Icon;
 use ui::search::{SearchRequest, open_search_binding};
 use ui::theme::Theme;
+use ui::widget::video_player::PlayerSetting;
 use ui::widget::{
     Avatar, AvatarSize, Badge, Banner, Button, ButtonRole, Chip, ChipLead, ChipStyle, Column,
     Container, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow, MediaAspect,
@@ -230,13 +231,12 @@ fn video_card_for(ui: Ui<'_>, v: &Video, resume_line: bool) -> MediaCard {
                 &[arg("time", clock(position as f64 / 1000.0))],
             )
         });
-    match resume {
-        Some(resume) => card = card.meta(&resume),
-        None => {
-            let reach = reach(v);
-            if !reach.is_empty() {
-                card = card.meta(reach);
-            }
+    if let Some(resume) = resume {
+        card = card.meta(&resume);
+    } else {
+        let reach = reach(v);
+        if !reach.is_empty() {
+            card = card.meta(reach);
         }
     }
     card = if v.live {
@@ -796,27 +796,54 @@ fn unplayable_banner(ui: Ui<'_>, unplayable: &crate::model::Unplayable) -> Banne
 /// Hand the shared player this video's `SponsorBlock` segments, the quality
 /// choice and, inside a segment the person skips by hand, the Skip command.
 fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
-    use ui::widget::video_player::PlayerSetting;
     let model = ui.model;
-    let duration = v.duration.max(1) as f32;
-    let marks = if model.settings.sponsorblock_enabled {
-        v.sponsor
-            .iter()
-            .filter(|s| model.settings.category_enabled(s.category))
-            .map(|s| {
-                (
-                    s.start as f32 / duration,
-                    s.end as f32 / duration,
-                    category_colour(ui.theme, s.category),
-                )
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
     let mut player = player.borrow_mut();
-    player.set_sponsor_marks(marks);
+    player.set_sponsor_marks(sponsor_marks(ui, v));
+    player.set_setting(quality_setting(model));
+    player.set_setting(speed_setting(model));
+    player.set_setting(captions_setting(model));
 
+    let manual = v
+        .sponsor
+        .iter()
+        .find(|s| model.settings.should_show_skip(s.category) && s.contains(model.playhead));
+    match manual {
+        Some(segment) => player.set_setting(PlayerSetting::button(
+            SKIP_SETTING,
+            Icon::SkipForward,
+            t_args(
+                "tube-skip-segment",
+                &[arg("segment", segment.category.label().to_lowercase())],
+            ),
+            2,
+        )),
+        None => player.remove_setting(SKIP_SETTING),
+    }
+}
+
+/// The enabled `SponsorBlock` segments as fractions of the video, with the
+/// colour of their category.
+fn sponsor_marks(ui: Ui<'_>, v: &Video) -> Vec<(f32, f32, vello::peniko::Color)> {
+    let model = ui.model;
+    if !model.settings.sponsorblock_enabled {
+        return Vec::new();
+    }
+    let duration = v.duration.max(1) as f32;
+    v.sponsor
+        .iter()
+        .filter(|s| model.settings.category_enabled(s.category))
+        .map(|s| {
+            (
+                s.start as f32 / duration,
+                s.end as f32 / duration,
+                category_colour(ui.theme, s.category),
+            )
+        })
+        .collect()
+}
+
+/// The resolution choice, labelled with what the stream actually is.
+fn quality_setting(model: &TubeModel) -> PlayerSetting {
     let qualities: Vec<String> = crate::app::QUALITIES
         .iter()
         .map(std::string::ToString::to_string)
@@ -825,7 +852,7 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         .iter()
         .position(|q| *q == model.settings.preferred_quality)
         .unwrap_or(0);
-    player.set_setting(PlayerSetting::choice(
+    PlayerSetting::choice(
         "resolution",
         Icon::Monitor,
         // What the stream actually is, when that is not what was asked for:
@@ -841,8 +868,11 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         1,
         qualities,
         selected,
-    ));
+    )
+}
 
+/// The playback speed choice.
+fn speed_setting(model: &TubeModel) -> PlayerSetting {
     let speeds: Vec<String> = crate::app::PLAYBACK_SPEEDS
         .iter()
         .map(|speed| t_args("tube-speed-value", &[arg("rate", speed.to_string())]))
@@ -851,16 +881,19 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         .iter()
         .position(|speed| (speed - model.settings.playback_speed).abs() < 0.01)
         .unwrap_or(3);
-    player.set_setting(PlayerSetting::choice(
+    PlayerSetting::choice(
         SPEED_SETTING,
         Icon::Gauge,
         t("tube-playback-speed"),
         2,
         speeds,
         speed,
-    ));
-    // Captions: what this video offers, plus Off. The label says what the
-    // choice is doing: off, on, or why it cannot be on.
+    )
+}
+
+/// Captions: what this video offers, plus Off. The label says what the choice
+/// is doing: off, on, or why it cannot be on.
+fn captions_setting(model: &TubeModel) -> PlayerSetting {
     let mut captions: Vec<String> = vec![t("tube-captions-off")];
     captions.extend(model.caption_tracks.iter().map(|track| {
         if track.automatic {
@@ -883,7 +916,7 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
                 .position(|track| track.language == language)
         })
         .map_or(0, |index| index.saturating_add(1));
-    player.set_setting(PlayerSetting::choice(
+    PlayerSetting::choice(
         CAPTIONS_SETTING,
         Icon::MessageSquare,
         match &model.captions_notice {
@@ -893,24 +926,7 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         3,
         captions,
         chosen,
-    ));
-
-    let manual = v
-        .sponsor
-        .iter()
-        .find(|s| model.settings.should_show_skip(s.category) && s.contains(model.playhead));
-    match manual {
-        Some(segment) => player.set_setting(PlayerSetting::button(
-            SKIP_SETTING,
-            Icon::SkipForward,
-            t_args(
-                "tube-skip-segment",
-                &[arg("segment", segment.category.label().to_lowercase())],
-            ),
-            2,
-        )),
-        None => player.remove_setting(SKIP_SETTING),
-    }
+    )
 }
 
 /// The player command that skips the segment under the playhead.
