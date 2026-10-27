@@ -2265,6 +2265,14 @@ impl Widget for ChatApp {
         let model_changed = self.pump_model();
         let room_changed = self.take_room();
         self.settle_attachment_save();
+        // The call's video tile is the one child laid out: dragged, handed
+        // off or following the grid, it is placed again where it went.
+        if self
+            .laid_video
+            .is_some_and(|laid| laid != (self.call.expanded, self.call_video_rect()))
+        {
+            ui::widget::note_layout_moved();
+        }
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
         std::mem::take(&mut self.read_on_present) || model_changed || room_changed
