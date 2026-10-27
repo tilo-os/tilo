@@ -625,8 +625,10 @@ esac
 # key, or the offline root once /usr/share/tilo/release/root.crt exists), so a
 # signed sibling scope cannot stand in for a weakened Tilo scope, and an
 # unreadable or malformed policy fails rather than passes.
-policy=/etc/containers/policy.json
-image_policy_check=/usr/libexec/tilo-image-policy-check
+policy=${TILO_SECURITY_AUDIT_POLICY:-/etc/containers/policy.json}
+image_policy_check=${TILO_IMAGE_POLICY_CHECK_BIN:-/usr/libexec/tilo-image-policy-check}
+image_trust=${TILO_IMAGE_TRUST_BIN:-/usr/libexec/tilo-image-trust}
+image_policy_trust=${TILO_IMAGE_POLICY_TRUST_DIR:-/usr/share/tilo/release}
 
 legacy_crypto_tools=""
 for tool in openssl sbsign sbverify efi-updatevar cert-to-efi-sig-list mokutil pesign efikeygen certutil pk12util; do
@@ -658,6 +660,42 @@ elif [ ! -e /usr/share/tilo/release/root.crt ] && [ ! -s /usr/share/tilo/cosign.
   warn "Tilo image signature policy pins /usr/share/tilo/cosign.pub, but that verification key is missing or empty"
 else
   ok "container signature policy pins signed Tilo images to the installed release trust: ${policy_report#*: }"
+fi
+
+# The image bootc actually follows. The policy above can be perfect and still
+# never be consulted for the image this machine boots from: the proof has to be
+# about the reference in `status.booted.image`, not about the scopes Tilo
+# publishes. The reference and its transport are read by the same strict
+# bootc-status parser the update gate uses, then the policy is asked about that
+# one reference. A missing bootc, an unparsable status, or a reference the
+# policy cannot judge is a FAIL: "could not observe" is not "nothing to see".
+bootc_bin=${TILO_SECURITY_AUDIT_BOOTC:-/usr/bin/bootc}
+bootc_status_max=$((1024 * 1024))
+bootc_json=""
+if [ ! -x "$bootc_bin" ]; then
+  warn "cannot read the image this machine follows: no bootc at $bootc_bin"
+elif ! bootc_json="$(timeout 30 "$bootc_bin" status --format json 2>/dev/null)"; then
+  warn "cannot read the image this machine follows: bootc status failed"
+elif [ "${#bootc_json}" -gt "$bootc_status_max" ]; then
+  warn "cannot read the image this machine follows: bootc status is larger than 1 MiB"
+else
+  booted_transport="$(printf '%s' "$bootc_json" \
+    | "$image_trust" bootc-status-field booted-transport 2>/dev/null)";
+  booted_image="$(printf '%s' "$bootc_json" \
+    | "$image_trust" bootc-status-field booted-image 2>/dev/null)"
+  if [ -z "$booted_image" ]; then
+    warn "cannot read the image this machine follows: bootc status names no booted image"
+  elif [ -z "$booted_transport" ]; then
+    warn "cannot read the image this machine follows: bootc status names no transport for $booted_image"
+  else
+    if ! followed_report="$("$image_policy_check" \
+          --reference "$booted_transport" "$booted_image" "$policy" \
+          "$image_policy_trust" 2>&1)"; then
+      warn "the image this machine follows is not covered by the signature policy: ${followed_report:-$image_policy_check produced no verdict}"
+    else
+      ok "the image this machine follows requires the release trust: $booted_transport:$booted_image"
+    fi
+  fi
 fi
 
 if [ -e /var/lib/tilo/image-trust/required ]; then

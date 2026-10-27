@@ -16,7 +16,7 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::{Value, json};
-use tilo_image_policy_check::{Failure, Trust, check};
+use tilo_image_policy_check::{Failure, Trust, check, check_reference};
 
 const SHIPPED: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -465,6 +465,92 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
 }
 
 #[test]
+fn the_followed_image_reference_must_require_the_release_signature() {
+    let shipped = fs::read_to_string(SHIPPED).unwrap();
+    let trust = repository_trust();
+    let digest = format!("registry.tilo.so/tilo/tilo@sha256:{}", "a".repeat(64));
+    for (transport, image) in [
+        ("registry", TILO),
+        ("registry", CODE),
+        ("registry", digest.as_str()),
+        // A tag does not take the reference out of its own scope.
+        ("registry", "registry.tilo.so/tilo/tilo:latest"),
+        // The image is already on the disk: it fetches nothing, and reached it
+        // through the signature-checked installer handoff.
+        ("containers-storage", "localhost/tilo-host"),
+    ] {
+        check_reference(&shipped, transport, image, &trust)
+            .unwrap_or_else(|error| panic!("{transport}:{image} was refused: {error:?}"));
+    }
+    for (transport, image) in [
+        // A public registry the policy admits only for a person's own pulls.
+        ("registry", "quay.io/x/y"),
+        ("registry", "docker.io/library/fedora"),
+        // A Tilo repository the policy refuses by name.
+        ("registry", "registry.tilo.so/tilo/tilo-dev"),
+        ("registry", "registry.tilo.so/tilo/tilo-vm"),
+        // A local build no signature accounts for, pulled from a registry.
+        ("registry", "localhost/tilo-host"),
+        // A transport the policy does not name.
+        ("docker-daemon", "anything"),
+    ] {
+        assert!(
+            check_reference(&shipped, transport, image, &trust).is_err(),
+            "{transport}:{image} was accepted"
+        );
+    }
+    // An unreadable reference is a failure, never a skip.
+    assert!(check_reference(&shipped, "registry", "", &trust).is_err());
+    assert!(check_reference(&shipped, "", TILO, &trust).is_err());
+    assert!(check_reference("{not json", "registry", TILO, &trust).is_err());
+}
+
+#[test]
+fn a_registry_pull_is_judged_by_the_docker_transport() {
+    // bootc calls it `registry`; containers-policy.json(5) calls it `docker`.
+    // A policy whose docker transport is missing must not silently admit a
+    // registry image through this name alone.
+    let mut policy = key_policy();
+    policy["transports"]
+        .as_object_mut()
+        .unwrap()
+        .remove("docker");
+    let text = policy.to_string();
+    assert_eq!(
+        match check_reference(&text, "registry", TILO, &key_trust()) {
+            Err(Failure::Policy(message)) => message,
+            other => panic!("expected a policy failure, got {other:?}"),
+        },
+        "the image this machine follows (registry:registry.tilo.so/tilo/tilo) is not a signed Tilo image: \
+         the policy has no docker transport, so it says nothing about this image"
+    );
+}
+
+#[test]
+fn a_followed_image_under_a_permissive_default_is_refused() {
+    // A Tilo repository with no scope of its own falls to the default rule.
+    let mut policy = key_policy();
+    policy["default"] = accept();
+    policy["transports"]["docker"]
+        .as_object_mut()
+        .unwrap()
+        .remove(TILO);
+    let text = policy.to_string();
+    assert_eq!(
+        match check_reference(&text, "registry", TILO, &key_trust()) {
+            Err(Failure::Policy(message)) => message,
+            other => panic!("expected a policy failure, got {other:?}"),
+        },
+        "the image this machine follows (registry:registry.tilo.so/tilo/tilo) is not a signed Tilo image: \
+         governed by the default rule: requirement type is 'insecureAcceptAnything', not 'sigstoreSigned'"
+    );
+    assert!(
+        check_reference(&text, "registry", "quay.io/x/y", &key_trust()).is_err(),
+        "a permissive default admitted a foreign image"
+    );
+}
+
+#[test]
 fn the_command_line_reports_as_the_audit_reads_it() {
     let (code, out, err) = run(&[SHIPPED, RELEASE]);
     assert_eq!(code, Some(0), "{out}{err}");
@@ -558,15 +644,42 @@ fn the_command_line_reports_as_the_audit_reads_it() {
         "universal newlines"
     );
 
+    let usage =
+        "usage: tilo-image-policy-check [--reference TRANSPORT IMAGE] [POLICY [TRUST_DIR]]\n";
     let (code, out, err) = run(&["a", "b", "c"]);
-    assert_eq!(
-        (code, out.as_str(), err.as_str()),
-        (
-            Some(2),
-            "",
-            "usage: tilo-image-policy-check [POLICY [TRUST_DIR]]\n"
-        )
+    assert_eq!((code, out.as_str(), err.as_str()), (Some(2), "", usage));
+    let (code, out, err) = run(&["--reference", "registry"]);
+    assert_eq!((code, out.as_str(), err.as_str()), (Some(2), "", usage));
+}
+
+#[test]
+fn the_command_line_judges_the_followed_image_reference() {
+    // The audit's form: the same policy, asked about the image this machine
+    // follows instead of about the scopes Tilo publishes.
+    let (code, out, err) = run(&["--reference", "registry", TILO, SHIPPED, RELEASE]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(
+        out.starts_with(&format!(
+            "{SHIPPED}: registry:{TILO} requires the /usr/share/tilo/cosign.pub sigstore signature"
+        )),
+        "{out}"
     );
+    let (code, out, _) = run(&["--reference", "registry", "quay.io/x/y", SHIPPED, RELEASE]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(
+        out.contains(&format!(
+            "{SHIPPED}: the image this machine follows (registry:quay.io/x/y) is not a signed Tilo image: governed by quay.io"
+        )),
+        "{out}"
+    );
+    let (code, out, _) = run(&[
+        "--reference",
+        "containers-storage",
+        "localhost/tilo-host",
+        SHIPPED,
+        RELEASE,
+    ]);
+    assert_eq!(code, Some(0), "{out}");
 }
 
 #[test]
@@ -576,8 +689,22 @@ fn the_audit_runs_the_compiled_check() {
         "/../../../os/usr/libexec/tilo-security-audit"
     ))
     .unwrap();
-    assert!(audit.contains("image_policy_check=/usr/libexec/tilo-image-policy-check\n"));
+    assert!(audit.contains(
+        "image_policy_check=${TILO_IMAGE_POLICY_CHECK_BIN:-/usr/libexec/tilo-image-policy-check}\n"
+    ));
     assert!(
         audit.contains(r#"if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then"#)
     );
+    // A perfect policy proves nothing about the image bootc actually follows.
+    assert!(audit.contains("bootc-status-field booted-image"));
+    assert!(audit.contains("bootc-status-field booted-transport"));
+    assert!(audit.contains(r#"--reference "$booted_transport" "$booted_image""#));
+    // The installed release trust lives at /usr/share/tilo/release on an image
+    // and beside the keys in a checkout, so the audit names it.
+    assert!(
+        audit
+            .contains("image_policy_trust=${TILO_IMAGE_POLICY_TRUST_DIR:-/usr/share/tilo/release}")
+    );
+    assert!(audit.contains(r#""$booted_image" "$policy""#));
+    assert!(audit.contains("cannot read the image this machine follows"));
 }

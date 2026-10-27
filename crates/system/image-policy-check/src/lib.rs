@@ -6,6 +6,8 @@
 //! tilo-image-policy-check [POLICY [TRUST_DIR]]
 //!     POLICY     default /etc/containers/policy.json
 //!     TRUST_DIR  default /usr/share/tilo/release (trust.env, root.crt)
+//!
+//! tilo-image-policy-check --reference BOOTC_TRANSPORT IMAGE [POLICY [TRUST_DIR]]
 //! ```
 //!
 //! Exits 0 only when the parsed policy proves the requirement. Anything this
@@ -14,6 +16,21 @@
 //! pass: exit 1 with the reason on stdout, exit 2 for a usage error. The boot
 //! security audit (`tilo-security-audit`) runs it; it only reads, never
 //! repairs.
+//!
+//! The second form asks the policy about the one image `bootc status` says
+//! the machine follows (`status.booted.image.image`: image and transport).
+//! `bootc` names that transport `registry` where the policy names it `docker`,
+//! and a source reference is what an image is pulled from, so it gets the
+//! release signature by the rule containers/image applies to it: its own
+//! scope, else the nearest enclosing namespace scope, else the default. A
+//! `containers-storage` reference fetches nothing — it is the image already on
+//! the disk, put there through a signature-checked path — so the same
+//! local-transport allowance that lets the installer hand the image over
+//! applies. Any other transport, or a reference admitting anything weaker (a
+//! user-chosen public registry, a permissive scope), fails: with the policy as
+//! shipped, nothing outside a Tilo image repository can become the next boot.
+//! Anything the check cannot read — a missing transport, an empty image, a
+//! transport this policy does not name — is a failure too.
 //!
 //! The release requirement depends on the installed trust. Without
 //! `TRUST_DIR/root.crt` it is the pinned release key (`keyPath`); with it, a
@@ -393,17 +410,38 @@ fn may_accept(transport: &str, scope: &str) -> bool {
     }
 }
 
+/// The repository a reference names, with any digest and tag removed.
+///
+/// containers/image scopes name a repository, so `repo:tag` and `repo@sha256:…`
+/// are scoped by `repo`. A registry host may carry a port, so only a colon after
+/// the last `/` separates a tag.
+fn repository_scope(reference: &str) -> &str {
+    let unpinned = reference
+        .split_once('@')
+        .map_or(reference, |(name, _)| name);
+    let last = unpinned.rsplit_once('/').map_or(unpinned, |(_, last)| last);
+    // The repository is what precedes the tag: strip the tag, then its colon.
+    match last.split_once(':') {
+        Some((_, tag)) => unpinned
+            .strip_suffix(tag)
+            .and_then(|head| head.strip_suffix(':'))
+            .unwrap_or(unpinned),
+        None => unpinned,
+    }
+}
+
 /// The scope name and requirements containers/image applies to
 /// `repository`: its own scope, else the nearest enclosing namespace scope,
 /// else the host's, else the policy default.
 fn effective_rule<'a>(
-    policy: &'a Json,
-    docker: &'a [(String, Json)],
+    default: Option<&'a Json>,
+    scopes: &'a [(String, Json)],
     repository: &str,
 ) -> (String, Option<&'a Json>) {
-    let mut candidate = repository;
+    let mut candidate = repository_scope(repository);
+
     loop {
-        if let Some((_, requirements)) = docker.iter().find(|(scope, _)| scope == candidate) {
+        if let Some((_, requirements)) = scopes.iter().find(|(scope, _)| scope == candidate) {
             return (candidate.to_owned(), Some(requirements));
         }
         match candidate.rsplit_once('/') {
@@ -411,7 +449,7 @@ fn effective_rule<'a>(
             None => break,
         }
     }
-    ("the default rule".to_owned(), policy.get("default"))
+    ("the default rule".to_owned(), default)
 }
 
 /// What a policy failed on.
@@ -429,6 +467,99 @@ impl Failure {
         match self {
             Self::Policy(message) | Self::Crash(message) => message,
         }
+    }
+}
+
+/// The containers-policy transport a `bootc` transport name is judged by.
+///
+/// The two vocabularies name the same transports differently: `bootc` calls a
+/// registry pull `registry`, while containers-policy.json(5) calls that
+/// transport `docker`. The local transports already share one name.
+fn policy_transport(bootc_transport: &str) -> &str {
+    if bootc_transport == "registry" {
+        "docker"
+    } else {
+        bootc_transport
+    }
+}
+
+/// Why the image `bootc status` reports at `transport`+`image` is not one the
+/// policy requires the release signature for, or `None` when it is.
+///
+/// The reference names where the image came from, so it gets the rule
+/// containers/image would apply to it through that transport: its own scope,
+/// else the nearest enclosing namespace scope, else the default. A local
+/// transport that fetches nothing keeps the allowance the policy already gives
+/// it; a registry pull must require the release signature, so a public
+/// registry admitted for a person's own pulls — or any scope that admits
+/// more — fails.
+///
+/// # Errors
+/// A policy this check cannot read, and so cannot judge the reference against.
+fn reference_problem(
+    policy: &Json,
+    bootc_transport: &str,
+    image: &str,
+    trust: &Trust,
+) -> Result<Option<String>, Failure> {
+    let transport = policy_transport(bootc_transport);
+    let Some(Json::Object(all_transports)) = policy.get("transports") else {
+        return Err(Failure::Policy(
+            "policy has no transports object".to_owned(),
+        ));
+    };
+    let Some(Json::Object(scopes)) = all_transports
+        .iter()
+        .find(|(name, _)| name == transport)
+        .map(|(_, value)| value)
+    else {
+        return Ok(Some(format!(
+            "the policy has no {transport} transport, so it says nothing about this image"
+        )));
+    };
+    // A local transport that fetches nothing is admitted by its `""` scope, and
+    // then the reference is only the name of an image already on this disk.
+    if LOCAL_TRANSPORTS.contains(&transport) && may_accept(transport, "") {
+        return Ok(None);
+    }
+    let (scope, requirements) = effective_rule(policy.get("default"), scopes, image);
+    if let Some(problem) = scope_problem(requirements, false, trust).map_err(Failure::Crash)? {
+        return Ok(Some(format!("governed by {scope}: {problem}")));
+    }
+    Ok(None)
+}
+
+/// Checks the policy text against the one image `bootc status` says this
+/// machine follows.
+///
+/// # Errors
+/// The first thing that keeps the policy from requiring the release signature
+/// for it.
+pub fn check_reference(
+    text: &str,
+    transport: &str,
+    image: &str,
+    trust: &Trust,
+) -> Result<(), Failure> {
+    let policy = parse(text).map_err(Failure::Policy)?;
+    if !matches!(policy, Json::Object(_)) {
+        return Err(Failure::Policy("policy is not a JSON object".to_owned()));
+    }
+    if transport.is_empty() {
+        return Err(Failure::Policy(
+            "bootc reports no transport for the image it follows".to_owned(),
+        ));
+    }
+    if image.is_empty() {
+        return Err(Failure::Policy(
+            "bootc reports no image reference for the image it follows".to_owned(),
+        ));
+    }
+    match reference_problem(&policy, transport, image, trust)? {
+        None => Ok(()),
+        Some(problem) => Err(Failure::Policy(format!(
+            "the image this machine follows ({transport}:{image}) is not a signed Tilo image: {problem}"
+        ))),
     }
 }
 
@@ -487,7 +618,7 @@ pub fn check(text: &str, trust: &Trust) -> Result<(), Failure> {
         }
     }
     for repository in GUARDED_REPOSITORIES {
-        let (scope, requirements) = effective_rule(&policy, docker, repository);
+        let (scope, requirements) = effective_rule(policy.get("default"), docker, repository);
         if let Some(problem) = scope_problem(requirements, true, trust).map_err(Failure::Crash)? {
             return Err(Failure::Policy(format!(
                 "{repository}: governed by {scope}: {problem}"
@@ -546,12 +677,31 @@ fn decode_message(bytes: &[u8], error: &std::str::Utf8Error) -> String {
 /// The command line, without the program name; writes the report to `out`
 /// and the usage to `err`, and returns the exit status.
 pub fn main(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    if args.len() > 2 {
-        let _ = writeln!(err, "usage: tilo-image-policy-check [POLICY [TRUST_DIR]]");
+    const USAGE: &str =
+        "usage: tilo-image-policy-check [--reference TRANSPORT IMAGE] [POLICY [TRUST_DIR]]";
+    // `--reference` names the image `bootc status` says the machine follows, so
+    // the same policy is judged against that one reference instead of the
+    // scopes Tilo publishes.
+    let (reference, rest) = match args.split_first() {
+        Some((flag, rest)) if flag == "--reference" => {
+            let Some((transport, rest)) = rest.split_first() else {
+                let _ = writeln!(err, "{USAGE}");
+                return 2;
+            };
+            let Some((image, rest)) = rest.split_first() else {
+                let _ = writeln!(err, "{USAGE}");
+                return 2;
+            };
+            (Some((transport.clone(), image.clone())), rest)
+        }
+        _ => (None, args),
+    };
+    if rest.len() > 2 {
+        let _ = writeln!(err, "{USAGE}");
         return 2;
     }
-    let path = args.first().map_or(DEFAULT_POLICY, String::as_str);
-    let trust_dir = args.get(1).map_or(DEFAULT_TRUST_DIR, String::as_str);
+    let path = rest.first().map_or(DEFAULT_POLICY, String::as_str);
+    let trust_dir = rest.get(1).map_or(DEFAULT_TRUST_DIR, String::as_str);
     let mut report = String::new();
     let code = match std::fs::read(path) {
         Err(error) => {
@@ -576,27 +726,87 @@ pub fn main(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
                     let _ = write!(report, "{path}: {message}");
                     1
                 }
-                Ok(trust) => match check(&text.replace("\r\n", "\n").replace('\r', "\n"), &trust) {
-                    Ok(()) => {
-                        let _ = write!(
-                            report,
-                            "{path}: Tilo image scopes require {}",
-                            trust.describe()
-                        );
-                        0
+                Ok(trust) => {
+                    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+                    match &reference {
+                        Some((transport, image)) => {
+                            match check_reference(&text, transport, image, &trust) {
+                                Ok(()) => {
+                                    let _ = write!(
+                                        report,
+                                        "{path}: {transport}:{image} requires {}",
+                                        trust.describe()
+                                    );
+                                    0
+                                }
+                                Err(Failure::Policy(message)) => {
+                                    let _ = write!(report, "{path}: {message}");
+                                    1
+                                }
+                                Err(Failure::Crash(message)) => {
+                                    let _ = writeln!(err, "TypeError: {message}");
+                                    return 1;
+                                }
+                            }
+                        }
+                        None => match check(&text, &trust) {
+                            Ok(()) => {
+                                let _ = write!(
+                                    report,
+                                    "{path}: Tilo image scopes require {}",
+                                    trust.describe()
+                                );
+                                0
+                            }
+                            Err(Failure::Policy(message)) => {
+                                let _ = write!(report, "{path}: {message}");
+                                1
+                            }
+                            Err(Failure::Crash(message)) => {
+                                let _ = writeln!(err, "TypeError: {message}");
+                                return 1;
+                            }
+                        },
                     }
-                    Err(Failure::Policy(message)) => {
-                        let _ = write!(report, "{path}: {message}");
-                        1
-                    }
-                    Err(Failure::Crash(message)) => {
-                        let _ = writeln!(err, "TypeError: {message}");
-                        return 1;
-                    }
-                },
+                }
             },
         },
     };
     let _ = writeln!(out, "{report}");
     code
+}
+
+#[cfg(test)]
+mod reference_scope_tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "a test fixture: any failed fixture call fails the test"
+    )]
+
+    use super::repository_scope;
+
+    #[test]
+    fn a_scope_names_the_repository_without_its_tag_or_digest() {
+        assert_eq!(
+            repository_scope("registry.tilo.so/tilo/tilo"),
+            "registry.tilo.so/tilo/tilo"
+        );
+        assert_eq!(
+            repository_scope("registry.tilo.so/tilo/tilo:latest"),
+            "registry.tilo.so/tilo/tilo"
+        );
+        assert_eq!(
+            repository_scope("registry.tilo.so/tilo/tilo@sha256:00ff"),
+            "registry.tilo.so/tilo/tilo"
+        );
+        // A port on the registry host is not a tag separator.
+        assert_eq!(
+            repository_scope("localhost:5000/tilo/tilo"),
+            "localhost:5000/tilo/tilo"
+        );
+        assert_eq!(
+            repository_scope("localhost:5000/tilo/tilo:latest"),
+            "localhost:5000/tilo/tilo"
+        );
+    }
 }

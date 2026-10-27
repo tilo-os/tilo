@@ -1125,12 +1125,21 @@ if [ -z "$image_policy_check" ]; then
     || bad 'could not build the image signature policy checker'
   image_policy_check="${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-image-policy-check"
 fi
+# The audit reads the followed reference out of `bootc status` with the same
+# strict parser the update gate uses.
+image_trust="${TILO_IMAGE_TRUST_BIN:-}"
+if [ -z "$image_trust" ]; then
+  cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-user-identity \
+    --bin tilo-image-trust \
+    || bad 'could not build the bootc status field reader'
+  image_trust="${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-image-trust"
+fi
 [ -x "$image_policy_check" ] || bad "no image signature policy checker at $image_policy_check"
 image_policy="$repo/os/etc/containers/policy.json"
 # The release trust the shipped policy is generated from (keys/release); an
 # installed image carries the same files in /usr/share/tilo/release.
 release_trust="$repo/keys/release"
-grep -Fqx 'image_policy_check=/usr/libexec/tilo-image-policy-check' "$audit" \
+grep -Fqx 'image_policy_check=${TILO_IMAGE_POLICY_CHECK_BIN:-/usr/libexec/tilo-image-policy-check}' "$audit" \
   && grep -Fq 'if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then' "$audit" \
   && grep -Fq '[ ! -s /usr/share/tilo/cosign.pub ]' "$audit" \
   || bad 'boot audit does not parse the image signature policy and check the pinned key'
@@ -1245,5 +1254,102 @@ elif "$image_policy_check" "$policy_cases/guarded-by-default-reject.policy" "$re
 else
   bad 'image signature policy check refuses guarded repositories a default reject already covers'
 fi
+
+# Besides the scopes Tilo publishes, the audit must judge the reference bootc
+# says this machine follows (`status.booted.image`). A perfect policy proves
+# nothing about an image no scope accepts, so the check is run against that one
+# reference and the audit fails when it cannot read it.
+grep -Fq 'bootc-status-field booted-image' "$audit" \
+  && grep -Fq 'bootc-status-field booted-transport' "$audit" \
+  && grep -Fq -- '--reference "$booted_transport" "$booted_image" "$policy"' "$audit" \
+  || bad 'boot audit does not check the image reference bootc actually follows'
+grep -Fq 'cannot read the image this machine follows' "$audit" \
+  || bad 'boot audit skips the followed image when it cannot read bootc status'
+# Fixture references: an official Tilo reference passes, while one the policy
+# admits for a person's own pulls, a development repository, and a local build
+# that no signature accounts for fail.
+followed_reference() {
+  "$image_policy_check" --reference "$1" "$2" "$image_policy" "$release_trust" >/dev/null 2>&1
+}
+followed_reference registry registry.tilo.so/tilo/tilo@sha256:$(printf 'a%.0s' $(seq 64)) \
+  || bad 'image signature policy check refuses the official Tilo reference the machine boots'
+followed_reference registry code.tilo.so/tilo/tilo \
+  || bad 'image signature policy check refuses the code.tilo.so Tilo reference'
+already_boots=0
+for foreign in quay.io/x/y registry.tilo.so/tilo/tilo-dev \
+               registry.tilo.so/tilo/tilo-vm localhost/tilo-host; do
+  already_boots=$((already_boots + 1))
+  if followed_reference registry "$foreign"; then
+    bad "image signature policy check accepts foreign followed image $foreign"
+  fi
+done
+[ "$already_boots" -eq 4 ] \
+  || bad "expected 4 foreign followed images, exercised $already_boots"
+# An image already on the disk fetches nothing, so the installer's handoff and
+# the operator-built host image keep working.
+followed_reference containers-storage localhost/tilo-host \
+  || bad 'image signature policy check refuses a containers-storage booted image'
+if "$image_policy_check" --reference registry '' "$image_policy" "$release_trust" >/dev/null 2>&1; then
+  bad 'image signature policy check accepts an empty followed image reference'
+fi
+if "$image_policy_check" --reference '' registry.tilo.so/tilo/tilo \
+     "$image_policy" "$release_trust" >/dev/null 2>&1; then
+  bad 'image signature policy check accepts a followed image with no transport'
+fi
+if followed_reference registry docker.io/library/fedora; then
+  bad 'image signature policy check accepts a registry image admitted only for a person pulls'
+fi
+
+# The audit as it actually runs: a bootc that reports the followed image drives
+# the check, and one that cannot be read fails the audit instead of skipping it.
+audit_fixture="$(mktemp -d)"
+cat >"$audit_fixture/bootc" <<'BOOTC'
+#!/usr/bin/bash
+[ "$1 $2" = 'status --format' ] || exit 1
+[ -n "${TILO_AUDIT_FIXTURE_STATUS:-}" ] || exit 1
+printf '%s\n' "$TILO_AUDIT_FIXTURE_STATUS"
+BOOTC
+chmod 0755 "$audit_fixture/bootc"
+bootc_status_json() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+print(json.dumps({"spec": {"image": {"image": sys.argv[2], "transport": sys.argv[1]}},
+                  "status": {"booted": {"image": {
+                      "image": {"image": sys.argv[2], "transport": sys.argv[1]}}}}}))
+PY
+}
+# The audit exits nonzero whenever any other check failed, so its verdict is
+# read from its report, not from its exit status.
+audit_report() {
+  TILO_AUDIT_FIXTURE_STATUS="$1" TILO_SECURITY_AUDIT_BOOTC="${2:-$audit_fixture/bootc}" \
+  TILO_SECURITY_AUDIT_POLICY="$image_policy" TILO_IMAGE_TRUST_BIN="$image_trust" \
+  TILO_IMAGE_POLICY_TRUST_DIR="$release_trust" \
+  TILO_IMAGE_POLICY_CHECK_BIN="$image_policy_check" bash "$audit" 2>/dev/null || true
+}
+if audit_report "$(bootc_status_json registry registry.tilo.so/tilo/tilo)" \
+     | grep -Fq 'the image this machine follows requires the release trust: registry:registry.tilo.so/tilo/tilo'; then
+  ok 'boot audit checks the followed image reference against the signature policy'
+else
+  bad 'boot audit does not report the followed image reference as trust-checked'
+fi
+if audit_report "$(bootc_status_json registry quay.io/x/y)" \
+     | grep -Fq 'the image this machine follows is not covered by the signature policy'; then
+  ok 'boot audit fails a followed image the policy does not require the release trust for'
+else
+  bad 'boot audit accepts a followed image outside the signed Tilo scopes'
+fi
+if audit_report 'not json' \
+     | grep -Fq 'cannot read the image this machine follows: bootc status names no booted image'; then
+  ok 'boot audit fails rather than skips when bootc status cannot be parsed'
+else
+  bad 'boot audit skips the followed image when bootc status is unparsable'
+fi
+if audit_report '' "$audit_fixture/absent-bootc" \
+     | grep -Fq 'cannot read the image this machine follows'; then
+  ok 'boot audit fails rather than skips when bootc is missing'
+else
+  bad 'boot audit skips the followed image when bootc is missing'
+fi
+rm -rf "$audit_fixture"
 
 exit "$fail"
