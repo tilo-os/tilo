@@ -112,7 +112,7 @@ tilo-actions = { path = "../../collab/actions" }
 # own module paths stay unchanged.
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # Both ends of every relay stream use its frame codec.
-tilo-relay-client = { path = "../tilo-relay-client" }
+tilo-relay-client = { path = "../tilo-relay-client", features = ["probe"] }
 # The session clients (relay, co-edit, anti-entropy, room administration and
 # workspace join): the daemon dials other relays with them and re-exports them
 # under its historic paths. Clients depend on that crate, not on this one.

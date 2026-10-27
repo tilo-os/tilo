@@ -150,6 +150,19 @@ pub struct WebArgs {
         requires = "session_device"
     )]
     pub session_env_out: Option<PathBuf>,
+    /// Readiness of this node while it serves, as one line of JSON an
+    /// unprivileged reader can check: the boot it started in, the endpoint
+    /// browsers reach it on, its own device key, and its session device key's
+    /// signature over those (the key under `--session-identity-root`). A node
+    /// that stops serving removes it, so a boot deciding whether to keep an
+    /// update finds no record where a node is not answering
+    /// (docs/node-machine.md).
+    #[arg(
+        long = "readiness-out",
+        value_name = "PATH",
+        requires_all = ["web", "session_device", "session_identity_root"]
+    )]
+    pub readiness_out: Option<PathBuf>,
     #[cfg(feature = "agents")]
     #[command(flatten)]
     pub agents: AgentArgs,
@@ -593,7 +606,158 @@ pub async fn serve(
         .await
         .context("start the browser listener")?;
     tracing::info!(origin = %web.origin, allowed = ?args.allowed_origins, "serving browsers");
+    if let Some(path) = &args.readiness_out {
+        publish_readiness(path, relay, &web, args)?;
+    }
     Ok(Some(web))
+}
+
+/// Publish what this node is now that it serves, under the session device
+/// key beside it.
+///
+/// It is written last in the start-up, so a record the boot finds is one a
+/// listener was serving behind, and readable by whoever may run
+/// `tilo-node-readiness` rather than only by this unit.
+fn publish_readiness(
+    path: &Path,
+    relay: &Relay,
+    web: &WebHandle,
+    args: &WebArgs,
+) -> anyhow::Result<()> {
+    let root = args
+        .session_identity_root
+        .as_deref()
+        .context("--readiness-out needs the session's identity root")?;
+    let paths = tilo_user_identity::IdentityPaths::under(root);
+    let (session, _) = tilo_user_identity::load_or_create_device_key(&paths)
+        .context("read the session's device key")?;
+    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .context("read the boot id")?
+        .trim()
+        .to_owned();
+    // The name a page dials: `--public-host` when one was given, else
+    // `localhost` for a listener on every address, else the address itself —
+    // which is what `--tls dev` minted the certificate for.
+    let name = args
+        .public_host
+        .clone()
+        .unwrap_or_else(|| match web.addr.ip().is_unspecified() {
+            true => "localhost".to_owned(),
+            false => web.addr.ip().to_string(),
+        });
+    let record = tilo_relay_client::Node::new(
+        tilo_relay_client::readiness::Record {
+            boot_id: &boot_id,
+            browsers: &web.addr.to_string(),
+            name: &name,
+            host_key: &hex::encode(relay.device_public_key()),
+            certificate_sha256: web.certificate_sha256.as_deref(),
+        },
+        &session,
+    );
+    let line = record.to_line().context("encode the readiness record")?;
+    tilo_files::native::atomic::write_with_mode(path, line.as_bytes(), 0o644)
+        .with_context(|| format!("write {}", path.display()))?;
+    tracing::info!(path = %path.display(), "published the readiness of this node");
+    Ok(())
+}
+
+/// `tilo-node-readiness`: whether the node named by a published record still
+/// serves.
+#[derive(clap::Args, Clone, Debug)]
+pub struct ReadinessArgs {
+    /// The record `run --web --readiness-out` publishes.
+    #[arg(value_name = "FILE")]
+    pub file: PathBuf,
+    /// The session device key the record must be signed by (hex), which
+    /// `TILO_NODE_SESSION_DEVICE` in the node's `session.env` names. Without
+    /// it the record is only checked to be one node's.
+    #[arg(long = "session-device", value_name = "HEX")]
+    pub session_device: Option<String>,
+    /// The boot the record has to come from: a record left by an earlier boot
+    /// says nothing about the node serving now.
+    #[arg(long = "boot-id", value_name = "ID")]
+    pub boot_id: Option<String>,
+    /// How long to wait for the relay to publish while it starts.
+    #[arg(long = "wait", value_name = "SECONDS", default_value = "90")]
+    pub wait: u64,
+    /// How long the node has to answer once it has published.
+    #[arg(long = "patience", value_name = "SECONDS", default_value = "15")]
+    pub patience: u64,
+}
+
+/// `tilo-relay readiness`: whether the node named by a published record still
+/// serves.
+///
+/// A node that stays alive and answers nothing is what a broken update looks
+/// like from outside, and a boot judged by its units cannot see it. This reads
+/// the record the relay published when it started serving, checks it is this
+/// boot's and, when the caller names it, this session's device's, then asks
+/// the address it names for the host behind it: the handshake a browser makes,
+/// which a listener that is up but wedged does not answer. It prints one line
+/// and exits non-zero with the reason when the node does not serve.
+///
+/// # Errors
+///
+/// The record is missing, another node's or another boot's, or the node does
+/// not answer, as [`tilo_relay_client::ReadinessError`] says.
+pub async fn readiness(args: &ReadinessArgs) -> anyhow::Result<()> {
+    let record = await_record(&args.file, args.wait)?;
+    if let Some(session) = &args.session_device {
+        record.verify(&proving_key(session)?)?;
+    }
+    if let Some(boot) = &args.boot_id {
+        anyhow::ensure!(
+            record.boot_id == *boot,
+            tilo_relay_client::ReadinessError::NotThisNodes(format!(
+                "it was written in boot {}, so the node serving now published nothing",
+                record.boot_id
+            ))
+        );
+    }
+    let http = tilo_relay_client::readiness::NodeHttps::trusting(&record)?;
+    let info = record
+        .probe(&http, Duration::from_secs(args.patience))
+        .await?;
+    println!(
+        "the node answers at {} as {}, certified for {}",
+        record.browsers,
+        hex::encode(record.host()?),
+        info.host_cert.device_label
+    );
+    Ok(())
+}
+
+/// The public key `hex_key` names.
+fn proving_key(hex_key: &str) -> anyhow::Result<ed25519_dalek::VerifyingKey> {
+    let bytes: [u8; 32] = hex::decode(hex_key.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .context("--session-device must be a 32-byte hex public key")?;
+    ed25519_dalek::VerifyingKey::from_bytes(&bytes).context("--session-device is not a device key")
+}
+
+/// The record the node in `path` published, waiting up to `seconds` for it:
+/// a boot asks while the relay is still starting.
+fn await_record(path: &Path, seconds: u64) -> anyhow::Result<tilo_relay_client::Node> {
+    let end = std::time::Instant::now() + Duration::from_secs(seconds);
+    loop {
+        // A relay that stops serving removes its record, so a missing file is
+        // an answer too; both are retried, because a start-up writes it last.
+        if let Ok(line) = std::fs::read_to_string(path)
+            && let Ok(record) = tilo_relay_client::Node::parse(&line)
+        {
+            return Ok(record);
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < end,
+            tilo_relay_client::ReadinessError::NotPublished(format!(
+                "{} was not written within {seconds}s",
+                path.display()
+            ))
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 /// `tilo-relay dev`.

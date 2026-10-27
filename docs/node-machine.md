@@ -28,6 +28,25 @@ streams. The person's root stays in their page; the machine never holds it.
    `TILO_NODE_WEB_ARGS="--allowed-origin https://PAGES --web-entry https://PAGES/"`.
 4. Hand the person the machine's origin (`https://HOST:9443`), its device key
    and the token.
+5. Say that this machine's liveness is that it answers, so a boot that keeps
+   an update is judged by the node and not by a sign-in screen it never draws:
+
+   ```sh
+   mkdir -p /etc/tilo/node
+   cat >/etc/tilo/node/health <<'EOF'
+   TILO_NODE_HEALTH_UNIT=tilo-node-relay@ACCOUNT.service
+   TILO_NODE_READINESS=/run/tilo-node/ACCOUNT/readiness.json
+   TILO_NODE_SESSION=tilo-node-session@ACCOUNT.service
+   EOF
+   ```
+
+   `tilo-boot-health` reads it before it blesses a boot: the relay has to be
+   active, the session beside it running, and the node has to answer
+   `tilo-node-readiness` — the record the relay published, signed by the
+   session's device key, then the host behind the address that record names.
+   An update that leaves the relay up and answering nothing is rolled back like
+   one that leaves a desktop on a black screen (docs/recovery.md). Removing the
+   file returns the machine to the desktop's verdict.
 
 ## Installing (the person)
 

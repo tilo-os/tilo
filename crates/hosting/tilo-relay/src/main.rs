@@ -91,6 +91,11 @@ enum Cmd {
     Room(Box<web_cli::RoomArgs>),
     /// Print current metrics + hosted workspace list.
     Status,
+    /// Whether the node this file's record describes still answers: the
+    /// boot's own check that an update kept a relay that serves
+    /// (`tilo-node-readiness`, docs/node-machine.md, docs/recovery.md).
+    #[cfg(feature = "web")]
+    Readiness(web_cli::ReadinessArgs),
     /// Add a workspace to the config file.
     BindWorkspace {
         /// Numeric workspace id.
@@ -183,6 +188,8 @@ fn run() -> anyhow::Result<()> {
             tilo_rt::daemon("tilo-relay").run(web_cli::room(*args, wait_for_shutdown()))?
         }
         Cmd::Status => cmd_status(&cli.config),
+        #[cfg(feature = "web")]
+        Cmd::Readiness(args) => tilo_rt::daemon("tilo-relay").run(web_cli::readiness(&args))?,
         Cmd::BindWorkspace { id, pin } => cmd_bind(&cli.config, id, pin),
         Cmd::UnbindWorkspace { id } => cmd_unbind(&cli.config, id),
         #[cfg(feature = "agents")]

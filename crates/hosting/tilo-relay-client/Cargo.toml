@@ -24,6 +24,7 @@ rand.workspace = true
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 thiserror.workspace = true
+serde_json.workspace = true
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 # Both carriers need the browser-safe clock: HTTPS remains available when
 # the optional iroh dialers are disabled, so this dependency is unconditional.
@@ -37,6 +38,16 @@ hex.workspace = true
 default = ["iroh"]
 # The iroh dialers: certification and remote environments over their ALPNs.
 iroh = ["dep:iroh"]
+# `readiness::NodeHttps`: the native HTTPS client a boot asks a node with.
+probe = [
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:tokio-rustls",
+    "dep:sha2",
+    "dep:bytes",
+    "dep:tilo-net",
+]
 
 [lints]
 workspace = true
@@ -44,3 +55,13 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# The readiness check's own HTTPS client, feature `probe`: a node is dialled by
+# the certificate it published, as a page pins WebTransport's.
+hyper = { version = "1", features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+tokio-rustls = { workspace = true, optional = true }
+rustls.workspace = true
+sha2 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+tilo-net = { workspace = true, optional = true }

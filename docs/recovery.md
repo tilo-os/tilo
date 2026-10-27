@@ -145,6 +145,17 @@ record, `/run/tilo-greeter/startup-metrics.json`, which its first presented
 frame completes; `journalctl -b -u tilo-boot-health` says which of the checks
 a failed boot missed.
 
+A machine provisioned as a node (docs/node-machine.md) has no sign-in screen at
+all, and says so in `/etc/tilo/node/health`. Its boot is good when the node
+**answers**: the relay is active, the session beside it that runs its apps is
+running, and `tilo-node-readiness` finds a record the relay published in this
+boot, signed by that session's device key, and then gets a reply from the host
+behind the address the record names. That reply is the handshake a page makes
+before it opens a room, so a relay that is up and answers nothing — a
+certificate it cannot load, a listener that bound and wedged, a session key its
+pages no longer trust — fails the boot and the update is rolled back. Units
+being active is not that answer, which is the whole reason the check exists.
+
 One machine keeps the plain verdict: a virtual machine made without any display
 device (the headless dev VMs reached over SSH), where no greeter can present on
 any generation. On real hardware no display device at all is what a broken GPU

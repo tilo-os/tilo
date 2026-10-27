@@ -1339,6 +1339,14 @@ impl Relay {
         self.identity.user_public_key
     }
 
+    /// This relay's own device key: the identity a peer, or a page, has to see
+    /// answer at the address the relay published.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn device_public_key(&self) -> [u8; 32] {
+        self.identity.cert.device_public_key
+    }
+
     /// In-process access to the records of the workspaces this relay hosts,
     /// for a service embedded in the host process.
     #[must_use]

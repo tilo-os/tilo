@@ -1,0 +1,83 @@
+#!/usr/bin/bash
+# Whether a node still serves, asked the way its pages ask it.
+#
+#   tilo-node-readiness [FILE]
+#
+# A node (docs/node-machine.md) is a machine whose liveness is that it answers:
+# a page opens its rooms, so a relay that is up and answers nothing is exactly
+# a broken update. This reads the record the relay published when it started
+# serving — the boot it started in, the address and name browsers reach it at,
+# its own device key — checks it is this boot's and this session's device's,
+# and then asks that address for the host behind it, through the handshake
+# every served host answers. `tilo-boot-health` runs it before it blesses a
+# boot, so an update that leaves the node silent is rolled back like one that
+# leaves a desktop on a black screen.
+#
+# What it needs is what an unprivileged reader has: the record (published
+# world-readable) and the session's *public* key, which the node's
+# `session.env` holds. The private half is never read here.
+#
+# Exit status: 0 the node serves, 1 it does not (the reason on stderr), 2 it
+# was not configured, 3 it could not be checked at all.
+set -uo pipefail
+
+log()  { printf 'tilo-node-readiness: %s\n' "$*" >&2; }
+
+# The relay publishes it under its account's runtime directory, where
+# `tilo-boot-health` finds it by the same path the node's health names.
+requested="${1:-${TILO_NODE_READINESS:-/run/tilo-node/readiness.json}}"
+
+# The node's own configuration, so a machine that is not a node says so
+# instead of reporting a node it never had. The environment wins so a test,
+# or a check running beside a node, can name its own.
+marker="${TILO_NODE_HEALTH_MARKER:-/etc/tilo/node/health}"
+configured=no
+if [ -n "${TILO_NODE_READINESS:-}" ]; then
+  configured=yes
+elif [ -f "$marker" ]; then
+  # shellcheck disable=SC1090
+  . "$marker"
+  configured=yes
+fi
+if [ "$configured" = no ]; then
+  log "this machine is not a node ($marker names no readiness)"
+  exit 2
+fi
+
+relay=/usr/libexec/tilo/tilo-relay
+if [ ! -x "$relay" ]; then
+  relay="$(command -v tilo-relay || true)"
+fi
+if [ -z "$relay" ]; then
+  log "there is no tilo-relay on this machine to ask"
+  exit 3
+fi
+
+boot_id=""
+if [ -r /proc/sys/kernel/random/boot_id ]; then
+  boot_id="$(head -1 /proc/sys/kernel/random/boot_id)"
+fi
+
+# The session device key's public half, as the node's session key unit wrote
+# it: a record it did not sign does not describe the node running now.
+session_env="${TILO_NODE_SESSION_ENV:-/var/lib/tilo-node/$(id -un 2>/dev/null)/session.env}"
+args=()
+if [ -n "${TILO_NODE_SESSION_DEVICE:-}" ]; then
+  args+=(--session-device "$TILO_NODE_SESSION_DEVICE")
+elif [ -r "$session_env" ]; then
+  # The file is `TILO_NODE_SESSION_DEVICE='<hex>'`, read without being sourced
+  # so nothing else in it can run here.
+  device="$(sed -n "s/^TILO_NODE_SESSION_DEVICE=['\"]\{0,1\}\([0-9a-fA-F]\{64\}\)['\"]\{0,1\}[[:space:]]*$/\1/p" \
+    "$session_env" | head -1)"
+  [ -n "$device" ] && args+=(--session-device "$device")
+fi
+[ -n "$boot_id" ] && args+=(--boot-id "$boot_id")
+[ -n "${TILO_NODE_READINESS_PATIENCE:-}" ] && args+=(--patience "$TILO_NODE_READINESS_PATIENCE")
+[ -n "${TILO_NODE_READINESS_WAIT:-}" ] && args+=(--wait "$TILO_NODE_READINESS_WAIT")
+
+"$relay" readiness "$requested" "${args[@]}"
+status=$?
+if [ "$status" != 0 ]; then
+  log "the node named by $requested does not serve (tilo-relay exited $status)"
+  exit 1
+fi

@@ -117,6 +117,7 @@ suites = [
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
   "os/tests/boot_health_greeter.sh",
+  "os/tests/boot_health_node.sh",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
   "os/tests/firewalld_names.sh",

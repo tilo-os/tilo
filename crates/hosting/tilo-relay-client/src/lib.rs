@@ -15,7 +15,9 @@
 //!   non-extractable key can authenticate;
 //! - [`https`] — the session with a host over its HTTPS routes
 //!   ([`https::HttpsLink`]), for a page through its `fetch` and for a native
-//!   device reaching a host that publishes no iroh address.
+//!   device reaching a host that publishes no iroh address;
+//! - [`readiness`] — what a node publishes about itself once it serves, and
+//!   the check that it still answers ([`readiness::Node`]).
 //!
 //! The messages themselves are defined in [`tilo_relay_protocol`]. Without
 //! the default `iroh` feature certification is left out and the signer seam,
@@ -31,6 +33,7 @@ pub mod coedit;
 pub mod environment;
 pub mod frame;
 pub mod https;
+pub mod readiness;
 pub mod signer;
 
 #[cfg(feature = "iroh")]
@@ -42,5 +45,6 @@ pub use environment::{
     attach_remote_environment, open_legacy_windows, open_remote_environment,
 };
 pub use https::{HttpClient, HttpFuture, HttpsLink, LinkError};
+pub use readiness::{Node, ReadinessError};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};
 pub use tilo_relay_protocol::transport::{ContentPeerRegistration, Envelope};

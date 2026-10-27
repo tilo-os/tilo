@@ -325,7 +325,9 @@ containerfile="$repo/os/Containerfile"
 # The one sign-in service, tilo-auth, and the polkit-1 and sudo services that
 # take their authentication from it ride the existing PAM COPY: three payload
 # rows.
-expected_contract=5d9337bfb5e23939a978dc5a869e8aee15180de4cd91aec0ce71da71896c00a7
+# tilo-node-readiness, which asks a node whether it still serves what it
+# published, rides the existing recovery-files libexec COPY: one payload row.
+expected_contract=f8a1e8c846b60943cfe22473aa766164a3eaf4c486dd31b7e76a37579f00c28f
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -25,7 +25,16 @@ StateDirectoryMode=0700
 RuntimeDirectory=tilo-node/%i
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
-ExecStart=/usr/libexec/tilo/tilo-relay --config /usr/lib/tilo/node-relay.toml run --web 0.0.0.0:9443 --install-token-file /etc/tilo/node/install-token --session-device ${TILO_NODE_SESSION_DEVICE} --session-identity-root /var/lib/tilo-node/%i/session --session-env-out /run/tilo-node/%i/session-host.env $TILO_NODE_WEB_ARGS
+ExecStart=/usr/libexec/tilo/tilo-relay --config /usr/lib/tilo/node-relay.toml run --web 0.0.0.0:9443 --install-token-file /etc/tilo/node/install-token --session-device ${TILO_NODE_SESSION_DEVICE} --session-identity-root /var/lib/tilo-node/%i/session --session-env-out /run/tilo-node/%i/session-host.env --readiness-out /run/tilo-node/%i/readiness.json $TILO_NODE_WEB_ARGS
+# The record it publishes says this node serves, in this boot, on this
+# address, behind this certificate; `tilo-node-readiness` asks that address for
+# the host behind it and the boot's health check gates the update on the
+# answer. Who may read it: the unprivileged reader that check runs as, and any
+# member of the node's session group, who can watch the node come and go.
+ExecStartPost=+/usr/bin/chgrp tilo-relay /run/tilo-node/%i/readiness.json
+# A node that stops serving has nothing to say about itself, and a record left
+# behind would be read as one that does.
+ExecStopPost=+/usr/bin/rm -f /run/tilo-node/%i/readiness.json
 # Until the person's page installs it, the relay waits for its certificate
 # and only then reports ready: that wait has no deadline.
 TimeoutStartSec=infinity

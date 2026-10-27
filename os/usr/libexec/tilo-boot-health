@@ -50,6 +50,28 @@
 # systemd-bless-boot meanwhile, and anything that must not act on an unproven
 # boot (tilo-rollback-confirm) is ordered after the blessing.
 #
+# ## A node is judged by what it serves
+#
+# A machine provisioned as a node (docs/node-machine.md) has no sign-in screen
+# at all: it serves a person's rooms to their web pages, and its liveness is
+# that it answers. Units being active is not that. An update that leaves the
+# relay up and unable to answer — a certificate it cannot load, a listener that
+# bound and wedged, a session key its pages no longer trust — is exactly what a
+# rollback is for, and the greeter such a machine does not have would never have
+# said so. So it is judged by where it says its own liveness is
+# (`/etc/tilo/node/health`): `tilo-node-readiness` reads the record the relay
+# published (the boot it started in, the endpoint it serves on, its session's
+# signature over both) and asks the host answering there for its own identity
+# (crates/hosting/tilo-relay-client/src/readiness.rs, `tilo-relay
+# --readiness-out`). The session beside the relay is up when systemctl says so,
+# which is what `set -e` in its start-up means: that is native readiness, the
+# node's apps running.
+#
+# A node announces itself with a file rather than being guessed at from the
+# units it has: a dev VM is a node while a persona runs the persona suite and a
+# desktop again afterwards, and provisioning that took the greeter away would
+# otherwise take the desktop's own health check with it.
+#
 # `greetd is active` alone is not even part 1. greetd has Restart=, so it is
 # active between restarts, and a greeter that cannot draw (a broken GPU driver,
 # cage or tilo-greeter) exits, takes greetd with it and is back a few seconds
@@ -109,6 +131,11 @@ GREETER_INPUT="${TILO_BOOT_HEALTH_GREETER_INPUT:-/run/tilo-greeter/input}"
 # attempts. A board with no account yet is judged by multi-user.target.
 board_marker="${TILO_BOOT_HEALTH_BOARD_MARKER:-/usr/share/tilo/board-headless-session}"
 board_wants="${TILO_BOOT_HEALTH_WANTS:-/etc/systemd/system/multi-user.target.wants}"
+# Where a node says how it is alive: TILO_NODE_HEALTH_UNIT is the unit that has
+# to be active, TILO_NODE_READINESS the file its relay publishes and
+# TILO_NODE_SESSION the session beside it. Only this one file path is
+# configured; what it names does the judging.
+node_marker="${TILO_NODE_HEALTH_MARKER:-/etc/tilo/node/health}"
 if [ -z "${TILO_BOOT_HEALTH_UNIT:-}" ] && [ -f "$board_marker" ]; then
   TILO_BOOT_HEALTH_UNIT=multi-user.target
   for link in "$board_wants"/tilo-board-headless-session@*.service; do
@@ -118,7 +145,95 @@ if [ -z "${TILO_BOOT_HEALTH_UNIT:-}" ] && [ -f "$board_marker" ]; then
     break
   done
 fi
+# The lines of a node's state a person can read from the serial console.
+node_final_state() {
+  local unit
+  for unit in "$UNIT" ${TILO_NODE_SESSION:-}; do
+    systemctl status --no-pager --lines=20 "$unit" 2>&1 \
+      | sed 's/^/tilo-boot-health:   /' >&2
+  done
+  systemctl --failed --no-legend --plain 2>/dev/null | sed 's/^/tilo-boot-health:   failed: /' >&2
+}
+
+# Why the node does not answer, in the words of what a person would look at.
+readiness_reason() {
+  case "$1" in
+    *"does not answer"*)
+      echo "it accepted connections and answered nothing, so the relay is up and serving" \
+        "no page" ;;
+    *"another host answers"*)
+      echo "another host answered on the address the relay published" ;;
+    *"published no readiness"*)
+      echo "it published nothing while starting, so it never reached serving" ;;
+    *"not this node's readiness"*)
+      echo "the record there was written by another node, or before this session was" \
+        "installed" ;;
+    *)
+      echo "what it published could not be read" ;;
+  esac
+}
+
+# Exits with the verdict on a node: it answers at the address it published, as
+# the host whose key it named, behind the certificate it pins, and the session
+# that runs its apps is running.
+#
+# The answer is not enough on its own. It says a relay is listening; the record
+# in front of it says which node published it and in which boot, and its
+# session device key's signature says the record is not one left behind. Both
+# together are what a page checks before it opens a room, so that is what the
+# boot that keeps the update checks.
+judge_node() {
+  local end=$(( $(date +%s) + ${TILO_BOOT_HEALTH_NODE_DEADLINE:-180} )) reason answered
+  while :; do
+    if ! systemctl is-active --quiet "$UNIT"; then
+      reason="$UNIT did not come up"
+    elif [ -n "${TILO_NODE_SESSION:-}" ] && ! systemctl is-active --quiet "$TILO_NODE_SESSION"; then
+      reason="$TILO_NODE_SESSION did not come up, so the node's apps are not there"
+    elif answered="$(TILO_NODE_READINESS_PATIENCE=$(( end - $(date +%s) )) \
+        TILO_NODE_READINESS="$TILO_NODE_READINESS" \
+        TILO_NODE_SESSION_ENV="${TILO_NODE_SESSION_ENV:-}" \
+        "${TILO_NODE_READINESS_PROGRAM:-/usr/libexec/tilo-node-readiness}" 2>&1)"; then
+      log "$answered"
+      if [ -n "${TILO_NODE_SESSION:-}" ]; then
+        log "$TILO_NODE_SESSION is running beside it — this boot is good"
+      else
+        log "this boot is good"
+      fi
+      report_failed_units
+      exit 0
+    else
+      reason="$(readiness_reason "$answered")"
+    fi
+    if [ "$(date +%s)" -ge "$end" ]; then
+      warn "$reason. This boot does not count as a success, so the boot loader entry"
+      warn "keeps its decremented try counter and the previous deployment becomes the"
+      warn "default once the tries run out. What the node said was:"
+      printf '%s\n' "$answered" | sed 's/^/tilo-boot-health:   /' >&2
+      node_final_state
+      exit 1
+    fi
+    sleep "$POLL"
+  done
+}
+
 UNIT="${TILO_BOOT_HEALTH_UNIT:-greetd.service}"
+if [ -z "${TILO_BOOT_HEALTH_UNIT:-}" ] && [ -f "$node_marker" ]; then
+  # What the node says about itself. A file that names neither its unit nor its
+  # readiness is a provisioning mistake, and a check that cannot observe its
+  # subject has to fail: the verdict under it decides whether an update is kept.
+  # shellcheck disable=SC1090
+  . "$node_marker"
+  UNIT="${TILO_NODE_HEALTH_UNIT:-}"
+  if [ -z "$UNIT" ] || [ -z "${TILO_NODE_READINESS:-}" ]; then
+    warn "$node_marker names no TILO_NODE_HEALTH_UNIT or TILO_NODE_READINESS, so nothing"
+    warn "here can tell whether this node works. This boot does not count as a success."
+    warn "State was:"
+    systemctl status --no-pager --lines=20 greetd.service 'tilo-node-*' 2>&1 \
+      | sed 's/^/tilo-boot-health:   /' >&2
+    exit 1
+  fi
+  judge_node
+fi
 if ! systemctl cat "$UNIT" >/dev/null 2>&1; then
   log "$UNIT is not installed on this machine — using multi-user.target instead"
   UNIT="multi-user.target"
