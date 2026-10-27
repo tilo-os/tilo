@@ -19,66 +19,33 @@
       {
         "name": "id",
         "ty": "text",
-        "description": "An id to address the layer by (`sky`); one is made when absent.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "An id to address the layer by (`sky`); one is made when absent."
       },
       {
         "name": "name",
         "ty": "text",
         "required": true,
-        "description": "name",
-        "schema": {
-          "type": "string"
-        }
+        "description": "name"
       },
       {
         "name": "medium",
         "ty": "text",
-        "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art."
       },
       {
         "name": "opacity",
         "ty": "number",
-        "description": "`0..=1`.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "`0..=1`."
       },
       {
         "name": "above",
         "ty": "text",
-        "description": "Put the new layer directly above this layer instead of on top.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Put the new layer directly above this layer instead of on top."
       },
       {
         "name": "texture",
         "ty": "number",
-        "description": "`0..=1`: let the ground's tooth show through the layer's marks.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "`0..=1`: let the ground's tooth show through the layer's marks."
       }
     ]
   },
@@ -105,35 +72,17 @@
       {
         "name": "edge",
         "ty": "text",
-        "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`."
       },
       {
         "name": "distribute",
         "ty": "text",
-        "description": "`horizontal` or `vertical`: equal gaps.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`horizontal` or `vertical`: equal gaps."
       },
       {
         "name": "to",
         "ty": "text",
-        "description": "`artwork` or a mark/group id; else their extent.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`artwork` or a mark/group id; else their extent."
       }
     ]
   },
@@ -252,21 +201,12 @@
         "name": "to",
         "ty": "text",
         "required": true,
-        "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`.",
-        "schema": {
-          "type": "string"
-        }
+        "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`."
       },
       {
         "name": "of",
         "ty": "text",
-        "description": "The mark or group `above` and `below` are relative to.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "The mark or group `above` and `below` are relative to."
       }
     ]
   },
@@ -305,13 +245,7 @@
       {
         "name": "kind",
         "ty": "text",
-        "description": "bar or hbar.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "bar or hbar."
       },
       {
         "name": "box",
@@ -332,90 +266,42 @@
       {
         "name": "max",
         "ty": "number",
-        "description": "Full-bar value (default largest).",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Full-bar value (default largest)."
       },
       {
         "name": "bar_width",
         "ty": "number",
-        "description": "Default: gap 2/3 of it.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Default: gap 2/3 of it."
       },
       {
         "name": "colour",
         "ty": "text",
-        "description": "colour",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "colour"
       },
       {
         "name": "label_size",
         "ty": "number",
-        "description": "label_size",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "label_size"
       },
       {
         "name": "values_shown",
         "ty": "boolean",
-        "description": "values_shown",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "values_shown"
       },
       {
         "name": "title",
         "ty": "text",
-        "description": "title",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "title"
       },
       {
         "name": "id",
         "ty": "text",
-        "description": "Prefix (default chart).",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Prefix (default chart)."
       },
       {
         "name": "layer",
         "ty": "text",
-        "description": "layer",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "layer"
       }
     ]
   },
@@ -459,10 +345,7 @@
         "name": "op",
         "ty": "text",
         "required": true,
-        "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`.",
-        "schema": {
-          "type": "string"
-        }
+        "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`."
       }
     ]
   },
@@ -471,7 +354,7 @@
     "action": "compare",
     "resource_kind": "canvas.artwork",
     "label": "Compare with reference",
-    "description": "Compare with reference. See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
+    "description": "See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
     "operation": "Effect",
     "params": [
       {
@@ -493,13 +376,7 @@
       {
         "name": "mode",
         "ty": "text",
-        "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ).",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ)."
       },
       {
         "name": "size",
@@ -521,39 +398,24 @@
     "action": "compare-versions",
     "resource_kind": "canvas.artwork",
     "label": "Compare versions",
-    "description": "Compare versions. Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
+    "description": "Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
     "operation": "Effect",
     "params": [
       {
         "name": "from",
         "ty": "text",
         "required": true,
-        "description": "The earlier version: a change id from history or a checkpoint name.",
-        "schema": {
-          "type": "string"
-        }
+        "description": "The earlier version: a change id from history or a checkpoint name."
       },
       {
         "name": "to",
         "ty": "text",
-        "description": "The later version (default now).",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "The later version (default now)."
       },
       {
         "name": "look",
         "ty": "boolean",
-        "description": "Also a picture of the changed region: before left, after right.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Also a picture of the changed region: before left, after right."
       }
     ]
   },
@@ -590,13 +452,7 @@
       {
         "name": "layer",
         "ty": "text",
-        "description": "The layer to draw on; the top layer when absent.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "The layer to draw on; the top layer when absent."
       },
       {
         "name": "marks",
@@ -1221,142 +1077,67 @@
         "name": "id",
         "ty": "text",
         "required": true,
-        "description": "id",
-        "schema": {
-          "type": "string"
-        }
+        "description": "id"
       },
       {
         "name": "name",
         "ty": "text",
-        "description": "name",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "name"
       },
       {
         "name": "group",
         "ty": "text",
-        "description": "Organisational folder name; empty removes the layer from its folder. Consecutive members are presented together without changing stacking.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Organisational folder name; empty removes the layer from its folder. Consecutive members are presented together without changing stacking."
       },
       {
         "name": "medium",
         "ty": "text",
-        "description": "A medium id, or empty for plain vector art.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A medium id, or empty for plain vector art."
       },
       {
         "name": "opacity",
         "ty": "number",
-        "description": "opacity",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "opacity"
       },
       {
         "name": "visible",
         "ty": "boolean",
-        "description": "visible",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "visible"
       },
       {
         "name": "locked",
         "ty": "boolean",
-        "description": "Locked marks are not picked by the pointer.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Locked marks are not picked by the pointer."
       },
       {
         "name": "to",
         "ty": "text",
-        "description": "`front`, `back`, `forward` or `backward` among the layers.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`front`, `back`, `forward` or `backward` among the layers."
       },
       {
         "name": "texture",
         "ty": "number",
-        "description": "`0..=1`: let the ground's tooth show through the layer's marks.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "`0..=1`: let the ground's tooth show through the layer's marks."
       },
       {
         "name": "adjust",
         "ty": "object",
-        "description": "Colour and tone of all on it, as `edit-marks` adjust; `{}` clears.",
-        "schema": {
-          "type": [
-            "object",
-            "null"
-          ]
-        }
+        "description": "Colour and tone of all on it, as `edit-marks` adjust; `{}` clears."
       },
       {
         "name": "mask",
         "ty": "text",
-        "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides; `unlink` keeps it put as the layer's marks move (`link` again).",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides; `unlink` keeps it put as the layer's marks move (`link` again)."
       },
       {
         "name": "invert",
         "ty": "boolean",
-        "description": "Invert the mask.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Invert the mask."
       },
       {
         "name": "clip",
         "ty": "boolean",
-        "description": "Clip to the layer below.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Clip to the layer below."
       }
     ]
   },
@@ -1371,13 +1152,7 @@
       {
         "name": "pixelated",
         "ty": "boolean",
-        "description": "Images: preserve hard pixel edges when enlarged.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Images: preserve hard pixel edges when enlarged."
       },
       {
         "name": "ids",
@@ -1394,24 +1169,12 @@
       {
         "name": "name",
         "ty": "text",
-        "description": "name",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "name"
       },
       {
         "name": "shape",
         "ty": "object",
-        "description": "Replace the geometry: a shape as `draw` takes it (e.g. a path's new `d`).",
-        "schema": {
-          "type": [
-            "object",
-            "null"
-          ]
-        }
+        "description": "Replace the geometry: a shape as `draw` takes it (e.g. a path's new `d`)."
       },
       {
         "name": "dash",
@@ -1430,222 +1193,102 @@
       {
         "name": "cap",
         "ty": "text",
-        "description": "cap",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "cap"
       },
       {
         "name": "join",
         "ty": "text",
-        "description": "join",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "join"
       },
       {
         "name": "blend",
         "ty": "text",
-        "description": "blend",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "blend"
       },
       {
         "name": "shadow",
         "ty": "object",
-        "description": "As draw's; zero offset and blur removes it.",
-        "schema": {
-          "type": [
-            "object",
-            "null"
-          ]
-        }
+        "description": "As draw's; zero offset and blur removes it."
       },
       {
         "name": "inner_shadow",
         "ty": "object",
-        "description": "As draw's; zero offset and blur removes it.",
-        "schema": {
-          "type": [
-            "object",
-            "null"
-          ]
-        }
+        "description": "As draw's; zero offset and blur removes it."
       },
       {
         "name": "grain",
         "ty": "number",
-        "description": "0 removes it.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "0 removes it."
       },
       {
         "name": "feather",
         "ty": "number",
-        "description": "0 removes it.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "0 removes it."
       },
       {
         "name": "group",
         "ty": "text",
-        "description": "Put into this group (`a/b` nests b in a); empty takes out of any.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Put into this group (`a/b` nests b in a); empty takes out of any."
       },
       {
         "name": "clip",
         "ty": "text",
-        "description": "Cut to this mark's or group's shape, `selection` or an area's SVG path data; empty uncuts.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Cut to this mark's or group's shape, `selection` or an area's SVG path data; empty uncuts."
       },
       {
         "name": "fill",
         "ty": "text",
-        "description": "A colour (replacing a gradient), or `none`.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A colour (replacing a gradient), or `none`."
       },
       {
         "name": "gradient",
         "ty": "object",
-        "description": "As draw's.",
-        "schema": {
-          "type": [
-            "object",
-            "null"
-          ]
-        }
+        "description": "As draw's."
       },
       {
         "name": "stroke",
         "ty": "text",
-        "description": "A colour, or `none`.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A colour, or `none`."
       },
       {
         "name": "stroke_width",
         "ty": "number",
-        "description": "stroke_width",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "stroke_width"
       },
       {
         "name": "opacity",
         "ty": "number",
-        "description": "opacity",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "opacity"
       },
       {
         "name": "brush",
         "ty": "text",
-        "description": "A stroke's brush preset (see paint).",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A stroke's brush preset (see paint)."
       },
       {
         "name": "size",
         "ty": "number",
-        "description": "A stroke's width.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "A stroke's width."
       },
       {
         "name": "brush_size",
         "ty": "number",
-        "description": "Painted layers: the brush size a filled shape is laid in with.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Painted layers: the brush size a filled shape is laid in with."
       },
       {
         "name": "angle",
         "ty": "number",
-        "description": "angle",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "angle"
       },
       {
         "name": "wet",
         "ty": "boolean",
-        "description": "wet",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "wet"
       },
       {
         "name": "params",
         "ty": "object",
-        "description": "params",
-        "schema": {
-          "type": [
-            "object",
-            "null"
-          ]
-        }
+        "description": "params"
       },
       {
         "name": "move_by",
@@ -1666,35 +1309,17 @@
       {
         "name": "scale",
         "ty": "number",
-        "description": "Scale about each mark's or group's centre.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Scale about each mark's or group's centre."
       },
       {
         "name": "rotate",
         "ty": "number",
-        "description": "Degrees clockwise about each centre.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Degrees clockwise about each centre."
       },
       {
         "name": "layer",
         "ty": "text",
-        "description": "Move the marks onto this layer, on top.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Move the marks onto this layer, on top."
       },
       {
         "name": "transform",
@@ -1715,13 +1340,7 @@
       {
         "name": "flip",
         "ty": "text",
-        "description": "`horizontal` or `vertical`: mirror about each centre.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`horizontal` or `vertical`: mirror about each centre."
       },
       {
         "name": "crop",
@@ -1740,13 +1359,7 @@
       {
         "name": "straighten",
         "ty": "number",
-        "description": "Images: degrees, -45 to 45, to level it.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Images: degrees, -45 to 45, to level it."
       },
       {
         "name": "adjust",
@@ -1872,24 +1485,12 @@
       {
         "name": "smooth",
         "ty": "number",
-        "description": "Strokes: take the wobble out of their paths, 0..=1.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Strokes: take the wobble out of their paths, 0..=1."
       },
       {
         "name": "simplify",
         "ty": "number",
-        "description": "Strokes: drop points within this many units of the line.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Strokes: drop points within this many units of the line."
       },
       {
         "name": "extend",
@@ -1927,13 +1528,7 @@
       {
         "name": "merge",
         "ty": "boolean",
-        "description": "Strokes: join them, in the order named, into the first.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Strokes: join them, in the order named, into the first."
       }
     ]
   },
@@ -1942,41 +1537,23 @@
     "action": "export",
     "resource_kind": "canvas.artwork",
     "label": "Export picture",
-    "description": "Export picture. Render the artwork at full size (or scaled) as a PNG, JPEG or WebP, written to path or kept as content.",
+    "description": "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP, written to path or kept as content.",
     "operation": "Effect",
     "params": [
       {
         "name": "transparent",
         "ty": "boolean",
-        "description": "Omit the artwork ground for a transparent PNG or WebP.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Omit the artwork ground for a transparent PNG or WebP."
       },
       {
         "name": "scale",
         "ty": "number",
-        "description": "Pixels per artwork unit, 0.05 to 4 (default 1).",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Pixels per artwork unit, 0.05 to 4 (default 1)."
       },
       {
         "name": "format",
         "ty": "text",
-        "description": "`png` (default, or the path's), `jpeg` or `webp` (lossless).",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`png` (default, or the path's), `jpeg` or `webp` (lossless)."
       },
       {
         "name": "quality",
@@ -1994,13 +1571,7 @@
       {
         "name": "path",
         "ty": "text",
-        "description": "An absolute `.png`, `.jpg` or `.webp` path to write it to.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "An absolute `.png`, `.jpg` or `.webp` path to write it to."
       }
     ]
   },
@@ -2009,7 +1580,7 @@
     "action": "export-svg",
     "resource_kind": "canvas.artwork",
     "label": "Export SVG",
-    "description": "Export SVG. Export the artwork as SVG (plain layers as exact vectors, painted ones as pictures), written to path or kept as content (small ones answered).",
+    "description": "Export the artwork as SVG (plain layers as exact vectors, painted ones as pictures), written to path or kept as content (small ones answered).",
     "operation": "Effect",
     "params": [
       {
@@ -2029,24 +1600,12 @@
       {
         "name": "outline_text",
         "ty": "boolean",
-        "description": "Write text as outlines, which look the same without its fonts. Text along a path is always outlined.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Write text as outlines, which look the same without its fonts. Text along a path is always outlined."
       },
       {
         "name": "path",
         "ty": "text",
-        "description": "An absolute `.svg` path to write it to.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "An absolute `.svg` path to write it to."
       }
     ]
   },
@@ -2065,7 +1624,7 @@
         "description": "The path of the field from the record's root, and the operation",
         "schema": {
           "type": "object",
-          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `title`: set, splice, replace — Title (string)\n- `width`: set — Width (number)\n- `height`: set — Height (number)\n- `ground`: set — Ground\n- `ground.texture`: set, splice, replace — `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel` (string)\n- `ground.colour`: set, splice, replace — The ground's colour, `#rrggbb` (string)\n- `layers`: upsert-item, insert-item, remove-item, move-to, set — Bottom to top; removing an item asks nothing; Undo takes it back\n- `layers.*`: set — Bottom to top; one item, by its id\n- `layers.*.name`: set, splice, replace — Name (string)\n- `layers.*.group`: set, splice, replace — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `layers.*.medium`: set, splice, replace — The medium preset that paints this layer's marks, or empty for plain (string)\n- `layers.*.opacity`: set — Opacity (number)\n- `layers.*.visible`: set — Visible (boolean)\n- `layers.*.texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `layers.*.locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `layers.*.adjust`: set — Colour and tone adjustments of everything on the layer (object or null)\n- `layers.*.adjust.exposure`: set — Stops, -5 to 5. Others -1 to 1 unless noted (number or null)\n- `layers.*.adjust.contrast`: set — Contrast (number or null)\n- `layers.*.adjust.highlights`: set — Highlights (number or null)\n- `layers.*.adjust.shadows`: set — Shadows (number or null)\n- `layers.*.adjust.saturation`: set — Saturation (number or null)\n- `layers.*.adjust.vibrance`: set — Saturation sparing strong colours (number or null)\n- `layers.*.adjust.hue`: set — Degrees, -180 to 180 (number or null)\n- `layers.*.adjust.temperature`: set — Warmer + (number or null)\n- `layers.*.adjust.tint`: set — Magenta + (number or null)\n- `layers.*.adjust.curve`: set — Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets (array or null)\n- `layers.*.adjust.grayscale`: set — Grayscale (boolean or null)\n- `layers.*.adjust.invert`: set — Invert (boolean or null)\n- `layers.*.adjust.blur`: set — Radius in units, 0-200 (pictures and paint) (number or null)\n- `layers.*.adjust.sharpen`: set — 0-1 (number or null)\n- `layers.*.adjust.vignette`: set — Edges darker +, lighter - (number or null)\n- `layers.*.base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `layers.*.invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `layers.*.clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `layers.*.unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)\n- `marks`: upsert-item, insert-item, remove-item, move-to, set — Bottom to top within each layer, layers bottom to top (see; removing an item asks nothing; Undo takes it back\n- `marks.*`: set — Bottom to top within each layer, layers bottom to top (see; one item, by its id\n- `marks.*.layer`: set, splice, replace — Layer (string)\n- `marks.*.name`: set, splice, replace — Name (string)\n- `marks.*.shape`: set — Shape\n- `marks.*.shape.rect.x`: set — X (number)\n- `marks.*.shape.rect.y`: set — Y (number)\n- `marks.*.shape.rect.width`: set — Width (number)\n- `marks.*.shape.rect.height`: set — Height (number)\n- `marks.*.shape.rect.radius`: set — Radius (number)\n- `marks.*.shape.ellipse.cx`: set — Cx (number)\n- `marks.*.shape.ellipse.cy`: set — Cy (number)\n- `marks.*.shape.ellipse.rx`: set — Rx (number)\n- `marks.*.shape.ellipse.ry`: set — Ry (number)\n- `marks.*.shape.polygon.points`: set — Points (array)\n- `marks.*.shape.line.points`: set — Points (array)\n- `marks.*.shape.path.d`: set, splice, replace — D (string)\n- `marks.*.shape.text.x`: set — X (number)\n- `marks.*.shape.text.y`: set — Y (number)\n- `marks.*.shape.text.text`: set, splice, replace — Text (string)\n- `marks.*.shape.text.size`: set — Size (number)\n- `marks.*.shape.text.font`: set — `sans`, `serif`, `mono` or a family `media` lists under fonts (string or null)\n- `marks.*.shape.text.weight`: set — 100 to 900; 400 regular, 700 bold, any value between (integer or null)\n- `marks.*.shape.text.italic`: set — Italic (boolean)\n- `marks.*.shape.text.align`: set — `start`, `center` or `end` at `x`, or in `width` (string or null)\n- `marks.*.shape.text.line_height`: set — Times size (1.2) (number or null)\n- `marks.*.shape.text.width`: set — Wrap width (number or null)\n- `marks.*.shape.text.tracking`: set — Letter spacing in thousandths of the size: 80 opens up capitals, (number or null)\n- `marks.*.shape.text.path`: set — SVG path data the baseline follows instead of starting at x, y; (string or null)\n- `marks.*.shape.stroke.points`: set — Points (array)\n- `marks.*.shape.stroke.size`: set — Size (number)\n- `marks.*.shape.stroke.forks`: set — Forks (integer or null)\n- `marks.*.shape.stroke.spread`: set — Spread (number or null)\n- `marks.*.shape.stroke.dabs`: set — Dabs (integer or null)\n- `marks.*.shape.stroke.scatter`: set — Scatter (number or null)\n- `marks.*.shape.stroke.dab_length`: set — Dab length (number or null)\n- `marks.*.shape.stroke.hatch`: set — Hatch (number or null)\n- `marks.*.shape.image.src`: set, splice, replace — File path, content address or `data:` URI (string)\n- `marks.*.shape.image.x`: set — X (number)\n- `marks.*.shape.image.y`: set — Y (number)\n- `marks.*.shape.image.width`: set — Units; absent: a unit per pixel, or the other side's aspect (number)\n- `marks.*.shape.image.height`: set — Height (number)\n- `marks.*.shape.image.crop`: set — Fractions `[x, y, w, h]` of the picture shown (array or null)\n- `marks.*.shape.image.straighten`: set — Degrees turned inside the frame (number or null)\n- `marks.*.style`: set — Style\n- `marks.*.style.pixelated`: set — Enlarge image pixels with nearest-neighbor sampling (boolean)\n- `marks.*.style.fill`: set — Fill colour: `#rrggbb`, `#rrggbbaa` or `pigment:<name>` from the (string or null)\n- `marks.*.style.gradient`: set — A gradient fill, drawn instead of `fill` on plain layers. On an oil\n- `marks.*.style.stroke`: set — Outline or stroke colour (string or null)\n- `marks.*.style.stroke_width`: set — Outline width in units; zero draws no outline (number)\n- `marks.*.style.opacity`: set — `0..=1`; absent is opaque (number or null)\n- `marks.*.style.brush`: set — A brush stroke's preset on a plain layer (`pen`, `pencil`, `marker`, (string or null)\n- `marks.*.style.brush_size`: set — On a painted layer: the size of the brush that lays a filled shape (number or null)\n- `marks.*.style.angle`: set — On a painted layer: the direction of the brushwork, in degrees (number or null)\n- `marks.*.style.wet`: set — On a painted layer: paint into what is still wet (blending, (boolean)\n- `marks.*.style.params`: set, remove-key — On a painted layer: overrides of the medium's parameters for this\n- `marks.*.style.params.*`: set, splice, replace, add, insert, remove — On a painted layer: overrides of the medium's parameters for this; an entry, by its key, and what is inside it\n- `marks.*.style.dash`: set — Outline dash pattern, `[on, off, …]` in units (array)\n- `marks.*.style.cap`: set — Outline ends: `butt`, `round` or `square`; round when absent (string or null)\n- `marks.*.style.join`: set — Outline corners: `miter`, `round` or `bevel`; round when absent (string or null)\n- `marks.*.style.blend`: set — How the mark mixes with what is beneath it; normal when absent (string or null)\n- `marks.*.style.shadow`: set — Shadow\n- `marks.*.style.inner_shadow`: set — A shadow cast inside the mark from its edge; a light colour and an\n- `marks.*.style.grain`: set — `0..=1`: film grain over the mark (number or null)\n- `marks.*.style.feather`: set — Soften the mark's edge outward over this many units: mist, glow, (number or null)\n- `marks.*.style.adjust`: set — Colour and tone adjustments: a picture's pixels, a shape's colours (object or null)\n- `marks.*.style.adjust.exposure`: set — Stops, -5 to 5. Others -1 to 1 unless noted (number or null)\n- `marks.*.style.adjust.contrast`: set — Contrast (number or null)\n- `marks.*.style.adjust.highlights`: set — Highlights (number or null)\n- `marks.*.style.adjust.shadows`: set — Shadows (number or null)\n- `marks.*.style.adjust.saturation`: set — Saturation (number or null)\n- `marks.*.style.adjust.vibrance`: set — Saturation sparing strong colours (number or null)\n- `marks.*.style.adjust.hue`: set — Degrees, -180 to 180 (number or null)\n- `marks.*.style.adjust.temperature`: set — Warmer + (number or null)\n- `marks.*.style.adjust.tint`: set — Magenta + (number or null)\n- `marks.*.style.adjust.curve`: set — Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets (array or null)\n- `marks.*.style.adjust.grayscale`: set — Grayscale (boolean or null)\n- `marks.*.style.adjust.invert`: set — Invert (boolean or null)\n- `marks.*.style.adjust.blur`: set — Radius in units, 0-200 (pictures and paint) (number or null)\n- `marks.*.style.adjust.sharpen`: set — 0-1 (number or null)\n- `marks.*.style.adjust.vignette`: set — Edges darker +, lighter - (number or null)\n- `marks.*.transform`: set — An affine transform `[a, b, c, d, e, f]` applied to the geometry (array or null)\n- `marks.*.group`: set, splice, replace — The group the mark belongs to, or empty (string)\n- `marks.*.clip`: set, splice, replace — The mark whose shape this mark is cut to, or empty (string)\n- `media`: set, remove-key — Media presets saved in this artwork, by id\n- `media.*`: set, splice, replace, add, insert, remove — Media presets saved in this artwork, by id; an entry, by its key, and what is inside it\n- `reference`: set — Reference\n- `selection`: set — Selection",
+          "description": "Editable paths:\n- `title`: set, splice, replace (string)\n- `width`: set (number)\n- `height`: set (number)\n- `ground`: set\n- `ground.texture`: set, splice, replace — `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel` (string)\n- `ground.colour`: set, splice, replace — The ground's colour, `#rrggbb` (string)\n- `layers`: upsert-item, insert-item, remove-item, move-to, set — Bottom to top; removing an item asks nothing; Undo takes it back\n- `layers.*`: set — one item, by its id\n- `layers.*.name`: set, splice, replace (string)\n- `layers.*.group`: set, splice, replace — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `layers.*.medium`: set, splice, replace — The medium preset that paints this layer's marks, or empty for plain (string)\n- `layers.*.opacity`: set (number)\n- `layers.*.visible`: set (boolean)\n- `layers.*.texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `layers.*.locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `layers.*.adjust`: set — Colour and tone adjustments of everything on the layer (object or null)\n- `layers.*.adjust.exposure`: set — Stops, -5 to 5. Others -1 to 1 unless noted (number or null)\n- `layers.*.adjust.contrast`: set (number or null)\n- `layers.*.adjust.highlights`: set (number or null)\n- `layers.*.adjust.shadows`: set (number or null)\n- `layers.*.adjust.saturation`: set (number or null)\n- `layers.*.adjust.vibrance`: set — Saturation sparing strong colours (number or null)\n- `layers.*.adjust.hue`: set — Degrees, -180 to 180 (number or null)\n- `layers.*.adjust.temperature`: set — Warmer + (number or null)\n- `layers.*.adjust.tint`: set — Magenta + (number or null)\n- `layers.*.adjust.curve`: set — Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets (array or null)\n- `layers.*.adjust.grayscale`: set (boolean or null)\n- `layers.*.adjust.invert`: set (boolean or null)\n- `layers.*.adjust.blur`: set — Radius in units, 0-200 (pictures and paint) (number or null)\n- `layers.*.adjust.sharpen`: set — 0-1 (number or null)\n- `layers.*.adjust.vignette`: set — Edges darker +, lighter - (number or null)\n- `layers.*.base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `layers.*.invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `layers.*.clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `layers.*.unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)\n- `marks`: upsert-item, insert-item, remove-item, move-to, set — Bottom to top within each layer, layers bottom to top (see; removing an item asks nothing; Undo takes it back\n- `marks.*`: set — one item, by its id\n- `marks.*.layer`: set, splice, replace (string)\n- `marks.*.name`: set, splice, replace (string)\n- `marks.*.shape`: set\n- `marks.*.shape.rect.x`: set (number)\n- `marks.*.shape.rect.y`: set (number)\n- `marks.*.shape.rect.width`: set (number)\n- `marks.*.shape.rect.height`: set (number)\n- `marks.*.shape.rect.radius`: set (number)\n- `marks.*.shape.ellipse.cx`: set (number)\n- `marks.*.shape.ellipse.cy`: set (number)\n- `marks.*.shape.ellipse.rx`: set (number)\n- `marks.*.shape.ellipse.ry`: set (number)\n- `marks.*.shape.polygon.points`: set (array)\n- `marks.*.shape.line.points`: set (array)\n- `marks.*.shape.path.d`: set, splice, replace (string)\n- `marks.*.shape.text.x`: set (number)\n- `marks.*.shape.text.y`: set (number)\n- `marks.*.shape.text.text`: set, splice, replace (string)\n- `marks.*.shape.text.size`: set (number)\n- `marks.*.shape.text.font`: set — `sans`, `serif`, `mono` or a family `media` lists under fonts (string or null)\n- `marks.*.shape.text.weight`: set — 100 to 900; 400 regular, 700 bold, any value between (integer or null)\n- `marks.*.shape.text.italic`: set (boolean)\n- `marks.*.shape.text.align`: set — `start`, `center` or `end` at `x`, or in `width` (string or null)\n- `marks.*.shape.text.line_height`: set — Times size (1.2) (number or null)\n- `marks.*.shape.text.width`: set — Wrap width (number or null)\n- `marks.*.shape.text.tracking`: set — Letter spacing in thousandths of the size: 80 opens up capitals, (number or null)\n- `marks.*.shape.text.path`: set — SVG path data the baseline follows instead of starting at x, y; (string or null)\n- `marks.*.shape.stroke.points`: set (array)\n- `marks.*.shape.stroke.size`: set (number)\n- `marks.*.shape.stroke.forks`: set (integer or null)\n- `marks.*.shape.stroke.spread`: set (number or null)\n- `marks.*.shape.stroke.dabs`: set (integer or null)\n- `marks.*.shape.stroke.scatter`: set (number or null)\n- `marks.*.shape.stroke.dab_length`: set (number or null)\n- `marks.*.shape.stroke.hatch`: set (number or null)\n- `marks.*.shape.image.src`: set, splice, replace — File path, content address or `data:` URI (string)\n- `marks.*.shape.image.x`: set (number)\n- `marks.*.shape.image.y`: set (number)\n- `marks.*.shape.image.width`: set — Units; absent: a unit per pixel, or the other side's aspect (number)\n- `marks.*.shape.image.height`: set (number)\n- `marks.*.shape.image.crop`: set — Fractions `[x, y, w, h]` of the picture shown (array or null)\n- `marks.*.shape.image.straighten`: set — Degrees turned inside the frame (number or null)\n- `marks.*.style`: set\n- `marks.*.style.pixelated`: set — Enlarge image pixels with nearest-neighbor sampling (boolean)\n- `marks.*.style.fill`: set — Fill colour: `#rrggbb`, `#rrggbbaa` or `pigment:<name>` from the (string or null)\n- `marks.*.style.gradient`: set — A gradient fill, drawn instead of `fill` on plain layers. On an oil\n- `marks.*.style.stroke`: set — Outline or stroke colour (string or null)\n- `marks.*.style.stroke_width`: set — Outline width in units; zero draws no outline (number)\n- `marks.*.style.opacity`: set — `0..=1`; absent is opaque (number or null)\n- `marks.*.style.brush`: set — A brush stroke's preset on a plain layer (`pen`, `pencil`, `marker`, (string or null)\n- `marks.*.style.brush_size`: set — On a painted layer: the size of the brush that lays a filled shape (number or null)\n- `marks.*.style.angle`: set — On a painted layer: the direction of the brushwork, in degrees (number or null)\n- `marks.*.style.wet`: set — On a painted layer: paint into what is still wet (blending, (boolean)\n- `marks.*.style.params`: set, remove-key — On a painted layer: overrides of the medium's parameters for this\n- `marks.*.style.params.*`: set, splice, replace, add, insert, remove — an entry, by its key, and what is inside it\n- `marks.*.style.dash`: set — Outline dash pattern, `[on, off, …]` in units (array)\n- `marks.*.style.cap`: set — Outline ends: `butt`, `round` or `square`; round when absent (string or null)\n- `marks.*.style.join`: set — Outline corners: `miter`, `round` or `bevel`; round when absent (string or null)\n- `marks.*.style.blend`: set — How the mark mixes with what is beneath it; normal when absent (string or null)\n- `marks.*.style.shadow`: set\n- `marks.*.style.inner_shadow`: set — A shadow cast inside the mark from its edge; a light colour and an\n- `marks.*.style.grain`: set — `0..=1`: film grain over the mark (number or null)\n- `marks.*.style.feather`: set — Soften the mark's edge outward over this many units: mist, glow, (number or null)\n- `marks.*.style.adjust`: set — Colour and tone adjustments: a picture's pixels, a shape's colours (object or null)\n- `marks.*.style.adjust.exposure`: set (number or null)\n- `marks.*.style.adjust.contrast`: set (number or null)\n- `marks.*.style.adjust.highlights`: set (number or null)\n- `marks.*.style.adjust.shadows`: set (number or null)\n- `marks.*.style.adjust.saturation`: set (number or null)\n- `marks.*.style.adjust.vibrance`: set (number or null)\n- `marks.*.style.adjust.hue`: set (number or null)\n- `marks.*.style.adjust.temperature`: set (number or null)\n- `marks.*.style.adjust.tint`: set (number or null)\n- `marks.*.style.adjust.curve`: set (array or null)\n- `marks.*.style.adjust.grayscale`: set (boolean or null)\n- `marks.*.style.adjust.invert`: set (boolean or null)\n- `marks.*.style.adjust.blur`: set (number or null)\n- `marks.*.style.adjust.sharpen`: set (number or null)\n- `marks.*.style.adjust.vignette`: set (number or null)\n- `marks.*.transform`: set — An affine transform `[a, b, c, d, e, f]` applied to the geometry (array or null)\n- `marks.*.group`: set, splice, replace — The group the mark belongs to, or empty (string)\n- `marks.*.clip`: set, splice, replace — The mark whose shape this mark is cut to, or empty (string)\n- `media`: set, remove-key — Media presets saved in this artwork, by id\n- `media.*`: set, splice, replace, add, insert, remove — an entry, by its key, and what is inside it\n- `reference`: set\n- `selection`: set",
           "properties": {
             "path": {
               "type": "array",
@@ -2226,30 +1785,18 @@
     "action": "find-area",
     "resource_kind": "canvas.artwork",
     "label": "Find image area",
-    "description": "Find image area. Select what a picture of the artwork shows: the magic wand (at: colour touching it), a colour everywhere (colour), a photo's subject (subject: true) or the selected edge refined (refine: units), as one undo step. Then use-selection fill, mask or clear. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
+    "description": "Select what a picture of the artwork shows: the magic wand (at: colour touching it), a colour everywhere (colour), a photo's subject (subject: true) or the selected edge refined (refine: units), as one undo step. Then use-selection fill, mask or clear. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
     "operation": "Effect",
     "params": [
       {
         "name": "subject",
         "ty": "boolean",
-        "description": "Find the main subject on-device; with at, the object there.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Find the main subject on-device; with at, the object there."
       },
       {
         "name": "refine",
         "ty": "number",
-        "description": "Edge reach in artwork units; subject defaults to 6 image pixels.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Edge reach in artwork units; subject defaults to 6 image pixels."
       },
       {
         "name": "at",
@@ -2270,57 +1817,27 @@
       {
         "name": "colour",
         "ty": "text",
-        "description": "`#rrggbb`: that colour everywhere.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`#rrggbb`: that colour everywhere."
       },
       {
         "name": "tolerance",
         "ty": "number",
-        "description": "How far a colour may stray for at or colour, 0..1 (default 0.15).",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "How far a colour may stray for at or colour, 0..1 (default 0.15)."
       },
       {
         "name": "layer",
         "ty": "text",
-        "description": "Find on this layer alone; otherwise use all visible layers.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Find on this layer alone; otherwise use all visible layers."
       },
       {
         "name": "mode",
         "ty": "text",
-        "description": "`replace` (default), `add`, `subtract` or `intersect`.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`replace` (default), `add`, `subtract` or `intersect`."
       },
       {
         "name": "feather",
         "ty": "number",
-        "description": "Feather in artwork units.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Feather in artwork units."
       }
     ]
   },
@@ -2508,32 +2025,17 @@
         "name": "svg",
         "ty": "text",
         "required": true,
-        "description": "SVG markup, an absolute path to a `.svg`, or a content address.",
-        "schema": {
-          "type": "string"
-        }
+        "description": "SVG markup, an absolute path to a `.svg`, or a content address."
       },
       {
         "name": "layer",
         "ty": "text",
-        "description": "The layer to draw on; the top layer when absent.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "The layer to draw on; the top layer when absent."
       },
       {
         "name": "group",
         "ty": "text",
-        "description": "The group the marks join (one is made when absent).",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "The group the marks join (one is made when absent)."
       },
       {
         "name": "fit",
@@ -2558,19 +2060,13 @@
     "action": "inspect",
     "resource_kind": "canvas.artwork",
     "label": "Inspect marks",
-    "description": "Inspect marks. List layers and newest marks (ids, bounds, colours), scoped by region/layer. palette: true also counts literal fill, stroke and gradient colours across all matching marks, independent of limit (first 32 colours, `palette_colours` is the total). Named pigments come from media. measure weighs ink to balance icons and type.",
+    "description": "List layers and newest marks (ids, bounds, colours), scoped by region/layer. palette: true also counts literal fill, stroke and gradient colours across all matching marks, independent of limit (first 32 colours, `palette_colours` is the total). Named pigments come from media. measure weighs ink to balance icons and type.",
     "operation": "View",
     "params": [
       {
         "name": "palette",
         "ty": "boolean",
-        "description": "Include literal fill, stroke and gradient colours with mark counts, scoped by region/layer, independent of the newest-mark limit.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Include literal fill, stroke and gradient colours with mark counts, scoped by region/layer, independent of the newest-mark limit."
       },
       {
         "name": "region",
@@ -2591,13 +2087,7 @@
       {
         "name": "layer",
         "ty": "text",
-        "description": "Only marks on this layer.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Only marks on this layer."
       },
       {
         "name": "limit",
@@ -2615,24 +2105,12 @@
       {
         "name": "version",
         "ty": "text",
-        "description": "A past version: a change id from history or a checkpoint name.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A past version: a change id from history or a checkpoint name."
       },
       {
         "name": "full",
         "ty": "boolean",
-        "description": "Also each mark's shape, style and transform, to edit exactly.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Also each mark's shape, style and transform, to edit exactly."
       }
     ]
   },
@@ -2641,7 +2119,7 @@
     "action": "look",
     "resource_kind": "canvas.artwork",
     "label": "Look at the artwork",
-    "description": "Look at the artwork. See the artwork as a picture: the whole of it, or a region up close. Answers with the image and the revision it shows. grid: true overlays labelled coordinates for placing marks.",
+    "description": "See the artwork as a picture: the whole of it, or a region up close. Answers with the image and the revision it shows. grid: true overlays labelled coordinates for placing marks.",
     "operation": "Effect",
     "params": [
       {
@@ -2676,24 +2154,12 @@
       {
         "name": "format",
         "ty": "text",
-        "description": "`jpeg` (default) or `png` for exact pixels.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`jpeg` (default) or `png` for exact pixels."
       },
       {
         "name": "grid",
         "ty": "boolean",
-        "description": "Draw a labelled coordinate grid over the picture, to place marks.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Draw a labelled coordinate grid over the picture, to place marks."
       },
       {
         "name": "layers",
@@ -2712,24 +2178,12 @@
       {
         "name": "version",
         "ty": "text",
-        "description": "A past version: a change id from history or a checkpoint name.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A past version: a change id from history or a checkpoint name."
       },
       {
         "name": "reference",
         "ty": "boolean",
-        "description": "Show the reference picture over the artwork; as set when absent.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Show the reference picture over the artwork; as set when absent."
       }
     ]
   },
@@ -2738,7 +2192,7 @@
     "action": "measure",
     "resource_kind": "canvas.artwork",
     "label": "Measure ink",
-    "description": "Measure ink. Weigh how marks or groups put down ink, as the eye sees it: each one's ink box, ink area, centre of mass and its offset from the box's middle (two icons balance when areas and offsets match), and a text's letter boxes. Answers once their pictures are rendered.",
+    "description": "Weigh how marks or groups put down ink, as the eye sees it: each one's ink box, ink area, centre of mass and its offset from the box's middle (two icons balance when areas and offsets match), and a text's letter boxes. Answers once their pictures are rendered.",
     "operation": "Effect",
     "params": [
       {
@@ -2756,13 +2210,7 @@
       {
         "name": "version",
         "ty": "text",
-        "description": "A past version: a change id from history or a checkpoint name.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A past version: a change id from history or a checkpoint name."
       }
     ]
   },
@@ -2771,7 +2219,7 @@
     "action": "media",
     "resource_kind": "canvas.artwork",
     "label": "List media",
-    "description": "List media. List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
+    "description": "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
     "operation": "View",
     "params": []
   },
@@ -2786,101 +2234,47 @@
       {
         "name": "title",
         "ty": "text",
-        "description": "title",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "title"
       },
       {
         "name": "size",
         "ty": "text",
-        "description": "A size preset; `width` and `height` override it.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A size preset; `width` and `height` override it."
       },
       {
         "name": "landscape",
         "ty": "boolean",
-        "description": "Turn the size on its side.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Turn the size on its side."
       },
       {
         "name": "width",
         "ty": "number",
-        "description": "Width in units, 16 to 8192.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Width in units, 16 to 8192."
       },
       {
         "name": "height",
         "ty": "number",
-        "description": "Height in units, 16 to 8192.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Height in units, 16 to 8192."
       },
       {
         "name": "start",
         "ty": "text",
-        "description": "A ground and first medium; the fields below override it.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A ground and first medium; the fields below override it."
       },
       {
         "name": "texture",
         "ty": "text",
-        "description": "texture",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "texture"
       },
       {
         "name": "ground_colour",
         "ty": "text",
-        "description": "Ground colour, `#rrggbb`.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Ground colour, `#rrggbb`."
       },
       {
         "name": "medium",
         "ty": "text",
-        "description": "The first layer's medium; empty for plain.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "The first layer's medium; empty for plain."
       }
     ]
   },
@@ -2896,10 +2290,7 @@
         "name": "file",
         "ty": "text",
         "required": true,
-        "description": "A `.artwork` path, a content address, or the file's JSON.",
-        "schema": {
-          "type": "string"
-        }
+        "description": "A `.artwork` path, a content address, or the file's JSON."
       }
     ]
   },
@@ -2915,21 +2306,12 @@
         "name": "path",
         "ty": "text",
         "required": true,
-        "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI.",
-        "schema": {
-          "type": "string"
-        }
+        "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI."
       },
       {
         "name": "title",
         "ty": "text",
-        "description": "The new artwork's title; the file's name when absent.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "The new artwork's title; the file's name when absent."
       }
     ]
   },
@@ -2944,13 +2326,7 @@
       {
         "name": "layer",
         "ty": "text",
-        "description": "The layer to paint on; the top layer when absent.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "The layer to paint on; the top layer when absent."
       },
       {
         "name": "strokes",
@@ -3092,13 +2468,7 @@
       {
         "name": "group",
         "ty": "text",
-        "description": "Put them in this group, to edit or remove them as one.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Put them in this group, to edit or remove them as one."
       }
     ]
   },
@@ -3130,10 +2500,7 @@
         "name": "id",
         "ty": "text",
         "required": true,
-        "description": "id",
-        "schema": {
-          "type": "string"
-        }
+        "description": "id"
       }
     ]
   },
@@ -3159,13 +2526,7 @@
       {
         "name": "layer",
         "ty": "text",
-        "description": "Remove every mark on this layer (with along: only its strokes).",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Remove every mark on this layer (with along: only its strokes)."
       },
       {
         "name": "along",
@@ -3200,10 +2561,7 @@
         "name": "id",
         "ty": "text",
         "required": true,
-        "description": "id",
-        "schema": {
-          "type": "string"
-        }
+        "description": "id"
       }
     ]
   },
@@ -3352,19 +2710,13 @@
     "action": "save-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Save artwork",
-    "description": "Save artwork. Save the artwork as a .artwork file open-artwork reads: to a path, or kept as content.",
+    "description": "Save the artwork as a .artwork file open-artwork reads: to a path, or kept as content.",
     "operation": "Effect",
     "params": [
       {
         "name": "path",
         "ty": "text",
-        "description": "An absolute `.artwork` path to write; else kept as content.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "An absolute `.artwork` path to write; else kept as content."
       }
     ]
   },
@@ -3512,13 +2864,7 @@
       {
         "name": "d",
         "ty": "text",
-        "description": "SVG path data.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "SVG path data."
       },
       {
         "name": "marks",
@@ -3567,46 +2913,22 @@
       {
         "name": "mode",
         "ty": "text",
-        "description": "`replace`, `add`, `subtract`, `intersect` or `none` (deselect).",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`replace`, `add`, `subtract`, `intersect` or `none` (deselect)."
       },
       {
         "name": "feather",
         "ty": "number",
-        "description": "Units.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Units."
       },
       {
         "name": "grow",
         "ty": "number",
-        "description": "Units, after invert; negative shrinks.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Units, after invert; negative shrinks."
       },
       {
         "name": "invert",
         "ty": "boolean",
-        "description": "invert",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "invert"
       }
     ]
   },
@@ -3621,57 +2943,27 @@
       {
         "name": "title",
         "ty": "text",
-        "description": "title",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "title"
       },
       {
         "name": "width",
         "ty": "number",
-        "description": "Width in units, 16 to 8192.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Width in units, 16 to 8192."
       },
       {
         "name": "height",
         "ty": "number",
-        "description": "Height in units, 16 to 8192.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Height in units, 16 to 8192."
       },
       {
         "name": "texture",
         "ty": "text",
-        "description": "`smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "`smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`."
       },
       {
         "name": "ground_colour",
         "ty": "text",
-        "description": "Ground colour, `#rrggbb`.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Ground colour, `#rrggbb`."
       },
       {
         "name": "crop",
@@ -3692,13 +2984,7 @@
       {
         "name": "fit",
         "ty": "text",
-        "description": "Crop to what this mark or group shows.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "Crop to what this mark or group shows."
       }
     ]
   },
@@ -3713,13 +2999,7 @@
       {
         "name": "image",
         "ty": "text",
-        "description": "A PNG or JPEG: an absolute file path, a content address, or the picture itself as `data:image/png;base64,…`.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "A PNG or JPEG: an absolute file path, a content address, or the picture itself as `data:image/png;base64,…`."
       },
       {
         "name": "frame",
@@ -3740,35 +3020,17 @@
       {
         "name": "opacity",
         "ty": "number",
-        "description": "`0..=1` (default 0.5).",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "`0..=1` (default 0.5)."
       },
       {
         "name": "visible",
         "ty": "boolean",
-        "description": "visible",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "visible"
       },
       {
         "name": "remove",
         "ty": "boolean",
-        "description": "Remove the reference.",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "Remove the reference."
       }
     ]
   },
@@ -3818,65 +3080,32 @@
         "name": "do",
         "ty": "text",
         "required": true,
-        "description": "`fill`, `stroke`, `mask` or `clear`.",
-        "schema": {
-          "type": "string"
-        }
+        "description": "`fill`, `stroke`, `mask` or `clear`."
       },
       {
         "name": "layer",
         "ty": "text",
-        "description": "layer",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "layer"
       },
       {
         "name": "colour",
         "ty": "text",
-        "description": "colour",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "colour"
       },
       {
         "name": "width",
         "ty": "number",
-        "description": "Stroke width (2).",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
+        "description": "Stroke width (2)."
       },
       {
         "name": "id",
         "ty": "text",
-        "description": "The new mark's.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "description": "The new mark's."
       },
       {
         "name": "defringe",
         "ty": "boolean",
-        "description": "mask/clear by a refined edge: clean the old background out of the pictures' edge (default true).",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
+        "description": "mask/clear by a refined edge: clean the old background out of the pictures' edge (default true)."
       },
       {
         "name": "cleaned",
@@ -3914,7 +3143,7 @@
         "description": "The path of the field from the item, and the operation",
         "schema": {
           "type": "object",
-          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `name`: set, splice, replace — Name (string)\n- `group`: set, splice, replace — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `medium`: set, splice, replace — The medium preset that paints this layer's marks, or empty for plain (string)\n- `opacity`: set — Opacity (number)\n- `visible`: set — Visible (boolean)\n- `texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `adjust`: set — Colour and tone adjustments of everything on the layer (object or null)\n- `adjust.exposure`: set — Stops, -5 to 5. Others -1 to 1 unless noted (number or null)\n- `adjust.contrast`: set — Contrast (number or null)\n- `adjust.highlights`: set — Highlights (number or null)\n- `adjust.shadows`: set — Shadows (number or null)\n- `adjust.saturation`: set — Saturation (number or null)\n- `adjust.vibrance`: set — Saturation sparing strong colours (number or null)\n- `adjust.hue`: set — Degrees, -180 to 180 (number or null)\n- `adjust.temperature`: set — Warmer + (number or null)\n- `adjust.tint`: set — Magenta + (number or null)\n- `adjust.curve`: set — Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets (array or null)\n- `adjust.grayscale`: set — Grayscale (boolean or null)\n- `adjust.invert`: set — Invert (boolean or null)\n- `adjust.blur`: set — Radius in units, 0-200 (pictures and paint) (number or null)\n- `adjust.sharpen`: set — 0-1 (number or null)\n- `adjust.vignette`: set — Edges darker +, lighter - (number or null)\n- `base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)",
+          "description": "Editable paths:\n- `name`: set, splice, replace (string)\n- `group`: set, splice, replace — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `medium`: set, splice, replace — The medium preset that paints this layer's marks, or empty for plain (string)\n- `opacity`: set (number)\n- `visible`: set (boolean)\n- `texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `adjust`: set — Colour and tone adjustments of everything on the layer (object or null)\n- `adjust.exposure`: set — Stops, -5 to 5. Others -1 to 1 unless noted (number or null)\n- `adjust.contrast`: set (number or null)\n- `adjust.highlights`: set (number or null)\n- `adjust.shadows`: set (number or null)\n- `adjust.saturation`: set (number or null)\n- `adjust.vibrance`: set — Saturation sparing strong colours (number or null)\n- `adjust.hue`: set — Degrees, -180 to 180 (number or null)\n- `adjust.temperature`: set — Warmer + (number or null)\n- `adjust.tint`: set — Magenta + (number or null)\n- `adjust.curve`: set — Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets (array or null)\n- `adjust.grayscale`: set (boolean or null)\n- `adjust.invert`: set (boolean or null)\n- `adjust.blur`: set — Radius in units, 0-200 (pictures and paint) (number or null)\n- `adjust.sharpen`: set — 0-1 (number or null)\n- `adjust.vignette`: set — Edges darker +, lighter - (number or null)\n- `base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)",
           "properties": {
             "path": {
               "type": "array",
