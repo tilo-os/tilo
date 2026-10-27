@@ -136,9 +136,9 @@ pre_push = true
 
 [[step]]
 name = "action-confirmation"
-label = "Undoable actions are never confirmed by typing; a typed phrase names what is lost"
+label = "Undoable actions are never confirmed by typing; a deletion Undo cannot take back is written down"
 run = "python3 tools/policy/check_action_confirmation.py"
-inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs"]
+inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs", "tools/policy/undoable-deletions.toml"]
 pre_push = true
 
 [[step]]
