@@ -1456,7 +1456,7 @@ fn a_step_that_would_cross_a_budget_is_refused_naming_the_limit() {
         .unwrap();
     let refused = agent
         .apply(Tracker::HOLD_SPEND.with(tracker::HoldSpend {
-            issue: issue.clone(),
+            issue,
             tokens: 200,
             cost_micros: 0,
         }))
