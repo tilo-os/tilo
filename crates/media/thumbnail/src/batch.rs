@@ -110,9 +110,18 @@ pub fn thumbnail_batch(inputs: &[Vec<u8>]) -> Vec<Result<Vec<u8>, Undecodable>> 
             });
         }
     });
+    // Every slot is filled by its worker; one left empty reads as its input
+    // having made no thumbnail rather than taking the batch down.
     thumbnails
         .into_iter()
-        .map(|thumbnail| thumbnail.expect("every input slot is filled"))
+        .zip(inputs)
+        .map(|(thumbnail, input)| {
+            thumbnail.unwrap_or_else(|| {
+                Err(Undecodable {
+                    digest: *blake3::hash(input).as_bytes(),
+                })
+            })
+        })
         .collect()
 }
 
