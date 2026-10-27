@@ -1509,7 +1509,7 @@ impl InstallerApp {
         let mut app = Self::with_disks(sample_disks());
         app.step = step;
         app.username.set("ada".to_string());
-        app.full_name.set("ada Example".to_string());
+        app.full_name.set("Ada Example".to_string());
         app.password = Arc::new(Mutex::new("correct horse battery staple".to_string()));
         app.password_confirmation =
             Arc::new(Mutex::new("correct horse battery staple".to_string()));
@@ -1550,7 +1550,7 @@ impl InstallerApp {
             windows_preparation: None,
             hostname: Some("studio".into()),
             username: Some("ada".into()),
-            full_name: Some("ada Example".into()),
+            full_name: Some("Ada Example".into()),
             locale: None,
             keyboard: Some("de".into()),
             timezone: Some("Europe/Berlin".into()),
@@ -7076,7 +7076,7 @@ mod tests {
                 windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
-                full_name: Some("ada Example".into()),
+                full_name: Some("Ada Example".into()),
                 locale: Some("de_DE.UTF-8".into()),
                 keyboard: Some("de".into()),
                 timezone: Some("Europe/Berlin".into()),
@@ -7131,7 +7131,7 @@ mod tests {
                 windows_preparation: None,
                 hostname: None,
                 username: Some("ada".into()),
-                full_name: Some("ada Example".into()),
+                full_name: Some("Ada Example".into()),
                 locale: Some("de_DE.UTF-8".into()),
                 keyboard: Some("de".into()),
                 timezone: Some("Europe/Berlin".into()),
@@ -7165,7 +7165,7 @@ mod tests {
                 windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
-                full_name: Some("ada Example".into()),
+                full_name: Some("Ada Example".into()),
                 locale: None,
                 keyboard: Some("de".into()),
                 timezone: Some("Europe/Berlin".into()),
@@ -7198,7 +7198,7 @@ mod tests {
                 windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
-                full_name: Some("ada Example".into()),
+                full_name: Some("Ada Example".into()),
                 locale: Some("de_DE.UTF-8".into()),
                 keyboard: None,
                 timezone: Some("Europe/Berlin".into()),

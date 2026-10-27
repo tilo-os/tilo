@@ -1,5 +1,5 @@
 From ee08cb17fa47922bb5ab9d2cdf3a13f155add60f Mon Sep 17 00:00:00 2001
-From: qwolff <ada@example.org>
+From: qwolff <quinten@tilo.so>
 Date: Thu, 15 Oct 2026 01:09:37 -0700
 Subject: [PATCH] fix(selection): drain pending X11 conversions before Wayland
  takeover

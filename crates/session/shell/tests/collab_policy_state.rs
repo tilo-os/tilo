@@ -257,13 +257,13 @@ fn participant_names_use_room_then_handle_then_local_id_without_raw_peer_ids() {
     const HANDLE: u64 = 5_537_458_103_208_628_978;
     let named = LocalIdentity::with_lookup(HANDLE, |_| {
         let mut labels = PeerLabels::new();
-        labels.insert(HANDLE, "bob".into());
+        labels.insert(HANDLE, "Bob".into());
         labels
     });
     let route = CrdtRoute::cluster("design-review");
     for announced in [Some("peer@5537458103208628978"), None] {
         let resolved = named.resolve(Some(&route), announced);
-        assert_eq!(resolved, "bob");
+        assert_eq!(resolved, "Bob");
         assert!(!resolved.starts_with("peer-") && !resolved.starts_with("peer@"));
     }
 

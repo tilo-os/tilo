@@ -1129,7 +1129,7 @@ mod tests {
     ) -> crate::notifications::RemoteContinuityNotification {
         crate::notifications::RemoteContinuityNotification {
             source_device: source.into(),
-            source_label: "ada's phone".into(),
+            source_label: "Ada's phone".into(),
             projection: crate::notifications::ContinuityNotificationProjection {
                 id: tilo_desktop::notifications::ContinuityNotificationId {
                     epoch: [7; 16],
@@ -1161,7 +1161,7 @@ mod tests {
             assert_eq!(notification.body, "Secret preview");
             assert_eq!(
                 notification.app_name.as_deref(),
-                Some("Mail · From ada's phone")
+                Some("Mail · From Ada's phone")
             );
             assert_eq!(notification.sender_id, None);
             assert_eq!(notification.source_workspace, None);

@@ -7414,7 +7414,7 @@ mod tests {
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
         assert_eq!(status(&mut app)["page"], "profile");
         app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "ada".into(),
+            value: "Ada".into(),
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -7426,7 +7426,7 @@ mod tests {
             created["prepared_identity"]["public_key"]
         );
         let updated = runtime_identity::load_from_path(record).unwrap();
-        assert_eq!(updated.display_name(), "ada");
+        assert_eq!(updated.display_name(), "Ada");
         assert_eq!(updated.sign(b"installer-profile-edit").unwrap(), proof);
         assert_eq!(preparation_operations(&preparations).len(), 1);
         assert!(!edited.to_string().contains("preview-secret-only"));
@@ -7627,7 +7627,7 @@ mod tests {
         );
         let key = created["prepared_identity"]["public_key"].clone();
         app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "ada".into(),
+            value: "Ada".into(),
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::UpdatePreparedIdentity {
@@ -7667,7 +7667,7 @@ mod tests {
         }
         let metadata =
             runtime_identity::load_metadata_from_path(&custody.join("primary.json")).unwrap();
-        assert_eq!(metadata.display_name, "ada");
+        assert_eq!(metadata.display_name, "Ada");
         assert_eq!(metadata.avatar_color, [0xab, 0xcd, 0xef]);
         #[cfg(target_os = "linux")]
         {

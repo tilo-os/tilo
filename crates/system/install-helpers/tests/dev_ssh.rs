@@ -164,9 +164,7 @@ fn malformed_requests_refuse_with_the_scripts_messages() {
     let refuse = |name: &str, content: &str| {
         let path = root.join(name);
         fs::write(&path, content).unwrap();
-        apply(&Labels::default(), &etc, "bob", &path)
-            .unwrap_err()
-            .0
+        apply(&Labels::default(), &etc, "bob", &path).unwrap_err().0
     };
     assert_eq!(refuse("empty", " \n\n"), "expected 1 to 16 SSH public keys");
     assert_eq!(
@@ -192,9 +190,7 @@ fn malformed_requests_refuse_with_the_scripts_messages() {
     fs::write(&path, crlf).unwrap();
     apply(&Labels::default(), &etc, "bob", &path).unwrap();
 
-    let invalid = apply(&Labels::default(), &etc, "bob", &path)
-        .unwrap_err()
-        .0;
+    let invalid = apply(&Labels::default(), &etc, "Bob", &path).unwrap_err().0;
     assert_eq!(invalid, "invalid installed /etc or account");
     let long = "a".repeat(33);
     let invalid = apply(&Labels::default(), &etc, &long, &path).unwrap_err().0;

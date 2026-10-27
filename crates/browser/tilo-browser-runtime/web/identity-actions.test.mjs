@@ -227,7 +227,7 @@ test('a linked account names itself in the profile and lends its picture until o
   const published = [];
   let current = null;
   const photos = {current: () => current, choose: async () => 'data:image/webp;base64,UklGRg==', show: url => { current = url; }};
-  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'ada',
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'Ada',
     profile: async ({photo, photoFrom, linked}) => { published.push({photo, photoFrom, linked}); },
     photos, naming: {ask: async () => null, set: chosen => chosen}});
   await actions.attach(fakeMount());
@@ -262,7 +262,7 @@ test('a new member with no saved profile wears their linked account’s picture'
   const published = [];
   let current = null;
   const photos = {current: () => current, choose: async () => null, show: url => { current = url; }};
-  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'ada',
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'Ada',
     profile: async ({photo, photoFrom, linked}) => { published.push({photo, photoFrom, linked}); },
     photos, naming: {ask: async () => null, set: chosen => chosen}});
   await actions.attach(fakeMount());
@@ -288,7 +288,7 @@ test('unlinking takes away the picture the account lent', async () => {
   const avatar = 'data:image/png;base64,iVBORw0KGgo=';
   let current = avatar;
   const photos = {current: () => current, choose: async () => null, show: url => { current = url; }};
-  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'ada',
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'Ada',
     profile: async ({photo, photoFrom, linked}) => { published.push({photo, photoFrom, linked}); },
     photos, naming: {ask: async () => null, set: chosen => chosen}});
   await actions.attach(fakeMount());

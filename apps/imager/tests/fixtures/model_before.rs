@@ -836,7 +836,7 @@ impl InstallProfile {
             purpose: install_profile_model::default_purpose(),
             hostname: "tilo-workstation".into(),
             user: UserAccount {
-                full_name: "ada".into(),
+                full_name: "Ada".into(),
                 username: "ada".into(),
                 password: "•••••••••".into(),
             },

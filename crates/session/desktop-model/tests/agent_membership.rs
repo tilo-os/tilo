@@ -50,12 +50,8 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
             "the kinds of the room grant are what the agent may do",
         );
 
-        ws.govern_as_at(
-            "ada",
-            Change::Revoke(GrantId::new("scribe-member")),
-            NOW,
-        )
-        .expect("the owner may revoke");
+        ws.govern_as_at("ada", Change::Revoke(GrantId::new("scribe-member")), NOW)
+            .expect("the owner may revoke");
         assert!(
             ws.agent_members_at(NOW).is_empty(),
             "revoking the grant is the whole of taking the agent out",
@@ -121,10 +117,7 @@ fn the_people_roster_is_the_owner_and_the_members() {
     ));
     assert_eq!(
         ws.roster(),
-        vec![
-            ("ada".into(), Role::Owner),
-            ("member".into(), Role::Viewer),
-        ]
+        vec![("ada".into(), Role::Owner), ("member".into(), Role::Viewer),]
     );
     assert_eq!(ws.role_of("member"), Some(Role::Viewer));
     assert_eq!(ws.role_of("not-a-member-here"), None);

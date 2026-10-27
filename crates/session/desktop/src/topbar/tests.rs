@@ -610,7 +610,7 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
     // The 960px chrome reserves a 360px centre selector; after its dots
     // and breathing room, this is the usable activity lane.
     bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
-    bar.activity_headline = Some("ada · 2 permission changes".into());
+    bar.activity_headline = Some("Ada · 2 permission changes".into());
     bar.activity_unread = 4;
     let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
         ui::font_catalog::checkout_root(),
@@ -625,7 +625,7 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
         renderer.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
     // The headline alone, whole: the unread count is the badge's.
     assert!(
-        label.starts_with("ada · 2 permission changes"),
+        label.starts_with("Ada · 2 permission changes"),
         "the full sentence survives: {label:?}"
     );
     assert!(width <= max_width + 0.5);
@@ -2266,7 +2266,7 @@ fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
     let mut joined = empty.clone();
     joined.workspaces[0].collaborators = vec![tilo_desktop_model::Collaborator::new(
         "peer@11895642303397647149",
-        "bob",
+        "Bob",
     )];
     let bar = TopBarChrome::from_tree(&joined);
     assert_eq!(
@@ -2284,7 +2284,7 @@ fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
     // he's in the workspace.
     let mut asked = empty.clone();
     asked.workspaces[0].collaborators = vec![
-        tilo_desktop_model::Collaborator::new("peer@11895642303397647149", "bob").as_invited(),
+        tilo_desktop_model::Collaborator::new("peer@11895642303397647149", "Bob").as_invited(),
     ];
     let bar = TopBarChrome::from_tree(&asked);
     assert!(

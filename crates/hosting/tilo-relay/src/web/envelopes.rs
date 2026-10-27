@@ -617,7 +617,7 @@ mod tests {
             async move { profiles.publish(&body, at, |_| async { true }).await }
         };
         let linked = serde_json::json!({"version": 1, "user_public_key": hex_root,
-            "display_name": "ada", "photo": "data:image/png;base64,iVBORw0KGgo=",
+            "display_name": "Ada", "photo": "data:image/png;base64,iVBORw0KGgo=",
             "photo_from": "Discord", "linked": [{"service": "Discord", "handle": "ada"}]})
         .to_string();
         publish(linked.clone(), 4_000)
@@ -636,7 +636,7 @@ mod tests {
             serde_json::json!({"linked": [{"service": "Discord", "handle": "x", "url": "y"}]}),
         ] {
             let mut text = serde_json::json!({"version": 1, "user_public_key": hex_root,
-                "display_name": "ada"});
+                "display_name": "Ada"});
             for (key, value) in bad.as_object().into_iter().flatten() {
                 text[key] = value.clone();
             }

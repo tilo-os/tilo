@@ -1636,9 +1636,7 @@ mod tests {
     #[test]
     fn a_person_acting_for_themselves_records_nobody() {
         assert_eq!(
-            ActionInvoker::actor("ada")
-                .acting_for("ada")
-                .on_behalf_of,
+            ActionInvoker::actor("ada").acting_for("ada").on_behalf_of,
             None
         );
         let agent = ActionInvoker::admitted(

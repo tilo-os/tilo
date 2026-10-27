@@ -269,7 +269,7 @@ mod tests {
             you_tag: t("workspace-settings-you"),
             remove: t("workspace-settings-remove"),
             people: vec![
-                person(0, "bob Hellauer"),
+                person(0, "Bob Hellauer"),
                 person(1, "Morgan Ashworth-Reyes"),
                 person(2, "Ada Lovelace-Byron"),
                 person(3, "Bo Li Andersson"),

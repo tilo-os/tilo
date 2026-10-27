@@ -311,7 +311,7 @@ mod tests {
             "schema": 1,
             "hostname": "studio",
             "username": "ada",
-            "full_name": "ada",
+            "full_name": "Ada",
             "locale": "en_US.UTF-8",
             "keyboard": "de",
             "timezone": "Europe/Berlin",

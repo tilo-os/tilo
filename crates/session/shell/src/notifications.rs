@@ -1639,7 +1639,7 @@ mod tests {
             let bridge = NotificationBridge::new();
             assert!(bridge.receive_continuity_projection(
                 "certified-phone",
-                "ada's phone",
+                "Ada's phone",
                 remote_projection(5, "Remote"),
                 1,
             ));
@@ -1648,7 +1648,7 @@ mod tests {
                 panic!("expected remote upsert");
             };
             assert_eq!(notification.source_device, "certified-phone");
-            assert_eq!(notification.source_label, "ada's phone");
+            assert_eq!(notification.source_label, "Ada's phone");
             assert!(!notification.is_projectable());
         }
         {

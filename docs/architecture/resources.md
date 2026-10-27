@@ -467,7 +467,7 @@ live, and the action runs through that view, exactly as a person's click does.
   it where they are.
 - **Presence.** Whoever acts is a participant with presence in the view: a
   person, a collaborator, an agent, a Shortcut. Presence names the actor and on
-  whose behalf it acts ("Claude, for ada"), shows where it works and what it
+  whose behalf it acts ("Claude, for Ada"), shows where it works and what it
   just changed.
 - **Me and others.** The person's own changes, a collaborator's and an agent's
   look different in every view and in history.

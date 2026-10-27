@@ -4868,10 +4868,7 @@ mod provisioned_identity_tests {
         let person = "ab".repeat(32);
         chrome.borrow_mut().act_as(person.clone());
 
-        assert_eq!(
-            chrome.borrow_mut().adopt_provisioned_identity("tester"),
-            1
-        );
+        assert_eq!(chrome.borrow_mut().adopt_provisioned_identity("tester"), 1);
 
         let state = chrome.borrow();
         let tree = state.tree();
@@ -4886,10 +4883,7 @@ mod provisioned_identity_tests {
         assert_eq!(workspace.role_of("tester"), None);
         drop(tree);
         drop(state);
-        assert_eq!(
-            chrome.borrow_mut().adopt_provisioned_identity("tester"),
-            0
-        );
+        assert_eq!(chrome.borrow_mut().adopt_provisioned_identity("tester"), 0);
     }
 }
 

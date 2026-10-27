@@ -85,7 +85,7 @@ failed step names its own remedy: **Offline** is the network, a missing name is
 pairing, and a pointer that crosses but types nowhere is the automatic-input
 switch.
 
-## What ada needs to do on the day
+## What Ada needs to do on the day
 
 Everything above is someone else's job. The shoot itself is one take and one
 drop, about thirty seconds of work:

@@ -749,7 +749,7 @@ impl PresenceCtx {
     /// `self_participant` before the declared list (which
     /// [`Self::set_own_identity`] replaces wholesale), and also matches the
     /// room's *name* for this session — a locally-sent frame is stamped
-    /// `bob`, the announced row is `ada`; safe because a remote id is
+    /// `Bob`, the announced row is `ada`; safe because a remote id is
     /// always `peer@<handle>`, never a bare name.
     pub fn is_own_identity(&self, user_id: &str) -> bool {
         if user_id.trim().is_empty() {
@@ -2550,9 +2550,9 @@ mod string_id_wrapper_tests {
             let peer = UserId("peer@5537458103208628978".into());
             let before = ctx.color_for(&peer);
 
-            ctx.set_display_name(peer.clone(), "bob");
+            ctx.set_display_name(peer.clone(), "Bob");
 
-            assert_eq!(ctx.display_name(&peer), "bob");
+            assert_eq!(ctx.display_name(&peer), "Bob");
             assert_eq!(
                 ctx.color_for(&peer),
                 before,
@@ -2568,14 +2568,14 @@ mod string_id_wrapper_tests {
             ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
             assert_eq!(ctx.remote_cursors[0].label, "peer@77");
 
-            ctx.set_display_name(UserId("peer@77".into()), "bob");
+            ctx.set_display_name(UserId("peer@77".into()), "Bob");
 
             assert_eq!(
                 ctx.remote_cursors.len(),
                 1,
                 "naming a peer adds no second pointer"
             );
-            assert_eq!(ctx.remote_cursors[0].label, "bob");
+            assert_eq!(ctx.remote_cursors[0].label, "Bob");
             assert_eq!(
                 ctx.remote_cursors[0].position,
                 [10.0, 20.0],
@@ -2587,11 +2587,11 @@ mod string_id_wrapper_tests {
         // peer's first move labels that move when it lands.
         {
             let mut ctx = PresenceCtx::empty();
-            ctx.set_display_name(UserId("peer@77".into()), "bob");
+            ctx.set_display_name(UserId("peer@77".into()), "Bob");
 
             ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
 
-            assert_eq!(ctx.remote_cursors[0].label, "bob");
+            assert_eq!(ctx.remote_cursors[0].label, "Bob");
         }
     }
 
@@ -3020,8 +3020,8 @@ mod own_identity_tests {
         {
             let mut ctx = PresenceCtx::empty();
             ctx.set_own_identity(["ada"]);
-            ctx.set_self_participant(UserId("peer@42".into()), "bob");
-            assert!(ctx.is_own_identity("bob"));
+            ctx.set_self_participant(UserId("peer@42".into()), "Bob");
+            assert!(ctx.is_own_identity("Bob"));
             assert!(
                 !ctx.is_own_identity("Claude"),
                 "a peer the room happens to have named must stay a peer",
@@ -3065,10 +3065,10 @@ mod own_identity_tests {
         {
             let mut ctx = PresenceCtx::empty();
             let me = UserId("peer@9007495404254172154".into());
-            ctx.set_self_participant(me.clone(), "bob");
+            ctx.set_self_participant(me.clone(), "Bob");
 
             assert_eq!(ctx.self_id(), Some(&me));
-            assert_eq!(ctx.self_name(), Some("bob"));
+            assert_eq!(ctx.self_name(), Some("Bob"));
             assert!(
                 !ctx.names.contains_key(&me),
                 "the row became a display name, which is what the roster, the \
@@ -3101,7 +3101,7 @@ mod own_identity_tests {
         // phase: a_blank_own_participant_is_refused
         {
             let mut ctx = PresenceCtx::empty();
-            ctx.set_self_participant(UserId("  ".into()), "bob");
+            ctx.set_self_participant(UserId("  ".into()), "Bob");
             assert_eq!(ctx.self_id(), None);
             assert!(!ctx.is_own_identity(""));
             assert!(!ctx.is_own_identity("  "));
@@ -3110,7 +3110,7 @@ mod own_identity_tests {
         {
             let mut ctx = PresenceCtx::empty();
             let me = UserId("peer@42".into());
-            ctx.set_self_participant(me.clone(), "bob");
+            ctx.set_self_participant(me.clone(), "Bob");
             ctx.set_own_identity(["so.tilo.chat"]);
             assert!(ctx.is_own_identity(&me.0));
             assert!(ctx.is_own_identity("so.tilo.chat"));

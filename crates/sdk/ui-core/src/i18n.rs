@@ -1782,7 +1782,7 @@ mod tests {
                 participant_display_label("agent:"),
                 "Unbekannter Agent · Agent"
             );
-            assert_eq!(participant_display_label("ada"), "ada");
+            assert_eq!(participant_display_label("Ada"), "Ada");
         }
     }
 

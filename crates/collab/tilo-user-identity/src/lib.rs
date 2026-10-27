@@ -161,7 +161,7 @@ use serde::{Deserialize, Serialize};
 pub struct UserIdentity {
     /// Ed25519 public key. 32 bytes.
     pub public_key: [u8; 32],
-    /// Human-readable label — "ada's identity", "Ada Lovelace",
+    /// Human-readable label — "Ada's identity", "Ada Lovelace",
     /// etc. Not authoritative; it's only for UI display and can be
     /// changed on any device without invalidating certs.
     pub label: String,
