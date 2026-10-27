@@ -210,7 +210,7 @@ fn operations_menu(
         for &(action, offer) in &offers {
             let intents = intents.clone();
             let run = move || intents.push(Intent::RunOn { action, partition });
-            let entry = if action.destructive() {
+            let entry = if action.is_delete() {
                 MenuEntry::destructive(action.label(), run)
             } else {
                 MenuEntry::new(action.label(), run)
