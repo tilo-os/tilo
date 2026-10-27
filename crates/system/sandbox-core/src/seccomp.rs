@@ -517,8 +517,36 @@ pub const CI_DENIES: &[libc::c_long] = &[
     libc::SYS_quotactl,
     libc::SYS_quotactl_fd,
     libc::SYS_open_by_handle_at,
+    // Refused by default, but a job may be allowed this half of the pair alone:
+    // see [`CiAllowance::FileHandleNames`].
     libc::SYS_name_to_handle_at,
 ];
+
+/// A call a CI job may be allowed beyond its [`CiProfile`], by the one job that
+/// asks for it (`tilo_sandbox::job::JobSpec::allow`), never by a profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CiAllowance {
+    /// `name_to_handle_at`: the opaque file handle (inode and generation
+    /// numbers, and the mount's id) of a path the job can already open.
+    /// virtiofsd asks for it as it starts, and won't serve a share where it
+    /// is refused, so a job testing micro-VM steps needs it. It is only half
+    /// of the file-handle pair: `open_by_handle_at`, which turns a handle back
+    /// into an open file past the mount tree and the path's permissions, stays
+    /// refused (and takes `CAP_DAC_READ_SEARCH` in the initial user namespace
+    /// besides). What the job learns is the inode and generation numbers of
+    /// files it can see.
+    FileHandleNames,
+}
+
+impl CiAllowance {
+    /// The calls it takes out of [`CI_DENIES`].
+    #[cfg(target_os = "linux")]
+    fn syscalls(self) -> &'static [libc::c_long] {
+        match self {
+            Self::FileHandleNames => &[libc::SYS_name_to_handle_at],
+        }
+    }
+}
 
 /// What [`CiProfile::Privileged`] takes out of [`CI_DENIES`]: rootful
 /// containers mount, pivot and join namespaces.
@@ -573,8 +601,24 @@ const CI_PERSONALITIES: &[u64] = &[0, 0xffff_ffff];
 /// Returns [`SeccompError::Compile`] if seccompiler rejects a condition.
 #[cfg(target_os = "linux")]
 pub fn ci_rules(profile: CiProfile) -> Result<BTreeMap<i64, Vec<SeccompRule>>, SeccompError> {
+    ci_rules_allowing(profile, &[])
+}
+
+/// [`ci_rules`] for a job also allowed `allowances`.
+///
+/// # Errors
+///
+/// As [`ci_rules`].
+#[cfg(target_os = "linux")]
+pub fn ci_rules_allowing(
+    profile: CiProfile,
+    allowances: &[CiAllowance],
+) -> Result<BTreeMap<i64, Vec<SeccompRule>>, SeccompError> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     for nr in CI_DENIES {
+        if allowances.iter().any(|a| a.syscalls().contains(nr)) {
+            continue;
+        }
         if profile == CiProfile::Privileged && CI_PRIVILEGED_ALLOWS.contains(nr) {
             continue;
         }
@@ -643,7 +687,20 @@ pub fn ci_rules(profile: CiProfile) -> Result<BTreeMap<i64, Vec<SeccompRule>>, S
 /// Returns [`SeccompError`] if the rules or their compilation fail.
 #[cfg(target_os = "linux")]
 pub fn ci_program(profile: CiProfile) -> Result<BpfProgram, SeccompError> {
-    deny_list_program(ci_rules(profile)?)
+    ci_program_allowing(profile, &[])
+}
+
+/// [`ci_program`] for a job also allowed `allowances`.
+///
+/// # Errors
+///
+/// As [`ci_program`].
+#[cfg(target_os = "linux")]
+pub fn ci_program_allowing(
+    profile: CiProfile,
+    allowances: &[CiAllowance],
+) -> Result<BpfProgram, SeccompError> {
+    deny_list_program(ci_rules_allowing(profile, allowances)?)
 }
 
 /// Install `program` on every thread of the calling process. Sets
@@ -1097,7 +1154,17 @@ mod tests {
     /// returns its exit status (12 = the filter would not install).
     #[cfg(target_os = "linux")]
     fn under_ci(profile: CiProfile, probe: fn() -> i32) -> i32 {
-        let program = ci_program(profile).expect("compile filter");
+        under_ci_allowing(profile, &[], probe)
+    }
+
+    /// [`under_ci`] with `allowances`.
+    #[cfg(target_os = "linux")]
+    fn under_ci_allowing(
+        profile: CiProfile,
+        allowances: &[CiAllowance],
+        probe: fn() -> i32,
+    ) -> i32 {
+        let program = ci_program_allowing(profile, allowances).expect("compile filter");
         // SAFETY: the child installs a filter, makes raw syscalls with inert
         // arguments and exits without returning into the test harness.
         let pid = unsafe { libc::fork() };
@@ -1234,6 +1301,69 @@ mod tests {
             "30 = NETLINK_ROUTE was refused, 31 = netfilter or XFRM netlink was allowed, \
              33 = bpf or setns was allowed"
         );
+    }
+
+    /// `name_to_handle_at` with no handle: the kernel answers EFAULT, the
+    /// filter EPERM first.
+    #[cfg(target_os = "linux")]
+    fn handle_name_errno() -> i32 {
+        // SAFETY: a literal path and null pointers; the kernel faults on the
+        // handle before it writes anything.
+        errno_of(unsafe {
+            libc::syscall(
+                libc::SYS_name_to_handle_at,
+                i64::from(libc::AT_FDCWD),
+                c"/".as_ptr(),
+                0_i64,
+                0_i64,
+                0_i64,
+            )
+        })
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn file_handle_names_are_allowed_only_to_a_job_that_asks() {
+        let allowed = [CiAllowance::FileHandleNames];
+        for profile in [
+            CiProfile::Standard,
+            CiProfile::Nested,
+            CiProfile::Privileged,
+        ] {
+            let refused = under_ci(profile, || i32::from(handle_name_errno() != libc::EPERM));
+            assert_eq!(refused, 0, "{profile:?} allowed name_to_handle_at unasked");
+            // Only this call: the other half of the pair and setns stay refused.
+            let rest = under_ci_allowing(profile, &allowed, || {
+                // SAFETY: invalid descriptors and a null handle; the filter
+                // answers first.
+                let open = errno_of(unsafe {
+                    libc::syscall(libc::SYS_open_by_handle_at, -1_i64, 0_i64, 0_i64)
+                });
+                i32::from(open != libc::EPERM)
+            });
+            assert_eq!(
+                rest, 0,
+                "{profile:?} with the allowance allowed open_by_handle_at"
+            );
+        }
+        let setns = under_ci_allowing(CiProfile::Nested, &allowed, || {
+            // SAFETY: an invalid descriptor; the filter answers first.
+            i32::from(
+                errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) }) != libc::EPERM,
+            )
+        });
+        assert_eq!(setns, 0, "the allowance let setns through");
+        // Inside a sandbox that already refuses it (a CI job), the call never
+        // reaches the kernel whatever this filter says.
+        if handle_name_errno() == libc::EFAULT {
+            let reaches = under_ci_allowing(CiProfile::Nested, &allowed, || {
+                i32::from(handle_name_errno() != libc::EFAULT)
+            });
+            assert_eq!(
+                reaches, 0,
+                "name_to_handle_at did not reach the kernel when allowed"
+            );
+        }
     }
 
     #[test]

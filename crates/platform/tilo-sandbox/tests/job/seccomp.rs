@@ -123,3 +123,57 @@ fn ordinary_build_syscalls_still_work() {
     assert!(status.success(), "{out}");
     assert!(out.contains("HI") && out.contains("ok"), "{out}");
 }
+
+#[test]
+fn only_a_job_allowed_file_handle_names_gets_them_and_open_by_handle_stays_refused() {
+    needs_sandbox!();
+    // name_to_handle_at with no handle: the kernel answers "Bad address", the
+    // filter "Operation not permitted" before it. open_by_handle_at stays
+    // refused either way, and setns with it.
+    let script = r#"
+for probe in \
+  'import ctypes,os; nr={"x86_64":303,"aarch64":264}[os.uname().machine]; libc=ctypes.CDLL(None,use_errno=True); libc.syscall(nr,-100,b"/",None,None,0); print("name_to_handle_at", os.strerror(ctypes.get_errno()))' \
+  'import ctypes,os; nr={"x86_64":304,"aarch64":265}[os.uname().machine]; libc=ctypes.CDLL(None,use_errno=True); libc.syscall(nr,-1,None,0); print("open_by_handle_at", os.strerror(ctypes.get_errno()))' \
+  'import ctypes,os; nr={"x86_64":308,"aarch64":268}[os.uname().machine]; libc=ctypes.CDLL(None,use_errno=True); libc.syscall(nr,-1,0); print("setns", os.strerror(ctypes.get_errno()))' ; do
+  python3 -c "$probe"
+done
+"#;
+    let line = |out: &str, name: &str| {
+        out.lines()
+            .find(|l| l.starts_with(&format!("{name} ")))
+            .unwrap_or("")
+            .to_owned()
+    };
+    let (status, out) = run(|s| {
+        shell(s, script);
+        s.allow_nested_sandboxes();
+    });
+    if out.contains("No such file or directory") && out.lines().count() < 3 {
+        eprintln!("skipped: no python3 in the host root: {out}");
+        return;
+    }
+    assert!(status.success(), "{out}");
+    for name in ["name_to_handle_at", "open_by_handle_at", "setns"] {
+        assert!(
+            line(&out, name).contains("Operation not permitted"),
+            "{name} was not refused unasked: {out}"
+        );
+    }
+
+    let (status, out) = run(|s| {
+        shell(s, script);
+        s.allow_nested_sandboxes();
+        s.allow(tilo_sandbox::job::CiAllowance::FileHandleNames);
+    });
+    assert!(status.success(), "{out}");
+    assert!(
+        line(&out, "name_to_handle_at").contains("Bad address"),
+        "name_to_handle_at did not reach the kernel when allowed: {out}"
+    );
+    for name in ["open_by_handle_at", "setns"] {
+        assert!(
+            line(&out, name).contains("Operation not permitted"),
+            "the allowance let {name} through: {out}"
+        );
+    }
+}

@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-pub use sandbox_core::seccomp::CiProfile;
+pub use sandbox_core::seccomp::{CiAllowance, CiProfile};
 
 /// One job: a command, the filesystem it sees and how it is confined.
 #[derive(Debug, Clone)]
@@ -28,6 +28,9 @@ pub struct JobSpec {
     pub hostname: String,
     pub ids: IdMap,
     pub seccomp: Seccomp,
+    /// Calls the job is allowed beyond its [`Seccomp`] profile, one by one
+    /// (see [`JobSpec::allow`]). Ignored with [`Seccomp::Off`].
+    pub seccomp_allows: Vec<CiAllowance>,
     pub landlock: Landlock,
     /// Mount the job's own cgroup, read-only, at `/sys/fs/cgroup` (on an
     /// otherwise empty `/sys`), so tools see its CPU and memory limits.
@@ -51,9 +54,19 @@ impl JobSpec {
             hostname: "job".into(),
             ids: IdMap::current(),
             seccomp: Seccomp::Ci(CiProfile::Standard),
+            seccomp_allows: Vec::new(),
             landlock: Landlock::Required,
             cgroup_view: true,
         }
+    }
+
+    /// Allow the job one call its seccomp profile refuses (see
+    /// [`CiAllowance`]): for the one job that needs it, never a profile's.
+    pub fn allow(&mut self, allowance: CiAllowance) -> &mut Self {
+        if !self.seccomp_allows.contains(&allowance) {
+            self.seccomp_allows.push(allowance);
+        }
+        self
     }
 
     /// Set `key` in the job's environment, replacing an earlier value.

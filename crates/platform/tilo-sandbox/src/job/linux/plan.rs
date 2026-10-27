@@ -978,7 +978,10 @@ fn candidates(spec: &JobSpec) -> Result<Vec<CString>, SpawnError> {
         .collect()
 }
 
-fn seccomp_filters(mode: Seccomp) -> Result<Vec<Vec<libc::sock_filter>>, SpawnError> {
+fn seccomp_filters(
+    mode: Seccomp,
+    allowances: &[crate::job::spec::CiAllowance],
+) -> Result<Vec<Vec<libc::sock_filter>>, SpawnError> {
     use sandbox_core::seccomp;
     let Seccomp::Ci(profile) = mode else {
         return Ok(Vec::new());
@@ -986,7 +989,7 @@ fn seccomp_filters(mode: Seccomp) -> Result<Vec<Vec<libc::sock_filter>>, SpawnEr
     let compile = |e: seccomp::SeccompError| SpawnError::Invalid(format!("seccomp: {e}"));
     let programs = [
         seccomp::clone3_compat_program().map_err(compile)?,
-        seccomp::ci_program(profile).map_err(compile)?,
+        seccomp::ci_program_allowing(profile, allowances).map_err(compile)?,
     ];
     Ok(programs
         .iter()
@@ -1091,7 +1094,7 @@ impl Plan {
                 })
                 .collect::<Result<_, _>>()?,
             landlock: landlock(landlock_mode(spec), rules)?,
-            seccomp: seccomp_filters(spec.seccomp)?,
+            seccomp: seccomp_filters(spec.seccomp, &spec.seccomp_allows)?,
             cap_last,
         })
     }

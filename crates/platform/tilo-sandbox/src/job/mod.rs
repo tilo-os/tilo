@@ -39,7 +39,8 @@ pub mod vm;
 use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
 
 pub use spec::{
-    CiProfile, IdBlock, IdMap, JobSpec, Landlock, Mount, MountKind, NESTING_ID, Root, Seccomp, Tmp,
+    CiAllowance, CiProfile, IdBlock, IdMap, JobSpec, Landlock, Mount, MountKind, NESTING_ID, Root,
+    Seccomp, Tmp,
 };
 
 #[cfg(target_os = "linux")]
