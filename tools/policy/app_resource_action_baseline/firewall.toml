@@ -1,2 +1,5 @@
+[ratchets.closure_action_button]
+"apps/firewall/src/view.rs" = 6
+
 [ratchets.closure_control]
 "apps/firewall/src/view.rs" = 1

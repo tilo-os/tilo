@@ -1,2 +1,5 @@
+[ratchets.closure_action_button]
+"apps/backups/src/view.rs" = 2
+
 [ratchets.closure_control]
 "apps/backups/src/view.rs" = 1

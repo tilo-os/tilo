@@ -1,2 +1,6 @@
+[ratchets.closure_action_button]
+"apps/mail/src/app.rs" = 2
+"apps/mail/src/reader.rs" = 1
+
 [ratchets.closure_control]
 "apps/mail/src/sidebar.rs" = 1
