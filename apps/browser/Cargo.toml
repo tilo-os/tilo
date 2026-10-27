@@ -26,9 +26,11 @@ thin = ["dep:runtime-dylib"]
 # (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
 # links them statically, because an engine library links only through
 # tools/ci/rustc-thin-app-wrapper.sh. Signed-in website sessions' custody
-# (account-custody's service sessions, through tilo-browser-sessions) comes
-# from the accounts engine (libtilo_accounts_engine.so) Mail and Settings
-# already load, rather than a second copy in the tapp.
+# (account-custody's service sessions, through tilo-browser-sessions in
+# browser-parts) comes from the accounts engine (libtilo_accounts_engine.so)
+# Mail and Settings already load, rather than a second copy in the tapp: the
+# import engine, which carries browser-parts, names it DT_NEEDED, so Browser
+# loads it through that engine (tools/apps/release-smoke.sh checks the chain).
 runtime-engine = ["thin", "tilo-browser-import-engine/thin", "tilo-accounts-engine/thin"]
 
 [dependencies]
@@ -42,8 +44,10 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the
 # `webview-adblock` feature provides filter-list compilation. The default
 # Chromium helper applies built-in network, cosmetic and scriptlet filtering.
+# The resource actions (`Resource`, `ActionBinding`, the invocation protocol)
+# and content by address (`ContentStore`) are the toolkit's to hand an app:
+# `ui::tilo_actions` and `ui::content`, not the crates behind them.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock"] }
-tilo-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-browser-import-engine = { path = "../../crates/runtime/engines/browser-import", optional = true }
 tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
@@ -74,6 +78,10 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # Browser's tests compile the parts in (src/lib.rs), with what they use.
 tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
+# The parts' sources name the action types the crate behind `ui::tilo_actions`
+# defines, and Browser compiles them into its own tests; Browser's shipped code
+# reaches them through `ui`.
+tilo-actions = { path = "../../crates/collab/actions" }
 fnv.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 host-info = { path = "../../crates/system/host-info" }

@@ -842,14 +842,6 @@ fn capture_every_scenario(
 /// Whether these arguments run the app in a live native window, rather than
 /// headless, as captures or as an audit.
 #[cfg(feature = "native")]
-/// A capture that could not set text in the product's faces is refused; on a
-/// build with no capture path there is nothing to refuse.
-#[cfg(not(feature = "native"))]
-fn capture_font_gate(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let _ = args;
-    Ok(())
-}
-
 fn opens_native_window(args: &LaunchArgs) -> bool {
     args.headless.is_none()
         && args.shots.is_none()
@@ -969,6 +961,13 @@ fn run_parsed(
             } else if let Some(directory) = &args.responsive_matrix {
                 for (name, viewport) in RESPONSIVE_VIEWPORTS {
                     driver.resize_component_capture(viewport);
+                    // The frame is the window a person sees a moment after the
+                    // resize, not the first one it could draw: a scroll thumb
+                    // still fading out, or a page still drawn from the bitmap
+                    // of the width it had before, is a difference about the
+                    // capture rather than about the layout. Equal frames are
+                    // only evidence when both were taken the same moment in.
+                    driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
                     driver.render_png(&directory.join(format!("{}-{name}.png", spec.app_id)));
                 }
             }
@@ -2790,7 +2789,7 @@ mod prepared_launch_tests {
         definition: &crate::application::ApplicationDefinition,
         args: &LaunchArgs,
         target: LaunchTarget,
-        authority: Rc<std::cell::RefCell<crate::permissions::PermissionContext>>,
+        authority: crate::permissions::SharedPermissions,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         PREPARES.set(PREPARES.get().saturating_add(1));
         let root = PathBuf::from(args.value("--fixture-root").expect("explicit test root"));

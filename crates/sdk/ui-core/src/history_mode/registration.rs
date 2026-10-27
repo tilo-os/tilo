@@ -128,6 +128,9 @@ pub struct HistoryRegistration {
     pub(crate) sources: Vec<HistorySourceRegistration>,
     pub(crate) assets:
         std::collections::HashMap<&'static str, std::rc::Rc<dyn super::HistoricalAssetSource>>,
+    /// The change History opens at when the window starts, as a window
+    /// replaying a recording opens at its first step.
+    pub(crate) opening_at: Option<crate::HistoryEntryId>,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HistoryRegistrationError {
@@ -221,6 +224,7 @@ impl HistoryRegistration {
             definition,
             sources,
             assets: std::collections::HashMap::new(),
+            opening_at: None,
         };
         registration.validate()?;
         for scope in definition.scopes {

@@ -52,7 +52,8 @@ async fn execute(route: &PrivateChatRoute, command: PersonChatCommand) -> Result
                 return Err("private contacts exceed bound".into());
             }
             serde_json::json!(contacts.into_iter().map(|contact| serde_json::json!({
-                "public_key": contact.public_key, "display_name": contact.display_name.unwrap_or_default()
+                "public_key": contact.public_key, "display_name": contact.display_name.unwrap_or_default(),
+                    "conversation": contact.conversation
             })).collect::<Vec<_>>())
         }
         PersonChatCommand::Open { public_key } => {

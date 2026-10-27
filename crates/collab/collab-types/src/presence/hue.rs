@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
 /// How many hues the presence palette has.
-pub const PRESENCE_LEN: usize = 12;
+pub const PRESENCE_LEN: usize = tilo_face::PRESENCE_LEN;
 
 /// The presence palette's hues, in OKLCH degrees: twelve evenly spaced, so
 /// neighbours sit 30° apart.
@@ -143,22 +143,7 @@ impl PresenceHue {
     /// demos and tests stay recognisable.
     #[must_use]
     pub fn of_identity(id: &str) -> Self {
-        match id {
-            "me" => Self::Blue,
-            "alice" => Self::Pink,
-            "bob" => Self::Orange,
-            "charlie" => Self::Green,
-            _ => {
-                // FNV-1a 64-bit: cheap, deterministic, no RNG state.
-                let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-                for byte in id.as_bytes() {
-                    hash ^= u64::from(*byte);
-                    hash = hash.wrapping_mul(0x0100_0000_01b3);
-                }
-                let slot = hash.checked_rem(PRESENCE_LEN as u64).unwrap_or(0);
-                Self::from_slot(usize::try_from(slot).unwrap_or(0))
-            }
-        }
+        Self::from_slot(tilo_face::presence_slot(id))
     }
 
     /// The person's stored choice in a settings document

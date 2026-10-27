@@ -1104,6 +1104,51 @@ impl<R> Edit<R> {
         }
     }
 
+    /// The same edit of a record stored as `root`, which callers also call
+    /// by one of `names`: a path whose first field names no field of the
+    /// record but the record itself starts at the field after it. A record
+    /// read nests its fields under such a name (a timeline's `project`), and
+    /// callers send `project.name` back.
+    ///
+    /// # Errors
+    /// The path names the record and nothing in it, or a field in it that
+    /// is not ordinary: the refusal says where the path starts.
+    pub(crate) fn past_record_name(
+        self,
+        root: crate::Shape,
+        names: &[&str],
+    ) -> Result<Self, String> {
+        let fields = root.fields();
+        let Some((Segment::Field(head), rest)) = self.path.split_first() else {
+            return Ok(self);
+        };
+        if fields.iter().any(|field| field.key == head)
+            || !names.iter().any(|name| name.eq_ignore_ascii_case(head))
+        {
+            return Ok(self);
+        }
+        let Some(start) = rest.first() else {
+            let editable: Vec<&str> = fields
+                .iter()
+                .filter(|field| !field.readonly)
+                .map(|field| field.key)
+                .collect();
+            return Err(format!(
+                "`{head}` is the record itself, not one of its fields: start the path at the field to change, one of {}",
+                editable.join(", ")
+            ));
+        };
+        // A door decides whether an edit asks first from the path as sent,
+        // which names no field that exposes the person or weakens their
+        // security; an edit of such a field is sent again from the root.
+        if root.trust_at(rest) != crate::Trust::Ordinary {
+            return Err(format!(
+                "`{head}` is the record itself, not one of its fields: start the path at `{start}`"
+            ));
+        }
+        Ok(Self::new(rest.to_vec(), self.op))
+    }
+
     /// Whether `next`, by the same actor straight after `self`, continues
     /// the same gesture: one undo step. Setting one path again (dragging a
     /// slider), typing on at the end of the previous splice (a word) and a

@@ -64,10 +64,17 @@ use super::record::RecordDoor;
 /// the host applies the action to the part of the chain it names.
 pub(crate) const CHAIN_ACTION_TYPE: &str = "tilo.app.chain-action";
 
-/// How often a window looks for parts that arrived on this device without
-/// being opened (a new head synced in) when nothing told its store one did
-/// ([`RecordStore::note_kept`]): listing the store reads its index.
-const LOOK_EVERY: ui_core::time::Duration = ui_core::time::Duration::from_secs(1);
+/// Where an earlier part a window asked for ([`Chain::hold`]) stands until
+/// what the room has of it is read here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartArrival {
+    /// Asked for; what the room has of it is on its way.
+    Arriving,
+    /// The room's hosts sent everything they hold, and none of it was this
+    /// part, or no host is connected to ask: nothing more comes until that
+    /// changes (a host connects, someone who has it shares it).
+    Unavailable,
+}
 
 /// A resource whose records are the parts of a chain kept beside the app's
 /// own record ([`RecordId::part`]). See the module docs.
@@ -103,6 +110,16 @@ pub trait Chained: Resource {
         Ok(())
     }
 
+    /// What a part started after part `previous` (whose state is `part`)
+    /// carries of the parts before it, written into it as it starts, before
+    /// the action that started it: a summary a reader needs of parts it
+    /// does not hold (a chat's message counts for unread badges). Whoever
+    /// starts a part holds the one before. `None` carries nothing.
+    fn carry(previous: u64, part: &Self::State) -> Option<Invoke<Self>> {
+        let _ = (previous, part);
+        None
+    }
+
     /// Where in the app's own record `action` happens, named as everyone
     /// the record is shared with sees that place (a post's channel,
     /// `#general`): history keeps it on the step
@@ -113,6 +130,17 @@ pub trait Chained: Resource {
         let _ = (action, base);
         None
     }
+}
+
+/// How a part was opened ([`ChainState::open_or_start`]).
+enum Opened {
+    /// Held already, or read from this device.
+    Held,
+    /// Started from its genesis here: nothing of it was on this device.
+    Started,
+    /// Asked of the room, through which the store reads records; not open
+    /// until it arrives.
+    Asked,
 }
 
 /// What a window holds a chain with: the store of the app's records, who
@@ -137,13 +165,17 @@ pub(crate) struct ChainState<P: Chained> {
     id: String,
     kind: RecordKind,
     parts: RefCell<BTreeMap<u64, Live<P>>>,
+    /// Earlier parts asked for ([`Self::hold`]) that are not read here
+    /// yet: held from their genesis, or not open at all while the room
+    /// sends them.
+    waiting: RefCell<BTreeMap<u64, PartArrival>>,
     /// What a part holds before anything was written to it: what the chain
     /// publishes before it has a head.
     empty: Rc<P::State>,
     revision: Cell<u64>,
-    /// When the window last looked for a newer head, with the store's
-    /// [`RecordStore::kept_revision`] then.
-    looked: Cell<Option<(ui_core::time::Instant, u64)>>,
+    /// The store's [`RecordStore::kept_revision`] when the window last
+    /// looked for a newer head and at the parts it waits for.
+    looked: Cell<Option<u64>>,
     published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
 }
 
@@ -165,6 +197,7 @@ impl<P: Chained> ChainState<P> {
             id: ui_core::record::chain_resource_id(&P::chain()),
             kind: RecordKind::new(P::KIND),
             parts: RefCell::default(),
+            waiting: RefCell::default(),
             empty,
             revision: Cell::new(0),
             looked: Cell::new(None),
@@ -216,7 +249,11 @@ impl<P: Chained> ChainState<P> {
                 .store
                 .read(&P::chain().part(*index), |doc| live.sync(doc))
             {
-                Some(Ok(true)) => moved = true,
+                Some(Ok(true)) => {
+                    // Its history arrived, or a first change was made here.
+                    self.waiting.borrow_mut().remove(index);
+                    moved = true;
+                }
                 Some(Err(error)) => {
                     tracing::warn!(kind = P::KIND, part = index, %error, "chain part unreadable");
                 }
@@ -240,6 +277,7 @@ impl<P: Chained> ChainState<P> {
         }
         if self.due() {
             moved |= self.look();
+            moved |= self.follow_waiting();
         }
         if moved {
             self.moved();
@@ -247,28 +285,61 @@ impl<P: Chained> ChainState<P> {
         moved
     }
 
-    /// Whether to look for a newer head now: the store was told a record
-    /// arrived, or the last look is a while ago. Not while a frame reads the
-    /// store (a view's sync): opening a part takes the store's writer, so
-    /// the look waits for the frame's settle, where the window takes up what
-    /// it was sent, and the view's sync reads the part it opened.
+    /// Whether to look for a newer head and at the parts waited for now:
+    /// the store was told a record arrived or what the room said of one
+    /// ([`RecordStore::note_kept`], [`RecordStore::announce`],
+    /// [`RecordStore::note_room_answered`]), each of which wakes the window.
+    /// Not while a frame reads the store (a view's sync): opening a part
+    /// takes the store's writer, so the look waits for the frame's settle,
+    /// where the window takes up what it was sent, and the view's sync reads
+    /// the part it opened.
     fn due(&self) -> bool {
-        if !self.room.store.takes_writes() {
-            return false;
+        self.room.store.takes_writes() && self.looked.get() != Some(self.room.store.kept_revision())
+    }
+
+    /// Open every part waited for that arrived since, and mark unavailable
+    /// those the room said it has no more of. Whether any changed.
+    fn follow_waiting(&self) -> bool {
+        let waiting: Vec<(u64, PartArrival)> = self
+            .waiting
+            .borrow()
+            .iter()
+            .map(|(index, arrival)| (*index, *arrival))
+            .collect();
+        let mut moved = false;
+        for (index, arrival) in waiting {
+            let held = self.parts.borrow().contains_key(&index);
+            if !held {
+                match self.open_or_start(index) {
+                    // Here now, with what the room sent of it.
+                    Ok(Opened::Held | Opened::Started) => {
+                        self.waiting.borrow_mut().remove(&index);
+                        moved = true;
+                        continue;
+                    }
+                    Ok(Opened::Asked) => {}
+                    Err(error) => {
+                        tracing::debug!(kind = P::KIND, part = index, %error, "earlier part not opened");
+                    }
+                }
+            }
+            let now = if self.room.store.room_answered(&P::chain().part(index)) {
+                PartArrival::Unavailable
+            } else {
+                PartArrival::Arriving
+            };
+            if now != arrival {
+                self.waiting.borrow_mut().insert(index, now);
+                moved = true;
+            }
         }
-        self.looked.get().is_none_or(|(at, kept)| {
-            kept != self.room.store.kept_revision()
-                || ui_core::time::now().saturating_duration_since(at) >= LOOK_EVERY
-        })
+        moved
     }
 
     /// Open every part newer than the head that this device holds. Whether
     /// one was.
     fn look(&self) -> bool {
-        self.looked.set(Some((
-            ui_core::time::now(),
-            self.room.store.kept_revision(),
-        )));
+        self.looked.set(Some(self.room.store.kept_revision()));
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.
@@ -283,9 +354,21 @@ impl<P: Chained> ChainState<P> {
             return false;
         }
         let opened = if kept.is_some_and(|kept| kept >= newest) {
-            self.hold(newest)
+            self.hold_kept(newest)
         } else {
-            self.start(newest)
+            // A part a peer started, started here from its genesis: what
+            // they wrote in it is on its way, and a view of it waits for
+            // that rather than reading back from an empty head.
+            self.open_or_start(newest).and_then(|opened| match opened {
+                Opened::Held => Ok(()),
+                Opened::Started => {
+                    self.waiting
+                        .borrow_mut()
+                        .insert(newest, PartArrival::Arriving);
+                    Ok(())
+                }
+                Opened::Asked => Err("the part is on its way from the room".into()),
+            })
         };
         opened
             .map_err(|error| {
@@ -294,8 +377,9 @@ impl<P: Chained> ChainState<P> {
             .is_ok()
     }
 
-    /// Hold part `index`, which this device has or asks its room for.
-    pub(crate) fn hold(&self, index: u64) -> Result<(), String> {
+    /// Hold part `index`, which this device keeps: a part a history verb
+    /// names is one someone here wrote to.
+    fn hold_kept(&self, index: u64) -> Result<(), String> {
         if self.parts.borrow().contains_key(&index) {
             return Ok(());
         }
@@ -309,24 +393,77 @@ impl<P: Chained> ChainState<P> {
         self.follow(index)
     }
 
+    /// Hold part `index`: read it from this device, or, when this device
+    /// has none of it, ask the room for it. A store that reads records
+    /// through the room (a native app's) asks for it as it opens it; any
+    /// other starts it from its genesis (the same change on every device),
+    /// so it is open here and the room's record sync asks the room for its
+    /// history, which merges in as it arrives. It is waited for until then
+    /// ([`Self::waiting`]); its arrival, or the room saying it has none of
+    /// it, wakes the window ([`RecordStore::wake_on_arrival`]).
+    pub(crate) fn hold(&self, index: u64) -> Result<(), String> {
+        match self.open_or_start(index)? {
+            Opened::Held => {}
+            Opened::Started | Opened::Asked => {
+                self.waiting
+                    .borrow_mut()
+                    .insert(index, PartArrival::Arriving);
+                // Looked at again at the next refresh, with what the store
+                // already knows of it.
+                self.looked.set(None);
+                self.moved();
+            }
+        }
+        Ok(())
+    }
+
+    /// Where part `index`, asked for and not read here yet, stands; `None`
+    /// once it is read (or was never asked for).
+    pub(crate) fn waiting(&self, index: u64) -> Option<PartArrival> {
+        self.waiting.borrow().get(&index).copied()
+    }
+
+    /// Every part asked for and not read here yet, oldest first.
+    pub(crate) fn waited(&self) -> Vec<(u64, PartArrival)> {
+        self.waiting
+            .borrow()
+            .iter()
+            .map(|(index, arrival)| (*index, *arrival))
+            .collect()
+    }
+
     /// Hold part `index`, starting it when nobody has.
     fn start(&self, index: u64) -> Result<(), String> {
+        match self.open_or_start(index)? {
+            Opened::Held | Opened::Started => Ok(()),
+            Opened::Asked => Err("the part is on its way from the room".into()),
+        }
+    }
+
+    /// Hold part `index`, kept on this device or started from its genesis,
+    /// or ask the room for it where the store reads records through it.
+    fn open_or_start(&self, index: u64) -> Result<Opened, String> {
         if self.parts.borrow().contains_key(&index) {
-            return Ok(());
+            return Ok(Opened::Held);
         }
         let checkout = self.checkout(index);
+        let mut opened = Opened::Held;
         if !self.room.store.is_ready(&checkout.id) {
             match self.room.store.try_open_record(&checkout) {
                 Ok(_) => {}
-                // A store that keeps no canonical records (a test's) has no
-                // record it could open: it is started as every record is.
+                Err(RecordOpenError::Arriving) => return Ok(Opened::Asked),
+                // Nothing of it on this device, or a store that keeps no
+                // canonical records (a test's) and has no record it could
+                // open: it is started as every record is.
                 Err(RecordOpenError::MissingRecord | RecordOpenError::IdentityMismatch) => {
                     self.create(&checkout)?;
+                    opened = Opened::Started;
                 }
                 Err(error) => return Err(error.to_string()),
             }
         }
-        self.follow(index)
+        self.follow(index)?;
+        Ok(opened)
     }
 
     /// Create the part `checkout` names, with the part resource's genesis:
@@ -456,10 +593,41 @@ impl<P: Chained> ChainState<P> {
                 )));
             }
         }
-        self.start(index).map_err(ActionError::Refused)?;
+        let head = self.parts.borrow().keys().next_back().copied();
+        match self.open_or_start(index).map_err(ActionError::Refused)? {
+            Opened::Held => {}
+            Opened::Started => {
+                if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
+                    self.carry(previous, index, invoker)?;
+                }
+            }
+            Opened::Asked => {
+                return Err(ActionError::Refused(
+                    "the part is on its way from the room".into(),
+                ));
+            }
+        }
         let encoded = tilo_resource::encode::<P>(&action)?;
         let created = self.write(index, &action, encoded, invoker, place)?;
         Ok((index, created))
+    }
+
+    /// Write into part `index`, just started after part `previous`, what it
+    /// carries of the parts before it ([`Chained::carry`]), as `invoker`'s.
+    fn carry(&self, previous: u64, index: u64, invoker: &ActionInvoker) -> Result<(), ActionError> {
+        let Some(carried) = self
+            .parts
+            .borrow()
+            .get(&previous)
+            .and_then(|part| P::carry(previous, &part.get()))
+        else {
+            return Ok(());
+        };
+        let action = carried
+            .build(tilo_resource::origin_now_ms())
+            .map_err(ActionError::Refused)?;
+        let encoded = tilo_resource::encode::<P>(&action)?;
+        self.write(index, &action, encoded, invoker, None).map(drop)
     }
 
     /// Apply a history verb to the part it names ([`PartEdit`]), invoked by
@@ -489,7 +657,7 @@ impl<P: Chained> ChainState<P> {
                 P::LABEL.to_lowercase()
             )));
         }
-        self.hold(edit.part).map_err(ActionError::Refused)?;
+        self.hold_kept(edit.part).map_err(ActionError::Refused)?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
         self.write(edit.part, &edit.action::<P>(), encoded, invoker, None)?;
         let now = self
@@ -766,11 +934,31 @@ impl<P: Chained> Chain<P> {
         self.state.revision()
     }
 
-    /// Hold the earlier part `index` too: read it from this device, which
-    /// asks the room for it when it has not got it yet (its changes arrive
-    /// and [`Self::revision`] moves).
+    /// Hold the earlier part `index` too: read it from this device, or ask
+    /// the room for it when this device has none of it. Its history merges
+    /// in as it arrives ([`Self::revision`] moves, the window is woken);
+    /// [`Self::waiting`] says where it stands until then.
+    ///
+    /// # Errors
+    /// The part could not be opened or asked for here.
     pub fn hold(&self, index: u64) -> Result<(), String> {
         self.state.hold(index)
+    }
+
+    /// Where part `index`, asked for and not read here yet, stands: on its
+    /// way (a view shows it loading, not empty), or unavailable (a view says
+    /// so, with nothing spinning). `None` once it is read.
+    #[must_use]
+    pub fn waiting(&self, index: u64) -> Option<PartArrival> {
+        self.state.refresh();
+        self.state.waiting(index)
+    }
+
+    /// Every part asked for and not read here yet, oldest first.
+    #[must_use]
+    pub fn waited(&self) -> Vec<(u64, PartArrival)> {
+        self.state.refresh();
+        self.state.waited()
     }
 
     /// Apply `action` now, as the window's person, to the part it changes.

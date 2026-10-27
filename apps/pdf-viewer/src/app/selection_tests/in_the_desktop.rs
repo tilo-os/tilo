@@ -3,7 +3,7 @@
 //! app: a press-drag reaches the reader through the strip and its window, and
 //! Ctrl+C copies what it selected.
 
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{rc::Rc, time::Duration};
 
 use serial_test::serial;
 use tilo_desktop_model::{IdMinter, Tab, TileContent, Workspace};
@@ -34,10 +34,9 @@ impl TileSource for Readers {
             ui::application_view::InstanceViewStore::new(self.state.clone(), "device", &room)
                 .expect("views"),
         );
-        let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-            "reader",
-            ui::permissions::Role::Owner,
-        )));
+        let permissions = ui::permissions::SharedPermissions::new(
+            ui::permissions::PermissionContext::member("reader", ui::permissions::Role::Owner),
+        );
         let mut context = HostContext::prepare(
             definition,
             HostContextInputs {

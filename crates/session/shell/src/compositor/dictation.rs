@@ -69,10 +69,18 @@ struct Recognition {
 }
 
 #[derive(PartialEq, Eq)]
+enum TargetRevision {
+    /// A foreign client's field: any committed change, including caret geometry.
+    Protocol(u64),
+    /// The compositor's own native field: committed edits only.
+    NativeEdit(u64),
+}
+
+#[derive(PartialEq, Eq)]
 struct Target {
     field: ObjectId,
     surface: ObjectId,
-    revision: u64,
+    revision: TargetRevision,
     multiline: bool,
     owner: TrustedInputMethod,
     private: Option<super::private_text_input::Identity>,
@@ -1103,8 +1111,21 @@ impl State {
                     // keyboard IME is separate.
                     Err(DictationError::UnsupportedField)
                 } else {
-                    self.text_fields
-                        .revision(field)
+                    // A foreign client's caret geometry is the only evidence
+                    // that its edit position moved. The native field instead
+                    // has an owner identity and a keyed text/selection stamp
+                    // (`ShellTextInput`), so its caret moving with layout,
+                    // reflow or a window resize keeps the original target.
+                    let revision = if self.shell_field_active {
+                        self.text_fields
+                            .edit_revision(field)
+                            .map(TargetRevision::NativeEdit)
+                    } else {
+                        self.text_fields
+                            .revision(field)
+                            .map(TargetRevision::Protocol)
+                    };
+                    revision
                         .map(|revision| Target {
                             field: field.id(),
                             surface: surface.id(),

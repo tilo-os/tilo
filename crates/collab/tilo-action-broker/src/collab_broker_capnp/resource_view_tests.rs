@@ -8,6 +8,8 @@ fn test_published_view(action: &str, view_id: &str, primary: bool) -> PublishedA
         resource_kind: "note".into(),
         resource_label: "One".into(),
         action_label: "Open".into(),
+        keywords: Vec::new(),
+        icon: None,
         description: None,
         operation_kind: tilo_actions::OperationKind::View,
         params: vec![

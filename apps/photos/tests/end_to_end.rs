@@ -732,7 +732,7 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
     eprintln!("phase save_does_not_default_to_overwriting_the_original");
     {
         let open = photos::OpenImage::new(
-            "/var/tmp/tilo/home/quinten/harbour.png",
+            "/var/tmp/tilo/home/user/harbour.png",
             10,
             10,
             "a".repeat(64),

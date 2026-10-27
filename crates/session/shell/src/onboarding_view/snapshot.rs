@@ -214,7 +214,7 @@ impl OnboardingView {
                 let _ = self.flow.complete(minted);
                 self.backup_was_verified = state == OnboardingVisualState::BackupVerified;
                 self.backup_saved = self.backup_was_verified.then(|| {
-                    PathBuf::from("/home/quinten/Documents/tilo-identity-backup.tilo-identity")
+                    PathBuf::from("/home/user/Documents/tilo-identity-backup.tilo-identity")
                 });
                 self.identity_ready_page = state == OnboardingVisualState::Ready;
             }

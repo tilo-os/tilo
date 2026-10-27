@@ -57,12 +57,24 @@ use ui::TextRole;
 mod controller;
 mod desk;
 mod desktop_control_chips;
+mod fullscreen_hint;
 pub use desk::SuperSurface;
 mod device_fabric;
 pub(crate) mod dictation_layer;
 mod displays;
 mod emoji_layer;
 mod history;
+// The surface model. Its vocabulary (`Role`, `Anchor`, `Modality`, `Owner`,
+// `Material`, `Lifecycle`, `Surface`) is what every overlay is migrating onto:
+// the stacked layers answer `ShellLayer::surface` today, and the overlays the
+// host still routes itself answer `LayerId::surface_kind` until they join them
+// (docs/architecture/surfaces.md, "Migration"). Nothing reads the model to
+// make a decision yet, so the arms no overlay uses are declared here, once,
+// rather than per type; the last migration step removes this.
+#[allow(
+    dead_code,
+    reason = "the surface model's vocabulary, published before input, scrim and focus are served from it; docs/architecture/surfaces.md, Migration"
+)]
 pub(crate) mod layers;
 mod live_shares;
 mod now_playing;
@@ -539,6 +551,9 @@ pub struct ShellOverlayHost {
     /// The live application directory, kept to narrow search to one part of
     /// an app when the app asks (`AppHostIntent::OpenSearch`).
     app_actions: Option<std::rc::Rc<crate::shell::search::providers::LiveAppActionsProvider>>,
+    /// An app's search, answered by its window: lent what the focused window
+    /// publishes for each query ([`Self::lend_focused_window`]).
+    focused_window: std::rc::Rc<crate::shell::search::providers::FocusedWindowProvider>,
     /// Starts an installed desktop app through the session launcher. Kept as
     /// an explicit service so fixture hosts can remain process-free.
     app_launcher: AppLauncher,
@@ -555,6 +570,14 @@ pub struct ShellOverlayHost {
     /// that row starts it with the app's arguments, and the person answers
     /// the rest, its confirmation among them.
     palette_offer: Option<(ui::search::SearchOffer, String)>,
+    /// The app's own action the palette was opened on
+    /// (`SearchRequest::asking`): once search lists it, the palette asks
+    /// for its arguments.
+    palette_asked: Option<tilo_actions::ActionAddress>,
+    /// The resource a search was opened on, selected in its rows (an app's
+    /// request, [`ui::search::SearchRequest::on`]): the row that opens it is
+    /// under the cursor once its provider answers, until the person moves it.
+    palette_anchor: Option<ui::search::Anchor>,
     /// A file row whose other actions the palette is listing (Alt+Enter),
     /// with the query to give back.
     secondary_flow: Option<(crate::shell::search::SearchResult, String)>,
@@ -615,9 +638,10 @@ pub struct ShellOverlayHost {
     /// palette's entries, so `take_structure_dirty` rebuilds the taffy
     /// node with the new row count — without this only ~1 result shows.
     palette_layout_dirty: bool,
-    /// Host rect and display area the palette's taffy style was last
-    /// computed against. See the sizing comment in `build_layout`.
-    palette_layout_host: Option<(Rect, Rect)>,
+    /// Host rect, display area and searched window (an app's search) the
+    /// palette's taffy style was last computed against. See the sizing
+    /// comment in `build_layout`.
+    palette_layout_host: Option<(Rect, Rect, Option<Rect>)>,
     content_node: Option<NodeId>,
     palette_node: Option<NodeId>,
     /// Shared chrome state; drives whether overview / quick-settings /
@@ -746,6 +770,9 @@ pub struct ShellOverlayHost {
     top_bar_reveal: top_bar_reveal::TopBarReveal,
     /// A fullscreen window's bar, shown over it when reached for.
     fullscreen_bar_reveal: top_bar_reveal::FullscreenBarReveal,
+    /// When a window filled the display and the shell began saying how to
+    /// leave it, while that is still up ([`fullscreen_hint`]).
+    fullscreen_hint: Option<Instant>,
     /// A finger that came down on a display's top edge while something
     /// hides there, and where: a swipe down from it reveals that.
     top_edge_swipe: Option<(u64, Point)>,

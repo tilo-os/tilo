@@ -4,8 +4,20 @@
 use super::{EngineError, EngineRequest, EngineResult, Layout, Query, plain_href};
 use crate::html::Document;
 
-pub(super) fn request(query: &str) -> Option<EngineRequest> {
-    EngineRequest::get("https://search.brave.com/search", &[("q", query)])
+pub(super) fn request(query: &str, safe: super::SafeMode) -> Option<EngineRequest> {
+    EngineRequest::get(
+        "https://search.brave.com/search",
+        &[
+            ("q", query),
+            (
+                "safesearch",
+                match safe {
+                    super::SafeMode::Off => "off",
+                    super::SafeMode::Strict => "strict",
+                },
+            ),
+        ],
+    )
 }
 
 pub(super) fn parse(doc: &Document) -> Result<Vec<EngineResult>, EngineError> {

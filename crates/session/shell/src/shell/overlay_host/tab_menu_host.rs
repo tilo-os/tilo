@@ -78,15 +78,20 @@ impl ShellOverlayHost {
         tab_count: usize,
         maximized: bool,
     ) -> Vec<crate::shell::window_menu::WindowMenuRow> {
-        use crate::shell::window_menu::{WindowMenuFacts, strip_shown_name, window_menu_rows};
+        use crate::shell::window_menu::{
+            WindowExtent, WindowMenuFacts, strip_shown_name, window_menu_rows,
+        };
         let mut facts = WindowMenuFacts {
             tab_count,
-            maximized,
+            extent: WindowExtent {
+                maximized,
+                full_screen: false,
+            },
             ..WindowMenuFacts::default()
         };
         if let Some(chrome) = self.chrome.as_ref() {
             let st = chrome.borrow();
-            facts.full_screen = st.fullscreen_group() == Some(target.group);
+            facts.extent.full_screen = st.fullscreen_group() == Some(target.group);
             let tree = st.tree();
             facts.renamable = crate::shell::tab_binding::may_rename_tab(&tree, target.tab);
             facts.sharing = crate::shell::search::providers::desktop_windows::shareable_window(
@@ -100,6 +105,21 @@ impl ShellOverlayHost {
                     shared,
                 },
             );
+            let surface = tree
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .find(|tab| tab.id == target.tab)
+                .and_then(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign { surface_id, .. } => {
+                        Some(*surface_id)
+                    }
+                    _ => None,
+                });
+            facts.attention = crate::shell::attention::is_asking(target.tab, surface);
             let home = tree
                 .desktop
                 .workspaces
@@ -119,6 +139,34 @@ impl ShellOverlayHost {
                     .iter()
                     .filter(|workspace| workspace.id != home.id)
                     .map(|workspace| (workspace.id, workspace.name.clone()))
+                    .collect();
+                // The other displays, in the order a person reads them:
+                // the menu is the discoverable "where can this go?" list,
+                // and the second panel on the desk belongs in it.
+                let here = tree.desktop.outputs.display_of(target.group);
+                let order = tree.desktop.outputs.reading_order();
+                drop(tree);
+                facts.displays = order
+                    .iter()
+                    .filter(|id| Some(**id) != here)
+                    .enumerate()
+                    .map(|(index, id)| {
+                        // Numbered by where it stands among the displays
+                        // this window is not on, as the display settings
+                        // name one it cannot identify.
+                        let number = order
+                            .iter()
+                            .position(|candidate| candidate == id)
+                            .unwrap_or(index)
+                            .saturating_add(1);
+                        (
+                            *id,
+                            crate::shell::i18n::t_args(
+                                "display-identify-unnamed",
+                                &[("number", number.into())],
+                            ),
+                        )
+                    })
                     .collect();
             }
         }
@@ -352,6 +400,65 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Give every window of `target`'s strip the same share of its width.
+    /// Whether any width changed.
+    fn equalize_widths_from_menu(&mut self, target: TabMenuTarget) -> bool {
+        let groups = self
+            .chrome
+            .as_ref()
+            .map(|chrome| {
+                let st = chrome.borrow();
+                let tree = st.tree();
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .find(|strip| strip.id == target.strip)
+                    .map(|strip| {
+                        strip
+                            .window_groups
+                            .iter()
+                            .map(|group| group.id)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        if groups.is_empty() {
+            return false;
+        }
+        let share = 1000_u32
+            .checked_div(u32::try_from(groups.len()).unwrap_or(1))
+            .unwrap_or(1000);
+        let mut changed = false;
+        for group in groups {
+            changed |=
+                self.set_group_width(group, crate::shell::state::WindowWidth::Fraction(share));
+        }
+        self.bump_chrome();
+        changed
+    }
+
+    /// Tell an agent about the menu's window, whatever app it shows: done
+    /// either way, so the menu has nothing more to offer.
+    fn tell_agent_from_menu(&mut self, target: TabMenuTarget) -> bool {
+        let app_id = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| {
+                chrome
+                    .borrow()
+                    .tab_app_id(target.strip, target.group, target.tab)
+            })
+            .map(|app| app.as_str().to_owned())
+            .unwrap_or_default();
+        // Done either way: without an agent to tell, the desktop
+        // says so, and the menu has nothing more to offer.
+        let at = self.layers.tab_menu.anchor_point();
+        self.tell_agent_about_app(&app_id, at);
+        true
+    }
+
     /// Run one tab-menu action against its tab; `true` when it was
     /// performed. Shared by the pointer and keyboard selection and by the
     /// accessibility route, so every door reaches the same operation — and
@@ -364,27 +471,17 @@ impl ShellOverlayHost {
         action: WindowMenuAction,
     ) -> bool {
         match action {
+            WindowMenuAction::Reveal => {
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                chrome.borrow_mut().show_tab(target.tab)
+            }
             // The `✕` and the keyboard chord's own durable lifecycle: tree
             // and document first, then the widget's close animation.
             WindowMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
             WindowMenuAction::CloseWindow => self.close_window_from_menu(target),
-            WindowMenuAction::TellAgent => {
-                let app_id = self
-                    .chrome
-                    .as_ref()
-                    .and_then(|chrome| {
-                        chrome
-                            .borrow()
-                            .tab_app_id(target.strip, target.group, target.tab)
-                    })
-                    .map(|app| app.as_str().to_owned())
-                    .unwrap_or_default();
-                // Done either way: without an agent to tell, the desktop
-                // says so, and the menu has nothing more to offer.
-                let at = self.layers.tab_menu.anchor_point();
-                self.tell_agent_about_app(&app_id, at);
-                true
-            }
+            WindowMenuAction::TellAgent => self.tell_agent_from_menu(target),
             WindowMenuAction::FullScreen => self.toggle_full_screen_from_menu(target),
             WindowMenuAction::Maximize => self.toggle_maximize_from_menu(target),
             WindowMenuAction::MoveToStrip(destination) => {
@@ -393,6 +490,25 @@ impl ShellOverlayHost {
             WindowMenuAction::MoveToWorkspace(workspace) => {
                 self.move_to_workspace_from_menu(target, workspace)
             }
+            WindowMenuAction::MoveToDisplay(display) => {
+                let moved = self.chrome.as_ref().is_some_and(|chrome| {
+                    chrome
+                        .borrow()
+                        .tree_mut()
+                        .move_group_to_display(target.group, display)
+                });
+                if moved {
+                    self.reframe_desktop();
+                    self.bump_chrome();
+                }
+                moved
+            }
+            WindowMenuAction::Width(width) => {
+                let changed = self.set_group_width(target.group, width);
+                self.bump_chrome();
+                changed
+            }
+            WindowMenuAction::EqualizeWidths => self.equalize_widths_from_menu(target),
             WindowMenuAction::NewTab => self.new_tab_from_menu(target),
             WindowMenuAction::RenameTab => self.begin_tab_rename(target),
             WindowMenuAction::ShareWindow => {

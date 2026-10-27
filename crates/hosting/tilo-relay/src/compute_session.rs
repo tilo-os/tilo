@@ -167,6 +167,29 @@ impl ProtocolHandler for ComputeProtocol {
     }
 }
 
+/// The workspace a message offers this device's compute in, if it is an
+/// offer.
+fn advertised_in(incoming: &ComputeEnvelope) -> Option<u64> {
+    match incoming {
+        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
+        _ => None,
+    }
+}
+
+/// What a device that does not drive this host's compute is told: a ping is
+/// answered, so the device learns it reaches the relay at all, and anything
+/// else is refused. Answers whether the session carries on.
+async fn controls_refused(
+    incoming: &ComputeEnvelope,
+    send: &mut SendStream,
+) -> Result<bool, ComputeSessionError> {
+    if matches!(incoming, ComputeEnvelope::Ping) {
+        write_compute(send, &ComputeEnvelope::Pong).await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 async fn run_server_session(
     protocol: ComputeProtocol,
     connection: Connection,
@@ -224,11 +247,7 @@ async fn run_server_session(
                     let controls =
                         host_person && !protocol.trust().is_agent(&peer.device_public_key);
                     if !controls {
-                        // Another user's device reaches environments on its
-                        // own streams; the control stream is the host's
-                        // person's.
-                        if matches!(incoming, ComputeEnvelope::Ping) {
-                            write_compute(&mut send, &ComputeEnvelope::Pong).await?;
+                        if controls_refused(&incoming, &mut send).await? {
                             continue;
                         }
                         break Err(ComputeSessionError::Protocol(
@@ -256,10 +275,7 @@ async fn run_server_session(
                             "compute message sent before workspace attach".into(),
                         ));
                     }
-                    let advertising = match &incoming {
-                        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
-                        _ => None,
-                    };
+                    let advertising = advertised_in(&incoming);
                     if let Some(reply) = dispatch_compute(&protocol.workspaces, &peer, incoming).await? {
                         write_compute(&mut send, &reply).await?;
                     }
@@ -277,7 +293,14 @@ async fn run_server_session(
             let lost = advertised
                 .contains(&workspace_id)
                 .then(|| refused.get(&workspace_id).copied().unwrap_or(WORKER_LOST));
-            release_workspace(workspace, peer.device_public_key, &disconnect, lost).await;
+            release_workspace(
+                workspace,
+                peer.device_public_key,
+                &disconnect,
+                advertised.is_empty(),
+                lost,
+            )
+            .await;
         }
     }
     outcome
@@ -325,12 +348,17 @@ async fn refused_workspaces(
 
 /// Release `device`'s compute state in `workspace` when this session (whose
 /// disconnect signal is `disconnect`) still holds it, and when it was
-/// working there, end its jobs with `lost`. The job scan is blocking I/O,
-/// so it runs on the blocking pool with the workspace lock moved along.
+/// working there, end its jobs with `lost`. A session that never offered
+/// compute is a requester's, and a requester keeps the results it is owed:
+/// ending it drops only its delivery channel, so the durable queue it was
+/// replaying stays whole for its device's next session instead of being
+/// withdrawn with a worker's job. The job scan is blocking I/O, so it runs
+/// on the blocking pool with the workspace lock moved along.
 async fn release_workspace(
     workspace: SharedWorkspace,
     device: [u8; 32],
     disconnect: &mpsc::Sender<()>,
+    requester_session: bool,
     lost: Option<&'static str>,
 ) {
     let Some(code) = lost else {
@@ -342,6 +370,10 @@ async fn release_workspace(
     let disconnect = disconnect.clone();
     let released = tokio::task::spawn_blocking(move || {
         let (compute, store) = crate::compute_transport::compute_parts(&mut runtime);
+        if requester_session {
+            compute.leave_requester(&device, &disconnect);
+            return Ok(0);
+        }
         if !compute.detach_session(&device, &disconnect) {
             return Ok(0);
         }

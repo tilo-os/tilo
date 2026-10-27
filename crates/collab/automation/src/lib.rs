@@ -26,6 +26,16 @@
 //! AI steps are not a second execution path: an [`Ai`](StepKind::Ai) step is
 //! an invocation of the agent's transform actions ([`AGENT_APP_ID`],
 //! [`AGENT_TRANSFORM_KIND`]), granted, confirmed and recorded like any other.
+//! What the agent may run inside a [`Task`](StepKind::Task) step is the
+//! shortcut's own grant, narrowed to the step's own [`allow`](StepKind::Task::allow),
+//! and nothing a run can widen.
+//!
+//! - [`scenario`] — a test as the same kind of program: a [`Scenario`] holds
+//!   the Shortcut's own action [`Invocation`]s, the surface presses only a
+//!   window can answer, and assertions on the model ([`Assert::Resource`]),
+//!   written as versioned canonical text a golden file holds. A saved
+//!   Shortcut runs as a scenario, and a scenario's action steps are the
+//!   Shortcut's steps.
 
 pub mod catalog;
 pub mod check;
@@ -35,6 +45,7 @@ pub mod path;
 pub mod program;
 pub mod requirements;
 pub mod run;
+pub mod scenario;
 pub mod shortcut;
 mod template;
 mod types;
@@ -52,16 +63,20 @@ pub use check::{
 pub use grant::{StepGrant, action_rule, edit_reach, grant_answer, step_node, step_node_at};
 pub use path::StepPath;
 pub use run::{
-    AskRequest, ConfirmationRequest, DEFAULT_STEP_TIMEOUT, RunHooks, RunId, RunMode, RunOutcome,
-    RunReport, RunRequest, RunTrigger, STEP_FACET, StepFailure, StepRecord, StepStatus, StopWatch,
-    invocation_id, run,
+    AskRequest, ConfirmationRequest, DEFAULT_BACKOFF_MS, DEFAULT_STEP_TIMEOUT, MAX_BACKOFF_MS,
+    Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger, STEP_FACET,
+    StepFailure, StepOutcome, StepRecord, StepStatus, StopWatch, invocation_id, run,
+};
+pub use scenario::{
+    Assert, DOOR_CODES, FormatError, Holds, Input, Invocation, SCENARIO_FORMAT_VERSION, Scenario,
+    ScenarioStep, SemanticAction, StateQuery, UnrunnableStep, is_door_code,
 };
 pub use shortcut::{
     ActorFilter, AiTransform, Binding, CatchUp, Condition, EVENT_INPUT, FOCUS_DO_NOT_DISTURB,
     FOCUS_SCHEDULE, FocusTransition, SAVED_SHORTCUT_DOMAIN, SavedProof, Schedule, ScheduleClaim,
-    Selector, Shortcut, ShortcutChange, Step, StepKind, TimeOfDay, TriggerSpec, Weekday,
+    Selector, Shortcut, ShortcutChange, Step, StepKind, StepPolicy, TimeOfDay, TriggerSpec,
+    Weekday,
 };
-
 /// Application that publishes shortcuts as runnable actions.
 pub const SHORTCUTS_APP_ID: &str = "so.tilo.shortcuts";
 /// Resource kind of one saved shortcut; its id is
@@ -83,6 +98,9 @@ pub const AGENT_EXTRACT_ACTION: &str = "extract";
 pub const AGENT_CLASSIFY_ACTION: &str = "classify";
 /// Answer a free-form prompt about the input.
 pub const AGENT_FREEFORM_ACTION: &str = "freeform";
+/// Start a task — a model-driven run of the actions the person is offered —
+/// and wait for its typed summary.
+pub const AGENT_TASK_ACTION: &str = "task";
 /// Take a person's request to their agent: answer it when it asks for
 /// information, or name the work when it asks for something to be done.
 pub const AGENT_RESPOND_ACTION: &str = "respond";

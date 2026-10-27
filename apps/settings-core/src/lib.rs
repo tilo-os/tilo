@@ -73,6 +73,7 @@ pub fn take_launcher_provider_admin() -> ui::models::ProviderAdministration {
 }
 
 pub use settings_sections::accessibility as accessibility_settings;
+pub use settings_sections::shortcuts as shortcut_settings;
 pub mod accounts;
 pub mod area;
 pub mod categories;
@@ -81,6 +82,7 @@ pub mod resource;
 pub mod row;
 pub mod scenarios;
 pub use os_actions::codec_pack;
+pub use os_actions::windows_compat;
 pub mod continuity;
 pub mod device_read;
 pub mod effects;

@@ -18,7 +18,6 @@ pub mod app_serving;
 #[doc(hidden)]
 pub mod authority_epoch;
 pub mod compaction;
-mod desktop_guard;
 pub mod federation;
 #[doc(hidden)]
 pub mod handshake;

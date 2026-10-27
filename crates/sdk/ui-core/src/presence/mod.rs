@@ -749,7 +749,7 @@ impl PresenceCtx {
     /// `self_participant` before the declared list (which
     /// [`Self::set_own_identity`] replaces wholesale), and also matches the
     /// room's *name* for this session — a locally-sent frame is stamped
-    /// `Xaver`, the announced row is `quinten`; safe because a remote id is
+    /// `Bob`, the announced row is `ada`; safe because a remote id is
     /// always `peer@<handle>`, never a bare name.
     pub fn is_own_identity(&self, user_id: &str) -> bool {
         if user_id.trim().is_empty() {
@@ -2550,9 +2550,9 @@ mod string_id_wrapper_tests {
             let peer = UserId("peer@5537458103208628978".into());
             let before = ctx.color_for(&peer);
 
-            ctx.set_display_name(peer.clone(), "Xaver");
+            ctx.set_display_name(peer.clone(), "Bob");
 
-            assert_eq!(ctx.display_name(&peer), "Xaver");
+            assert_eq!(ctx.display_name(&peer), "Bob");
             assert_eq!(
                 ctx.color_for(&peer),
                 before,
@@ -2568,14 +2568,14 @@ mod string_id_wrapper_tests {
             ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
             assert_eq!(ctx.remote_cursors[0].label, "peer@77");
 
-            ctx.set_display_name(UserId("peer@77".into()), "Xaver");
+            ctx.set_display_name(UserId("peer@77".into()), "Bob");
 
             assert_eq!(
                 ctx.remote_cursors.len(),
                 1,
                 "naming a peer adds no second pointer"
             );
-            assert_eq!(ctx.remote_cursors[0].label, "Xaver");
+            assert_eq!(ctx.remote_cursors[0].label, "Bob");
             assert_eq!(
                 ctx.remote_cursors[0].position,
                 [10.0, 20.0],
@@ -2587,11 +2587,11 @@ mod string_id_wrapper_tests {
         // peer's first move labels that move when it lands.
         {
             let mut ctx = PresenceCtx::empty();
-            ctx.set_display_name(UserId("peer@77".into()), "Xaver");
+            ctx.set_display_name(UserId("peer@77".into()), "Bob");
 
             ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
 
-            assert_eq!(ctx.remote_cursors[0].label, "Xaver");
+            assert_eq!(ctx.remote_cursors[0].label, "Bob");
         }
     }
 
@@ -2907,7 +2907,7 @@ mod own_identity_tests {
 
     fn mine() -> PresenceCtx {
         let mut ctx = PresenceCtx::empty();
-        ctx.set_own_identity(["quinten"]);
+        ctx.set_own_identity(["ada"]);
         ctx
     }
 
@@ -2917,19 +2917,19 @@ mod own_identity_tests {
         {
             let mut ctx = mine();
             ctx.apply_remote_presence(
-                "quinten".into(),
+                "ada".into(),
                 room(),
                 PresencePayload::Pointer { x: 120.0, y: 90.0 },
             );
-            ctx.apply_remote_presence("quinten".into(), room(), PresencePayload::Caret { pos: 7 });
+            ctx.apply_remote_presence("ada".into(), room(), PresencePayload::Caret { pos: 7 });
 
             assert!(
                 ctx.remote_cursors.is_empty(),
                 "painted a cursor pill for this session's own identity: {:?}",
                 ctx.remote_cursors,
             );
-            assert_eq!(ctx.pointer_for(&room(), &UserId("quinten".into())), None);
-            assert_eq!(ctx.caret_for(&room(), &UserId("quinten".into())), None);
+            assert_eq!(ctx.pointer_for(&room(), &UserId("ada".into())), None);
+            assert_eq!(ctx.caret_for(&room(), &UserId("ada".into())), None);
             assert!(ctx.peers_on(&room()).is_empty());
         }
         // phase: another_person_is_still_painted
@@ -2972,7 +2972,7 @@ mod own_identity_tests {
         {
             let mut ctx = mine();
             assert_eq!(
-                ctx.apply_remote_presence("quinten".into(), room(), PresencePayload::Arrived),
+                ctx.apply_remote_presence("ada".into(), room(), PresencePayload::Arrived),
                 RemotePresenceEffect::PeerArrived,
                 "a sibling that arrived must still be answered with state",
             );
@@ -2987,7 +2987,7 @@ mod own_identity_tests {
         {
             let mut ctx = PresenceCtx::empty();
             ctx.apply_remote_presence(
-                "quinten".into(),
+                "ada".into(),
                 room(),
                 PresencePayload::Pointer { x: 1.0, y: 2.0 },
             );
@@ -3011,7 +3011,7 @@ mod own_identity_tests {
         // leaves the bug reachable.
         {
             let mut ctx = mine();
-            ctx.upsert_remote_cursor("quinten".into(), [5.0, 5.0], None);
+            ctx.upsert_remote_cursor("ada".into(), [5.0, 5.0], None);
             assert!(ctx.remote_cursors.is_empty());
             ctx.upsert_remote_cursor("peer@77".into(), [5.0, 5.0], None);
             assert_eq!(ctx.remote_cursors.len(), 1);
@@ -3019,9 +3019,9 @@ mod own_identity_tests {
         // phase: a_frame_stamped_with_the_rooms_name_for_this_session_is_still_its_own
         {
             let mut ctx = PresenceCtx::empty();
-            ctx.set_own_identity(["quinten"]);
-            ctx.set_self_participant(UserId("peer@42".into()), "Xaver");
-            assert!(ctx.is_own_identity("Xaver"));
+            ctx.set_own_identity(["ada"]);
+            ctx.set_self_participant(UserId("peer@42".into()), "Bob");
+            assert!(ctx.is_own_identity("Bob"));
             assert!(
                 !ctx.is_own_identity("Claude"),
                 "a peer the room happens to have named must stay a peer",
@@ -3050,13 +3050,13 @@ mod own_identity_tests {
             };
             assert_eq!(
                 ctx.apply_remote_presence(
-                    "quinten".into(),
+                    "ada".into(),
                     PresenceKey::view(&subset),
                     PresencePayload::Arrived,
                 ),
                 RemotePresenceEffect::None,
             );
-            assert!(ctx.peer_view(&UserId("quinten".into())).is_none());
+            assert!(ctx.peer_view(&UserId("ada".into())).is_none());
         }
         // phase: knowing_which_participant_you_are_does_not_make_you_a_peer
         // The room's answer to "which participant am I" arrives without making
@@ -3065,10 +3065,10 @@ mod own_identity_tests {
         {
             let mut ctx = PresenceCtx::empty();
             let me = UserId("peer@9007495404254172154".into());
-            ctx.set_self_participant(me.clone(), "Xaver");
+            ctx.set_self_participant(me.clone(), "Bob");
 
             assert_eq!(ctx.self_id(), Some(&me));
-            assert_eq!(ctx.self_name(), Some("Xaver"));
+            assert_eq!(ctx.self_name(), Some("Bob"));
             assert!(
                 !ctx.names.contains_key(&me),
                 "the row became a display name, which is what the roster, the \
@@ -3101,7 +3101,7 @@ mod own_identity_tests {
         // phase: a_blank_own_participant_is_refused
         {
             let mut ctx = PresenceCtx::empty();
-            ctx.set_self_participant(UserId("  ".into()), "Xaver");
+            ctx.set_self_participant(UserId("  ".into()), "Bob");
             assert_eq!(ctx.self_id(), None);
             assert!(!ctx.is_own_identity(""));
             assert!(!ctx.is_own_identity("  "));
@@ -3110,7 +3110,7 @@ mod own_identity_tests {
         {
             let mut ctx = PresenceCtx::empty();
             let me = UserId("peer@42".into());
-            ctx.set_self_participant(me.clone(), "Xaver");
+            ctx.set_self_participant(me.clone(), "Bob");
             ctx.set_own_identity(["so.tilo.chat"]);
             assert!(ctx.is_own_identity(&me.0));
             assert!(ctx.is_own_identity("so.tilo.chat"));
@@ -3314,7 +3314,7 @@ mod own_identity_tests {
                 path: vec![PathSegment::Index(0)],
             };
             let claude = UserId("peer@7".into());
-            let xaver = UserId("peer@8".into());
+            let bob = UserId("peer@8".into());
 
             let mut ctx = PresenceCtx::default();
             ctx.set_display_name(claude.clone(), "Claude");
@@ -3334,7 +3334,7 @@ mod own_identity_tests {
 
             // Somebody else keeps talking; the first one stops.
             let t1 = t0 + horizon + Duration::from_secs(1);
-            ctx.set_pointer_at(&room, xaver.clone(), (300.0, 200.0), t1);
+            ctx.set_pointer_at(&room, bob.clone(), (300.0, 200.0), t1);
             assert!(
                 ctx.prune_pointers(t1, horizon),
                 "the one that went quiet is retired, which is a reason to repaint",
@@ -3345,7 +3345,7 @@ mod own_identity_tests {
                 "no cursor for a peer that has stopped saying where it is pointing",
             );
             assert_eq!(
-                ctx.pointer_for(&room, &xaver),
+                ctx.pointer_for(&room, &bob),
                 Some((300.0, 200.0)),
                 "and the peer still talking is untouched - this retires one \
              pointer, not the scope",

@@ -398,7 +398,7 @@ fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
         &Signature::new_id(),
         5,
         PtRect::new(360.0, 640.0, 180.0, 56.0),
-        "Alice Daskju",
+        "Alice Example",
         SignatureInk::Typed,
     );
     replica
@@ -406,7 +406,7 @@ fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
         .expect("typed signature");
     let got = markup(&replica).list_signatures();
     assert_eq!(got.len(), 1);
-    assert_eq!(got[0].signer, "Alice Daskju");
+    assert_eq!(got[0].signer, "Alice Example");
     assert_eq!(got[0].page, 5);
     assert_eq!(got[0].ink, SignatureInk::Typed);
     replica

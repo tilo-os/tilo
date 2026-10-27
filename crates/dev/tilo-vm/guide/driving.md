@@ -95,6 +95,25 @@ stops the session and user manager, removes their drop-ins, and deletes the
 account and home, including both identity trees. Real `device`/`vm` slots do
 not receive this override and cannot be removed this way.
 
+To test what needs the machine's own identity (fs, home servers, anything
+behind `/var/lib/tilo/device/cert.bin`), make one slot this VM's person
+instead:
+
+```sh
+tilo-vm slot create me --headful --identity device
+```
+
+Its session gets no `TILO_IDENTITY_ROOT`, so it shows the first-login
+onboarding a device shows, and tilo-vmd presses through it by name (begin,
+the acknowledgements, create, skip the backup and tour, enter) the way a
+person's clicks would. Onboarding creates the identity and certifies the
+machine's device key, exactly as on a device; that certificate starts
+`fs.service`, which the create waits for. Nothing is minted or copied in. One
+slot per VM can be its person, and only on a VM whose identity tree holds no
+one yet: the create refuses otherwise and never replaces or adopts an
+identity. Removing that slot removes the account, not the machine's
+certificate; use a fresh VM for another person.
+
 A throwaway cannot use the shared `/var/lib/tilo` identity tree. Its device
 certificates expire after 24 hours; after expiry, remove and recreate the
 slot instead of treating a copied certificate as lasting access. Setting

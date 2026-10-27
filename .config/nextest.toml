@@ -73,7 +73,7 @@ filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
 [[profile.default.overrides]]
-filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
+filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions) or test(native_4k_modal_layers_match_between_dense_and_retained_frames))'
 threads-required = "num-cpus"
 priority = 100
 

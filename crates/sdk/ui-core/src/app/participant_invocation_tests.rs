@@ -463,9 +463,9 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
             views,
             device_id: "D".into(),
             instance_id: 1,
-            permissions: Rc::new(RefCell::new(
+            permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
             author: crate::permissions::UserId("fixture-user".into()),
             action_context: tilo_actions::ActionContext::default(),
         },

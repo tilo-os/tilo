@@ -1498,6 +1498,8 @@ fn row(
             resource_kind: kind.into(),
             resource_label: resource_label.into(),
             action_label: action_label.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::ServerPreferred,
             kind: operation,

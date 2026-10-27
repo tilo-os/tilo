@@ -45,6 +45,40 @@ thread_local! {
     /// The instant this thread's frame reads its motions at, while a frame's
     /// layout is pinned ([`pin_frame`]).
     static FRAME_AT: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// How many frames' layouts are under way on this thread
+    /// ([`laying_out_frame`]).
+    static LAYING_OUT: Cell<u32> = const { Cell::new(0) };
+}
+
+/// While the guard lives, a frame is built, laid out and drawn on this
+/// thread: its composition passes settle against the state of the app its
+/// model pass took in, as they read their motions at one instant
+/// ([`pin_frame`]).
+#[cfg(feature = "native")]
+pub(crate) fn laying_out_frame() -> LayingOutFrame {
+    LAYING_OUT.with(|count| count.set(count.get().saturating_add(1)));
+    LayingOutFrame(())
+}
+
+/// Ends what [`laying_out_frame`] began.
+#[cfg(feature = "native")]
+pub(crate) struct LayingOutFrame(());
+
+#[cfg(feature = "native")]
+impl Drop for LayingOutFrame {
+    fn drop(&mut self) {
+        LAYING_OUT.with(|count| count.set(count.get().saturating_sub(1)));
+    }
+}
+
+/// Whether a frame is being built, laid out or drawn on this thread. Work an app ran
+/// elsewhere that lands meanwhile (a device read on a thread of its own) is
+/// taken in by the next frame, which the work's wake asks for: taken in
+/// now, it would compose the frame again partway through, at whatever pass
+/// it happened to land in.
+#[must_use]
+pub fn frame_laying_out() -> bool {
+    LAYING_OUT.with(|count| count.get() > 0)
 }
 
 /// The instant a motion is read at: the frame's, while its layout is pinned

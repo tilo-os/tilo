@@ -3,6 +3,15 @@
 // Kept as an `App` implementation so custom widgets and built-in controls
 // share one authoritative action/resource route.
 
+/// A broker's resolution of a resource still being read, answered once its
+/// read lands.
+pub(super) struct AwaitedResolution {
+    revision: String,
+    resource: String,
+    action: String,
+    reply: tokio::sync::oneshot::Sender<runtime_collab::ActionDirectoryResolution>,
+}
+
 #[derive(Clone, Copy)]
 struct ResourceInvocation<'a> {
     address: &'a tilo_actions::ActionAddress,
@@ -109,6 +118,21 @@ impl App {
         self.actions.local_resource_cache.get_mut().take();
         self.actions.open_resource_search_cache.get_mut().take();
         self.actions.last_control_availability = None;
+        // Also at an exhausted generation, which no longer moves on.
+        self.layout.walks = runtime::TreeWalks::default();
+    }
+
+    /// The retained tree the frame's whole-tree walks read, as far as a
+    /// walk can tell it apart from the last one
+    /// ([`runtime::TreeGeneration`]).
+    fn tree_generation(&self) -> runtime::TreeGeneration {
+        runtime::TreeGeneration {
+            resources: self.actions.resource_generation.get(),
+            rebuilds: self.layout.rebuilds,
+            remounts: self.layout.remounts,
+            permissions: self.actions.permission_generation.get(),
+            shared_permissions: crate::permissions::shared_revision(),
+        }
     }
 
     fn ensure_resource_cache(&self) -> ResourceCacheKey {
@@ -282,10 +306,36 @@ impl App {
         resources
     }
 
+    /// Push what each control in the tree may run now into it. The walks
+    /// of the tree here read only the tree, the document and permissions it
+    /// was built from, what the window's own History door serves and
+    /// whether input goes to History: a frame that moved none of them (one
+    /// only an animation asked for) walks nothing, unless a bound
+    /// component's permissions sample an outside authority.
     fn refresh_control_action_availability(&mut self) {
-        use crate::profiling::resource_trace::{CacheResult, Stage};
-        if !self.framework_input.get()
-            && self.history.as_ref().is_none_or(|h| !h.captures_input())
+        let history_captures = self.history.as_ref().is_some_and(|h| h.captures_input());
+        let history_door = self.refresh_history_controls();
+        tilo_startup_metrics::startup_mark("actions-history-done");
+        let inputs = runtime::AvailabilityInputs {
+            tree: self.tree_generation(),
+            framework_input: self.framework_input.get(),
+            history_captures,
+            history_door,
+        };
+        let unchanged = self.layout.walks.availability.as_ref().filter(|walk| {
+            walk.inputs == inputs && walk.controls == self.actions.last_control_availability
+        });
+        if let Some(walk) = unchanged {
+            if walk.sampled {
+                let history_door = inputs.history_door.clone();
+                let _ = self.refresh_bound_control_availability(&history_door);
+            }
+            return;
+        }
+        #[cfg(test)]
+        let _walk = crate::profiling::frame_probe::span("walk.availability");
+        if !inputs.framework_input
+            && !history_captures
             && let Err(error) = crate::bound_dispatch::legacy_document::refresh_legacy_controls(
                 self.root_widget.as_mut(),
                 &self.permission_ctx,
@@ -298,26 +348,54 @@ impl App {
         // startup file names the stage. Startup-only: this runs on
         // every rebuild.
         tilo_startup_metrics::startup_mark("actions-legacy-done");
+        let history_door = inputs.history_door.clone();
+        let sampled = self.refresh_bound_control_availability(&history_door);
+        self.refresh_emitter_availability(history_door);
+        self.layout.walks.availability = Some(runtime::AvailabilityWalk {
+            inputs,
+            controls: self.actions.last_control_availability.clone(),
+            sampled,
+        });
+    }
+
+    /// Push what the bound components' controls may run into them; whether
+    /// any of their permissions sample an outside authority, or failed to.
+    fn refresh_bound_control_availability(
+        &mut self,
+        history_door: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) -> bool {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
-        let history_door = self.refresh_history_controls();
-        tilo_startup_metrics::startup_mark("actions-history-done");
-        let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
+        let discovered = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
             &self.actions.bound_resource_cache,
             self.actions.resource_generation.get(),
-        )
-        .unwrap_or_default();
+        );
+        let unread = discovered.is_err();
+        let snapshots = discovered.unwrap_or_default();
         trace.finish(CacheResult::NotObserved);
         tilo_startup_metrics::startup_mark("actions-bound-discovery-done");
         let trace = self.trace_resource_stage(Stage::BoundControlProjection);
         let _ = crate::bound_dispatch::refresh_bound_controls(
             self.root_widget.as_mut(),
             &snapshots,
-            &history_door,
+            history_door,
         );
         trace.finish(CacheResult::NotApplicable);
         tilo_startup_metrics::startup_mark("actions-bound-projection-done");
+        let sampled = |s: &crate::bound_dispatch::BoundResourceSnapshot| {
+            s.binding.permissions.borrow().samples_outside()
+        };
+        unread || snapshots.iter().any(sampled)
+    }
+
+    /// Push the local action surface into the tree's action emitters.
+    fn refresh_emitter_availability(
+        &mut self,
+        history_door: std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation doors.
         // Recheck presence: widget-local changes can add/remove emitters.
@@ -680,6 +758,7 @@ impl App {
             self.refresh_document_routes();
         }
         self.publish_action_surface_after_refresh();
+        self.actions.published_stamp = self.publication_stamp();
     }
 
     /// Publish the surface a handled input left for the frame after its
@@ -1808,6 +1887,25 @@ impl App {
         }
     }
 
+    /// Whether `resource_id`, which resolves to nothing now, may resolve
+    /// once what its widget reads lands
+    /// ([`crate::resources::PublishesResources::resource_pending`]).
+    fn publication_resource_pending(&mut self, resource_id: &str, action_id: &str) -> bool {
+        let address = tilo_actions::ActionAddress::new(resource_id, action_id);
+        match self.actions.bound_publication.target(&address) {
+            Ok(Some(target)) => crate::bound_dispatch::component_resource_pending(
+                self.root_widget.as_mut(),
+                &target.binding,
+                &target.address.address.resource,
+            ),
+            Err(_) => false,
+            Ok(None) => crate::bound_dispatch::unbound_resource_pending(
+                self.root_widget.as_ref(),
+                resource_id,
+            ),
+        }
+    }
+
     fn resolve_action_directory(
         &mut self,
         revision: &str,
@@ -1880,7 +1978,43 @@ impl App {
         }
     }
 
+    /// Answer the resolutions held for a resource that was still being read
+    /// and no longer is: found, or not found once its read ended. One whose
+    /// caller went away is dropped.
+    fn answer_awaited_resolutions(&mut self) {
+        let awaited = std::mem::take(&mut self.actions.awaited_resolutions);
+        for awaited in awaited {
+            if awaited.reply.is_closed() {
+                continue;
+            }
+            if self.publication_resource_pending(&awaited.resource, &awaited.action) {
+                self.actions.awaited_resolutions.push(awaited);
+                continue;
+            }
+            let _ = awaited.reply.send(self.published_action_directory_resolution(
+                &awaited.revision,
+                &awaited.resource,
+                &awaited.action,
+            ));
+        }
+    }
+
+    /// Answer `asked` now, or once its resource is read when it is still
+    /// being read: at the pump the read's landing wakes.
+    fn resolve_or_await(&mut self, asked: AwaitedResolution) {
+        let resolution =
+            self.published_action_directory_resolution(&asked.revision, &asked.resource, &asked.action);
+        if matches!(resolution, runtime_collab::ActionDirectoryResolution::NotFound)
+            && self.publication_resource_pending(&asked.resource, &asked.action)
+        {
+            self.actions.awaited_resolutions.push(asked);
+            return;
+        }
+        let _ = asked.reply.send(resolution);
+    }
+
     fn pump_action_directory_requests(&mut self) {
+        self.answer_awaited_resolutions();
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::ResolveLocalDocumentAction {
@@ -1905,11 +2039,12 @@ impl App {
                     resource,
                     action,
                     reply,
-                } => {
-                    let _ = reply.send(
-                        self.published_action_directory_resolution(&revision, &resource, &action),
-                    );
-                }
+                } => self.resolve_or_await(AwaitedResolution {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                }),
             }
         }
     }
@@ -1924,6 +2059,27 @@ impl App {
         ambient_context: Option<&tilo_actions::ActionContext>,
     ) {
         if self.action_publication_failure.is_some() {
+            return;
+        }
+        if !self.collaboration.manager.invocation_owner_current(id) {
+            // Accepted for a document this window has since reopened or
+            // replaced: nothing ran, and it must not run in the new one.
+            self.collaboration
+                .manager
+                .send(CollabRequest::UpdateInvocation {
+                    id,
+                    update: tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "action_document_replaced".into(),
+                            message: crate::i18n::I18nManager::lookup_plain(
+                                "action-document-replaced",
+                            ),
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                });
             return;
         }
         if !self.published_action_history_ready() {
@@ -4493,12 +4649,22 @@ impl App {
     /// the query already typed. A standalone window shows its own palette;
     /// inside the Tilo shell the component hands the request to the shell.
     pub fn open_search(&mut self, request: crate::search::SearchRequest) {
+        // On one of the app's actions: the palette asks for its arguments.
+        if let Some(address) = request.asked()
+            && self.open_action_palette_at(&address)
+        {
+            return;
+        }
         self.open_action_palette();
         if let Some(palette) = self.actions.action_palette.as_mut() {
             palette.set_scope(request.resource_scope().cloned());
             if let Some(query) = &request.query {
                 palette.set_query(query);
                 palette.select_query();
+            }
+            if let Some(anchor) = request.anchored() {
+                palette.set_query(&anchor.query);
+                palette.select_resource(&anchor.resource);
             }
         }
     }

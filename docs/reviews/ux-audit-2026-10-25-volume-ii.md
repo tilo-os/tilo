@@ -1840,22 +1840,33 @@ Everything else in the range is conventionally correct and its body says why.
 
 ## 7.4 What is still open
 
-- `SHELL-01`, the blocker: no input method on the lock screen. In flight, and the only finding
-  where "not fixed" means some people cannot use the product.
-- `T11` withdrawn (§4.12): captures are not byte-reproducible (`T10`), but repeated runs are
-  layout-identical, so the gate is viable. What is left is `T1`'s class in canvas, typst-editor and
-  Settings' tablet width.
-- `SHELL-02..17` (17), and the creation and utility app clusters.
-- `T10`: one antialiased pixel still differs between identical runs of the calculator's graph.
-- **A toolkit gap found while integrating.** `policy/app-toolbars` fails on `apps/activity`'s own
-  find field, and the app is not at fault: Activity is a function-based `ResourceApp`, so it has no
-  root widget for `ui::widget::SearchableWindow` to reach, and the bar's search has no other way in.
-  A history feed without search is worse than a field in the wrong place, so the field stayed and
-  the gap is recorded here: **the toolkit owes a `ResourceApp` a query view**, and that is
-  `M5`'s missing piece rather than an app's defect. It is the one policy step in this tree that is
-  red for a reason worth naming.
-- Two policy steps fail on a clean base and are not ours: `capnp` bindings (unavailable in a
-  worktree) and one suite test about a fetched bundle.
+- **`apps.agent` links `tilo-model-client` directly** (`check_app_portability`: 8 `D2` against a
+  baseline of 7). The architecture doc explains why the agent holds the gateway's client — streamed
+  turns it may abandon, trace marks the gateway logs, bounded transforms — and `ui::models` carries
+  none of that. Narrowing `D2` to apps that ship to the web would exempt **62 of 64 apps and erase
+  164 findings**, so that is not a tightening of the rule but a deletion of it. The decision belongs
+  to whoever owns the agent↔gateway boundary.
+- **Four files over their ceilings, all from work in flight elsewhere**: `action_palette` and
+  `bound_dispatch` by a line each, `search/providers/actions.rs` by three, `search/mod.rs` by
+  fifty-one. Each needs a small extraction by whoever is in those files next.
+- **`T10`**: closed. Captures ask the rasteriser for a fixed segment order
+  (`enable_canonical_segment_order`) instead of depending on `VELLO_CANONICAL_SEGMENT_ORDER`, and
+  `--shots-dir` pins the clock like every other capture mode. Two runs of one command now write the
+  same bytes: 41/41 of Chat's scenarios, six of six calculator runs.
+- **The lock suite's flakiness**: closed. A test pointed the process's `HOME` at a tree it deleted
+  when it finished, so a compositor started afterwards by another test refused to start. Every
+  fixture gives its child its own `HOME`; the suite runs 19/19 where it failed three or four.
+
+## 7.5 What the blocker cost
+
+`SHELL-01` — no input method on the lock screen — was the audit's only blocker, and it took four
+attempts. The first reading found the guard (`native.rs` gated the whole text-input path on
+`!session.is_locked()`); an implementation followed; main then rewrote the lock screen to
+`SecretPrompt` underneath it, so the branch could not merge; and the final version is a third of the
+size of the first, because main had meanwhile built the receiving end (`handle_event` already routed
+`WindowEvent::Ime` and had `composing()`). What remains mine is the decision — `field_owner`, a pure
+function whose truth table says that while locked only the lock's own field is served, and nothing
+at all while a client still holds the keyboard.
 
 # Closing: what "finished" means here, and where the head-room ran out
 

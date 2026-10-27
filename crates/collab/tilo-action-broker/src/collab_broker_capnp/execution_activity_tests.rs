@@ -46,6 +46,8 @@ fn fixture_tagged(
             resource_kind: "test.block".into(),
             resource_label: "Block".into(),
             action_label: "Update".into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),
@@ -655,6 +657,8 @@ fn continuation_fixture() -> (
         resource_kind: "test.block".into(),
         resource_label: "Block".into(),
         action_label: action.into(),
+        keywords: Vec::new(),
+        icon: None,
         description: None,
         operation_kind: kind,
         params: Vec::new(),
@@ -1065,6 +1069,7 @@ async fn shortcut_step_observes_once_per_change() {
                     trigger: tilo_automation::RunTrigger::Manual,
                     inputs: serde_json::Map::new(),
                     caused_by: None,
+                    parent: None,
                 },
             )
             .await

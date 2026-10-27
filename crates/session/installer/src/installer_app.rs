@@ -1031,6 +1031,11 @@ pub struct InstallerApp {
     /// Secure Boot must have propagated into the kernel's runtime restrictions;
     /// the EFI variable alone is not sufficient evidence for TPM unlock.
     kernel_lockdown: bool,
+    /// The component-by-component compatibility report, read once from this
+    /// computer before anything is written. It never decides the install and
+    /// grants nothing; Review shows it so a person reads what the running
+    /// system observed, and what it could not, beside the plan itself.
+    hardware: crate::hardware_report::HardwareReport,
     /// A dedicated preflight must also prove the installed target, not merely
     /// the running live medium, retains the complete verified-boot boundary.
     target_verified_boot: bool,
@@ -1257,6 +1262,7 @@ impl InstallerApp {
             force_startup_passphrase: false,
             unattended_mode: false,
             unattended_error: None,
+            hardware: crate::hardware_report::HardwareReport::probe(),
             tpm2: has_tpm2(),
             secure_boot: secure_boot_enabled(),
             kernel_lockdown: kernel_lockdown_active(),
@@ -1502,8 +1508,8 @@ impl InstallerApp {
     pub fn for_shot(step: Step) -> Self {
         let mut app = Self::with_disks(sample_disks());
         app.step = step;
-        app.username.set("quinten".to_string());
-        app.full_name.set("Quinten Example".to_string());
+        app.username.set("ada".to_string());
+        app.full_name.set("Ada Example".to_string());
         app.password = Arc::new(Mutex::new("correct horse battery staple".to_string()));
         app.password_confirmation =
             Arc::new(Mutex::new("correct horse battery staple".to_string()));
@@ -1543,8 +1549,8 @@ impl InstallerApp {
             tpm_handoff: None,
             windows_preparation: None,
             hostname: Some("studio".into()),
-            username: Some("quinten".into()),
-            full_name: Some("Quinten Example".into()),
+            username: Some("ada".into()),
+            full_name: Some("Ada Example".into()),
             locale: None,
             keyboard: Some("de".into()),
             timezone: Some("Europe/Berlin".into()),
@@ -2285,6 +2291,13 @@ impl InstallerApp {
         }
         if !self.filesystem_policy_ready() {
             self.set_status(&self.filesystem_policy_message());
+            return;
+        }
+        // Review says a part the desktop cannot start without is unsupported,
+        // so installing here would leave a computer that does not run. Refuse
+        // before consuming secrets or writing anything.
+        if self.hardware_blocks_install() {
+            self.set_status(&crate::i18n::t("installer-hardware-blocks-install"));
             return;
         }
         let Some(disk) = self.selected_dev() else {
@@ -3448,6 +3461,25 @@ impl InstallerApp {
         ));
     }
 
+    /// The compatibility report, drawn as one row per component class with
+    /// the reason the probe found and what the person can do about a
+    /// limitation. It is a reading, not a choice: nothing here is gated on it.
+    /// Whether the report found a component the installed desktop cannot
+    /// start without. The same question the Begin button, Enter and the
+    /// backend handoff ask, so no door starts an install the report refused.
+    fn hardware_blocks_install(&self) -> bool {
+        self.hardware
+            .report()
+            .is_some_and(imager_backend::support_report::SupportReport::blocks_install)
+    }
+
+    fn compose_hardware_report(&self, children: &mut Vec<Box<dyn Widget>>) {
+        children.push(crate::hardware_report::summary_row(&self.hardware));
+        if let Some(report) = self.hardware.report() {
+            children.extend(crate::hardware_report::component_rows(report));
+        }
+    }
+
     fn compose_destructive_confirmation(
         &self,
         theme: &Theme,
@@ -3637,6 +3669,24 @@ impl InstallerApp {
             ));
         }
 
+        // What this computer's own components can and cannot do, read before
+        // anything is written. The probe grants nothing and decides nothing;
+        // it answers "will the desktop run here" before the person commits.
+        self.compose_hardware_report(children);
+
+        if self
+            .hardware
+            .report()
+            .is_some_and(imager_backend::support_report::SupportReport::blocks_install)
+        {
+            children.push(Box::new(
+                Text::new(&crate::i18n::t("installer-hardware-blocks-install"))
+                    .with_id("installer.hardware.blocked")
+                    .with_role(TextRole::Caption)
+                    .with_color(danger),
+            ));
+        }
+
         let impact = if self.install_method == InstallMethod::Alongside {
             alongside_install_impact(self.uses_guided_alongside(), &dev)
         } else {
@@ -3680,7 +3730,8 @@ impl InstallerApp {
         // encrypting (otherwise always enabled).
         let begin_disabled = !self.encryption_ready()
             || !self.destructive_confirmation_ready()
-            || !self.filesystem_policy_ready();
+            || !self.filesystem_policy_ready()
+            || self.hardware_blocks_install();
         actions.push(self.nav_row(
             Step::Review,
             self.control(op::REVIEW, "begin", Value::Null),
@@ -4020,12 +4071,12 @@ fn sample_disks() -> Vec<Disk> {
 /// lines that wrap so the status log's wrap-aware tailing is exercised.
 fn sample_install_log() -> Vec<String> {
     vec![
-        "Starting install to /dev/sda for user quinten (btrfs).".to_string(),
+        "Starting install to /dev/sda for user ada (btrfs).".to_string(),
         "==> Copying the running Tilo image into local container storage".to_string(),
         "Copying local image docker://localhost/tilo-installer:latest to containers-storage:localhost/bootc".to_string(),
         "==> Installing Tilo onto /dev/sda (this ERASES the disk)".to_string(),
         "  base system installed.".to_string(),
-        "==> Preparing the 'quinten' account on the installed system".to_string(),
+        "==> Preparing the 'ada' account on the installed system".to_string(),
         "==> Setting hostname 'tilo' and time zone 'UTC'".to_string(),
     ]
 }
@@ -4314,7 +4365,10 @@ impl Widget for InstallerApp {
                     // Enter must honour the same gate as the Begin button:
                     // when encrypting, the recovery-key acknowledgement is
                     // required before the install can start.
-                    if self.encryption_ready() && self.destructive_confirmation_ready() {
+                    if self.encryption_ready()
+                        && self.destructive_confirmation_ready()
+                        && !self.hardware_blocks_install()
+                    {
                         self.run_press(Press::new(op::REVIEW, "begin", Value::Null));
                     }
                     *ctx.handled = true;
@@ -4869,14 +4923,14 @@ mod tests {
         // validate_step: (step, disk, username, hostname, ok).
         let steps = [
             // The keyboard step never blocks forward progress.
-            (Step::Keyboard, Some(0), "quinten", "tilo", true),
+            (Step::Keyboard, Some(0), "ada", "tilo", true),
             // Disk requires a selection.
             (Step::Disk, None, "", "tilo", false),
             (Step::Disk, Some(0), "", "tilo", true),
             // Account requires a valid username.
             (Step::Account, Some(0), "", "tilo", false),
             (Step::Account, Some(0), "   ", "tilo", false),
-            (Step::Account, Some(0), "quinten", "tilo", true),
+            (Step::Account, Some(0), "ada", "tilo", true),
             (Step::Account, Some(0), "lab-user_2", "tilo", true),
             (Step::Account, Some(0), "2bad", "tilo", false),
             (Step::Account, Some(0), "has space", "tilo", false),
@@ -4998,12 +5052,12 @@ mod tests {
             assert_eq!(app.status, "Enter a username");
 
             // Typed fields stay in view state; secrets use external buffers.
-            app.username.set("quinten".to_string());
+            app.username.set("ada".to_string());
             *app.password.lock().unwrap() = "correct horse battery staple".to_string();
             *app.password_confirmation.lock().unwrap() = "correct horse battery staple".to_string();
             activate(&mut app, &mut doc, "Next");
             assert_eq!(app.step, Step::Options);
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
         }
         {
             let mut app = InstallerApp::with_disks(sample());
@@ -5334,7 +5388,7 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
-                username: Some("quinten".into()),
+                username: Some("ada".into()),
                 full_name: None,
                 locale: Some("en_US.UTF-8".into()),
                 keyboard: Some("us".into()),
@@ -6098,7 +6152,7 @@ mod tests {
             let mut app = staged_app();
             assert_eq!(app.selected_disk, Some(0));
             assert_eq!(app.install_method, InstallMethod::Alongside);
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
             assert_eq!(local_text(&app.hostname), "studio");
             assert!(
                 app.status
@@ -7021,8 +7075,8 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
-                username: Some("quinten".into()),
-                full_name: Some("Quinten Example".into()),
+                username: Some("ada".into()),
+                full_name: Some("Ada Example".into()),
                 locale: Some("de_DE.UTF-8".into()),
                 keyboard: Some("de".into()),
                 timezone: Some("Europe/Berlin".into()),
@@ -7032,7 +7086,7 @@ mod tests {
             app.tpm2 = false;
             assert_eq!(app.step, Step::Disk);
             assert_eq!(local_text(&app.hostname), "studio");
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
             assert_eq!(app.keymap(), "German (QWERTZ)");
             assert_eq!(app.filesystem(), "ext4");
 
@@ -7076,8 +7130,8 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: None,
-                username: Some("quinten".into()),
-                full_name: Some("Quinten Example".into()),
+                username: Some("ada".into()),
+                full_name: Some("Ada Example".into()),
                 locale: Some("de_DE.UTF-8".into()),
                 keyboard: Some("de".into()),
                 timezone: Some("Europe/Berlin".into()),
@@ -7086,7 +7140,7 @@ mod tests {
             });
             app.tpm2 = false;
             assert_eq!(app.step, Step::Disk, "sound keyboard is retained");
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
             assert_eq!(app.filesystem(), "ext4");
 
             app.selected_disk = Some(0);
@@ -7110,8 +7164,8 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
-                username: Some("quinten".into()),
-                full_name: Some("Quinten Example".into()),
+                username: Some("ada".into()),
+                full_name: Some("Ada Example".into()),
                 locale: None,
                 keyboard: Some("de".into()),
                 timezone: Some("Europe/Berlin".into()),
@@ -7143,8 +7197,8 @@ mod tests {
                 tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
-                username: Some("quinten".into()),
-                full_name: Some("Quinten Example".into()),
+                username: Some("ada".into()),
+                full_name: Some("Ada Example".into()),
                 locale: Some("de_DE.UTF-8".into()),
                 keyboard: None,
                 timezone: Some("Europe/Berlin".into()),
@@ -7153,7 +7207,7 @@ mod tests {
             });
             assert_eq!(app.step, Step::Keyboard);
             assert_eq!(local_text(&app.hostname), "studio");
-            assert_eq!(local_text(&app.username), "quinten");
+            assert_eq!(local_text(&app.username), "ada");
             assert!(app.status.contains("keyboard layout"));
         }
     }

@@ -1,5 +1,6 @@
-//! Find and replace over the workbook, for the app's find band and the
-//! window bar's search.
+//! Find and replace over the workbook, for the window bar's search: the app
+//! is the [`Findable`] the bar drives in place, and draws no find field of its
+//! own.
 //!
 //! The matcher is built on the platform's text folding
 //! ([`ui::search::fold_char`]): case-insensitive search also folds
@@ -10,11 +11,13 @@
 //!
 //! A match is a byte range of a cell's raw input, which is the text replace
 //! can edit. Find is also navigation: revealing a match switches to its
-//! sheet, selects and scrolls to its cell, and says "match 4 of 12" in the
-//! status line. Replacing is one grouped edit, so undo takes it back whole.
+//! sheet, selects and scrolls to its cell (clear of the window search's
+//! options while they stand open), and says "match 4 of 12" in the status
+//! line. Replacing is one grouped edit, so undo takes it back whole.
 
 use ui::tilo_resource::Invoke;
 use ui::widget::{FindMatch, FindOptions, Findable};
+use vello::kurbo::Rect;
 
 use super::{FoundCell, SheetsApp};
 use crate::model::Addr;
@@ -222,7 +225,6 @@ impl SheetsApp {
         }
         self.submit(doc, Invoke::group(members));
         self.reload();
-        self.find.refresh();
         self.pending.redraw = true;
     }
 
@@ -279,6 +281,11 @@ impl Findable for SheetsApp {
         self.pending.redraw = true;
     }
 
+    fn set_find_cover(&mut self, cover: Option<Rect>) {
+        self.grid.set_find_cover(cover);
+        self.pending.redraw = true;
+    }
+
     fn clear_find(&mut self) {
         self.find_matches.clear();
         self.find_current = None;
@@ -286,11 +293,8 @@ impl Findable for SheetsApp {
     }
 
     fn supports_replace(&self) -> bool {
-        // The window bar's search keeps replacement usable at any width.
-        // This app's own band drops the row when its two localised buttons
-        // would leave no field (a phone with large text); Ctrl+H then opens
-        // the window bar's search instead.
-        self.dispatch.is_some() && !(self.find_open && !self.find_replace_roomy)
+        // The window bar's search keeps the replacement usable at any width.
+        self.dispatch.is_some()
     }
 
     fn replace(&mut self, index: usize, with: &str) -> bool {
@@ -326,7 +330,9 @@ impl Findable for SheetsApp {
             let Some(raw) = self.find_cell_raw(found) else {
                 continue;
             };
-            ranges.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            // Right to left, so each replacement leaves the ranges before
+            // it where they were found.
+            ranges.sort_unstable_by_key(|range| std::cmp::Reverse(range.0));
             let mut replaced = raw;
             for (start, end) in ranges {
                 if let Some(next) = replace_range(&replaced, start, end, with) {

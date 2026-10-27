@@ -103,8 +103,8 @@ RUN printf '%s\n' '[install]' 'bootloader = "systemd"' \
         > /usr/lib/bootc/install/80-rootfs.toml
 
 # A login. The evidence for every numbered step is collected over ssh.
-RUN useradd -m -G wheel quickuser \
-    && printf 'quickuser:tilo\n' | chpasswd \
+RUN useradd -m -G wheel tester \
+    && printf 'tester:tilo\n' | chpasswd \
     && printf 'root:tilo\n' | chpasswd \
     && printf '%%wheel ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/wheel-nopasswd \
     && chmod 0440 /etc/sudoers.d/wheel-nopasswd \

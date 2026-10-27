@@ -28,8 +28,9 @@
 //! it is an opaque full-window page with no floating edge. A floating sheet
 //! follows its content height;
 //! its title is a `Title`; its actions are Regular buttons anchored to the
-//! footer in the platform's order. Dialog callbacks are host-supplied
-//! closures and do not flow through the document.
+//! footer in the platform's order. Dismissal ([`ModalDialog::on_dismiss`])
+//! is the dialog's close control, published as a view action so agents and
+//! scripts close the dialog as a person does.
 
 use crate::widget::{AppModel, ModelPath};
 #[cfg(test)]
@@ -1355,7 +1356,9 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     /// Reads the content, which is the `C` the dialog was built with
     /// ([`Self::primary_enabled_if`]).
     primary_gate: Option<Box<dyn Fn(&dyn Widget) -> bool>>,
-    on_dismiss: Option<Box<dyn FnMut()>>,
+    /// Dismissal, published as the dialog's close control
+    /// ([`Self::on_dismiss`]); every way of dismissing emits it.
+    dismiss: Option<super::dismissal::Dismissal>,
     open: bool,
     destructive: bool,
     /// Widest the sheet is drawn, in design pixels.
@@ -1428,7 +1431,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             tertiary_destructive: false,
             primary_enabled: true,
             primary_gate: None,
-            on_dismiss: None,
+            dismiss: None,
             open: false,
             destructive: false,
             max_width: MODAL_MAX_WIDTH,
@@ -1468,6 +1471,9 @@ impl<C: Widget + 'static> ModalDialog<C> {
     #[must_use]
     pub fn with_test_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = Some(id.into());
+        if let Some(dismiss) = self.dismiss.take() {
+            self.dismiss = Some(dismiss.renamed(self.surface_id()));
+        }
         self
     }
 
@@ -1543,16 +1549,6 @@ impl<C: Widget + 'static> ModalDialog<C> {
     #[must_use]
     pub fn with_destructive_tertiary(mut self, on: bool) -> Self {
         self.tertiary_destructive = on;
-        self
-    }
-
-    /// Fires on Escape, on a scrim click and on the close control. A dialog
-    /// with a dismiss handler and no secondary action shows the close
-    /// control.
-    #[must_use]
-    pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
-        self.on_dismiss = Some(Box::new(f));
-        self.laid_out_for = None;
         self
     }
 
@@ -1727,7 +1723,12 @@ impl ModalDialog<dyn Widget> {
     }
 
     fn closable(&self) -> bool {
-        self.on_dismiss.is_some() && self.secondary_action.is_none()
+        self.dismiss.is_some() && self.secondary_action.is_none()
+    }
+
+    /// The close control's address in the accessibility tree.
+    fn close_target(&self) -> String {
+        format!("dialog:{}:close", self.action_identity)
     }
 
     fn hovered(&self, rect: Rect) -> bool {
@@ -1969,8 +1970,8 @@ impl ModalDialog<dyn Widget> {
     }
 
     fn dismiss(&mut self) {
-        if let Some(cb) = self.on_dismiss.as_mut() {
-            cb();
+        if let Some(dismiss) = self.dismiss.as_mut() {
+            dismiss.emit();
         } else if let Some(cancel) = self.secondary_action.as_mut() {
             // Escape is Cancel when the sheet names its way out.
             cancel.run();
@@ -2157,6 +2158,14 @@ impl Widget for ModalDialog<dyn Widget> {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The dialog holds no document state itself; its content does.
         self.content.sync(state, path);
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // A move the top layer found (a new window, a scroll) is laid out.
+        if self.open && (self.stale || self.remeasure) {
+            crate::widget::note_layout_moved();
+        }
+        super::defaults::update(self.children_mut(), state, path)
     }
 
     fn build_layout(
@@ -2693,7 +2702,7 @@ impl Widget for ModalDialog<dyn Widget> {
                     .with_key(3)
                     .with_state(AccessState::new().focusable(true))
                     .with_bounds(self.close_rect().unwrap_or(Rect::ZERO))
-                    .with_action_target(format!("dialog:{}:close", self.action_identity)),
+                    .with_action_target(self.close_target()),
             );
         }
         Some(node)
@@ -2745,6 +2754,12 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         Some(self)
     }
 
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -2755,6 +2770,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.as_dyn_mut().sync(state, path);
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.as_dyn_mut().update(state, path)
     }
 
     fn build_layout(
@@ -2961,6 +2980,8 @@ fn activate_focused(
 fn theme_line(theme: &Theme) -> f32 {
     theme.text(TextRole::Body).line_height_px() * 3.0
 }
+mod close_control;
+
 #[cfg(test)]
 #[path = "modal_dialog_tests.rs"]
 mod tests;

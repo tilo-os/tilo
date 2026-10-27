@@ -903,10 +903,11 @@ pub trait ShortcutLibraryServices: Send + Sync {
     }
 }
 
-/// The device's own keyboard shortcuts, described and changed by the host
-/// that owns their labels. The broker loads and saves the keymap, offers
-/// the catalogue only to callers on this machine, and checks each action
-/// against the caller's policy under [`Self::app_id`].
+/// The device's own keyboard shortcuts, described by the host that owns
+/// their labels. The broker loads the keymap, offers the catalogue only to
+/// callers on this machine, and checks each action against the caller's
+/// policy under [`Self::app_id`]. Changing a shortcut is the person's
+/// `shortcuts` settings section's action, not this door's.
 pub trait KeyboardShortcutServices: Send + Sync {
     /// The application id keyboard shortcut actions are checked against.
     fn app_id(&self) -> &str;
@@ -924,19 +925,17 @@ pub trait KeyboardShortcutServices: Send + Sync {
         keymap: &settings_store::hardware::ShortcutConfig,
         address: &tilo_actions::ActionAddress,
     ) -> Option<tilo_actions::ActionDescriptor>;
-    /// Decode `argument` for `address` and apply it to `keymap`: its output,
-    /// and whether `keymap` changed and must be saved.
+    /// Decode `argument` for `address` and answer it from `keymap`.
     ///
     /// # Errors
     ///
-    /// Why the arguments are malformed or the change cannot be made, such
-    /// as the chord another shortcut holds.
+    /// Why the arguments are malformed.
     fn apply(
         &self,
-        keymap: &mut settings_store::hardware::ShortcutConfig,
+        keymap: &settings_store::hardware::ShortcutConfig,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-    ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>>;
+    ) -> Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
 }
 
 /// One step the broker admitted for the host to run: action `address`

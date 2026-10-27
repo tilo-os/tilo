@@ -122,7 +122,7 @@ const CONVERSATIONAL_WORDS: &[&str] = &[
     "noah",
     "oliver",
     "olivia",
-    "quinten",
+    "ada",
     "samuel",
     "sophia",
     "victoria",

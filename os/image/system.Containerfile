@@ -16,6 +16,10 @@ COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remot
 # remains reviewable and the initramfs does not depend on a desktop image
 # stack; a theme edit changes only this small layer.
 COPY --from=plymouth-assets /out/tilo/ /usr/share/plymouth/themes/tilo/
+# Points Plymouth's two text faces at the login screen's face, which the theme
+# carries cut to its two weights (boot-face.ttf, boot-face-strong.ttf).
+COPY --chmod=0755 os/usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh \
+    /usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh
 # The desktop's wallpapers (os-wallpapers) and their credits.
 COPY --from=os-wallpapers /out/backgrounds/tilo/ /usr/share/backgrounds/tilo/
 COPY --from=os-wallpapers /out/licenses/tilo-wallpapers/ /usr/share/licenses/tilo-wallpapers/
@@ -218,6 +222,9 @@ COPY \
     os/usr/lib/systemd/system/tilo-flatpak-defaults.service \
     os/usr/lib/systemd/system/tilo-cache-gc.service \
     os/usr/lib/systemd/system/tilo-cache-gc.timer \
+    os/usr/lib/systemd/system/tilo-cache-gc-pressure.service \
+    os/usr/lib/systemd/system/tilo-cache-gc-pressure.timer \
+    os/usr/lib/systemd/system/tilo-os-image-gc.service \
     os/usr/lib/systemd/system/tilo-sandbox-view.service \
     os/usr/lib/systemd/system/tilo-sandbox-view.path \
     os/usr/lib/systemd/system/tilo-sandbox-view-retire@.service \
@@ -324,14 +331,16 @@ COPY \
 # offers it only while the person's key is held. A custom authselect
 # profile over the configured one, with its features, so authselect keeps
 # owning the files; an image whose base has no authselect configuration fails
-# here rather than shipping a stack that skips the daemon.
+# here rather than shipping a stack that skips the daemon. No backup of the
+# files it replaces: the base image has them, and a backup is named by the time
+# the build ran, which made the layer differ in every build.
 RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselect-tilo.py,ro \
     current="$(authselect current --raw)" \
     && base="${current%% *}" \
     && features="$(printf '%s' "$current" | cut -s -d' ' -f2-)" \
     && authselect create-profile tilo --base-on="$base" \
     && python3 /run/authselect-tilo.py /etc/authselect/custom/tilo \
-    && authselect select custom/tilo $features --force \
+    && authselect select custom/tilo $features --force --nobackup \
     && grep -q pam_tilo.so /etc/pam.d/system-auth \
     && grep -q pam_tilo.so /etc/pam.d/password-auth \
     && ! grep -q pam_fprintd /etc/pam.d/system-auth /etc/pam.d/password-auth
@@ -641,7 +650,6 @@ RUN --network=none --mount=type=bind,source=os/dev/windows_provider.py,target=/t
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/tilo-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
 COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/tilo/windows/catalogues/
-COPY os/usr/share/tilo/windows/fex-emulator.json os/usr/share/tilo/windows/fex-graphics-provider.json /usr/share/tilo/windows/
 # The VM is defined only after an owner supplies installation media. These
 # immutable host/guest contracts deliberately ship no Windows image or key.
 COPY \
@@ -711,7 +719,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     # Fedora's remote-add starts with tilo-flatpak-defaults, off the greeter's path; enabled
     # on its own, multi-user.target and so graphical.target would wait for it.
     systemctl disable flatpak-add-fedora-repos.service && \
-    systemctl enable tilo-cache-gc.timer && \
+    systemctl enable tilo-cache-gc.timer tilo-cache-gc-pressure.timer && \
     systemctl --global enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-app-update.timer && \
     systemctl --global enable tilo-public-content-refresh.timer && \

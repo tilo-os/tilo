@@ -321,29 +321,29 @@ def main() -> int:
     sessions: list[Session] = []
     try:
         print("\n[1] two real sessions, isolated from this machine and each other")
-        quinten = Session("quinten", root); sessions.append(quinten)
-        xaver = Session("xaver", root); sessions.append(xaver)
+        ada = Session("ada", root); sessions.append(ada)
+        bob = Session("bob", root); sessions.append(bob)
         for s in sessions:
             if not check(f"{s.name} came up", s.wait_up(),
                          "" if os.path.exists(s.socket) else f"see {s.log_path}"):
                 return 1
 
         print("\n[2] one room")
-        exported = {f"{a['provider']}:{a['id']}" for a in quinten.enumerate("")}
+        exported = {f"{a['provider']}:{a['id']}" for a in ada.enumerate("")}
         if not check("peer-sync is on (peer.invite is exported)",
                      f"{ACTIONS}:peer.invite" in exported):
             print("        peer-sync is off. Check the session log for "
                   "'device key load failed':")
-            print(f"        {quinten.log_path}")
+            print(f"        {ada.log_path}")
             return 1
         if not check("the room-index action is exported",
                      f"{ACTIONS}:record.bring" in exported):
             return 1
 
-        token = mint_invite(quinten)
-        if not check("quinten minted an invite", bool(token)):
+        token = mint_invite(ada)
+        if not check("ada minted an invite", bool(token)):
             return 1
-        if not check("xaver joined the room", join(xaver, token)):
+        if not check("bob joined the room", join(bob, token)):
             return 1
         gap("joining has no semantic op — the invite token still had to be typed")
 
@@ -352,21 +352,21 @@ def main() -> int:
         # measured against this.
         before = {s.name: s.view_state() for s in sessions}
 
-        print("\n[3] quinten puts a document in the room")
-        q_id, q_tok = a_document(shared, "quinten")
+        print("\n[3] ada puts a document in the room")
+        q_id, q_tok = a_document(shared, "ada")
         check("nobody has it beforehand",
-              xaver.holds_record(q_id, q_tok) is None
-              and quinten.holds_record(q_id, q_tok) is None)
-        resp = bring(quinten, q_id)
+              bob.holds_record(q_id, q_tok) is None
+              and ada.holds_record(q_id, q_tok) is None)
+        resp = bring(ada, q_id)
         if not check("the action was accepted", "err" not in resp,
                      json.dumps(resp.get("err", {}))[:160]):
             return 1
-        check("quinten's own session holds it",
-              bool(wait_for(lambda: quinten.holds_record(q_id, q_tok), timeout=20)))
+        check("ada's own session holds it",
+              bool(wait_for(lambda: ada.holds_record(q_id, q_tok), timeout=20)))
 
-        print("\n[4] xaver's session is asked about its own copy of the room")
-        got = wait_for(lambda: xaver.holds_record(q_id, q_tok), timeout=45)
-        check("xaver's room holds the document quinten brought", bool(got),
+        print("\n[4] bob's session is asked about its own copy of the room")
+        got = wait_for(lambda: bob.holds_record(q_id, q_tok), timeout=45)
+        check("bob's room holds the document ada brought", bool(got),
               got if got else "NOT REPLICATED after 45s")
         check("and his session says it is in this room, not somewhere else",
               bool(got) and "this room" in got.lower(), got or "")
@@ -375,9 +375,9 @@ def main() -> int:
         # Putting a record in a room is an act, so it is gated like one.
         # A guest who has only been admitted is not yet an editor.
         check("a guest cannot put a record in the room unasked",
-              not can_bring(xaver),
+              not can_bring(bob),
               "record.bring is not exported to him")
-        refused = bring(xaver, "file:/docs/should-not-land.md")
+        refused = bring(bob, "file:/docs/should-not-land.md")
         check("and invoking it anyway is refused, not silently ignored",
               "err" in refused,
               json.dumps(refused.get("err", {}))[:120])
@@ -389,32 +389,32 @@ def main() -> int:
         # room-scoped grant authorises nothing a person *does* here —
         # `Scope::Workspace` is the spelling that means "an editor in
         # this workspace", and it is what the roster reads as membership.
-        granted = quinten.call({
-            "op": "grant", "subject": "person:xaver",
+        granted = ada.call({
+            "op": "grant", "subject": "person:bob",
             "scope": "workspace", "verb": "write",
         })
-        check("quinten grants xaver write in the room", "err" not in granted,
+        check("ada grants bob write in the room", "err" not in granted,
               json.dumps(granted.get("answer", granted.get("err", {})))[:120])
-        check("the grant reaches xaver's own session",
-              bool(wait_for(lambda: can_bring(xaver), timeout=45)),
+        check("the grant reaches bob's own session",
+              bool(wait_for(lambda: can_bring(bob), timeout=45)),
               "record.bring is now exported to him")
 
-        x_id, x_tok = a_document(shared, "xaver")
-        resp = bring(xaver, x_id)
-        check("xaver's action was accepted", "err" not in resp,
+        x_id, x_tok = a_document(shared, "bob")
+        resp = bring(bob, x_id)
+        check("bob's action was accepted", "err" not in resp,
               json.dumps(resp.get("err", {}))[:160])
-        got = wait_for(lambda: quinten.holds_record(x_id, x_tok), timeout=45)
-        check("quinten's room holds the document xaver brought", bool(got),
+        got = wait_for(lambda: ada.holds_record(x_id, x_tok), timeout=45)
+        check("ada's room holds the document bob brought", bool(got),
               got if got else "NOT REPLICATED after 45s")
 
         print("\n[6] both at once — neither loses")
-        q2_id, q2_tok = a_document(shared, "quinten-atonce")
-        x2_id, x2_tok = a_document(shared, "xaver-atonce")
+        q2_id, q2_tok = a_document(shared, "ada-atonce")
+        x2_id, x2_tok = a_document(shared, "bob-atonce")
         # Issued back to back with no wait between them, so the two
         # references are in flight against each other.
-        bring(quinten, q2_id)
-        bring(xaver, x2_id)
-        for who, sess in (("quinten", quinten), ("xaver", xaver)):
+        bring(ada, q2_id)
+        bring(bob, x2_id)
+        for who, sess in (("ada", ada), ("bob", bob)):
             both = wait_for(
                 lambda s=sess: (s.holds_record(q2_id, q2_tok) is not None)
                 and (s.holds_record(x2_id, x2_tok) is not None),
@@ -422,100 +422,100 @@ def main() -> int:
             check(f"{who}'s room holds both simultaneous documents", bool(both),
                   "" if both else "one of the two is missing")
 
-        print("\n[7] quinten opens a window — it opens for xaver, and does "
+        print("\n[7] ada opens a window — it opens for bob, and does "
               "not move him")
-        # Put xaver somewhere specific first, so "he did not move" is a
+        # Put bob somewhere specific first, so "he did not move" is a
         # claim about a place he chose rather than about a default.
-        xaver.invoke(ACTIONS, "tab.new.terminal.here")
+        bob.invoke(ACTIONS, "tab.new.terminal.here")
         time.sleep(1.5)
-        before_groups = xaver.groups_here()
-        before_view = xaver.view_state()
-        check("xaver is on a tab he opened himself",
+        before_groups = bob.groups_here()
+        before_view = bob.view_state()
+        check("bob is on a tab he opened himself",
               bool(before_view["active_group"]),
               f"focused group {before_view['active_group']}")
 
-        q_before = set(quinten.tabs_here())
-        opened = quinten.invoke(ACTIONS, "window.new.terminal")
-        check("quinten opened a window", "err" not in opened,
+        q_before = set(ada.tabs_here())
+        opened = ada.invoke(ACTIONS, "window.new.terminal")
+        check("ada opened a window", "err" not in opened,
               json.dumps(opened.get("err", {}))[:120])
         # Keyed on the *tab*, not the group: the placement rule tabs into
         # the focused group when it is already tabbed, so a new window
         # does not always mean a new group.
-        fresh = wait_for(lambda: (set(quinten.tabs_here()) - q_before) or None,
+        fresh = wait_for(lambda: (set(ada.tabs_here()) - q_before) or None,
                          timeout=20)
-        if not check("quinten's own session shows the new window", bool(fresh)):
+        if not check("ada's own session shows the new window", bool(fresh)):
             return 1
         tid = sorted(fresh)[0]
 
-        # The claim. Read back from xaver, by the id quinten minted.
-        landed = wait_for(lambda: tid in xaver.tabs_here(), timeout=60)
-        check("the window quinten opened is open for xaver too", bool(landed),
+        # The claim. Read back from bob, by the id ada minted.
+        landed = wait_for(lambda: tid in bob.tabs_here(), timeout=60)
+        check("the window ada opened is open for bob too", bool(landed),
               f"tab {tid}" if landed else "NOT REPLICATED after 60s")
         if landed:
-            where = xaver.tabs_here()[tid]
-            titles = xaver.groups_here()[where["group"]]["tabs"]
+            where = bob.tabs_here()[tid]
+            titles = bob.groups_here()[where["group"]]["tabs"]
             check("and it arrived with what is in it", bool(titles),
                   json.dumps(titles))
 
         # …and the view did not follow.
-        after_view = xaver.view_state()
-        after_groups = xaver.groups_here()
-        check("xaver's active workspace did not move",
+        after_view = bob.view_state()
+        after_groups = bob.groups_here()
+        check("bob's active workspace did not move",
               after_view["active"] == before_view["active"],
               f'{before_view["active"]} -> {after_view["active"]}')
-        check("xaver's scrolled-to strip did not move",
+        check("bob's scrolled-to strip did not move",
               after_view["active_strip"] == before_view["active_strip"])
-        check("xaver's focus did not move",
+        check("bob's focus did not move",
               after_view["active_group"] == before_view["active_group"])
         for g, was in before_groups.items():
             if g in after_groups:
-                check(f"the tab in front of xaver in group {g[:6]}… did not change",
+                check(f"the tab in front of bob in group {g[:6]}… did not change",
                       after_groups[g]["active_tab"] == was["active_tab"],
                       f'{was["active_tab"]} -> {after_groups[g]["active_tab"]}')
         # The arriving window is not what he is looking at: his focused
         # group is unchanged above, and it is his own.
         if landed:
-            arrived_in = xaver.tabs_here()[tid]["group"]
+            arrived_in = bob.tabs_here()[tid]["group"]
             focused = {str(v) for v in (after_view["active_group"] or {}).values()}
-            check("xaver is still looking at his own window, not the new one",
+            check("bob is still looking at his own window, not the new one",
                   arrived_in not in focused,
                   f"arrived in {arrived_in[:6]}…, focused {sorted(f[:6] for f in focused)}")
 
         print("\n[7b] and the other direction")
-        x_before = set(xaver.tabs_here())
-        xaver.invoke(ACTIONS, "window.new.terminal")
-        x_new = wait_for(lambda: (set(xaver.tabs_here()) - x_before) or None,
+        x_before = set(bob.tabs_here())
+        bob.invoke(ACTIONS, "window.new.terminal")
+        x_new = wait_for(lambda: (set(bob.tabs_here()) - x_before) or None,
                          timeout=20)
-        if check("xaver opened a window", bool(x_new)):
+        if check("bob opened a window", bool(x_new)):
             xtid = sorted(x_new)[0]
-            check("the window xaver opened is open for quinten too",
-                  bool(wait_for(lambda: xtid in quinten.tabs_here(), timeout=60)),
+            check("the window bob opened is open for ada too",
+                  bool(wait_for(lambda: xtid in ada.tabs_here(), timeout=60)),
                   f"tab {xtid}")
 
-        print("\n[8] a picture of xaver's session with quinten's document in it")
-        shot = os.path.join(root, "xaver-room.png")
-        xaver.key("Escape")
+        print("\n[8] a picture of bob's session with ada's document in it")
+        shot = os.path.join(root, "bob-room.png")
+        bob.key("Escape")
         time.sleep(0.3)
         # Super+K is the palette. The modifier is held across the
         # keystroke the way hardware holds it — the `key` op is a
         # press+release pair, which would drop Super before the `k`
         # arrived.
-        xaver.call({"op": "key_down", "key": "Super"})
-        xaver.call({"op": "key", "key": "k"})
-        xaver.call({"op": "key_up", "key": "Super"})
+        bob.call({"op": "key_down", "key": "Super"})
+        bob.call({"op": "key", "key": "k"})
+        bob.call({"op": "key_up", "key": "Super"})
         time.sleep(0.6)
-        xaver.type_text(q_tok)
+        bob.type_text(q_tok)
         time.sleep(1.2)
-        xaver.snapshot(shot)
+        bob.snapshot(shot)
         ok = wait_for(lambda: os.path.exists(shot) and os.path.getsize(shot) > 5000,
                       timeout=20)
-        check("a frame was captured from xaver's session", bool(ok),
+        check("a frame was captured from bob's session", bool(ok),
               f"{shot} ({os.path.getsize(shot)} bytes)" if ok else "no PNG")
         if ok:
             keep = REPO / "target" / "room-index-proof"
             keep.mkdir(parents=True, exist_ok=True)
-            shutil.copy(shot, keep / "xaver-room.png")
-            print(f"        kept at {keep / 'xaver-room.png'}")
+            shutil.copy(shot, keep / "bob-room.png")
+            print(f"        kept at {keep / 'bob-room.png'}")
 
         print()
         if failures:

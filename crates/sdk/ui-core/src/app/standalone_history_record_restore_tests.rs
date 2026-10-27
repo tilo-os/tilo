@@ -225,7 +225,7 @@ fn standalone_history_record_restore_requires_write() {
     // A reader cannot open a restore review.
     {
         let (mut fixture, versions) = record_history_fixture();
-        *fixture.permissions.borrow_mut() = read_only_record_authority();
+        fixture.permissions.set(read_only_record_authority());
         let heads = record_heads(&fixture);
         assert!(!can_restore(&mut fixture.app));
         let error = review_record_restore(&mut fixture.app, versions[0]).unwrap_err();
@@ -237,7 +237,7 @@ fn standalone_history_record_restore_requires_write() {
     {
         let (mut fixture, versions) = record_history_fixture();
         review_record_restore(&mut fixture.app, versions[0]).unwrap();
-        *fixture.permissions.borrow_mut() = read_only_record_authority();
+        fixture.permissions.set(read_only_record_authority());
         let heads = record_heads(&fixture);
         let error = confirm_record_restore(&mut fixture.app).unwrap_err();
         assert!(error.contains("Denied"), "{error}");
@@ -248,7 +248,7 @@ fn standalone_history_record_restore_requires_write() {
     // The record door itself refuses a reader, whatever its caller checked.
     {
         let (mut fixture, versions) = record_history_fixture();
-        *fixture.permissions.borrow_mut() = read_only_record_authority();
+        fixture.permissions.set(read_only_record_authority());
         let heads = record_heads(&fixture);
         let result = crate::state::owned_restore::restore_reviewed_record(
             &mut fixture.app.state.doc,

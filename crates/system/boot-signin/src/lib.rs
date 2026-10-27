@@ -7,9 +7,11 @@
 
 pub mod auth;
 pub mod flow;
+pub mod glyphs;
 pub mod people;
 pub mod relay;
 pub mod screen;
+pub mod unlock_prompt;
 
 #[cfg(test)]
 mod test_support {

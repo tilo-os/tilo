@@ -3,7 +3,7 @@
 `dist/dev/fedora44-vm-iterate.sh` builds debug binaries in a Fedora 44 distrobox
 (`tilo-app-fedora44`, target dir `target/fedora44-dev`) and copies them over SSH
 into a mutable Fedora 44 desktop VM, where Tilo runs as the "Tilo (my build)"
-developer session (`tilo-session-devel`) of user `quickuser`. You log out and in
+developer session (`tilo-session-devel`) of user `tester`. You log out and in
 by hand in the VM's UI.
 
 Slots test the Tilo OS image itself instead: the VM runs the dev image, every

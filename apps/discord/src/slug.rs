@@ -113,7 +113,7 @@ pub fn webhook_username(name: &str, automated: bool) -> String {
 }
 
 /// The webhook username of a person who linked their Discord account: their
-/// Tilo name and their Discord handle, "Quinten (@quik2007)", so they read as
+/// Tilo name and their Discord handle, "Ada (@ada)", so they read as
 /// the same person on both sides. Within Discord's 80 characters the name
 /// gives way, ending in "…", and the handle stays whole. Discord's markup and
 /// banned words are cleaned out of both as in [`webhook_username`]; a handle
@@ -200,10 +200,7 @@ mod tests {
 
     #[test]
     fn a_linked_person_is_named_with_their_handle() {
-        assert_eq!(
-            linked_webhook_username("Quinten", "quik2007"),
-            "Quinten (@quik2007)"
-        );
+        assert_eq!(linked_webhook_username("Ada", "ada"), "Ada (@ada)");
         let long = linked_webhook_username(&"Ada ".repeat(40), "ada.lovelace");
         assert_eq!(long.chars().count(), MAX_USERNAME_CHARS);
         assert!(long.ends_with("… (@ada.lovelace)"), "{long}");

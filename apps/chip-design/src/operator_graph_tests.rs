@@ -231,6 +231,139 @@ fn generic_shots_seed_only_capture_and_render_bound_controls() {
     );
 }
 
+/// Click where the canvas draws the control `id`. A canvas's controls are
+/// laid out in its own content space, so the place a person presses is that
+/// rect through the viewport's transform — the same mapping production uses
+/// for a pointer.
+fn click_drawn(app: &mut TestApp<ChipDesignShell>, id: &str) -> Result<(), String> {
+    let rect = app
+        .harness()
+        .targets()
+        .get(id)
+        .copied()
+        .ok_or_else(|| format!("no control named {id:?}"))?;
+    let point = ui::widget::DocumentViewport::first_in(app.harness().root_widget()).map_or_else(
+        || rect.center(),
+        |canvas| canvas.content_point_on_screen(rect.center()),
+    );
+    app.harness().click_at(point.x, point.y);
+    Ok(())
+}
+
+/// One frame after a zoom was asked for: the canvas answers a request from
+/// outside it when it next draws.
+fn frame(app: &mut TestApp<ChipDesignShell>) {
+    app.harness().relayout_at((1600, 1400)).unwrap();
+}
+
+/// The canvas in the window, as the app drew it: its rect, the zoom it is
+/// showing, and whether the graph reaches past it.
+fn canvas(app: &mut TestApp<ChipDesignShell>) -> (ui::kurbo::Rect, f64, bool) {
+    let viewport = ui::widget::DocumentViewport::first_in(app.harness().root_widget())
+        .expect("the operator graph is drawn on a canvas");
+    let state = viewport.state();
+    (
+        ui::widget::Widget::get_rect(viewport),
+        state.zoom(),
+        state.overflows_x() || state.overflows_y(),
+    )
+}
+
+/// Open the graph with `nodes` operators, and settle.
+fn graph_with(nodes: &[(&str, OperatorKind)]) -> TestApp<ChipDesignShell> {
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    for (index, (id, kind)) in nodes.iter().enumerate() {
+        let mut operator = node(id, *kind);
+        let index = u16::try_from(index).unwrap_or(0);
+        operator.x = index.saturating_mul(280);
+        apply(&mut app, ChipProject::ADD_NODE.with(operator));
+    }
+    app.effect(&crate::view::ChipEffect::OperatorGraph).unwrap();
+    app.harness().resize((1600, 1400)).unwrap();
+    app.settle();
+    app
+}
+
+#[test]
+fn the_canvas_fills_the_window_and_fits_the_whole_graph() {
+    let mut app = graph_with(&[
+        ("a", OperatorKind::Input),
+        ("b", OperatorKind::RmsNorm),
+        ("c", OperatorKind::Silu),
+        ("d", OperatorKind::Multiply),
+    ]);
+    let (rect, zoom, overflows) = canvas(&mut app);
+    assert!(
+        rect.height() > 900.0,
+        "a design canvas takes the window's height, not a fixed band: {rect:?}"
+    );
+    assert!(
+        !overflows,
+        "the graph opens showing all of itself, at {zoom} in {rect:?}"
+    );
+    // Zooming in draws larger; Fit is the factor the canvas computes for
+    // itself, and shows the whole design.
+    app.effect(&crate::view::ChipEffect::ZoomGraph { step: "in".into() })
+        .unwrap();
+    app.settle();
+    frame(&mut app);
+    let (_, zoomed, _) = canvas(&mut app);
+    assert!(zoomed > zoom, "Zoom in draws larger: {zoomed} from {zoom}");
+    app.effect(&crate::view::ChipEffect::ZoomGraph { step: "in".into() })
+        .unwrap();
+    app.settle();
+    frame(&mut app);
+    let (_, again, _) = canvas(&mut app);
+    assert!(again > zoomed, "Zoom in steps again: {again} from {zoomed}");
+    app.effect(&crate::view::ChipEffect::ZoomGraph { step: "fit".into() })
+        .unwrap();
+    app.settle();
+    frame(&mut app);
+    let viewport = ui::widget::DocumentViewport::first_in(app.harness().root_widget())
+        .expect("the operator graph is drawn on a canvas");
+    let (fitted, fit) = (viewport.state().zoom(), viewport.state().fit_zoom());
+    assert!(
+        (fitted - fit).abs() < 0.001,
+        "Fit is the canvas's own fit: {fitted} vs {fit}"
+    );
+    let (_, _, still_overflows) = canvas(&mut app);
+    assert!(!still_overflows, "fitted, the whole design is on screen");
+    // Panning is kept: the canvas opens where it was left, not at its corner.
+    app.effect(&crate::view::ChipEffect::ZoomGraph { step: "in".into() })
+        .unwrap();
+    app.settle();
+    assert!(
+        app.effect(&crate::view::ChipEffect::ZoomGraph {
+            step: "sideways".into(),
+        })
+        .is_err(),
+        "a step that is not a zoom is refused, not ignored"
+    );
+}
+
+#[test]
+fn every_operator_is_reachable_from_the_list_without_finding_it_on_the_canvas() {
+    let mut app = graph_with(&[
+        ("a", OperatorKind::Input),
+        ("b", OperatorKind::RmsNorm),
+        ("beyond_the_right_edge", OperatorKind::Silu),
+    ]);
+    app.harness()
+        .click_named("chip-operator-beyond_the_right_edge")
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        app.parsed().operator_graph.nodes.len(),
+        3,
+        "choosing an operator in the list changes nothing on the canvas"
+    );
+    let shown = app.harness().inspection_json().unwrap();
+    assert!(
+        shown.contains("beyond_the_right_edge"),
+        "the chosen operator's own facts are shown: {shown}"
+    );
+}
+
 #[test]
 fn pointer_ports_submit_the_same_typed_connection_and_undo() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
@@ -243,13 +376,9 @@ fn pointer_ports_submit_the_same_typed_connection_and_undo() {
     apply(&mut app, ChipProject::ADD_NODE.with(sink));
     app.effect(&crate::view::ChipEffect::OperatorGraph).unwrap();
     app.settle();
-    app.harness()
-        .click_named("chip-port-out-source-value")
-        .unwrap();
+    click_drawn(&mut app, "chip-port-out-source-value").unwrap();
     app.settle();
-    app.harness()
-        .click_named("chip-port-in-sink-value")
-        .unwrap();
+    click_drawn(&mut app, "chip-port-in-sink-value").unwrap();
     app.settle();
     assert_eq!(
         app.parsed().operator_graph.active,

@@ -335,7 +335,10 @@ fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
         "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
-    );
+    )
+    // Typed data for a program to reason about; a person reads what the
+    // app shows.
+    .for_audience(tilo_actions::Audience::Agents);
     spec.contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
@@ -363,8 +366,13 @@ fn read(
                 .clone()
                 .fork_at(&heads)
                 .map_err(|error| error.to_string())?;
-            let past = typed.read(&frozen).map_err(|error| error.to_string())?;
-            let content = typed.read_content(past.as_ref(), &frozen, item)?;
+            // The type's own adapter over the frozen version: its content,
+            // or the exact bytes it holds. A version that does not read as
+            // the type says which of the three ways it does not.
+            let content = typed
+                .historical_content(&frozen, item)
+                .map_err(|gap| gap.to_string())?;
+
             super::history::review::bounded(serde_json::json!({
                 "version": heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("+"),
                 "heads": heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -1314,6 +1322,7 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
         label,
         presentation,
         semantic_identity,
+        app_id,
         children: _,
         actions,
         views,
@@ -1324,6 +1333,7 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
         label: label.clone(),
         presentation: presentation.clone(),
         semantic_identity: semantic_identity.clone(),
+        app_id: app_id.clone(),
         children: Vec::new(),
         actions: actions.clone(),
         views: views.clone(),
@@ -2231,6 +2241,16 @@ impl RootModel for ResourceRoot {
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+        // A view of a resource the system asked for: show that item first, so
+        // the picture is of the item and not of whatever the window happened
+        // to show. `render` is the app's answer to "show me this resource".
+        if let Some(request) = op.unscoped()
+            && request.type_id == crate::runner::RENDER_TYPE
+            && !request.payload.is_empty()
+            && let Some(anchor) = crate::runner::rendered_anchor(request.payload)
+        {
+            self.stages.open(&anchor)?;
+        }
         if let Some(output) = with_app_view_mut(&mut self.content, |view| {
             self.native_presentation.start_operation(op, doc, view)
         })? {
@@ -2666,6 +2686,12 @@ impl RootPublishes for ResourceRoot {
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         RootPublishes::resource_for(self, None, doc, id)
+    }
+    /// A live row a surface is still reading.
+    fn resource_pending(&self, id: &str) -> bool {
+        let mut pending = false;
+        self.surfaces(&mut |surface| pending = pending || surface.live_row_pending(id));
+        pending
     }
     /// Resource `id` in the published tree, or one the tree leaves out: a
     /// child the resource resolves by id, or a live row a surface resolves.

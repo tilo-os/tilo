@@ -12,7 +12,7 @@
 #                                  composed with them, with OUT/digest and OUT/revision
 #   os-image.sh board BOARD IN OUT the board's sealed dev image (os/Containerfile.board: firmware,
 #                                  device tree, initramfs, a UKI) FROM the aarch64 dev image `dev`
-#                                  left in IN, into OUT/image.oci.tar, with OUT/digest, OUT/revision
+#                                  left in IN, as an OCI layout in OUT/oci, with OUT/digest, OUT/revision
 #                                  and OUT/board; the Lenovo's audio stack checked inside it; and
 #                                  its flashable disk in OUT/disk
 #
@@ -21,6 +21,7 @@
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
+. os/dev/guest-disks.sh
 
 # Root's tools in the guest: podman and what build-image.sh verifies its inputs with.
 guest_tools() {
@@ -36,6 +37,9 @@ guest_tools() {
     mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm
   fi
   use_cosign
+  guest_writeback
+  guest_memory_watch
+  in_guest=1
   # /var/lib/containers is the step's own scratch disk: native overlay, no loop volume needed.
   podman info --format '{{.Store.GraphDriverName}} {{.Store.GraphRoot}}'
 }
@@ -57,13 +61,14 @@ load_image() {
   podman tag "$id" "$name"
 }
 
-# NAME from podman's store into OUT/image.oci.tar, with OUT/digest and OUT/revision.
+# NAME from podman's store into the OCI layout OUT/oci, which the size check, the signature and
+# the publication read as it is, with OUT/digest and OUT/revision.
 save_image() {
   local name=$1 out=$2 revision=$3
   mkdir -p "$out"
-  rm -f "$out/image.oci.tar"
-  podman push --compression-format zstd --compression-level 3 "$name" "oci-archive:$out/image.oci.tar"
-  archive_digest "$out/image.oci.tar" > "$out/digest"
+  rm -rf "$out/oci"
+  podman push --compression-format zstd --compression-level 3 "$name" "oci:$out/oci:tilo"
+  index_digest "$out/oci/index.json" < "$out/oci/index.json" > "$out/digest"
   printf '%s\n' "$revision" > "$out/revision"
   printf 'built %s of %s\n' "$(cat "$out/digest")" "$revision"
 }
@@ -177,9 +182,10 @@ install_board_disk() {
 }
 
 # How long each part took, for finding what a build spends its time on.
-phase_started=$SECONDS phase_name=start
+phase_started=$SECONDS phase_name=start in_guest=0
 phase() {
   printf 'TILO_IMAGE_TIMING phase=%s seconds=%s\n' "$phase_name" "$((SECONDS - phase_started))"
+  [[ $in_guest == 0 ]] || guest_disk_report "$phase_name"
   phase_name=$1 phase_started=$SECONDS
 }
 trap 'phase end' EXIT
@@ -204,12 +210,19 @@ case ${1:-} in
     # orders dev bases, as it did in Build / OS dev. The dev components come compiled
     # (os-compile-dev-<arch>): nothing compiles here. While stable has not published this tree's
     # env-runtime the OS image ships none; the dev image then ships env-runtime-dev-<arch>'s, built
-    # from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone.
+    # from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone. Its
+    # local model catalog is model-catalog-dev-<arch>'s, which names the runtimes of this tree.
+    # Its layers are dated by the OS image's clock (its base's and RPM snapshot's), not by the
+    # commit or the time they were built, so a dev layer whose content is the same is the same
+    # blob in the next build, and a publication sends it once.
+    epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' localhost/tilo:ci)
+    [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "the OS image carries no clock but '$epoch'"
     phase build
-    TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
+    SOURCE_DATE_EPOCH=$epoch TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
       TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
       TILO_COMPILED_DEV=$compiled \
       TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/dev/$arch \
+      TILO_DEV_MODEL_CATALOG=/target/model-catalog/dev/$arch \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
       bash os/dev/build-dev-image.sh
     # Kept as the layers it added over the OS image's, composed with them: the OS image's
@@ -221,7 +234,7 @@ case ${1:-} in
     printf '{"inputs":{},"inputsDigest":""}' > "$scratch/dev-inputs.json"
     python3 -I tools/ci/os/oci_layers.py take "$in/oci" "$dev" "$scratch/dev-fragment" dev-image "$scratch/dev-inputs.json"
     rm -rf "$dev"
-    python3 -I tools/ci/os/oci_layers.py compose "$out" "$in/oci" "$scratch/dev-fragment"
+    python3 -I tools/ci/os/oci_layers.py compose --copy "$out" "$in/oci" "$scratch/dev-fragment"
     printf '%s\n' "$revision" > "$out/revision"
     ;;
   board)

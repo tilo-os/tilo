@@ -96,6 +96,22 @@ export function workspaceAt(workspaces, origin) {
   return workspaces.find(workspace => originOf(workspace.host.origin) === wanted) ?? null;
 }
 
+/**
+ * The listed workspace the room `scope` names, when it is one: its host
+ * lists a workspace and the room is that workspace's, as the listing names
+ * it, else the room this browser was let into through its door
+ * (`admittedRoom` on this visit, or the membership it kept). Another room
+ * on the same host is not the listed one, and goes by no name or count of
+ * the listed one's.
+ */
+export function listedAt(workspaces, scope, admittedRoom = null, memberships = globalThis.localStorage) {
+  if (scope?.kind !== 'room') return null;
+  const listed = workspaceAt(workspaces, scope.host);
+  if (!listed) return null;
+  const room = listed.room ?? admittedRoom ?? keptMembership(listed, memberships)?.room ?? null;
+  return scope.room == null || scope.room === room ? listed : null;
+}
+
 const ENTERED = 'tilo-entered-workspaces';
 const CHOSEN = 'tilo-chosen-workspace';
 /** The most rooms remembered as entered; the least recently opened go first. */
@@ -266,22 +282,27 @@ export function isPublicHome({home = null, homeRoom = null, scope = null}) {
  * `null`): the web host's `home` workspace, then the rooms they `entered`,
  * never the one in front. `homeRoom` is the room this browser was admitted
  * to through the home's door, so that room is offered once, as the home.
- * Each choice is `{id, name, origin, room, home, unavailable}`; `id` is its
- * host action id.
+ * Where the person may have a desktop of their own (`own`), it comes first,
+ * so a room is never a dead end. Each choice is
+ * `{id, name, origin, room, home, own, unavailable}`; `id` is its host
+ * action id.
  */
-export function workspaceChoices({home = null, homeRoom = null, entered = [], current = null}) {
+export function workspaceChoices({home = null, homeRoom = null, entered = [], current = null, own = false}) {
   const here = current?.kind === 'room' ? current : null;
   const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
   const isHome = scope => isHomeRoom({home, homeRoom, scope});
   const choices = [];
+  if (own && current?.kind !== 'own') {
+    choices.push({id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', origin: null, room: null, home: false, own: true, unavailable: false});
+  }
   if (homeOrigin && !(here && isHome(here))) {
     choices.push({id: `${OPEN_WORKSPACE}home`, name: home.name || new URL(homeOrigin).host, origin: homeOrigin,
-      room: home.room ?? null, home: true, unavailable: false});
+      room: home.room ?? null, home: true, own: false, unavailable: false});
   }
   for (const entry of entered) {
     if (isHome(entry) || (here && originOf(here.host) === entry.origin && here.room === entry.room)) continue;
     choices.push({id: `${OPEN_WORKSPACE}${entry.origin}/${entry.room}`, name: entry.name || new URL(entry.origin).host,
-      origin: entry.origin, room: entry.room, home: false, unavailable: entry.unavailable});
+      origin: entry.origin, room: entry.room, home: false, own: false, unavailable: entry.unavailable});
   }
   return choices;
 }
@@ -296,6 +317,9 @@ export function workspaceActions(choices, {current = null} = {}) {
   const names = [current, ...choices.map(choice => choice.name)].filter(Boolean);
   const shared = name => names.filter(other => other === name).length > 1;
   return choices.map(choice => {
+    if (choice.own) {
+      return {id: choice.id, title: 'Open your desktop', label: choice.name, source: 'workspaces', subtitle: 'Your own desktop, in this browser'};
+    }
     const host = new URL(choice.origin).host;
     const sameHost = choices.filter(other => other.name === choice.name && other.origin === choice.origin).length > 1;
     const label = !shared(choice.name) ? choice.name

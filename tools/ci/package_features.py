@@ -67,6 +67,10 @@ NATIVE_TEST_FEATURES = {
     # The tunnel the shell links is a feature the root helper leaves out; its
     # tests, and the namespace test of both together, need it.
     "tilo-device-vpn": ("test-support",),
+    # An integration test links the library without its `cfg(test)`, so the
+    # fixtures every application test draws with (the headless app driver, the
+    # pinned font catalogue) are behind its `test-support`.
+    "tilo-ui": ("test-support",),
 }
 
 # Packages whose tested features above are not their default build. The

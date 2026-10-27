@@ -21,9 +21,11 @@ layers, so the pinned base is a fragment as it comes from the registry.
                                                      the layout PARENT (`-` for none), as a
                                                      fragment, its uncompressed layers
                                                      compressed
-    oci_layers.py compose OUT FRAGMENT...            an image of the fragments' layers, in
+    oci_layers.py compose [--copy] OUT FRAGMENT...   an image of the fragments' layers, in
                                                      order, as a layout in OUT/oci, its
-                                                     digest in OUT/digest
+                                                     digest in OUT/digest; its blobs hard
+                                                     links to the fragments' own, or copies
+                                                     of them with --copy
     oci_layers.py view OUT FRAGMENT...               the same, its blobs links to the
                                                      fragments' own, for loading in place
                                                      and never kept
@@ -118,7 +120,7 @@ def put_blob(root, data):
     return digest, len(data)
 
 
-def link_blob(src_root, dst_root, digest, symlink=False):
+def link_blob(src_root, dst_root, digest, symlink=False, copy=False):
     src, dst = blob_path(src_root, digest), blob_path(dst_root, digest)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     if os.path.exists(dst):
@@ -126,10 +128,13 @@ def link_blob(src_root, dst_root, digest, symlink=False):
     if symlink:
         os.symlink(os.path.realpath(src), dst)
         return
-    try:
-        os.link(src, dst)
-    except OSError:
-        shutil.copyfile(src, dst)
+    if not copy:
+        try:
+            os.link(src, dst)
+            return
+        except OSError:
+            pass
+    shutil.copyfile(src, dst)
 
 
 def gzip_blob(src, dst_root, diff_id):
@@ -294,13 +299,16 @@ def cmd_take(parent, built, out, action, inputs_file):
     print(f"{action}: {len(layers)} layers, {size / 1048576:.1f} MiB, inputs {inputs['inputsDigest'][:19]}")
 
 
-def compose(out, fragments, epoch, symlink=False):
+def compose(out, fragments, epoch, symlink=False, copy=False):
     """The image of the fragments' layers in order, as an OCI layout in OUT/oci; its manifest
     descriptor. The configuration is the topmost fragment's (its environment, labels,
     command), with the layers' diff_ids and one history entry per layer saying which action
     made it. SYMLINK links the blobs to the fragments' own rather than copying those it can't
     hard-link (another filesystem, such as a step's read-only outputs): a view of them to load
-    in place, which lives no longer than they do."""
+    in place, which lives no longer than they do. COPY copies every blob rather than hard-link
+    it: in a micro-VM step a fragment among the outputs of the steps before is a lower layer of
+    the overlay at /target, where a hard link first copies the file up and syncs it to the
+    scratch disk, while a copy stays in memory until the outputs are read off it."""
     frags = [load_fragment(f) for f in fragments]
     config = next((f["config"] for f in reversed(frags) if f.get("config")), None)
     if config is None:
@@ -315,7 +323,7 @@ def compose(out, fragments, epoch, symlink=False):
     layers, diff_ids, history = [], [], []
     for frag in frags:
         for layer in frag["layers"]:
-            link_blob(frag["root"], root, layer["digest"], symlink)
+            link_blob(frag["root"], root, layer["digest"], symlink, copy)
             annotations = dict(layer.get("annotations") or {})
             if frag.get("inputsDigest"):
                 annotations[ACTION] = frag["action"]
@@ -504,6 +512,8 @@ def main(argv):
         cmd_export(*args)
     elif cmd == "take" and len(args) == 5:
         cmd_take(*args)
+    elif cmd == "compose" and args[:1] == ["--copy"] and len(args) >= 3:
+        compose(args[1], args[2:], os.environ.get("SOURCE_DATE_EPOCH", "0"), copy=True)
     elif cmd in ("compose", "view") and len(args) >= 2:
         compose(args[0], args[1:], os.environ.get("SOURCE_DATE_EPOCH", "0"), symlink=cmd == "view")
     elif cmd == "index" and len(args) >= 2:

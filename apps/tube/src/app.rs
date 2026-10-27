@@ -30,7 +30,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Dispatcher, PersonRecord};
+use ui::framework::{Actions, Dispatcher, PersonRecord};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -42,7 +42,7 @@ use crate::actions::TubeEffect;
 use crate::api::{Request, Worker};
 use crate::history::WatchHistory;
 use crate::i18n::t;
-use crate::model::{Route, TubeModel};
+use crate::model::{Route, SearchType, TubeModel};
 use crate::resource::Library;
 use crate::screens;
 use crate::widgets::SharedPlayer;
@@ -72,6 +72,9 @@ pub struct TubeApp {
     /// resource. `None` until the framework attaches the surface; a bare
     /// widget shows a library it cannot change.
     dispatcher: Option<Dispatcher<Library>>,
+    /// The library's published actions and Tube's effects, which the
+    /// screens' controls are bound to. `None` until the framework attaches.
+    actions: Option<Actions<Library>>,
     /// The person's watch history, a record in their own room, in a live
     /// window.
     history: Option<PersonRecord<WatchHistory>>,
@@ -120,6 +123,9 @@ pub struct TubeApp {
     /// What the platform search last asked this window for, so its results
     /// can offer to search `YouTube` for it.
     palette_query: String,
+    /// What `YouTube` answered for the platform search's query, shown under
+    /// the row that searches it.
+    suggested: crate::suggest::Suggested,
 
     /// The user's explicit sidebar preference for this session, carried
     /// across the structural rebuilds that recreate the widget tree. `None`
@@ -224,6 +230,7 @@ impl TubeApp {
         Self {
             model: crate::sample::model(),
             dispatcher: None,
+            actions: None,
             history: None,
             preferences: None,
             local_history: None,
@@ -245,6 +252,7 @@ impl TubeApp {
             structure_dirty: false,
             search_query: ui::LocalState::new(String::new()),
             palette_query: String::new(),
+            suggested: crate::suggest::Suggested::default(),
             sidebar_open: None,
             force_sidebar_open_shot: false,
             online: false,
@@ -323,12 +331,20 @@ impl TubeApp {
                     .ok_or_else(|| format!("there is no screen `{screen}`"))?;
                 self.navigate_to(route);
             }
+            TubeEffect::FilterSearch { kind } => {
+                let kind = SearchType::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.id() == kind)
+                    .ok_or_else(|| format!("there is no result type `{kind}`"))?;
+                self.model.search_type_filter.click(kind);
+            }
             TubeEffect::ToggleSidebar => {
                 let now = self.sidebar_currently_open();
                 self.sidebar_open = Some(!now);
                 self.shell.toggle_sidebar();
             }
             TubeEffect::OpenVideo { video } => {
+                self.adopt_suggested(&video);
                 if self.model.video(&video).is_none() {
                     return Err("That video is no longer available".into());
                 }
@@ -457,9 +473,15 @@ impl TubeApp {
     /// Invoke an effect through the framework's door, which asks for the
     /// confirmation a destructive one needs before it reaches
     /// [`Self::perform`].
-    fn invoke(&self, effect: &TubeEffect) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.effect(effect);
+    fn invoke(&mut self, effect: &TubeEffect) {
+        match &self.dispatcher {
+            Some(dispatcher) => dispatcher.effect(effect),
+            // A bare widget, with no door to go through, does it itself.
+            None => {
+                if let Err(error) = self.perform(effect.clone()) {
+                    tracing::debug!(%error, "effect refused");
+                }
+            }
         }
     }
 
@@ -750,9 +772,11 @@ impl TubeApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: Dispatcher<Library>,
+        actions: Actions<Library>,
         history: Option<PersonRecord<WatchHistory>>,
     ) {
         self.dispatcher = Some(dispatcher);
+        self.actions = Some(actions);
         self.history = history;
         self.follow_history();
     }
@@ -787,6 +811,7 @@ impl TubeApp {
             model: &self.model,
             theme,
             bus: &self.bus,
+            actions: self.actions.as_ref(),
             imgs: crate::images::Imgs(self.images.as_ref()),
             content_width: self.content_width(theme),
             waiting: &self.waiting,
@@ -863,9 +888,8 @@ impl TubeApp {
                 item(&Route::Settings, &t("tube-nav-settings"), Icon::Settings),
             ],
         )])
-        .with_id("tube_rail")
         .with_accessible_name(t("tube-nav-name"))
-        .on_select({
+        .on_view("tube_rail", {
             let bus = self.bus.clone();
             move |id| action::push(&bus, Action::Effect(TubeEffect::ShowScreen { screen: id }))
         });
@@ -1002,9 +1026,6 @@ impl TubeApp {
                 self.dismiss_overlay_rail();
                 self.request_live(Request::Channel(id));
             }
-            Action::ToggleSearchType(t) => {
-                self.model.search_type_filter.click(t);
-            }
             Action::Back => {
                 self.go_back();
             }
@@ -1088,14 +1109,75 @@ impl TubeApp {
     /// The videos, creators, playlists and watch history shown here, as
     /// search entries.
     pub(crate) fn search_entries_of_model(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        let suggested = self.suggested.videos_for(&self.palette_query);
         let mut entries = crate::search_type::model_entries(&self.model);
+        // A video `YouTube` offers for the query shows once, under it.
+        entries.retain(|entry| {
+            !suggested.iter().any(|video| {
+                entry.anchor.as_deref() == Some(&*crate::search_type::video_anchor(&video.id))
+            })
+        });
         entries.extend(crate::search_type::query_entry(&self.palette_query));
+        entries.extend(crate::search_type::suggested_entries(
+            &self.palette_query,
+            suggested,
+            self.model.settings.dearrow_titles_on(),
+        ));
         entries
     }
 
-    /// Take the platform search's latest query.
+    /// Take the platform search's latest query, and ask `YouTube` for its
+    /// top videos when this window is live.
     pub(crate) fn follow_palette_query(&mut self, query: &str) {
         query.trim().clone_into(&mut self.palette_query);
+        if !self.online || crate::search_type::query_entry(&self.palette_query).is_none() {
+            self.suggested.awaiting = false;
+            return;
+        }
+        if self.suggested.answered(&self.palette_query) {
+            self.suggested.awaiting = false;
+            return;
+        }
+        if self.worker.is_none() {
+            self.worker = Some(crate::api::Worker::spawn(self.wake.clone()));
+        }
+        self.suggested.awaiting = self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.suggest(&self.palette_query));
+    }
+
+    /// Whether `YouTube` has yet to answer the platform search's query.
+    pub(crate) fn suggestions_pending(&self) -> bool {
+        self.suggested.awaiting
+    }
+
+    /// Take `YouTube`'s answer for `query`; one for a query since replaced
+    /// is dropped, so it never stands in for the newer one's.
+    pub(crate) fn take_suggestions(&mut self, query: String, videos: Vec<crate::model::Video>) {
+        if query != self.palette_query {
+            return;
+        }
+        self.suggested = crate::suggest::Suggested {
+            query,
+            videos,
+            awaiting: false,
+        };
+    }
+
+    /// Bring a video the platform search offered from `YouTube` into the
+    /// catalogue, so opening it finds it.
+    fn adopt_suggested(&mut self, video: &str) {
+        if self.model.video(video).is_some() {
+            return;
+        }
+        let Some(found) = self.suggested.videos.iter().find(|v| v.id == video) else {
+            return;
+        };
+        let found = found.clone();
+        self.model
+            .ensure_channel_stub(&found.channel_id, &found.channel_name);
+        self.model.upsert_video(found);
     }
 }
 

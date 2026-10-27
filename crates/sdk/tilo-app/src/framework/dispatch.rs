@@ -1349,6 +1349,28 @@ impl<R: Resource> Dispatcher<R> {
         );
     }
 
+    /// Send `call`, another resource's published action, to the session's
+    /// host, continuing `parent`, the invocation the host delivered here for
+    /// someone: the host decides it as theirs. A past version calls nothing.
+    ///
+    /// # Errors
+    /// A past version, custody that no longer holds, or a call that cannot
+    /// be addressed.
+    pub(crate) fn call_published(
+        &self,
+        parent: Option<tilo_actions::InvocationId>,
+        call: &super::Call,
+    ) -> Result<ui_core::InvocationCall, String> {
+        if self.core.past {
+            return Err("a past version calls nothing".into());
+        }
+        if let Some(custody) = &self.core.custody {
+            custody.check()?;
+        }
+        let (target, argument) = call.request()?;
+        Ok(self.core.opener.call(parent, target, argument))
+    }
+
     /// Invoke an action published on a nested resource, such as one item of
     /// a collection.
     pub(crate) fn invoke_at(
@@ -1360,6 +1382,22 @@ impl<R: Resource> Dispatcher<R> {
             return;
         }
         self.core.queue_invocation(address, arguments);
+    }
+
+    /// Run `invoke`, one of the actions `actions` publishes (another
+    /// record's, such as a settings section), through the host as a control
+    /// bound to it runs it: where another provider keeps the record, it runs
+    /// there. From an effect's handler or completion it continues that
+    /// effect, as its caller's. A refusal is told in [`Self::refused`].
+    pub fn invoke_on<T: Resource>(&self, actions: &super::Actions<T>, invoke: Invoke<T>) {
+        if let Some(refusal) = invoke.refusal() {
+            self.core.refuse(invoke.id, refusal.to_owned());
+            return;
+        }
+        self.invoke_at(
+            ActionAddress::new(actions.resource_id(), invoke.id),
+            invoke.arguments,
+        );
     }
 
     /// Submit one typed action value — an edit with no named declaration,

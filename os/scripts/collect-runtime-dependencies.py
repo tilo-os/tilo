@@ -52,13 +52,17 @@ def locate(soname, library_dirs, cache):
     for directory in library_dirs:
         candidate = directory / soname
         if candidate.is_file():
-            return candidate
+            return candidate.resolve()
     if not cache:
         cache.update(loader_cache())
     path = cache.get(soname)
     if path is None or not path.is_file():
         raise ValueError(f'library loaded on first use is unresolved: {soname}')
-    return path
+    # The bundle signs a library under its file name, and the loader finds it
+    # there by its SONAME, so a host that links the soname to the file it names
+    # (Fedora links libgsttag-1.0.so.0 to libgsttag-1.0.so.0.2408.0) still
+    # signs the one library rather than whatever the link points at.
+    return path.resolve()
 
 
 def collect(objects, library_dirs):

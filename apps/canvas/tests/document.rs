@@ -31,10 +31,12 @@ fn labels(app: &TestApp<App>) -> Vec<String> {
 fn naming_the_artwork_is_one_step_of_history() {
     let mut app = TestApp::<App>::new().unwrap();
     let before = app.versions().len();
-    app.harness().click_named("canvas-title").unwrap();
-    app.harness().type_text("Dawn");
-    app.harness().key("Enter");
-    app.harness().key("Tab");
+    // The window bar's location is the title: committing it renames the
+    // artwork through its own action.
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Commit {
+            text: "Dawn".to_owned(),
+        });
     assert_eq!(app.state().title, "Dawn");
     let after = labels(&app);
     assert_eq!(
@@ -295,7 +297,10 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
     app.harness().key("Shift");
     let shown = |app: &mut TestApp<App>| app.harness().targets().contains_key("canvas-dock");
     let before = shown(&mut app);
-    app.harness().click_named("nav-shell-inspector").unwrap();
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "canvas.tools".to_owned(),
+        });
     for _ in 0..4 {
         app.harness().key("Shift");
     }
@@ -304,7 +309,10 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
         before,
         "the toggle shows or hides the panels"
     );
-    app.harness().click_named("nav-shell-inspector").unwrap();
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "canvas.tools".to_owned(),
+        });
     for _ in 0..4 {
         app.harness().key("Shift");
     }
@@ -523,9 +531,11 @@ fn starting_a_regular_sheet_after_a_sprite_resets_the_pixel_brush() {
         .unwrap();
     app.harness().click_named("canvas-new-title").unwrap();
     app.harness().key("Enter");
-    app.harness().click_named("canvas-menu").unwrap();
-    app.harness().key("Home");
-    app.harness().key("Enter");
+    // New artwork, from the artwork menu the window bar holds.
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "canvas.carry-out.new".to_owned(),
+        });
     app.harness().click_named("canvas-new-size-a4").unwrap();
     app.harness().click_named("canvas-new-start-paper").unwrap();
     app.harness().click_named("canvas-new-title").unwrap();

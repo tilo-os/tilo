@@ -37,7 +37,7 @@ case "$display" in gl|2d) ;; *) echo '--display must be gl or 2d' >&2; exit 2 ;;
 base="$(cd "$(dirname "$base")" && pwd)/$(basename "$base")"
 out="$(mkdir -p "$out" && cd "$out" && pwd)"
 
-export TILO_USER="${TILO_USER:-quickuser}"
+export TILO_USER="${TILO_USER:-tester}"
 export TILO_PASS="${TILO_PASS:-tilo}"
 arch="${TILO_VM_ARCH:-$(uname -m)}"
 # Short: QEMU's monitor and console sockets live here (108-byte AF_UNIX limit).

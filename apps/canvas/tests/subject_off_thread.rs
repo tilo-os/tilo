@@ -224,12 +224,18 @@ fn the_window_takes_input_while_the_subject_model_works() {
     let says = |harness: &ui::headless::FrameHarness, what: &str| {
         harness.inspection_json().unwrap().contains(what)
     };
+    // What the canvas is doing is said in the window's bar, where a transient
+    // notice belongs: the row it used to stand in under the title is the
+    // bar's now.
+    let says_it_is_finding = |_: &ui::headless::FrameHarness| {
+        ui::window_toolbar::shown()
+            .and_then(|toolbar| toolbar.notice)
+            .is_some_and(|notice| notice.text == finding)
+    };
     assert!(
         app.harness()
-            .wait_until(tilo_test_env::hang_bound(), |harness| says(
-                harness, &finding
-            )),
-        "the header says {finding:?}"
+            .wait_until(tilo_test_env::hang_bound(), says_it_is_finding),
+        "the window bar says {finding:?}"
     );
     assert!(
         says(app.harness(), "0 selected;"),

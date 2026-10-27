@@ -495,6 +495,27 @@ impl Table {
             .collect()
     }
 
+    /// The earliest instant anyone but the dealer may deal, in milliseconds
+    /// since the Unix epoch: the hand's end plus [`DEAL_GRACE_MS`]. `None`
+    /// while a hand is in play, where nobody deals regardless.
+    #[must_use]
+    pub fn deal_opens_ms(&self) -> Option<i64> {
+        (!self.hand.street.in_play()).then(|| self.hand.since_ms.saturating_add(DEAL_GRACE_MS))
+    }
+
+    /// The earliest instant anyone may fold for the player to act, in
+    /// milliseconds since the Unix epoch: [`TURN_MS`] after their turn began.
+    /// `None` when nobody is to act.
+    #[must_use]
+    pub fn skip_opens_ms(&self) -> Option<i64> {
+        if !self.hand.street.in_play() {
+            return None;
+        }
+        self.hand
+            .to_act
+            .map(|_| self.hand.since_ms.saturating_add(TURN_MS))
+    }
+
     /// Whether `player` may deal now.
     #[must_use]
     pub fn may_deal(&self, player: &str, now_ms: i64) -> bool {

@@ -77,6 +77,14 @@ Viewer. The Viewer must materialize the original message and selected range,
 share/Stop without video, Copy/Open, Leave and refuse access after owner removal.
 Its receipt and frame are written to `target/mounted-resource-encrypted/`.
 
+Every journey step that waits on the page says what it waits for, and its
+failure receipt names the last completed stage and that wait in `lastMark`,
+alongside what the page said of itself then: `arrival` (load, join, open, draw,
+done or stopped), the card it asks (`card`) and the outcome it settled on
+(`entry`). A journey that stops between two stages — reopening the link, the
+reader's page mounting — is thereby told apart, and its `pageStatus` read as the
+step's own line rather than the link's.
+
 The focused native repro verifies the same reference succeeds before restart
 and after it. Previously the cold read failed with `source channel keys
 unavailable`: discovery checked only already-open stewards before a document

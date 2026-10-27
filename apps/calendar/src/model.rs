@@ -49,11 +49,13 @@ impl View {
     }
     /// The visible label; `label` remains the stable action identifier.
     pub(crate) fn display_label(self) -> String {
-        if self == Self::Tasks {
-            crate::resource::t("calendar-tasks-title")
-        } else {
-            self.label().to_owned()
-        }
+        crate::resource::t(match self {
+            Self::Month => "calendar-view-month",
+            Self::Week => "calendar-view-week",
+            Self::Day => "calendar-view-day",
+            Self::Agenda => "calendar-view-agenda",
+            Self::Tasks => "calendar-tasks-title",
+        })
     }
     pub const ALL: [View; 5] = [
         View::Month,
@@ -1058,15 +1060,18 @@ impl Calendar {
     }
 
     /// The name a smart list or project is shown under.
+    /// The list's name as a person reads it: the smart lists are the app's
+    /// own words, a project is called what the person called it.
     pub fn list_title(&self, sel: &ListSel) -> String {
         match sel {
-            ListSel::Inbox => "Inbox".into(),
-            ListSel::Today => "Today".into(),
-            ListSel::Upcoming => "Upcoming".into(),
-            ListSel::Completed => "Completed".into(),
-            ListSel::Project(id) => self
-                .project(*id)
-                .map_or_else(|| "Project".into(), |project| project.name.clone()),
+            ListSel::Inbox => crate::resource::t("calendar-tasks-inbox"),
+            ListSel::Today => crate::resource::t("calendar-tasks-today"),
+            ListSel::Upcoming => crate::resource::t("calendar-tasks-upcoming"),
+            ListSel::Completed => crate::resource::t("calendar-tasks-completed"),
+            ListSel::Project(id) => self.project(*id).map_or_else(
+                || crate::resource::t("calendar-project"),
+                |project| project.name.clone(),
+            ),
         }
     }
 

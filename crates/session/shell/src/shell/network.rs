@@ -16,9 +16,9 @@ mod display_input_tests;
 mod display_observation_refresh_tests;
 mod display_observations;
 mod governance_requests;
+mod governed_layout;
 mod governor_actions;
 mod hosted_sites;
-mod hosted_topology;
 mod room_rosters;
 mod room_window_carriers;
 mod room_window_views;
@@ -38,6 +38,8 @@ mod native_admission;
 mod native_admission_tests;
 mod native_enrollment;
 mod native_ingress;
+mod on_demand_records;
+pub(crate) use on_demand_records::OnDemand;
 #[cfg(test)]
 mod native_replay_budget_tests;
 #[cfg(test)]
@@ -1396,7 +1398,7 @@ pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     native_admission: native_admission::State,
     peer_sync_worker: peer_sync_worker::State,
-    hosted_topology: hosted_topology::State,
+    governed_layout: governed_layout::State,
     /// Members viewing this device's windows, and what this device views
     /// of theirs ([`room_window_views`]).
     room_window_views: room_window_views::State,
@@ -1411,6 +1413,7 @@ pub struct ShellNetwork {
     /// Pairing links this computer made, and the new devices asking.
     device_approvals: device_approvals::State,
     record_content: record_content::State,
+    on_demand_records: on_demand_records::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
     /// The shared workspace tree every network reaction reads and writes.
@@ -2358,7 +2361,7 @@ impl ShellNetwork {
             native_enrollment: native_enrollment::State::default(),
             native_admission: native_admission::State::default(),
             peer_sync_worker: peer_sync_worker::State::default(),
-            hosted_topology: hosted_topology::State::default(),
+            governed_layout: governed_layout::State::default(),
             room_window_views: room_window_views::State::default(),
             room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
@@ -2366,6 +2369,7 @@ impl ShellNetwork {
             hosted_sites: hosted_sites::State::open(state_dir, readiness),
             device_approvals: device_approvals::State::default(),
             record_content: record_content::State::default(),
+            on_demand_records: on_demand_records::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             drain_wake,
@@ -6879,6 +6883,11 @@ impl ShellNetwork {
                 device,
                 active,
             } => self.host_member(ws, host, device, active),
+            NetEvent::RecordOpened {
+                ws,
+                channel,
+                frames,
+            } => self.on_demand_record_opened(ws, channel, frames),
             NetEvent::HostReady { ws, peer } => {
                 // What was live before this session to the room's host was up
                 // (a resting pointer) reached nobody: it is said again now.
@@ -6891,6 +6900,7 @@ impl ShellNetwork {
                 if let Ok(mut waiting) = self.outbox_waiting.lock() {
                     *waiting = None;
                 }
+                self.on_demand_hosts_changed(ws);
                 self.record_content_sources_changed();
                 self.handle_host_ready(ws);
                 self.room_relay_ready();
@@ -6939,8 +6949,12 @@ impl ShellNetwork {
                 if let Ok(mut direct) = self.workspace_control_direct.lock() {
                     direct.remove(&(ws, peer));
                 }
-                if let Ok(mut relays) = self.workspace_control_relays.lock() {
-                    relays.remove(&(ws, peer));
+                let host_left = self
+                    .workspace_control_relays
+                    .lock()
+                    .is_ok_and(|mut relays| relays.remove(&(ws, peer)));
+                if host_left {
+                    self.on_demand_hosts_changed(ws);
                 }
                 self.host_left(ws, peer);
                 self.notify_workspace_control(WorkspaceControlNetworkEvent::PeerLeft {
@@ -8348,7 +8362,7 @@ pub(crate) fn shell_network_for_test(
         native_enrollment: native_enrollment::State::default(),
         native_admission: native_admission::State::default(),
         peer_sync_worker: peer_sync_worker::State::default(),
-        hosted_topology: hosted_topology::State::default(),
+        governed_layout: governed_layout::State::default(),
         room_window_views: room_window_views::State::default(),
         room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),
@@ -8356,6 +8370,7 @@ pub(crate) fn shell_network_for_test(
         hosted_sites: hosted_sites::State::with_readiness(readiness),
         device_approvals: device_approvals::State::default(),
         record_content: record_content::State::default(),
+        on_demand_records: on_demand_records::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         drain_wake,
@@ -9645,6 +9660,8 @@ mod tests {
                     resource_kind: "files.entry".into(),
                     resource_label: "report".into(),
                     action_label: "Refresh".into(),
+                    keywords: Vec::new(),
+                    icon: None,
                     description: None,
                     operation_kind: tilo_actions::OperationKind::Effect,
                     params: Vec::new(),

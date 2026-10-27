@@ -14,6 +14,16 @@ use super::*;
 // The kept fixtures carry handles their phases inspect only where a phase
 // names them; the whole scenario runs as one test, as before the split.
 
+/// A page that says something only in pixels: a small PNG, as the engine
+/// paints a scanned letter. Its bytes are what a capture answers with.
+const SCANNED_LETTER_PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 12, 0, 0, 0, 6, 8, 2, 0,
+    0, 0, 120, 140, 232, 214, 0, 0, 0, 50, 73, 68, 65, 84, 120, 156, 99, 96, 16, 209, 176, 9, 72,
+    169, 232, 89, 176, 229, 196, 157, 15, 44, 18, 58, 14, 33, 25, 53, 19, 150, 236, 56, 243, 224,
+    11, 135, 140, 129, 75, 68, 78, 195, 148, 21, 123, 24, 134, 170, 34, 0, 164, 221, 97, 81, 182,
+    196, 223, 57, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
 /// Page actions, as an agent reaches them: published on `browser.page`,
 /// admitted through the resource operation lane, answered by the engine
 /// and reported through the invocation's terminal update.
@@ -30,7 +40,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         let (doc, root) = synced(&mut widget);
         (engine, widget, doc, root)
     }
-    fn page_action(widget: &BrowserWidget, doc: &AutoCommit, id: &str) -> ActionSpec {
+    fn page_action(widget: &BrowserWidget, id: &str) -> ActionSpec {
         widget
             .published()
             .children
@@ -50,7 +60,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         id: &str,
         args: &serde_json::Value,
     ) -> Result<ui::tilo_actions::InvocationId, String> {
-        let action = page_action(widget, doc, id);
+        let action = page_action(widget, id);
         let encoded = action
             .build_json(args.as_object().ok_or("arguments are an object")?)
             .map_err(|error| error.to_string())?;
@@ -63,6 +73,10 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             Some(ui::framework::Effected::Pending) => Ok(invocation),
             other => Err(format!("a page action must be accepted, got {other:?}")),
         }
+    }
+    fn page_action_contract(id: &str) -> ui::tilo_actions::ActionContract {
+        let (_, widget, _, _) = page_on("https://shop.test/");
+        page_action(&widget, id).contract
     }
     fn page_requests(engine: &TestEngine) -> Vec<PageRequest> {
         engine
@@ -77,7 +91,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
 
     // Phase `page_actions_publish_programmatic_write_contracts`.
     {
-        let (_, widget, doc, _) = page_on("https://shop.test/");
+        let (_, widget, _, _) = page_on("https://shop.test/");
         for id in [
             "read-page",
             "click-page",
@@ -92,8 +106,9 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             "wait-page-settled",
             "read-page-console",
             "read-page-network",
+            "capture-page",
         ] {
-            let action = page_action(&widget, &doc, id);
+            let action = page_action(&widget, id);
             assert!(action.contract.validate_declaration().is_empty(), "{id}");
             assert!(action.contract.availability.is_available(), "{id}");
             assert!(!action.contract.reaches_people(), "{id}");
@@ -112,12 +127,13 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             );
             assert_eq!(
                 action.contract.execution,
-                ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+                ui::tilo_actions::ExecutionMode::Background { cancellable: true },
+                "{id} may navigate or hold its tab, so its caller can always stop it"
             );
         }
-        let (_, blank, doc, _) = page_on("about:blank");
+        let (_, blank, _, _) = page_on("about:blank");
         assert!(
-            !page_action(&blank, &doc, "read-page")
+            !page_action(&blank, "read-page")
                 .contract
                 .availability
                 .is_available()
@@ -172,7 +188,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         );
         assert!(widget.reader_view);
         assert_eq!(
-            page_action(&widget, &doc, "reader-view").label,
+            page_action(&widget, "reader-view").label,
             "Close reader view"
         );
         toggle(&mut widget, &mut doc);
@@ -189,9 +205,9 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             })
             .unwrap();
         assert!(!widget.reader_view, "the next page opens as itself");
-        let (_, blank, doc, _) = page_on("about:blank");
+        let (_, blank, _, _) = page_on("about:blank");
         assert!(
-            !page_action(&blank, &doc, "reader-view")
+            !page_action(&blank, "reader-view")
                 .contract
                 .availability
                 .is_available()
@@ -356,7 +372,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
     // Phase `agent_reads_and_consented_writes_reach_the_engine_typed`.
     {
         let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
-        let secret = page_action(&widget, &doc, "fill-page-secret");
+        let secret = page_action(&widget, "fill-page-secret");
         assert!(
             secret.params().iter().any(
                 |param| param.name == "text" && param.ty == ui::tilo_actions::ParamType::Secret
@@ -475,6 +491,130 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         assert_eq!(answers[6]["data"]["next"], 0);
     }
 
+    // Phase `a_page_picture_is_the_actions_own_content`: what a page shows
+    // only as pixels reaches the reader who can see it, and nothing else
+    // carries it.
+    {
+        let (engine, mut widget, mut doc, root) = page_on("https://letters.test/scan");
+        let content = ui::content::ContentStore::memory();
+        widget.attach_content(content.clone());
+        engine.set_page_capture(SCANNED_LETTER_PNG);
+
+        // The picture is the whole of a viewport capture: no ref, no width,
+        // so the engine decides both.
+        let invocation = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        widget.sync(&doc, &root);
+        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+            widget.poll_invocation(invocation)
+        else {
+            panic!("a picture of the page succeeds its invocation");
+        };
+        assert_eq!(
+            page_requests(&engine),
+            vec![PageRequest::Capture {
+                element: None,
+                max_width: None,
+                frame: None,
+            }],
+            "the page is asked for a picture of itself, nothing else"
+        );
+        // The picture travels as content, never as a finding: a reader that
+        // cannot see still reads the page's words, one that can sees this.
+        assert_eq!(output.resources.len(), 1);
+        let hash = ui::tilo_actions::content_hash(&output.resources[0])
+            .expect("a picture is content the answer names");
+        assert_eq!(content.read(hash).as_deref(), Some(SCANNED_LETTER_PNG));
+        let value = output.value.expect("the answer says what it pictured");
+        assert_eq!(value["provenance"], "web-content");
+        assert_eq!(value["url"], "https://letters.test/scan");
+        assert!(
+            value["data"].get("capture").is_none(),
+            "the pixels are the answer's content, not a base64 finding beside it"
+        );
+
+        // An element's own box, at the width the caller asked for.
+        let invocation = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({"element": "d1e5", "max_width": 400}),
+        )
+        .unwrap();
+        widget.sync(&doc, &root);
+        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. }) =
+            widget.poll_invocation(invocation)
+        else {
+            panic!("a picture of an element succeeds its invocation");
+        };
+        assert_eq!(
+            page_requests(&engine).last(),
+            Some(&PageRequest::Capture {
+                element: Some("d1e5".into()),
+                max_width: Some(400),
+                frame: None,
+            })
+        );
+
+        // A ref the outline never printed is refused by the action's own
+        // text, before the page is asked to paint anything.
+        let before = page_requests(&engine).len();
+        let refused = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({"element": "not-a-ref"}),
+        )
+        .unwrap_err();
+        assert!(refused.contains("element"), "{refused}");
+        assert_eq!(page_requests(&engine).len(), before);
+
+        // A width wider than any engine paints is refused rather than
+        // silently cut: the caller asked for something that cannot exist.
+        let refused = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({"max_width": 4000}),
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("arguments the page cannot take"),
+            "a width no engine paints is refused before the page is asked: {refused}"
+        );
+        assert_eq!(page_requests(&engine).len(), before);
+
+        // A window with nowhere to keep a picture says so instead of
+        // answering as if the page had none.
+        let (engine, mut widget, mut doc, root) = page_on("https://letters.test/scan");
+        engine.set_page_capture(SCANNED_LETTER_PNG);
+        let invocation = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        widget.sync(&doc, &root);
+        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+            widget.poll_invocation(invocation)
+        else {
+            panic!("the page is still read, even with nowhere to keep its picture");
+        };
+        assert!(output.resources.is_empty());
+        assert!(output.value.unwrap()["picture"].is_string());
+    }
+
     // Phase `an_action_that_navigates_completes_on_the_page_it_opened`.
     {
         let (engine, mut widget, mut doc, root) = page_on("https://shop.test/cart");
@@ -483,6 +623,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             message: "Clicked button \"Checkout\"".into(),
             outline: None,
             data: None,
+            image: None,
             navigation: ui::webview::PageNavigation::Started,
             loading: true,
         }));
@@ -559,4 +700,158 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             .is_ok()
         );
     }
+
+    // Phase `a_page_action_answers_at_most_once_so_its_failure_asks_for_none`.
+    {
+        // Every page action runs once at the page: the wheel it turned, the
+        // click it pressed or the text it typed cannot be undone by running it
+        // again. A failure that invited a retry would break that promise, so
+        // even the refusals a later try could get past are finals: the caller
+        // asks again itself, with the page it read by then.
+        let scroll = page_action_contract("scroll-page");
+        assert_eq!(
+            scroll.retry,
+            ui::tilo_actions::RetryPolicy::AtMostOnce,
+            "a scroll turns the wheel once"
+        );
+        let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+        for (code, message) in [
+            ("busy", "Another page action is still running in this tab"),
+            ("timeout", "The page did not answer in time."),
+        ] {
+            engine.push_page_reply(Err(PageFailure::new(code, message)));
+            let scroll = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "scroll-page",
+                &serde_json::json!({"to": "bottom"}),
+            )
+            .unwrap();
+            widget.sync(&doc, &root);
+            let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+                widget.poll_invocation(scroll)
+            else {
+                panic!("a refused scroll must fail its invocation");
+            };
+            assert_eq!(error.code, format!("browser.page.{code}"));
+            assert!(
+                !error.retryable,
+                "{code} must not advertise a retry of an action that already ran"
+            );
+        }
+    }
+}
+#[test]
+fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
+    let mut widget = BrowserWidget::new_headless();
+    widget.current_uri = "https://site.test/form".into();
+    let abandoned = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(abandoned, PageRequest::Outline { frame: None })
+        .unwrap();
+    // Its page answered after the caller was answered `accepted`.
+    widget.page_operation = None;
+    widget.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Succeeded {
+        invocation: abandoned,
+        output: ui::tilo_actions::ActionOutput::default(),
+    });
+    assert!(
+        !widget.reply_outstanding(abandoned),
+        "nothing waits on the abandoned invocation"
+    );
+
+    // The next action in this tab runs rather than being refused.
+    let next = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(next, PageRequest::Outline { frame: None })
+        .expect("an unwatched result must not refuse the next page action");
+    assert!(
+        widget
+            .page_operation
+            .as_ref()
+            .is_some_and(|operation| operation.invocation == next),
+        "the next action took the slot"
+    );
+
+    // The decision is the reply set, never the age of the result: a settled
+    // result whose invocation a reply still waits on stays for that reply.
+    assert!(!widget.reply_outstanding(next));
+    widget.page_operation = None;
+    widget.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Succeeded {
+        invocation: next,
+        output: ui::tilo_actions::ActionOutput::default(),
+    });
+    widget.abandon_unwatched_page_result();
+    assert!(
+        widget.page_operation_result.is_none(),
+        "a settled result no reply waits on is let go"
+    );
+
+    // An operation still running is left alone: it settles at its own
+    // deadline, and refusing the next action while it runs is right.
+    let running = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(running, PageRequest::Outline { frame: None })
+        .unwrap();
+    assert!(
+        widget
+            .start_page_operation(
+                ui::tilo_actions::InvocationId::new(),
+                PageRequest::Outline { frame: None }
+            )
+            .is_err(),
+        "a second page action is refused while one runs"
+    );
+    assert!(
+        widget
+            .page_operation
+            .as_ref()
+            .is_some_and(|operation| operation.invocation == running),
+        "the running action keeps the slot"
+    );
+}
+
+#[test]
+fn a_page_action_either_finishes_or_says_what_became_of_it() {
+    // Giving up on a page action frees the tab's slot and says that what the
+    // page did is unknown, whether the caller stopped waiting for it or the
+    // action ran out of time: neither claims the page acted or did not.
+    let mut widget = BrowserWidget::new_headless();
+    widget.current_uri = "https://site.test/form".into();
+    let cancelled = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(cancelled, PageRequest::Outline { frame: None })
+        .unwrap();
+    let answer = widget
+        .answer_a_cancelled_page_operation(cancelled, true)
+        .expect("a running page action is stopped when its caller gives up");
+    let ui::tilo_actions::InvocationUpdate::Failed { error, .. } = answer else {
+        panic!("a stopped page action answers as a failure");
+    };
+    assert_eq!(error.code, "browser.page.cancelled");
+    assert!(error.message.contains("unknown"), "{}", error.message);
+    assert!(widget.page_operation.is_none(), "the slot is freed");
+
+    // An invocation that runs nothing here is not answered twice.
+    assert!(
+        widget
+            .answer_a_cancelled_page_operation(cancelled, true)
+            .is_none(),
+        "nothing is left to stop"
+    );
+
+    // Running out of time says the same about what the page did.
+    let slow = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(slow, PageRequest::Outline { frame: None })
+        .unwrap();
+    let operation = widget.page_operation.take().unwrap();
+    let ui::tilo_actions::InvocationUpdate::Failed { error, .. } =
+        BrowserWidget::answer_a_timed_out_page_operation(&operation)
+    else {
+        panic!("a page action that ran out of time answers as a failure");
+    };
+    assert_eq!(error.code, "browser.page.timeout");
+    assert!(error.message.contains("unknown"), "{}", error.message);
 }

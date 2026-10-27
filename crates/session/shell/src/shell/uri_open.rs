@@ -158,7 +158,8 @@ fn open_for(uri: &str, chrome: &Chrome, person: bool) -> Result<UriOpened, UriOp
         )
         .inspect(|_| {
             if person && explicit.is_none() {
-                bring_forward_window_of(chrome, |window| {
+                let shown = chrome.borrow().tree().desktop.active;
+                bring_forward_window_of(chrome, shown, |window| {
                     identities
                         .iter()
                         .any(|identity| identity.eq_ignore_ascii_case(window.trim()))
@@ -200,16 +201,27 @@ fn open_for(uri: &str, chrome: &Chrome, person: bool) -> Result<UriOpened, UriOp
     // Read just the room and capabilities out of the tree and drop the
     // guard before the launch's file I/O and process spawn, rather than
     // holding a read lock on the whole workspace tree through them.
-    let (room, capabilities) = {
+    // Personal Settings opens in the personal workspace whichever is shown
+    // ([`crate::shell::state::WorkspaceTree::home_for_app`]).
+    let (room, capabilities, home) = {
         let state = chrome.borrow();
-        let tree = state.tree();
-        let workspace = tree
+        let mut tree = state.tree_mut();
+        let shown = tree
             .desktop
             .active_workspace()
+            .ok_or(UriOpenError::NoWorkspace)?
+            .id;
+        let home = tree.home_for_app(&app.package_id, shown);
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == home)
             .ok_or(UriOpenError::NoWorkspace)?;
         (
             workspace.room(),
             workspace.launch_grants(tilo_clock::unix_now()),
+            home,
         )
     };
     // Placement is noted before queueing, as the person asked, so the window
@@ -220,31 +232,60 @@ fn open_for(uri: &str, chrome: &Chrome, person: bool) -> Result<UriOpened, UriOp
     if let Some(placement) = explicit {
         launcher::set_pending_placement(&app.package_id, placement);
     }
+    // A personal app opened by the person from another workspace takes them
+    // to the personal workspace at once: its place is held there, as an app
+    // launch holds it, unless its one window is already open.
+    let held = {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        (person
+            && explicit.is_none()
+            && home != tree.desktop.active
+            && crate::shell::state::is_personal_app(&app.package_id)
+            && crate::shell::peer_windows::opened_here(&tree, &app.package_id).is_none())
+        .then(|| {
+            crate::shell::tab_binding::hold_place_for_launch(
+                &mut tree,
+                &app.package_id,
+                &app.display_name,
+                crate::shell::tab_binding::Placement::NewGroup,
+            )
+        })
+    };
     launcher::queue_uri_in_room(app.clone(), room, capabilities, uri.to_owned())
         .inspect(|()| {
-            if person && explicit.is_none() {
-                bring_forward_window_of(chrome, |window| {
+            if person && explicit.is_none() && held.is_none() {
+                bring_forward_window_of(chrome, home, |window| {
                     launcher::app_id_matches_package(window, &app.package_id)
                 });
             }
         })
         .map(|()| UriOpened::Package(app.clone()))
         .inspect_err(|_| {
-            if explicit.is_some() {
+            if explicit.is_some() || held.is_some() {
                 launcher::clear_pending_placement(&app.package_id);
+            }
+            if let Some(held) = held {
+                crate::shell::tab_binding::remove_tab(&mut chrome.borrow().tree_mut(), held);
             }
         })
         .map_err(UriOpenError::Launch)
 }
 
 /// Take the person to the window of the app that takes their link, when one
-/// is open in the workspace in front: the one showing that app, else any
-/// holding it ([`crate::shell::tab_binding::bring_forward`]).
-fn bring_forward_window_of(chrome: &Chrome, is_app: impl Fn(&str) -> bool) {
+/// is open in `workspace`, the one the link opens in (the workspace in
+/// front, or the personal one for a personal app): the one showing that
+/// app, else any holding it ([`crate::shell::tab_binding::bring_forward`]).
+fn bring_forward_window_of(
+    chrome: &Chrome,
+    workspace: crate::shell::state::WorkspaceId,
+    is_app: impl Fn(&str) -> bool,
+) {
     let window = {
         let state = chrome.borrow();
         let tree = state.tree();
-        tree.desktop.active_workspace().and_then(|workspace| {
+        let wanted = workspace;
+        tree.desktop.workspaces.iter().find(|workspace| workspace.id == wanted).and_then(|workspace| {
             let shows = |tab: &crate::shell::state::Tab| {
                 matches!(&tab.tile, crate::shell::state::TileContent::Foreign { app_id, .. } if is_app(app_id))
             };
@@ -326,7 +367,8 @@ mod tests {
         tree.desktop.active_strip.insert(workspace, here);
         let chrome = crate::shell::chrome_state::ChromeState::new(tree);
 
-        bring_forward_window_of(&chrome, |window| {
+        let shown = chrome.borrow().tree().desktop.active;
+        bring_forward_window_of(&chrome, shown, |window| {
             launcher::app_id_matches_package(window, "so.tilo.browser")
         });
 

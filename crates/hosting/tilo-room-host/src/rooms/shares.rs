@@ -35,8 +35,9 @@ fn fresh_request() -> Result<[u8; 32], CollaborationError> {
 /// Whether `device` may share `node` of the room `room` holds as the share
 /// `share`, as far as windows go ([`tilo_desktop_model::window_share`]): a
 /// window is shared only under its own share id, what a Tilo app's window
-/// shows only under that window's, and either only by the device the
-/// window's tab's topology namespace is registered to, which hosts it.
+/// shows only under that window's, and either only by the device that
+/// minted the window's tab, which hosts it
+/// ([`tilo_desktop_model::window_share::device_salts`]).
 /// Nobody shares another device's window, or says what it shows.
 fn window_is_the_callers(
     room: Option<&automerge::AutoCommit>,
@@ -61,7 +62,7 @@ fn window_is_the_callers(
         }
     };
     let host = room
-        .map(tilo_desktop_model::projection::contents_owners_of)
+        .map(tilo_desktop_model::window_share::device_salts)
         .and_then(|owners| owners.get(&tilo_desktop_model::peer_salt_of(tab)).cloned());
     if host.as_deref() != Some(hex::encode(device.device_public_key).as_str()) {
         return Err(CollaborationError::new(

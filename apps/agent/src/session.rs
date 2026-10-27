@@ -20,6 +20,7 @@ mod agent_loop;
 mod confirmation;
 mod native_task;
 mod outstanding;
+mod planning;
 mod selection_prompt;
 mod tracker;
 
@@ -246,6 +247,9 @@ pub struct Session {
     /// What this agent was asked, did and said in earlier tasks.
     /// What the task in progress asked its host without waiting in line.
     outstanding: outstanding::Outstanding,
+    /// What the model spent on the run in progress, as its provider counted
+    /// it: reported on the run's thread when the run ends.
+    spend: planning::Spend,
 }
 
 /// Ask the broker to select one current holder of this exact route. Safe to
@@ -338,6 +342,7 @@ impl Session {
             catalogue_cache: None,
             turn: None,
             outstanding: outstanding::Outstanding::default(),
+            spend: planning::Spend::default(),
         })
     }
 
@@ -484,6 +489,7 @@ impl Session {
             return Ok(());
         }
         self.begin_task_watch();
+        self.spend = planning::Spend::default();
         self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
         // The cancellation poll is not waited for here: its answer, with the
         // run's messages, is read before the first turn (or the first
@@ -491,19 +497,30 @@ impl Session {
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Progress {
-                message: "Reviewing the permission-filtered action catalogue".into(),
+                message: "Reading the actions this room's apps publish".into(),
                 presentation: None,
             },
         )?;
         self.poll_cancellation(run)?;
         self.wait_for_task_catalogue()?;
+        // Which planner decides this run's steps, said before it decides:
+        // the model that plans it, or that its steps are matched to the
+        // published actions and why no model plans instead.
+        let plan = self.planner(run);
+        self.report_task(
+            run,
+            runtime_collab::TaskRunUpdate::Progress {
+                message: plan.announcing(),
+                presentation: None,
+            },
+        )?;
         // A model task is a discover → invoke → observe loop over the live
         // catalogue. A managed agent has no other planner; one without a
         // model (`--no-model`) falls back to the rules-only survey below.
-        if matches!(run.planning, runtime_collab::TaskRunPlanning::Model)
-            && (self.chooser.loop_model().is_ok() || self.managed)
-        {
-            return match self.run_task_loop(run)? {
+        if plan.is_model() {
+            let end = self.run_task_loop(run)?;
+            self.report_spend(run, &plan)?;
+            return match end {
                 agent_loop::LoopEnd::Finished(finish, completed) => {
                     if !finish.done {
                         return self.fail_task(
@@ -517,7 +534,7 @@ impl Session {
                     // The model's own reply is the run's result, whole: an
                     // answer to a question is what the issue asked for.
                     let message = finish.reply.unwrap_or_else(|| {
-                        format!("Completed {completed} broker-approved action(s)")
+                        format!("Completed {completed} action(s) the broker approved")
                     });
                     self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
                 }
@@ -540,10 +557,16 @@ impl Session {
         if self.task_cancelled(run)? {
             return self.cancel_task(run, "Cancelled before planning");
         }
-        let (actions, reply) = match self.plan_task(run) {
+        let (actions, reply) = match self.plan_task(run, &plan) {
             Ok((actions, reply)) if !actions.is_empty() => (actions, reply),
             Ok(_) => {
-                return self.fail_task(run, "No permitted live action can complete this task");
+                return self.fail_task(
+                    run,
+                    &planning::unmatched(
+                        &plan,
+                        "No published action carries the words of the request.",
+                    ),
+                );
             }
             Err(message) => return self.fail_task(run, &message),
         };
@@ -585,8 +608,7 @@ impl Session {
                 Err(TaskActionStop::Failed(message)) => return self.fail_task(run, &message),
             }
         }
-        let message = reply
-            .unwrap_or_else(|| format!("Completed {} broker-approved action(s)", actions.len()));
+        let message = reply.unwrap_or_else(|| planning::finished(&plan, actions.len()));
         self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
     }
 
@@ -685,11 +707,53 @@ impl Session {
     fn plan_task(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
+        plan: &planning::Planner,
     ) -> Result<(Vec<TaskAction>, Option<String>), String> {
         let catalogue = self.task_catalogue();
         let (offer, arguments) = surface::from_verbs(run.instruction(), &catalogue.offers)
-            .map_err(|error| format!("Rules-only planner could not choose an action: {error:?}"))?;
+            .map_err(|no_match| planning::unmatched(plan, &no_match.explanation()))?;
         task_action_from_offer(offer, arguments).map(|action| (vec![action], None))
+    }
+
+    /// How this run will decide its steps, as the run's note states it.
+    fn planner(&self, run: &runtime_collab::TaskRunEnvelope) -> planning::Planner {
+        if !matches!(run.planning, runtime_collab::TaskRunPlanning::Model) {
+            return planning::Planner::Words {
+                reason: planning::Words::Asked,
+            };
+        }
+        match self.chooser.planned_by() {
+            Some((provider, model)) => planning::Planner::Model {
+                provider: provider.to_owned(),
+                model: model.to_owned(),
+            },
+            // A model task whose model cannot be reached: the run still
+            // happens, matched to the published actions, and its note says
+            // which model is missing and where to choose one.
+            None => planning::Planner::Words {
+                reason: planning::Words::NoModel,
+            },
+        }
+    }
+
+    /// Record what the model spent on this run, on the run's own thread: the
+    /// model, its turns and its tokens, or that it counted none.
+    fn report_spend(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        plan: &planning::Planner,
+    ) -> Result<()> {
+        let report = self.spend.report(plan);
+        if report.is_empty() {
+            return Ok(());
+        }
+        self.report_task(
+            run,
+            runtime_collab::TaskRunUpdate::Progress {
+                message: report,
+                presentation: None,
+            },
+        )
     }
 
     fn invoke_task_action(

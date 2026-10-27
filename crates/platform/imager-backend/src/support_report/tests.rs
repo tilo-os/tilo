@@ -544,3 +544,97 @@ fn windows_observation_parses_actual_model_drivers_and_optional_devices() {
     );
     assert!(!report.blocks_install());
 }
+
+#[cfg(target_os = "linux")]
+fn boot_chain_root(board: Option<&str>) -> tempfile::TempDir {
+    let root = hybrid_laptop();
+    std::fs::create_dir_all(root.path().join("sys/class/misc/kvm")).unwrap();
+    write(root.path(), "proc/cpuinfo", "flags\t\t: sse2 vmx\n");
+    if let Some(board) = board {
+        write(root.path(), "usr/lib/tilo/hardware-profile.json", board);
+    }
+    root
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_generic_image_says_which_architecture_it_starts_on_and_that_it_starts() {
+    let root = boot_chain_root(None);
+    let report = linux::probe_root(root.path());
+    let boot = component(&report, ComponentKind::Boot);
+    // A generic image carries no board profile, so the firmware alone
+    // describes the machine and the boot chain is not in question.
+    assert_ne!(boot.state, SupportState::Unsupported);
+    assert!(matches!(
+        &boot.reason,
+        SupportReason::StartsHere { board: None, .. }
+    ));
+    assert!(boot.evidence.iter().any(|evidence| matches!(
+        &evidence.fact,
+        EvidenceFact::Architecture { name } if name == std::env::consts::ARCH
+    )));
+    // The jump to a virtual machine is a fact, not a verdict: it is never a
+    // reason to refuse an install.
+    report.validate().unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_image_built_for_another_architecture_cannot_start_here() {
+    let other = if std::env::consts::ARCH == "aarch64" {
+        "x86_64"
+    } else {
+        "aarch64"
+    };
+    let root = boot_chain_root(Some(&format!(
+        "{{\"schema_version\": 1, \"id\": \"other-board\", \"architecture\": \"{other}\", \"devicetree\": null}}"
+    )));
+    let report = linux::probe_root(root.path());
+    let boot = component(&report, ComponentKind::Boot);
+    assert_eq!(boot.state, SupportState::Unsupported);
+    assert!(matches!(
+        &boot.reason,
+        SupportReason::OtherArchitecture { architecture, running }
+            if architecture == other && running == std::env::consts::ARCH
+    ));
+    assert_eq!(boot.remedy, Some(Remedy::RunOnDestination));
+    // The boot chain is essential, so this is what stops the install.
+    assert!(ComponentKind::Boot.critical());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_arm64_image_without_a_device_tree_cannot_describe_its_board() {
+    // The reason must exist for the architecture it describes, so it is
+    // built directly rather than through a host that is not ARM64.
+    let component = ComponentSupport {
+        kind: ComponentKind::Boot,
+        name: String::new(),
+        present: true,
+        state: SupportState::Unsupported,
+        applicability: Applicability::ObservationOnly,
+        reason: SupportReason::BoardWithoutDevicetree {
+            board: "unlisted-board".into(),
+            architecture: "aarch64".into(),
+        },
+        evidence: Vec::new(),
+        remedy: Some(Remedy::RunOnDestination),
+    };
+    let report = SupportReport {
+        schema: REPORT_SCHEMA.into(),
+        identity: DestinationIdentity {
+            source: ReportSource::LocalScan,
+            manufacturer: Some("Test Vendor".into()),
+            model: Some("Test Laptop 15".into()),
+            variant: Some("TESTBOARD".into()),
+            board: None,
+            sku: None,
+            firmware: None,
+        },
+        kernel: None,
+        architecture: Some("aarch64".into()),
+        components: vec![component],
+    };
+    report.validate().unwrap();
+    assert!(report.blocks_install());
+}

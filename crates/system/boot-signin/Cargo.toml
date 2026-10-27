@@ -24,6 +24,8 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tilo-ask-password = { path = "../ask-password" }
+# The person's initials and colour, as the login screen draws them.
+tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 zeroize.workspace = true
 workspace-hack = { version = "0.1" }
 

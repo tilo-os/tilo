@@ -56,7 +56,7 @@ fn walk(steps: &[Step], out: &mut ProgramRequirements) {
                 out.apps.insert(action.app.clone());
                 out.appearance |= appearance.is_some();
             }
-            StepKind::Ai { .. } => {
+            StepKind::Ai { .. } | StepKind::Task { .. } => {
                 out.apps.insert(AGENT_APP_ID.to_owned());
             }
             StepKind::If {
@@ -74,7 +74,7 @@ fn walk(steps: &[Step], out: &mut ProgramRequirements) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AiTransform, Binding, Condition, Selector};
+    use crate::{Binding, Condition, Selector};
     use std::collections::BTreeMap;
     use tilo_actions::ActionKey;
 
@@ -123,8 +123,9 @@ mod tests {
                                 Step::new(
                                     "sum",
                                     StepKind::Ai {
-                                        transform: AiTransform::Summarise,
-                                        input: Binding::Var("item".into()),
+                                        prompt: "Condense".into(),
+                                        output: None,
+                                        input: Some(Binding::Var("item".into())),
                                     },
                                 ),
                             ],

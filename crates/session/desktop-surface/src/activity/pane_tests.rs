@@ -52,7 +52,7 @@ mod tests {
                 &user,
                 CapOverride::grant(
                     Subject::app("files"),
-                    Scope::FsPath("/home/quinten/notes".to_string()),
+                    Scope::FsPath("/home/user/notes".to_string()),
                     Access::Read,
                 ),
             )
@@ -712,7 +712,7 @@ mod tests {
             &user,
             CapOverride::grant(
                 Subject::app("files"),
-                Scope::FsPath("/home/quinten/later".to_string()),
+                Scope::FsPath("/home/user/later".to_string()),
                 Access::Read,
             ),
         )
@@ -855,7 +855,7 @@ mod tests {
             &user,
             CapOverride::grant(
                 Subject::app("files"),
-                Scope::FsPath("/home/quinten/new-result".into()),
+                Scope::FsPath("/home/user/new-result".into()),
                 Access::Read,
             ),
         )
@@ -1088,7 +1088,7 @@ mod tests {
         );
         let summaries: Vec<&str> = pane.entries().iter().map(|e| e.summary.as_str()).collect();
         assert!(
-            summaries.iter().any(|s| s.contains("/home/quinten/notes")),
+            summaries.iter().any(|s| s.contains("/home/user/notes")),
             "the filesystem grant is named by the path it granted: {summaries:?}"
         );
         assert!(
@@ -1238,7 +1238,7 @@ mod tests {
             "the other room's network grant leaked into this room: {scoped:?}"
         );
         assert!(
-            scoped.iter().any(|s| s.contains("/home/quinten/notes")),
+            scoped.iter().any(|s| s.contains("/home/user/notes")),
             "this room's own grant is present: {scoped:?}"
         );
 
@@ -1267,7 +1267,7 @@ mod tests {
             .entries()
             .iter()
             .filter(|e| {
-                e.summary.contains("research.example") || e.summary.contains("/home/quinten/notes")
+                e.summary.contains("research.example") || e.summary.contains("/home/user/notes")
             })
             .map(|e| e.summary.clone())
             .collect();
@@ -1288,7 +1288,7 @@ mod tests {
         let (mut tree, first, second) = two_room_tree();
         let mut pane = pane_over(&mut tree);
         let in_first: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
-        assert!(in_first.iter().any(|s| s.contains("/home/quinten/notes")));
+        assert!(in_first.iter().any(|s| s.contains("/home/user/notes")));
 
         tree.set_active(second);
         pane.refresh(&mut tree);
@@ -1298,7 +1298,7 @@ mod tests {
             "the second room's own grant: {in_second:?}"
         );
         assert!(
-            !in_second.iter().any(|s| s.contains("/home/quinten/notes")),
+            !in_second.iter().any(|s| s.contains("/home/user/notes")),
             "the first room's grant must not follow us: {in_second:?}"
         );
         let _ = first;
@@ -1373,7 +1373,7 @@ mod tests {
         let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
         let last_week = CapOverride::grant(
             Subject::app("files"),
-            Scope::FsPath("/home/quinten/last-week".to_string()),
+            Scope::FsPath("/home/user/last-week".to_string()),
             Access::Read,
         );
         let cap_id = {
@@ -1414,7 +1414,7 @@ mod tests {
             &user,
             CapOverride::grant(
                 Subject::app("files"),
-                Scope::FsPath("/home/quinten/today".to_string()),
+                Scope::FsPath("/home/user/today".to_string()),
                 Access::Read,
             ),
         )
@@ -1638,12 +1638,12 @@ mod tests {
         let grant = pane
             .entries()
             .iter()
-            .find(|e| e.summary.contains("/home/quinten/notes"))
+            .find(|e| e.summary.contains("/home/user/notes"))
             .expect("the filesystem grant has a row");
         assert!(
             grant
                 .summary
-                .starts_with("Granted read on /home/quinten/notes to files"),
+                .starts_with("Granted read on /home/user/notes to files"),
             "the grant names verb, scope and subject: {:?}",
             grant.summary
         );
@@ -2038,7 +2038,7 @@ mod tests {
             "a name someone else wrote must say so: {sub:?}"
         );
         assert!(
-            !sub.contains("named by test-owner") && !sub.contains("named by quinten"),
+            !sub.contains("named by test-owner") && !sub.contains("named by ada"),
             "and it must not be attributed to the reader: {sub:?}"
         );
     }
@@ -2574,7 +2574,7 @@ mod resume_card_tests {
 
     #[test]
     fn resume_uses_the_local_users_latest_targeted_action() {
-        let local = "quinten";
+        let local = "ada";
         let now = SystemTime::now();
         let older = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
         let entries = vec![resume_entry(1, local, older), resume_entry(2, "Ada", now)];
@@ -3274,13 +3274,13 @@ mod reader_tests {
     fn the_readers_own_changes_never_reach_the_passive_activity() {
         let own = ui::widget::history::HistoryAuthor::new("Workspace setup", 10.0, "a1b2")
             .with_relation(ui::widget::history::AuthorRelation::Reader);
-        assert!(author_is_local(&own, "quinten"));
+        assert!(author_is_local(&own, "ada"));
         assert!(
             author_is_local(&own, ""),
             "known as the reader without a name"
         );
         let other = ui::widget::history::HistoryAuthor::new("Ada", 10.0, "c3d4");
-        assert!(!author_is_local(&other, "quinten"));
+        assert!(!author_is_local(&other, "ada"));
     }
 }
 

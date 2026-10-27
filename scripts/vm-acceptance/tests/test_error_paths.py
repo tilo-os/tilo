@@ -225,9 +225,10 @@ class ErrorPaths(unittest.TestCase):
 
     def test_partial_relay_setup_removes_the_already_certified_peer(self):
         device = "ab" * 32
-        self.ctx.vm.exec.side_effect = [json.dumps({"device_public_key": device,
-                                                  "relay_service_node_id": "cd" * 32}),
-                                        "Failed to start transient unit"]
+        paired = json.dumps({"device_public_key": device, "relay_service_node_id": "cd" * 32})
+        self.ctx.vm.root_exec.side_effect = [paired + "\nHOME-RELAY pairing\n",
+                                             "Failed to start transient unit"]
+        self.ctx.vm.exec.side_effect = ["HOME-RELAY approved\n"]
         self.ctx.vm.slot_uid.return_value = 1001
         with patch.object(resources, "stop_home_relay") as stop:
             with self.assertRaisesRegex(core.Unobservable, "did not start"):
@@ -235,9 +236,10 @@ class ErrorPaths(unittest.TestCase):
         stop.assert_called_once_with(self.ctx, device)
 
     def test_partial_setup_preserves_original_failure_when_cleanup_also_fails(self):
-        self.ctx.vm.exec.side_effect = [json.dumps({"device_public_key": "ab" * 32,
-                                                  "relay_service_node_id": "cd" * 32}),
-                                        VmError("setup connection lost")]
+        paired = json.dumps({"device_public_key": "ab" * 32, "relay_service_node_id": "cd" * 32})
+        self.ctx.vm.root_exec.side_effect = [paired + "\nHOME-RELAY pairing\n",
+                                             VmError("setup connection lost")]
+        self.ctx.vm.exec.side_effect = ["HOME-RELAY approved\n"]
         self.ctx.vm.slot_uid.return_value = 1001
         with patch.object(resources, "stop_home_relay", side_effect=VmError("stop refused")):
             with self.assertRaisesRegex(VmError, "setup connection lost") as raised:
@@ -258,22 +260,26 @@ class ErrorPaths(unittest.TestCase):
             path.chmod(0o755)
         identity = self.out / "identity"
         (identity / "peers").mkdir(parents=True)
+        peers = identity / "peers" / "home-peers.json"
         runtime = self.out / "runtime"
         runtime.mkdir()
         relay = runtime / resources.HOME_RELAY_DIR
         relay.mkdir()
         (relay / "state").write_text("keep if stop fails")
-        env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
-                   XDG_RUNTIME_DIR=str(runtime), TILO_IDENTITY_ROOT=str(identity))
+        # The relay's directory and the machine's home-peer registry, here.
+        patch.object(resources, "RELAY_RUNTIME", str(runtime)).start()
+        patch.object(resources, "HOME_PEERS", str(peers)).start()
+        env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
 
         def execute(script, **kwargs):
             proc = subprocess.run(["sh", "-c", script], capture_output=True, text=True, env=env)
             if kwargs.get("check", True) and proc.returncode:
-                raise VmError(proc.stderr.strip())
+                raise VmError((proc.stdout + proc.stderr).strip())
             return proc.stdout
 
         self.ctx.vm.exec.side_effect = execute
-        return relay, identity / "peers" / "home-peers.json"
+        self.ctx.vm.root_exec.side_effect = execute
+        return relay, peers
 
     def test_relay_setup_cannot_delete_state_when_previous_relay_refuses_stop(self):
         relay, _ = self.relay_tools(stop=True)

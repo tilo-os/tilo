@@ -133,6 +133,7 @@ workspace-members = [
     "tilo-clock",
     "tilo-lock",
     "tilo-sort",
+    "tilo-face",
     "tilo-content",
     "tilo-desktop-model",
     "wire-frame",

@@ -729,7 +729,7 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
         tap_offline(&mut a, OfflineAction::Download);
         assert_eq!(a.tiles.progress().total, 0, "nothing was queued");
         assert_eq!(a.model.regions.len(), before, "no region was recorded");
-        assert_eq!(a.model.status, OFFLINE_AREAS_REFUSED);
+        assert_eq!(a.model.status, crate::offline_panel::areas_refused());
     }
 
     // Phase `offline_zoom_delta_clamps`.
@@ -1351,24 +1351,26 @@ fn transit_time_and_journeys_drive_queries_and_map_fit() {
     // local time (`ui::clock`), which a capture pins to 10:42, the time the
     // bundled departures lie just ahead of.
     {
-        ui::clock::freeze_for_capture();
-        let a = app_at(1280.0, 800.0);
-        let route = a.model.route.clone().expect("demo has a road route");
-        let (dep, arr) = a.road_trip_clock(route.duration_s);
-        assert_eq!(
-            dep,
-            ui::clock::hour_minute(10, 42),
-            "a capture leaves at its pinned time"
-        );
-        assert!(
-            clock_minutes(&arr) > clock_minutes(&dep),
-            "arrival derived from now + trip duration: {arr}"
-        );
-        let first = a.model.transit.first().expect("demo has departures");
-        assert!(
-            clock_minutes(&first.dep) > clock_minutes(&dep),
-            "the departures lie ahead of now"
-        );
+        let at = ui::clock::capture_wall().expect("the capture time exists in the local zone");
+        ui::time::testing::with_wall(at, || {
+            let a = app_at(1280.0, 800.0);
+            let route = a.model.route.clone().expect("demo has a road route");
+            let (dep, arr) = a.road_trip_clock(route.duration_s);
+            assert_eq!(
+                dep,
+                ui::clock::hour_minute(10, 42),
+                "a capture leaves at its pinned time"
+            );
+            assert!(
+                clock_minutes(&arr) > clock_minutes(&dep),
+                "arrival derived from now + trip duration: {arr}"
+            );
+            let first = a.model.transit.first().expect("demo has departures");
+            assert!(
+                clock_minutes(&first.dep) > clock_minutes(&dep),
+                "the departures lie ahead of now"
+            );
+        });
     }
 
     // Phase `time_picker_available_for_all_modes_and_road_clock_derives`.
@@ -2062,7 +2064,7 @@ fn directions_modes_and_route_replies_recompute_the_route() {
                 from: origin,
                 to: dest,
             };
-            tx.send(NetMsg::Route(Ok(route))).unwrap();
+            tx.send(NetMsg::Route(Ok(vec![route]))).unwrap();
             dense.len()
         });
         let dense_len = worker.join().expect("worker thread completes");

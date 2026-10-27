@@ -390,6 +390,7 @@ files-drive-gone = Dieses Laufwerk ist nicht mehr verbunden.
 files-drive-open-failed = Das Laufwerk konnte nicht geöffnet werden: { $error }
 files-trash-unavailable = Der Papierkorb ist auf diesem Gerät nicht verfügbar.
 files-place-workspace = Arbeitsbereich
+files-place-desktop = Schreibtisch
 files-place-documents = Dokumente
 files-place-downloads = Downloads
 files-place-pictures = Bilder
@@ -487,6 +488,19 @@ files-menu-paste = Einfügen
 files-menu-new-folder = Neuer Ordner
 files-menu-new-file = Neue Datei  ›
 files-menu-move-trash = In den Papierkorb verschieben
+files-rename-selected = „{ $name }“ umbenennen
+files-trash-selected = { $count ->
+    [one] „{ $name }“
+   *[other] { $count } Objekte
+} in den Papierkorb verschieben
+files-copy-selected = { $count ->
+    [one] „{ $name }“
+   *[other] { $count } Objekte
+} kopieren
+files-cut-selected = { $count ->
+    [one] „{ $name }“
+   *[other] { $count } Objekte
+} ausschneiden
 files-menu-add-favourite = Zu Favoriten hinzufügen
 files-menu-remove-favourite = Aus Favoriten entfernen
 files-menu-hide-hidden = Verborgene Dateien ausblenden

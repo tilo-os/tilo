@@ -307,7 +307,7 @@ mod tests {
     fn a_branch_names_its_builds_as_the_publishing_check_does() {
         for (branch, slug) in [
             ("feature/Foo_bar", "feature-foo-bar"),
-            ("quinten/dev-delivery", "quinten-dev-delivery"),
+            ("ada/dev-delivery", "ada-dev-delivery"),
             ("--x--", "x"),
             ("a/b/c.d", "a-b-c.d"),
         ] {

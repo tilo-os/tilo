@@ -954,10 +954,12 @@ fn finish_bound(mut spec: ActionSpec, decl: &Declaration) -> ActionSpec {
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }
-    // Offered to whom it is declared for, housekept and undone as
-    // declared: `#[action(audience = "people", item = ...)]` is no
-    // agent's on its item either. Before `destructive`, which asks first
-    // for what Undo cannot bring back (`undo:irreversible`).
+    // On its item it is the same act, in the same picture.
+    spec.icon.clone_from(&decl.icon);
+    // Offered to whom it is declared for, housekept and undone as declared:
+    // `#[action(audience = "people", item = ...)]` is no agent's on its item
+    // either. Before `destructive`, which settles its confirmation from what
+    // the tags say and would otherwise ask about the undo they declare.
     for tag in &decl.tags {
         if !spec.contract.tags.contains(tag) {
             spec.contract.tags.push(tag.clone());

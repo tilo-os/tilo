@@ -176,7 +176,6 @@ impl SidebarNav {
             let follow = Rc::clone(core);
             let section_action = Rc::clone(requests);
             NavList::new(Vec::new())
-                .with_id("feeds.sidebar")
                 .with_accessible_name("Subscriptions")
                 // Headings and a New folder are what a growing library
                 // needs: the sidebar is a list from the start, never a rail.
@@ -186,7 +185,7 @@ impl SidebarNav {
                         section_action.borrow_mut().push(Request::NewFolder);
                     }
                 })
-                .on_select(move |id| {
+                .on_view("feeds.sidebar", move |id| {
                     if let Some(filter) = filter_of(&id) {
                         show.borrow_mut().push(Request::Show(filter));
                     }

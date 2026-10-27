@@ -756,6 +756,7 @@ fn tab_stub(id: u64, title: &str, kind: AppKind, label: &str) -> (TabDescriptor,
             title: title.into(),
             app_kind: Some(kind),
             icon: None,
+            attention: false,
         },
         TileContent::Stub {
             kind,
@@ -783,24 +784,28 @@ fn probe_tab_centers() -> [Point; 4] {
             title: "Notes".into(),
             app_kind: Some(AppKind::Editor),
             icon: None,
+            attention: false,
         },
         TabDescriptor {
             id: 2,
             title: "Files".into(),
             app_kind: Some(AppKind::Files),
             icon: None,
+            attention: false,
         },
         TabDescriptor {
             id: 3,
             title: "Terminal".into(),
             app_kind: Some(AppKind::Terminal),
             icon: None,
+            attention: false,
         },
         TabDescriptor {
             id: 4,
             title: "Browser".into(),
             app_kind: Some(AppKind::Browser),
             icon: None,
+            attention: false,
         },
     ];
     let theme = Theme::dark();
@@ -1368,4 +1373,89 @@ fn pump_host(
     // `node_id` is only dereferenced when walking children; the pre-pass returns first.
     let dummy_node = NodeId::from(0_u64);
     dispatch(host, &taffy, dummy_node, modifiers, event)
+}
+
+// Test 5: a narrow window's bar, over a folder deep in the home
+//
+// Every control keeps its slot and the location takes what they leave: the
+// breadcrumb folds its middle levels into the `…` and cuts the folder's own
+// name short inside its field, never running under the window's search or
+// its own controls, which stand apart as a group at the trailing edge.
+
+/// A Files window's slots for a folder five levels under the home.
+fn deep_folder_toolbar() -> ui::window_toolbar::WindowToolbar {
+    use ui::window_toolbar::{
+        LocationSegment, ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
+    };
+    let levels = [
+        "Home",
+        "Documents",
+        "Projects",
+        "Tilo",
+        "designs",
+        "app-language",
+    ];
+    WindowToolbar {
+        sidebar: Some(false),
+        navigation: Some(ToolbarNavigation {
+            back: true,
+            forward: false,
+        }),
+        location: Some(ToolbarLocation {
+            label: "app-language".into(),
+            value: "~/Documents/Projects/Tilo/designs/app-language".into(),
+            editable: true,
+            segments: levels
+                .iter()
+                .map(|label| LocationSegment {
+                    label: (*label).into(),
+                    value: (*label).into(),
+                })
+                .collect(),
+            ..ToolbarLocation::default()
+        }),
+        actions: vec![
+            ToolbarAction::new("view", "layout-grid", "Show as grid"),
+            ToolbarAction::new("new-folder", "folder-plus", "New folder"),
+            ToolbarAction::new("up", "arrow-up", "Up").in_menu(),
+        ],
+        ..WindowToolbar::default()
+    }
+}
+
+#[test]
+fn e2e_narrow_window_bar_keeps_its_location_inside_its_field() {
+    const WIDTH: f32 = 480.0;
+    const HEIGHT: f32 = 160.0;
+    let _guard = TEST_LOCK.lock_recover();
+    let tabs = vec![tab_stub(1, "Files", AppKind::Files, "files")];
+    let mut group = WindowGroup::new(300, tabs, 1, WindowWidth::Normal);
+    group.set_strip_usable_px(f64::from(WIDTH));
+    assert!(group.set_tab_toolbar(1, Some(deep_folder_toolbar())));
+    let theme = Theme::dark();
+    let presence = PresenceCtx::default();
+    let mut tr = TextRenderer::new();
+    // The first paint measures the bar's labels; the layout after it places
+    // them.
+    lay_out(&mut group, WIDTH, HEIGHT);
+    tilo_test_env::wait_until("the narrow window's bar to settle", || {
+        let mut s = Scene::new();
+        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+        lay_out(&mut group, WIDTH, HEIGHT);
+        !group.needs_animation_frame()
+    });
+    let mut s = Scene::new();
+    group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+    let Some(mut offscreen) = OffscreenRenderer::try_new(480, 160).ok() else {
+        eprintln!("offscreen: no wgpu adapter — the narrow bar's golden was not compared");
+        return;
+    };
+    let rendered = screenshots_dir().join("e2e-narrow-window-bar-deep-folder.png");
+    offscreen.render_png(&s, theme.tokens.colors.surfaces.content, rendered.clone());
+    assert_png_nonempty(&rendered);
+    SnapshotAssertion::new(
+        rendered,
+        pinned_golden_path(goldens_dir().join("e2e-narrow-window-bar-deep-folder.png")),
+    )
+    .assert();
 }

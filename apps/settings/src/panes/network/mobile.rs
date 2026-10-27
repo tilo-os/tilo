@@ -66,10 +66,6 @@ pub fn area(app: &SettingsApp) -> Option<&MobileArea> {
     app.areas().find()
 }
 
-/// How often the open section reads the modem again: signal and operator
-/// change as the person moves.
-const READ_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
-
 /// Whether a connection's data counts against a limit, by the key the
 /// metered action takes.
 const METERED: &[(&str, &str)] = &[
@@ -296,7 +292,11 @@ impl MobileArea {
         let mut statuses = Vec::new();
         let mut unavailable = |id: &'static str, code: &str, reason: &str| {
             statuses.push(EffectStatus::unavailable(
-                ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                ActionRef::<SettingsEffect, ()>::new(
+                    id,
+                    &[],
+                    <SettingsEffect as ui::tilo_resource::Effect>::kind(),
+                ),
                 code,
                 reason,
             ));
@@ -485,6 +485,13 @@ pub(crate) trait MobileService: Send + Sync {
     /// # Errors
     /// A wrong code, or why the device refused or failed it.
     fn change(&self, change: &MobileChange) -> Result<(), ModemError>;
+    /// Follow the modems: `changed` is called, on another thread, each time
+    /// the modem service or the network service reports a change (signal,
+    /// operator, registration, the data connection), for as long as the
+    /// answer is held. `None` when nothing can be followed.
+    fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
 }
 
 /// This device's modems.
@@ -501,6 +508,23 @@ impl DeviceModem {
 }
 
 impl MobileService for DeviceModem {
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        let changed: Arc<dyn Fn() + Send + Sync> = Arc::from(changed);
+        let modems = Arc::clone(&changed);
+        let modems = os_actions::bus_follow::follow_system_services(
+            &["org.freedesktop.ModemManager1"],
+            move || modems(),
+        );
+        let network = os_actions::network::follow_network_changes(Box::new(move || changed()));
+        match (modems, network) {
+            (Ok(modems), Ok(network)) => Some(Box::new((modems, network))),
+            (Err(error), _) | (_, Err(error)) => {
+                warn!(target: "tilo::settings", %error, "the modems' changes are not followed");
+                None
+            }
+        }
+    }
+
     fn snapshot(&self) -> MobileSnapshot {
         crate::device_read::off_ui_thread();
         MobileSnapshot {
@@ -891,9 +915,10 @@ pub struct MobileModel {
     apn_open: bool,
     apn_automatic: LocalState<bool>,
     apn_text: LocalState<String>,
-    /// When the modems were last read, to read them again every
-    /// [`READ_EVERY`] while the section is shown.
-    read_at: Option<ui::time::Instant>,
+    /// What tells the model the modems changed while a pane shows it.
+    following: std::rc::Weak<crate::watch::Counted>,
+    /// The change count last read for.
+    changes_seen: u64,
     changed: bool,
 }
 
@@ -934,7 +959,8 @@ impl MobileModel {
             apn_open: false,
             apn_automatic: LocalState::new(true),
             apn_text: LocalState::new(String::new()),
-            read_at: None,
+            following: std::rc::Weak::new(),
+            changes_seen: 0,
             changed: false,
         }
     }
@@ -999,10 +1025,7 @@ impl MobileModel {
             }),
         );
         match started {
-            Ok(()) => {
-                self.snapshot = Some(receiver);
-                self.read_at = Some(ui::time::now());
-            }
+            Ok(()) => self.snapshot = Some(receiver),
             Err(error) => {
                 self.notice = Some(t_args(
                     "net-mobile-read-err",
@@ -1419,20 +1442,26 @@ impl MobileModel {
         }
     }
 
-    /// Read again every [`READ_EVERY`] while a modem is shown and nothing
-    /// runs.
-    fn read_when_due(&mut self, now: ui::time::Instant) {
-        let due = self.loaded
-            && self.present()
-            && self.cx.reaches_devices()
-            && self.snapshot.is_none()
-            && self.in_flight == 0
-            && self
-                .read_at
-                .is_none_or(|at| now.saturating_duration_since(at) >= READ_EVERY);
-        if due {
-            self.start_snapshot();
+    /// Read the modems again once a service reported a change, while a
+    /// pane follows them. Reads coalesce: one runs at a time, and a change
+    /// that came meanwhile is read once it lands.
+    fn read_reported_changes(&mut self) {
+        let Some(changes) = self
+            .following
+            .upgrade()
+            .and_then(|following| following.changes())
+        else {
+            return;
+        };
+        if changes == self.changes_seen
+            || !self.loaded
+            || self.snapshot.is_some()
+            || self.in_flight > 0
+        {
+            return;
         }
+        self.changes_seen = changes;
+        self.start_snapshot();
     }
 
     /// The state the section shows, for agents and scripts: never a code.
@@ -1988,7 +2017,7 @@ impl PaneModel for MobileModel {
     fn poll(&mut self) -> bool {
         self.poll_background();
         self.poll_codes();
-        self.read_when_due(ui::time::now());
+        self.read_reported_changes();
         std::mem::take(&mut self.changed)
     }
 
@@ -1996,10 +2025,19 @@ impl PaneModel for MobileModel {
         "MobilePane"
     }
 
-    fn next_wake(&self) -> Option<ui::time::Instant> {
-        (self.loaded && self.present() && self.cx.reaches_devices())
-            .then(|| self.read_at?.checked_add(READ_EVERY))
-            .flatten()
+    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        if let Some(held) = self.following.upgrade() {
+            return Some(held);
+        }
+        // Nothing was followed while no pane showed the model: a model
+        // already read reads the modems again once; a first read on its way
+        // covers it.
+        self.changes_seen = if self.loaded { u64::MAX } else { 0 };
+        let service = Arc::clone(&self.service);
+        let following = crate::watch::shared(&mut self.following, move || {
+            crate::watch::Counted::start(|changed| service.follow(changed))
+        });
+        Some(following)
     }
 }
 

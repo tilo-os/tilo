@@ -21,7 +21,7 @@ fn harness_admits_an_explicitly_enrolled_certified_device() {
     let _broker = typed_peer::spawn_with_agent_actions(&socket, &[]);
     let mut peer = typed_peer::TypedPeer::connect(&socket);
 
-    peer.announce(&socket, &hello("quinten"))
+    peer.announce(&socket, &hello("ada"))
         .expect("the fixture authority admits its explicitly enrolled device");
 }
 

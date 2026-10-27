@@ -247,6 +247,19 @@ RUN --network=none \
     bash /run/tilo-dev/os/scripts/ensure-dev-env-runtime.sh /run/tilo-dev-env-runtime \
       /usr/libexec/tilo/tilo-install
 
+# The local model catalog of this tree (`dev-model-catalog`: t's model-catalog-dev-<arch>, which
+# names the runtimes this tree builds, signed with a throwaway key this image's own signature
+# vouches for), in place of the base's, whose release has not signed them yet. An empty directory
+# keeps the base's catalog.
+RUN --network=none \
+    --mount=type=bind,from=dev-model-catalog,source=/,target=/run/tilo-dev-model-catalog,ro \
+    if [ -e /run/tilo-dev-model-catalog/catalog.json ]; then \
+      install -m 0644 /run/tilo-dev-model-catalog/catalog.json \
+        /usr/share/tilo/system-extensions/local-model-catalog.json \
+      && install -m 0644 /run/tilo-dev-model-catalog/keys.json \
+        /usr/share/tilo/system-extensions/local-model-keys.json; \
+    fi
+
 # base.json for tilo-vmd's layer checks, the dev-only update policy and the
 # flavour marker; then proof that every piece above is really in place.
 ARG BASE_IMAGE

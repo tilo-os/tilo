@@ -37,7 +37,10 @@ fn follow_nearby_transfer(channel: runtime_collab::ChannelHandle, inbound_tx: In
             match channel.nearby_transfer_changed(after).await {
                 Ok(change) if change != after => {
                     after = change;
-                    if !inbound_tx.send_durable(CollabEvent::NearbyTransferChanged) {
+                    if !inbound_tx
+                        .send_durable(CollabEvent::NearbyTransferChanged)
+                        .await
+                    {
                         return;
                     }
                 }
@@ -72,7 +75,7 @@ fn follow_speakers(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBr
             match channel.speaker_changed(after).await {
                 Ok(change) if change != after => {
                     after = change;
-                    if !inbound_tx.send_durable(CollabEvent::SpeakersChanged) {
+                    if !inbound_tx.send_durable(CollabEvent::SpeakersChanged).await {
                         return;
                     }
                 }
@@ -107,7 +110,10 @@ fn follow_applications(channel: runtime_collab::ChannelHandle, inbound_tx: Inbou
             match channel.applications_changed(after).await {
                 Ok(change) if change != after => {
                     after = change;
-                    if !inbound_tx.send_durable(CollabEvent::ApplicationsChanged) {
+                    if !inbound_tx
+                        .send_durable(CollabEvent::ApplicationsChanged)
+                        .await
+                    {
                         return;
                     }
                 }
@@ -137,7 +143,7 @@ fn follow_drives(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBrid
             match channel.drives_changed(after).await {
                 Ok(change) if change != after => {
                     after = change;
-                    if !inbound_tx.send_durable(CollabEvent::DrivesChanged) {
+                    if !inbound_tx.send_durable(CollabEvent::DrivesChanged).await {
                         return;
                     }
                 }

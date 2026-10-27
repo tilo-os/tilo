@@ -19,7 +19,8 @@ root shell on a virtio-serial port the check hot-plugs after each boot. Nothing 
 target is changed.
 
 Variants:
-  one-secret             the installer's own path: one secret for disk and account
+  one-secret             the installer's own default: one secret for disk and account; the
+                         recovery key it hands over must open a keyslot of its own (item 8)
   separate-disk-secret   the installer's separate disk secret: migration adds the keyslot with the
                          volume key the initrd links, then the boot sign-in takes the password
 
@@ -326,13 +327,13 @@ class Run:
     # -- the installer ------------------------------------------------------------------------
 
     def install(self) -> None:
-        """The separate-secret variant installs through the installer's unattended entry point:
-        a private recipe applied through the same published actions and privileged backend
-        (tilo-install, tilo-disk-encrypt) as the wizard, with the one-time recovery key written
-        to a private file the test shell reads. The one-secret variant drives the wizard over
-        the console, because only the wizard installs with one secret: an unattended recipe
-        always carries a separate disk secret and refuses one equal to the account password.
-        That variant has no recovery key; item 6 runs in the other."""
+        """Both variants install through the installer's unattended entry point: a private
+        recipe applied through the same published actions and privileged backend (tilo-install,
+        tilo-disk-encrypt) as the wizard, with the one-time recovery key written to a private
+        file the test shell reads. The one-secret recipe carries no `protection`, so the account
+        password is the startup secret too, as the wizard installs it; the separate-secret
+        recipe carries its own disk secret. Item 8 checks the one-secret key's keyslot after
+        install; item 6, the key at the boot prompt, runs in the other variant."""
         c = self.cycle
         c.vm("init-cycle")
         # The medium is unsigned: its installer admits the target only with the VM proof port.
@@ -342,12 +343,9 @@ class Run:
             console.poll(c.console, lambda s: s.get("app") == "installer", 900, 5)
         except TimeoutError as error:
             raise Failed("the live installer never answered on its console") from error
-        if not self.disk:
-            self.run_wizard()
         sh = self.live_shell()
         try:
-            if self.disk:
-                self.run_unattended(sh)
+            self.run_unattended(sh)
             self.prepare_target(sh)
         finally:
             try:
@@ -360,70 +358,6 @@ class Run:
             c.stop()
         (self.out / "serial-installer-withheld.log").write_text(
             "withheld: the live installer's serial may carry the one-time recovery key\n")
-
-    def run_wizard(self) -> None:
-        c = self.cycle
-        last, repeats = "", 0
-        while True:
-            state = console.state(c.console, 30)
-            step = state.get("step", "unknown")
-            repeats = repeats + 1 if step == last else 0
-            if repeats > 3:
-                raise Failed(f"the installer stays on {step}: {state.get('status')}")
-            last = step
-            say(f"installer: {step}")
-            if step in ("keyboard", "network", "media"):
-                c.invoke("installer", "next@installer")
-            elif step == "accounts":
-                c.invoke("installer", "skip-offline@installer.accounts")
-            elif step == "disk":
-                c.invoke("installer", "set-method@installer.storage", {"method": "erase"})
-                disks = [d for d in (state.get("storage") or {}).get("disks", [])
-                         if not d.get("installer_medium") and not d.get("read_only")]
-                if len(disks) != 1:
-                    raise Failed(f"expected one target disk, the installer lists {disks}")
-                c.invoke("installer", f"select@installer.disk:{disks[0]['device']}")
-                c.invoke("installer", "next@installer")
-            elif step == "account":
-                self.facts["installer_secret_policy"] = (state.get("account") or {}).get("secret_policy")
-                c.invoke("installer", "set-identity@installer.account",
-                         {"username": self.user, "full_name": self.full_name})
-                c.invoke("installer", "set-passphrase@installer.account",
-                         {"passphrase": self.account, "confirmation": self.account})
-                c.invoke("installer", "next@installer")
-            elif step == "options":
-                c.invoke("installer", "set-hostname@installer.options", {"hostname": "signin-e2e"})
-                c.invoke("installer", "next@installer")
-            elif step == "review":
-                c.invoke("installer", "set-recovery-promise@installer.review", {"acknowledged": True})
-                target = (console.state(c.console, 30).get("storage") or {}).get("confirmation_target")
-                if not target:
-                    raise Failed("the installer names no confirmation target")
-                c.invoke("installer", "begin@installer.review", {"confirmation_phrase": target})
-            elif step == "install":
-                break
-            else:
-                raise Failed(f"the installer is on a step this check does not know: {step}")
-        started = time.monotonic()
-        seen: list = []
-
-        def finished(state: dict) -> bool:
-            install = state.get("install") or {}
-            for stage in (install.get("stages") or [])[len(seen):]:
-                seen.append(stage)
-                say(f"install stage after {time.monotonic() - started:.0f}s: {SECRETS.redact(str(stage))}")
-            return install.get("state") in ("done", "failed")
-
-        try:
-            final = console.poll(c.console, finished, 3600, 10)
-        except TimeoutError as error:
-            raise Failed("the install did not finish within an hour") from error
-        self.save("installer-final-state.json", final)
-        if final["install"]["state"] != "done":
-            raise Failed("the install failed: " + " | ".join(final["install"].get("log_tail", [])[-5:]))
-        self.facts["install_seconds"] = round(time.monotonic() - started)
-        # The key is not read here: the separate-secret variant proves the recovery path.
-        c.invoke("installer", "confirm-saved@installer.recovery", {"saved": True})
 
     def run_unattended(self, sh: Shell) -> None:
         c = self.cycle
@@ -444,12 +378,13 @@ class Run:
                      "partition_table": device.get("pttype") or "",
                      "partition_table_uuid": device.get("ptuuid") or "",
                      "logical_sector_size": int(device["log-sec"])},
-            "protection": {"kind": "passphrase", "secret": self.disk or self.account},
             "data_source": "none",
             "acknowledge_recovery_key": True,
             "preferences": {"hostname": "signin-e2e"},
             "finish": "stay",
         }
+        if self.disk:
+            recipe["protection"] = {"kind": "passphrase", "secret": self.disk}
         self.facts["target_disk"] = recipe["disk"]
         # The recipe travels on the shell's input, never in argv, and only into a 0600 file.
         body = json.dumps(recipe)
@@ -548,11 +483,34 @@ class Run:
         unlock = self.disk or self.account
         opened = self.slot_opened_by(sh, dev, unlock)
         self.baseline["disk_secret_slot"] = opened
-        if self.recovery:
-            self.baseline["recovery_slot"] = self.slot_opened_by(sh, dev, self.recovery)
+        recovery = self.baseline["recovery_slot"] = (
+            self.slot_opened_by(sh, dev, self.recovery) if self.recovery else None)
         say(f"after install: keyslots {sorted(self.baseline['keyslots'])}, the disk secret opens "
-            f"{opened}, the recovery key opens {self.baseline.get('recovery_slot')}")
+            f"{opened}, the recovery key " + (f"opens {recovery}" if self.recovery else "was not read"))
+        if self.variant == "one-secret":
+            self.check_recovery_slot(opened, recovery)
         self.inject_test_shell(sh, dev, unlock)
+
+    def check_recovery_slot(self, disk_slot: int | None, recovery_slot: int | None) -> None:
+        """Item 8: the key the installer handed over opens the one slot its systemd-recovery
+        token names, which is not the startup secret's."""
+        recovery_tokens = sorted({int(k) for t in self.baseline["tokens"].values()
+                                  if t.get("type") == "systemd-recovery" for k in t.get("keyslots", [])})
+        evidence = {"recovery_slot": recovery_slot, "disk_secret_slot": disk_slot,
+                    "systemd_recovery_token_slots": recovery_tokens,
+                    "keyslots": sorted(self.baseline["keyslots"])}
+        if not self.recovery:
+            self.item("8", "failed", "the install handed over no recovery key", **evidence)
+        elif recovery_slot is None:
+            self.item("8", "failed", "the recovery key the installer handed over opens no keyslot", **evidence)
+        elif recovery_slot == disk_slot or recovery_tokens != [recovery_slot]:
+            self.item("8", "failed", f"the recovery key opens keyslot {recovery_slot}, not the one slot "
+                      f"its systemd-recovery token names ({recovery_tokens}) apart from the startup "
+                      f"secret's ({disk_slot})", **evidence)
+        else:
+            self.item("8", "passed", f"the recovery key the installer handed over opens keyslot "
+                      f"{recovery_slot}, the one its systemd-recovery token names; the account "
+                      f"password opens {disk_slot}", **evidence)
 
     def keyslot_view(self, sh: Shell, dev: str) -> dict:
         """The LUKS2 header's keyslots and tokens, and a hash of each keyslot's key material."""
@@ -1009,7 +967,7 @@ cryptsetup close e2e-target
         }
         evidence["checks"] = checks
         if self.recovery is None:
-            evidence["note"] = "this variant installs without reading the recovery key; its slot was compared by header and key material only"
+            evidence["note"] = "the recovery key was not read (item 8); its slot was compared by header and key material only"
         failed = [name for name, ok in checks.items() if not ok]
         if failed:
             self.item("2", "failed", "; ".join(failed), **evidence)
@@ -1347,7 +1305,7 @@ cryptsetup close e2e-target
 
     def execute(self) -> None:
         if self.variant == "one-secret":
-            steps = [("install", self.install, ("1", "2", "3", "4", "5")),
+            steps = [("install", self.install, ("1", "2", "3", "4", "5", "8")),
                      ("first boot", self.first_boot, ("1",)),
                      ("migration", self.migrate, ("2", "3", "4", "5")),
                      ("boot sign-in", self.boot_sign_in, ("3",)),
@@ -1399,6 +1357,7 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "5": "Lock screen, sudo and polkit accept the secret through pam_tilo and reject a wrong one",
         "6": "Recovery key opens the volume from \"Can't sign in\"",
         "7": "Separate disk passphrase: migration through the linked volume key, then boot sign-in",
+        "8": "One secret: the recovery key the installer hands over opens its own keyslot after install",
     }
     for key in names:
         items.setdefault(key, {"status": "not-run", "summary": "an earlier step failed", "evidence": {}})

@@ -1009,6 +1009,40 @@ impl ShellOverlayHost {
         self.overview_press = None;
     }
 
+    /// Open the search of the app in `tab` with `query` typed, as the app's
+    /// own search control asks for it ([`Self::open_app_search`]), for
+    /// `bin/shots`.
+    pub fn open_app_search_for_shots(&mut self, tab: crate::shell::state::TabId, query: &str) {
+        self.open_app_search(
+            tab,
+            &ui::search::SearchRequest::this_app().with_query(query),
+        );
+    }
+
+    /// The rows the palette shows now, as (title, kind, provider), for
+    /// tests.
+    #[cfg(test)]
+    pub(crate) fn search_rows_for_tests(
+        &self,
+    ) -> Vec<(String, crate::shell::search::ResourceKind, String)> {
+        self.search_results
+            .iter()
+            .map(|row| (row.title.clone(), row.kind.clone(), row.provider_id.clone()))
+            .collect()
+    }
+
+    /// Hand `invocation` to the app of tab `tab`'s window, as a row chosen
+    /// in its search does: how a scene makes what the app holds through
+    /// the app's own actions. `false` when no window here shows the tab.
+    pub fn run_in_window_for_shots(
+        &mut self,
+        tab: crate::shell::state::TabId,
+        invocation: tilo_actions::ControlInvocation,
+    ) -> bool {
+        self.desktop_surface_mut()
+            .is_some_and(|surface| surface.queue_window_control(tab, invocation).is_ok())
+    }
+
     /// Single-frame settle for the palette's entry animation, so a
     /// one-frame headless scene doesn't land at alpha 0 — which is
     /// indistinguishable from no overlay at all. Test-only.

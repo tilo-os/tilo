@@ -64,6 +64,24 @@ pub trait AppDirectory {
     fn resources(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// The workspace's resources the host knows, each by the title its app
+    /// publishes for it: what a person picks an existing resource from.
+    fn titled_resources(&self) -> Vec<TitledResource> {
+        Vec::new()
+    }
+}
+
+/// A resource of the workspace by the title its app publishes for it, as a
+/// search finds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitledResource {
+    /// The app that keeps it.
+    pub app: String,
+    /// Its kind: an item's (`notes.notebook.pages`), else the resource's own.
+    pub kind: String,
+    /// Its id in that app.
+    pub resource: String,
+    pub title: String,
 }
 
 /// A host with no application catalogue: apps are named by their id.
@@ -416,8 +434,9 @@ pub struct Picked {
 
 /// What a person may pick for `pick` in `ws`, as `local_user` sees it, with
 /// `apps` naming apps and resources: the workspace's people, agents and
-/// apps; the whole workspace, each app and each resource; or each grant
-/// they could revoke, by what it allows.
+/// apps; the whole workspace, each app and each resource; each grant they
+/// could revoke, by what it allows; or each existing resource of a kind, by
+/// its title, as a reference to it.
 pub fn picks(
     ws: &Workspace,
     local_user: &str,
@@ -464,6 +483,32 @@ pub fn picks(
                         node.to_string()
                     }),
                     detail: None,
+                    person: None,
+                })
+                .collect()
+        }
+        tilo_actions::Pick::Resource { kind } => {
+            let mut found: Vec<TitledResource> = apps
+                .titled_resources()
+                .into_iter()
+                .filter(|titled| titled.kind == kind)
+                .collect();
+            found.sort_by(|a, b| {
+                a.title
+                    .cmp(&b.title)
+                    .then_with(|| a.resource.cmp(&b.resource))
+            });
+            found
+                .into_iter()
+                .map(|titled| Picked {
+                    value: serde_json::json!({
+                        "app": titled.app,
+                        "kind": kind,
+                        "id": titled.resource,
+                        "label": titled.title,
+                    }),
+                    detail: Some(app_display_name(apps, &titled.app)),
+                    label: titled.title,
                     person: None,
                 })
                 .collect()
@@ -1935,20 +1980,29 @@ pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
     )
 }
 
-/// One line saying what a grant answers, for what, where: "Allowed: reading
-/// and undoable changes in Notes".
+/// What one grant means, said as a person reads it: "Notes: reading and
+/// undoable changes allowed, outside effects ask first". Where it says
+/// "everything", the grant covers every kind.
 pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) -> String {
-    t_args(
-        match grant.answer {
-            tilo_action_policy::Answer::Allow => "workspace-settings-grant-allows",
-            tilo_action_policy::Answer::Ask => "workspace-settings-grant-asks",
-            tilo_action_policy::Answer::Deny => "workspace-settings-grant-denies",
-        },
-        &[
-            ("kinds", kinds_phrase(grant.kinds).into()),
-            ("where", node_phrase(&grant.node, apps).into()),
-        ],
-    )
+    grant_set_sentence(std::slice::from_ref(grant), apps)
+}
+
+/// A grant set as people and agents talk about it: one sentence per grant —
+/// where it applies, then what it answers for each kind of action it covers
+/// — from the most specific node to the least. An empty set grants nothing.
+pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDirectory) -> String {
+    struct Named<'a>(&'a dyn AppDirectory);
+    impl tilo_action_policy::Labels for Named<'_> {
+        fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
+            use tilo_action_policy::Level;
+            match level {
+                Level::App => Some(app_display_name(self.0, id)),
+                Level::Resource | Level::Item => self.0.resource_label(id),
+                _ => None,
+            }
+        }
+    }
+    tilo_action_policy::sentences(grants, &Named(apps))
 }
 
 /// The kinds of action a grant covers, in words.

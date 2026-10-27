@@ -335,6 +335,30 @@ fn a_four_letter_typo_and_typos_among_spread_words_still_find_it() {
 }
 
 #[test]
+fn a_short_word_does_not_find_another_word_one_letter_off() {
+    let documents = [
+        Document::new(0).field(
+            "Paris Protests Erupt Over High Fuel Costs & Trump Cuts Diesel",
+            FieldWeight::TITLE,
+        ),
+        Document::new(1).field("Cats being cats", FieldWeight::TITLE),
+        Document::new(2).field("Notes", FieldWeight::TITLE),
+    ];
+    for index in [committed(Matching::LOOSE, documents.clone()), {
+        let mut index = SearchIndex::new(Matching::LOOSE).through_tantivy();
+        index.replace_all(documents);
+        index.commit().unwrap();
+        index
+    }] {
+        // "cats" is not "cuts" mistyped, though it is one letter away.
+        assert_eq!(keys(&index, "cats"), [1]);
+        // A dropped or swapped letter still finds the word.
+        assert_eq!(keys(&index, "nots"), [2]);
+        assert_eq!(keys(&index, "ntoes"), [2]);
+    }
+}
+
+#[test]
 fn numbers_carry_no_typos_and_punctuation_opens_a_word() {
     let documents = (0..12).map(|at| {
         Document::new(at)

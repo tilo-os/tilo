@@ -244,25 +244,25 @@ mod admitted_history_tests {
                 }],
             }],
         }];
-        tilo_desktop_model::projection::project_owned_contents(
-            &mut doc,
-            &strips,
-            5,
-            None,
-            tilo_desktop_model::projection::EmptyStrips::Skip,
-        )
-        .unwrap();
-        doc.commit();
+        let write = |doc: &mut AutoCommit, strips: &[Strip]| {
+            let mut layout = workspace.clone();
+            layout.strips = strips.to_vec();
+            tilo_desktop_model::shared_record::device::write(
+                doc,
+                workspace.room(),
+                &layout,
+                &tilo_desktop_model::shared_record::device::Writer {
+                    person: Some("ada"),
+                    mine: &|id| id >> 48 == 5,
+                    retained: &|_| false,
+                },
+            )
+            .unwrap();
+            doc.commit();
+        };
+        write(&mut doc, &strips);
         strips[0].window_groups[0].tabs[0].title = "After".into();
-        tilo_desktop_model::projection::project_owned_contents(
-            &mut doc,
-            &strips,
-            5,
-            None,
-            tilo_desktop_model::projection::EmptyStrips::Skip,
-        )
-        .unwrap();
-        doc.commit();
+        write(&mut doc, &strips);
         let mut snapshot = ActivitySnapshot::new(
             DesktopTree {
                 active: workspace.id,

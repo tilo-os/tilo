@@ -30,6 +30,7 @@ use ui::{Arrival, CatalogueCall, InvocationCall, LocalState, RemoteActions};
 
 use crate::editor;
 use crate::model::Workbench;
+use crate::proposal::Proposal;
 
 /// What the door does, published on the drafts for every caller.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -64,6 +65,15 @@ pub enum DoorEffect {
         #[param("What the shortcut should do, in your words")]
         description: String,
     },
+    /// Say what the last run of a shortcut should do differently, and have
+    /// the agent propose the change.
+    #[effect(job)]
+    Refine {
+        #[param("The shortcut program as it is, as JSON")]
+        program: String,
+        #[param("What should be different next time, in your words")]
+        comment: String,
+    },
 }
 
 /// The library's own actions, published by the session under this app's id.
@@ -73,8 +83,32 @@ const LIBRARY_RESOURCE: &str = "shortcuts";
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunStatus {
     Running,
-    Completed(Option<Value>),
+    /// It finished: what it reported, and the steps that fell short when
+    /// any did (`RunReport::degraded_summary`).
+    Completed {
+        value: Option<Value>,
+        degraded: Option<String>,
+    },
     Failed(String),
+}
+
+impl RunStatus {
+    /// The status of a run that finished with `value`: a degraded run's
+    /// value carries the note saying which steps fell short.
+    #[must_use]
+    fn completed(value: Option<Value>) -> Self {
+        let (value, degraded) = match value {
+            Some(Value::Object(mut reported)) if reported.contains_key("degraded") => {
+                let degraded = match reported.remove("degraded") {
+                    Some(Value::String(summary)) => Some(summary),
+                    _ => None,
+                };
+                (reported.remove("output"), degraded)
+            }
+            other => (other, None),
+        };
+        Self::Completed { value, degraded }
+    }
 }
 
 /// One run started from this app, newest first in [`DoorState::runs`].
@@ -96,12 +130,54 @@ pub enum Notice {
     Failed(String),
 }
 
+/// The shortcut an agent answered with, or why it answered nothing.
+fn answer_of(answer: &Result<Option<ActionOutput>, String>) -> Result<Value, String> {
+    answer
+        .as_ref()
+        .map_err(Clone::clone)?
+        .as_ref()
+        .and_then(|output| output.value.clone())
+        .ok_or_else(|| "the agent answered nothing".to_owned())
+}
+
+/// What the agent's answer to `purpose` drafted, as offered for review: a
+/// refinement keeps the shortcut it changed and says what changed in it.
+fn draft_answer(
+    purpose: &Purpose,
+    answer: &Result<Option<ActionOutput>, String>,
+    saved: &[Shortcut],
+    catalog: &ActionCatalog,
+) -> Result<Refined, String> {
+    let value = answer_of(answer)?;
+    match purpose {
+        Purpose::Refine { before } => {
+            let drafted = crate::proposal::refine(value, before, saved, catalog)?;
+            let changes =
+                crate::proposal::diff(&before.shortcut.steps, &drafted.shortcut.steps, catalog);
+            Ok(Refined { drafted, changes })
+        }
+        _ => Ok(Refined {
+            drafted: crate::drafting::adopt(value, saved, catalog)?,
+            changes: Vec::new(),
+        }),
+    }
+}
+
 /// Where asking the agent for a draft stands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Drafting {
     Drafting,
-    Ready(Box<crate::drafting::Drafted>),
+    Ready(Box<Refined>),
     Failed(String),
+}
+
+/// A shortcut the agent drafted, and for a refinement what changed from the
+/// program the person had.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refined {
+    pub drafted: crate::drafting::Drafted,
+    /// The steps that would change, one line each; empty for a first draft.
+    pub changes: Vec<String>,
 }
 
 /// Everything the door knows, shown by the views.
@@ -113,6 +189,11 @@ pub struct DoorState {
     pub notice: Option<Notice>,
     /// The last draft asked of the agent.
     pub drafted: Option<Drafting>,
+    /// The repeated work worth a shortcut, when there is any.
+    pub proposal: Option<Proposal>,
+    /// The comment the person is writing about the last run, and what came
+    /// of the one before it.
+    pub feedback: String,
 }
 
 impl DoorState {
@@ -142,10 +223,19 @@ type Reply = EffectReply;
 enum Purpose {
     Catalogue,
     List,
-    Save { name: String },
-    Run { serial: u64 },
-    Delete { name: String },
+    Save {
+        name: String,
+    },
+    Run {
+        serial: u64,
+    },
+    Delete {
+        name: String,
+    },
     Draft,
+    Refine {
+        before: Box<crate::drafting::Drafted>,
+    },
 }
 
 enum Answer {
@@ -169,6 +259,8 @@ pub struct DoorCore {
     next_run: u64,
     /// Lists still being read for the current refresh, and what they found.
     listing: Vec<Shortcut>,
+    /// What the app was handed about the person's repeated work.
+    observed: crate::Observed,
 }
 
 impl DoorCore {
@@ -181,7 +273,44 @@ impl DoorCore {
             calls: Vec::new(),
             next_run: 1,
             listing: Vec::new(),
+            observed: crate::Observed::default(),
         }
+    }
+
+    /// Take on what the person has been doing, and notice the work worth a
+    /// shortcut. Returns whether the proposal on offer changed.
+    pub fn observe(&mut self, observed: crate::Observed) -> bool {
+        self.observed = observed;
+        self.notice_proposal()
+    }
+
+    /// Notice the repeated work in what has been observed, keeping the
+    /// proposal the person is already looking at and never offering work
+    /// they turned down.
+    fn notice_proposal(&self) -> bool {
+        let catalog = self.state.with(DoorState::catalog);
+        let ignored = self.live.with(|workbench| workbench.ignored.clone());
+        let saved = self
+            .state
+            .with(|state| state.library.ready().cloned().unwrap_or_default());
+        let found = crate::proposal::detect(&self.observed.invocations())
+            .filter(|proposal| !ignored.contains(&proposal.key()))
+            .filter(|proposal| {
+                // What is offered is what saving would accept: a program the
+                // checker has no complaint about.
+                let mut program = proposal.program();
+                program.name = proposal.name(&catalog);
+                serde_json::to_value(&program).ok().is_some_and(|program| {
+                    crate::drafting::adopt(program, &saved, &catalog)
+                        .is_ok_and(|checked| checked.problems.is_empty())
+                })
+            });
+        let before = self.state.with(|state| state.proposal.clone());
+        let changed = before != found;
+        if changed {
+            self.state.update(|state| state.proposal = found);
+        }
+        changed
     }
 
     fn row_target(&self, resource: &str, action: &str) -> Option<RemoteActionTarget> {
@@ -358,6 +487,42 @@ impl DoorCore {
         Ok(())
     }
 
+    /// Ask the agent what the shortcut should do differently, after a run
+    /// the person commented on.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing can be asked now; nothing was sent.
+    pub fn refine(
+        &mut self,
+        before: crate::drafting::Drafted,
+        comment: &str,
+        reply: Option<Reply>,
+    ) -> Result<(), String> {
+        let comment = comment.trim();
+        if comment.is_empty() {
+            return Err("Say what should be different next time".to_owned());
+        }
+        let catalog = self
+            .state
+            .with(|state| state.catalogue.ready().cloned())
+            .ok_or_else(|| self.catalogue_missing())?;
+        let target = crate::drafting::target(&catalog)
+            .ok_or("the agent does not offer drafting in this workspace")?;
+        let arguments = crate::proposal::arguments(&before.shortcut, comment, &catalog);
+        self.state
+            .update(|state| state.drafted = Some(Drafting::Drafting));
+        self.invoke(
+            target,
+            arguments,
+            Purpose::Refine {
+                before: Box::new(before),
+            },
+            reply,
+        );
+        Ok(())
+    }
+
     /// Delete saved shortcut `shortcut`.
     ///
     /// # Errors
@@ -397,6 +562,10 @@ impl DoorCore {
     }
 
     fn settle(&mut self, call: Call) {
+        let saved = self
+            .state
+            .with(|state| state.library.ready().cloned().unwrap_or_default());
+        let catalog = self.state.with(DoorState::catalog);
         let outcome: Result<Option<ActionOutput>, String> = match &call.answer {
             Answer::Catalogue(answer) => match answer.get() {
                 Arrival::Ready(page) => {
@@ -467,13 +636,14 @@ impl DoorCore {
                     self.refresh(None);
                 }
             }
-            (Purpose::Draft, result) => {
-                self.settle_draft(result.clone(), call.reply);
+            (Purpose::Draft | Purpose::Refine { .. }, result) => {
+                let refined = draft_answer(&call.purpose, result, &saved, &catalog);
+                self.settle_draft(refined, call.reply);
                 return;
             }
             (Purpose::Run { serial }, result) => {
                 let status = match result {
-                    Ok(output) => RunStatus::Completed(
+                    Ok(output) => RunStatus::completed(
                         output.as_ref().and_then(|output| output.value.clone()),
                     ),
                     Err(reason) => RunStatus::Failed(reason.clone()),
@@ -490,25 +660,16 @@ impl DoorCore {
         }
     }
 
-    /// Offer what the agent drafted, and answer the `describe` caller with
-    /// it and the checker's verdict.
-    fn settle_draft(&self, result: Result<Option<ActionOutput>, String>, reply: Option<Reply>) {
-        let saved = self
-            .state
-            .with(|state| state.library.ready().cloned().unwrap_or_default());
-        let catalog = self.state.with(DoorState::catalog);
-        let drafted = result.and_then(|output| {
-            let value = output
-                .and_then(|output| output.value)
-                .ok_or("the agent answered nothing")?;
-            crate::drafting::adopt(value, &saved, &catalog)
-        });
-        let answer = drafted.as_ref().map_err(Clone::clone).and_then(|drafted| {
-            serde_json::to_value(&drafted.shortcut)
+    /// Offer what the agent drafted, and answer the caller with it and the
+    /// checker's verdict.
+    fn settle_draft(&self, drafted: Result<Refined, String>, reply: Option<Reply>) {
+        let answer = drafted.as_ref().map_err(Clone::clone).and_then(|refined| {
+            serde_json::to_value(&refined.drafted.shortcut)
                 .map(|shortcut| ActionOutput {
                     value: Some(json!({
                         "shortcut": shortcut,
-                        "problems": drafted.problems,
+                        "problems": refined.drafted.problems,
+                        "changes": refined.changes,
                     })),
                     resources: Vec::new(),
                 })
@@ -516,7 +677,7 @@ impl DoorCore {
         });
         self.state.update(|state| {
             state.drafted = Some(match drafted {
-                Ok(drafted) => Drafting::Ready(Box::new(drafted)),
+                Ok(refined) => Drafting::Ready(Box::new(refined)),
                 Err(reason) => Drafting::Failed(reason),
             });
         });
@@ -567,6 +728,17 @@ impl DoorCore {
             }
             DoorEffect::Delete { shortcut } => self.delete(&shortcut, reply)?,
             DoorEffect::Describe { description } => self.describe(&description, reply)?,
+            DoorEffect::Refine { program, comment } => {
+                let program: tilo_automation::Shortcut =
+                    serde_json::from_str(&program).map_err(|error| {
+                        format!("These are not the steps of a saved shortcut: {error}")
+                    })?;
+                let before = crate::drafting::Drafted {
+                    shortcut: program,
+                    problems: Vec::new(),
+                };
+                self.refine(before, &comment, reply)?;
+            }
         }
         Ok(())
     }
@@ -651,5 +823,41 @@ pub(crate) fn catalogue_refusal(error: &ui::tilo_actions::remote::ActionHostErro
                 .to_owned()
         }
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_degraded_runs_status_keeps_what_it_produced_and_the_note() {
+        // What the broker reports for a run whose step fell short: the
+        // value the shortcut produced, and which step did not deliver.
+        let reported = json!({
+            "output": "Three notes",
+            "degraded": "1 step did not finish as intended: the app was unavailable"
+        });
+        let status = RunStatus::completed(Some(reported));
+        let RunStatus::Completed { value, degraded } = status else {
+            panic!("a finished run");
+        };
+        assert_eq!(value, Some(json!("Three notes")));
+        assert!(
+            degraded
+                .as_deref()
+                .is_some_and(|note| note.contains("unavailable")),
+            "{degraded:?}"
+        );
+
+        // A run that finished as intended reports its value as it is, even
+        // when the value is an object with keys of its own.
+        let plain = json!({"done": true});
+        let RunStatus::Completed { value, degraded } = RunStatus::completed(Some(plain.clone()))
+        else {
+            panic!("a finished run");
+        };
+        assert_eq!(value, Some(plain));
+        assert_eq!(degraded, None);
     }
 }

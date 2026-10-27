@@ -48,3 +48,21 @@ sheets-reply-body = Antwort bearbeitet
 sheets-doc-settings-currency = Währung der Arbeitsmappe festgelegt
 sheets-doc-settings-date-format = Datumsformat der Arbeitsmappe festgelegt
 sheets-doc-settings-time-format = Zeitformat der Arbeitsmappe festgelegt
+
+# Notion-Export importieren.
+sheets-notion-import-title = Notion-Export importieren
+sheets-notion-files = Notion-Export
+sheets-notion-json-files = Notion-Datenbankliste
+sheets-notion-imported =
+    { $tables ->
+        [one] Eine Tabelle importiert
+       *[other] { $tables } Tabellen importiert
+    }
+sheets-notion-imported-table = Importierte Tabelle
+sheets-notion-no-tables = In diesem Export ist keine Tabelle zum Importieren
+sheets-notion-too-big = Der Export ist zu groß zum Importieren
+sheets-notion-too-many-tables = Der Export enthält mehr als { $limit } Tabellen
+sheets-notion-archive-invalid = Das Export-Archiv lässt sich nicht lesen
+sheets-notion-unreadable = Diese Datei ist kein Notion-Export
+sheets-notion-yes = Ja
+sheets-notion-no = Nein

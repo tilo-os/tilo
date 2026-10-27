@@ -43,7 +43,7 @@ async fn a_hosted_room_adds_and_removes_an_agent_and_gives_and_takes_back_a_gran
     let relay = start(scratch.path(), &alice, &host).await;
     let room = create_and_enter(&relay, &host, &laptop, "Sealed membership").await;
     let workspace = room.workspace_id;
-    topology_namespace::admit(&relay, &host, &member, &room.room).await;
+    members::admit(&relay, &host, &member, &room.room).await;
     let owner = subscribed(&relay, &laptop, workspace).await;
 
     // The member's replica, as it sees the room the host stewards.

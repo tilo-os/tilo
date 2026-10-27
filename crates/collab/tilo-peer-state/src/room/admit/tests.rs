@@ -5,6 +5,8 @@ use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
 use std::collections::BTreeMap;
 use tilo_action_policy::{Role, Subject, roles};
+use tilo_desktop_model::ownership::SharedDesktop;
+use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId, shared_record};
 
 const ROOM: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
 const OWNER: [u8; 32] = [0x11; 32];
@@ -20,15 +22,19 @@ fn person_id(root: [u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A room the owner governs, with an editor and a viewer, one strip owned by
-/// the authority's namespace and one by salt `0x0002`.
+/// A room the owner governs, with an editor and a viewer, one strip the
+/// owner made and one the editor made.
 fn governed() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "room", ROOM).unwrap();
     doc.put(ROOT, "name", "Room").unwrap();
     doc.put(ROOT, "owner", person_id(OWNER)).unwrap();
     let members = doc.put_object(ROOT, "members", ObjType::Map).unwrap();
-    for (root, role) in [(EDITOR, Role::Editor), (VIEWER, Role::Viewer)] {
+    for (root, role) in [
+        (OWNER, Role::Owner),
+        (EDITOR, Role::Editor),
+        (VIEWER, Role::Viewer),
+    ] {
         doc.put(
             &members,
             person_id(root),
@@ -45,14 +51,33 @@ fn governed() -> AutoCommit {
         )
         .unwrap();
     }
-    let contents = doc.put_object(ROOT, "contents", ObjType::Map).unwrap();
-    for id in ["0001000000000001", "0002000000000001"] {
-        let strip = doc.put_object(&contents, id, ObjType::Map).unwrap();
-        doc.put(&strip, "name", "Strip").unwrap();
-    }
+    let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+    workspace.strips = vec![
+        Strip::new(StripId(OWNERS_STRIP), "Strip"),
+        Strip::new(StripId(EDITORS_STRIP), "Strip"),
+    ];
+    shared_record::write(
+        &mut doc,
+        &SharedDesktop {
+            tree: DesktopTree {
+                active: workspace.id,
+                workspaces: vec![workspace],
+                ..DesktopTree::default()
+            },
+            authors: BTreeMap::from([
+                (OWNERS_STRIP, person_id(OWNER)),
+                (EDITORS_STRIP, person_id(EDITOR)),
+            ]),
+            ..SharedDesktop::default()
+        },
+    )
+    .unwrap();
     doc.commit();
     doc
 }
+
+const OWNERS_STRIP: u64 = 0x0001_0000_0000_0001;
+const EDITORS_STRIP: u64 = 0x0002_0000_0000_0001;
 
 /// The changes `edit` makes on top of `before`.
 fn changes_after(before: &AutoCommit, edit: impl FnOnce(&mut AutoCommit)) -> Vec<Vec<u8>> {
@@ -89,7 +114,6 @@ fn admit(
     before: Option<&AutoCommit>,
     source: Writer<'_>,
     authority: AuthorityPin<'_>,
-    contents: ContentOwnership,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedRoom, RoomRefusal> {
     admit_room_changes(
@@ -98,17 +122,34 @@ fn admit(
             room: ROOM,
             source,
             authority,
-            contents,
             now_ns: crate::room::saved_shortcut::ns_at(NOW),
         },
         changes,
     )
 }
 
-fn strip_name(doc: &mut AutoCommit, id: &str, name: &str) {
-    let (_, contents) = doc.get(ROOT, "contents").unwrap().unwrap();
-    let (_, strip) = doc.get(&contents, id).unwrap().unwrap();
-    doc.put(&strip, "name", name).unwrap();
+fn strip_name(doc: &mut AutoCommit, id: u64, name: &str) {
+    let mut desktop = shared_record::read(&*doc, None).unwrap();
+    for strip in desktop
+        .tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|w| &mut w.strips)
+    {
+        if strip.id.0 == id {
+            strip.name = name.into();
+        }
+    }
+    shared_record::write(doc, &desktop).unwrap();
+}
+
+/// A strip nobody is named as having made.
+fn add_strip(doc: &mut AutoCommit, id: u64) {
+    let mut desktop = shared_record::read(&*doc, None).unwrap();
+    desktop.tree.workspaces[0]
+        .strips
+        .push(Strip::new(StripId(id), "New"));
+    shared_record::write(doc, &desktop).unwrap();
 }
 
 fn take_ownership(doc: &mut AutoCommit, root: [u8; 32]) {
@@ -123,7 +164,6 @@ fn authority_bootstrap_needs_no_roster_and_others_need_held_governance() {
         None,
         member(&authority, OWNER),
         AuthorityPin::Device(&authority),
-        ContentOwnership::Registry,
         &snapshot,
     )
     .expect("the invite's authority supplies the first governance");
@@ -137,7 +177,6 @@ fn authority_bootstrap_needs_no_roster_and_others_need_held_governance() {
             None,
             member(&stranger, EDITOR),
             AuthorityPin::Device(&authority),
-            ContentOwnership::Registry,
             &snapshot,
         )
         .unwrap_err(),
@@ -159,14 +198,12 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
     );
     let authority = key(0xA0);
     let writer = key(0x02);
-    let salted = ContentOwnership::Salted { local_salt: 0x0001 };
-    let edit = changes_after(&based, |doc| strip_name(doc, "0002000000000001", "Edited"));
+    let edit = changes_after(&based, |doc| strip_name(doc, EDITORS_STRIP, "Edited"));
     assert!(
         admit(
             Some(&based),
             member(&writer, EDITOR),
             AuthorityPin::Device(&authority),
-            salted,
             &edit,
         )
         .is_ok()
@@ -178,14 +215,13 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
     let policy = tilo_desktop_model::projection::room_policy_of(&ungranted, ROOM);
     assert_eq!(policy.active_role(&person_id(EDITOR)), Some(Role::Editor));
     let edit = changes_after(&ungranted, |doc| {
-        strip_name(doc, "0002000000000001", "Edited");
+        strip_name(doc, EDITORS_STRIP, "Edited");
     });
     assert_eq!(
         admit(
             Some(&ungranted),
             member(&writer, EDITOR),
             AuthorityPin::Device(&authority),
-            salted,
             &edit,
         )
         .unwrap_err(),
@@ -196,16 +232,14 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
 #[test]
 fn sender_needs_write_on_the_room_it_already_governs() {
     let before = governed();
-    let edit = changes_after(&before, |doc| strip_name(doc, "0002000000000001", "Edited"));
+    let edit = changes_after(&before, |doc| strip_name(doc, EDITORS_STRIP, "Edited"));
     let authority = key(0xA0);
     let writer = key(0x02);
-    let salted = ContentOwnership::Salted { local_salt: 0x0001 };
     assert_eq!(
         admit(
             Some(&before),
             member(&writer, VIEWER),
             AuthorityPin::Device(&authority),
-            salted,
             &edit,
         )
         .unwrap_err(),
@@ -217,7 +251,6 @@ fn sender_needs_write_on_the_room_it_already_governs() {
             Some(&before),
             member(&writer, [0x44; 32]),
             AuthorityPin::Device(&authority),
-            salted,
             &edit,
         )
         .unwrap_err(),
@@ -229,11 +262,11 @@ fn sender_needs_write_on_the_room_it_already_governs() {
             Some(&before),
             member(&writer, EDITOR),
             AuthorityPin::Device(&authority),
-            salted,
             &edit,
         )
         .is_ok()
     );
+    let added = changes_after(&before, |doc| add_strip(doc, 0x0003_0000_0000_0001));
     assert!(
         admit(
             Some(&before),
@@ -242,8 +275,7 @@ fn sender_needs_write_on_the_room_it_already_governs() {
                 standing: Standing::TransportAuthorized,
             },
             AuthorityPin::Device(&authority),
-            salted,
-            &edit,
+            &added,
         )
         .is_ok(),
         "a transport that already decided Write is not asked again"
@@ -259,7 +291,6 @@ fn malformed_batch_and_foreign_room_are_refused() {
             Some(&before),
             member(&authority, OWNER),
             AuthorityPin::Device(&authority),
-            ContentOwnership::Registry,
             &[vec![0x85, 0x6f, 0x4a, 0x83, 0xff]],
         ),
         Err(RoomRefusal::Malformed(_))
@@ -273,7 +304,6 @@ fn malformed_batch_and_foreign_room_are_refused() {
             Some(&before),
             member(&authority, OWNER),
             AuthorityPin::Device(&authority),
-            ContentOwnership::Registry,
             &moved,
         )
         .unwrap_err(),
@@ -288,7 +318,6 @@ fn governance_changes_only_from_the_pinned_writer() {
     let authority = key(0xA0);
     let editor = key(0x02);
     let as_editor = member(&editor, EDITOR);
-    let salted = ContentOwnership::Salted { local_salt: 0x0001 };
     for pin in [
         AuthorityPin::Device(&authority),
         AuthorityPin::Person(&OWNER),
@@ -296,7 +325,7 @@ fn governance_changes_only_from_the_pinned_writer() {
         AuthorityPin::Unpinned,
     ] {
         assert_eq!(
-            admit(Some(&before), as_editor, pin, salted, &seize).unwrap_err(),
+            admit(Some(&before), as_editor, pin, &seize).unwrap_err(),
             RoomRefusal::GovernanceWriter,
             "{pin:?} must refuse an editor's governance change"
         );
@@ -306,7 +335,6 @@ fn governance_changes_only_from_the_pinned_writer() {
             Some(&before),
             member(&authority, OWNER),
             AuthorityPin::Device(&authority),
-            salted,
             &seize,
         )
         .is_ok(),
@@ -317,7 +345,6 @@ fn governance_changes_only_from_the_pinned_writer() {
             Some(&before),
             member(&key(0x05), OWNER),
             AuthorityPin::Person(&OWNER),
-            salted,
             &seize,
         )
         .is_ok(),
@@ -327,16 +354,7 @@ fn governance_changes_only_from_the_pinned_writer() {
     let echo = changes_after(&before, |doc| {
         doc.put(ROOT, "owner", person_id(OWNER)).unwrap();
     });
-    assert!(
-        admit(
-            Some(&before),
-            as_editor,
-            AuthorityPin::Unpinned,
-            salted,
-            &echo
-        )
-        .is_ok()
-    );
+    assert!(admit(Some(&before), as_editor, AuthorityPin::Unpinned, &echo).is_ok());
 }
 
 #[test]
@@ -351,7 +369,6 @@ fn unpinned_room_refuses_the_first_governance_from_anyone() {
                 standing: Standing::TransportAuthorized,
             },
             AuthorityPin::Unpinned,
-            ContentOwnership::Salted { local_salt: 0x0003 },
             &snapshot,
         )
         .unwrap_err(),
@@ -379,7 +396,6 @@ fn durable_and_import_governance_count_as_governance() {
             Some(&before),
             member(&editor, EDITOR),
             AuthorityPin::Local,
-            ContentOwnership::Salted { local_salt: 0x0001 },
             &receipts,
         )
         .unwrap_err(),
@@ -388,67 +404,53 @@ fn durable_and_import_governance_count_as_governance() {
 }
 
 #[test]
-fn registry_contents_change_only_by_their_owner() {
-    let mut before = governed();
-    let owners = before
-        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
-        .unwrap();
+fn what_someone_else_made_changes_only_with_the_rooms_leave() {
+    let before = governed();
     let authority = key(0xA0);
-    let second = key(0x02);
-    before.put(&owners, "0001", authority.as_str()).unwrap();
-    before.put(&owners, "0002", second.as_str()).unwrap();
-    before.commit();
-    let theirs = changes_after(&before, |doc| strip_name(doc, "0001000000000001", "Stolen"));
+    let editor = key(0x02);
+    let theirs = changes_after(&before, |doc| strip_name(doc, OWNERS_STRIP, "Stolen"));
+    for pin in [AuthorityPin::Device(&authority), AuthorityPin::Local] {
+        let refused = admit(Some(&before), member(&editor, EDITOR), pin, &theirs);
+        assert!(
+            matches!(refused, Err(RoomRefusal::NotTheirs(_))),
+            "{pin:?}: {refused:?}"
+        );
+    }
+    let own = changes_after(&before, |doc| strip_name(doc, EDITORS_STRIP, "Mine"));
+    assert!(
+        admit(
+            Some(&before),
+            member(&editor, EDITOR),
+            AuthorityPin::Device(&authority),
+            &own,
+        )
+        .is_ok(),
+        "a person's own strip is theirs from any device"
+    );
+    // The owner, from a device that does not govern the room, moderates it.
+    let moderated = changes_after(&before, |doc| strip_name(doc, EDITORS_STRIP, "Tidied"));
+    assert!(
+        admit(
+            Some(&before),
+            member(&key(0x07), OWNER),
+            AuthorityPin::Device(&authority),
+            &moderated,
+        )
+        .is_ok()
+    );
+    // A sender whose person is not known may change nothing a person made.
     assert!(matches!(
         admit(
             Some(&before),
-            member(&second, EDITOR),
-            AuthorityPin::Device(&authority),
-            ContentOwnership::Registry,
-            &theirs,
+            Writer {
+                key: &editor,
+                standing: Standing::TransportAuthorized,
+            },
+            AuthorityPin::Local,
+            &own,
         ),
-        Err(RoomRefusal::Topology(_))
+        Err(RoomRefusal::NotTheirs(_))
     ));
-    let own = changes_after(&before, |doc| strip_name(doc, "0002000000000001", "Mine"));
-    assert!(
-        admit(
-            Some(&before),
-            member(&second, EDITOR),
-            AuthorityPin::Device(&authority),
-            ContentOwnership::Registry,
-            &own,
-        )
-        .is_ok()
-    );
-}
-
-#[test]
-fn salted_contents_protect_the_receivers_own_entries() {
-    let before = governed();
-    let editor = key(0x02);
-    let rewrite = changes_after(&before, |doc| strip_name(doc, "0001000000000001", "Stolen"));
-    assert_eq!(
-        admit(
-            Some(&before),
-            member(&editor, EDITOR),
-            AuthorityPin::Local,
-            ContentOwnership::Salted { local_salt: 0x0001 },
-            &rewrite,
-        )
-        .unwrap_err(),
-        RoomRefusal::OwnedContents(1)
-    );
-    let own = changes_after(&before, |doc| strip_name(doc, "0002000000000001", "Theirs"));
-    assert!(
-        admit(
-            Some(&before),
-            member(&editor, EDITOR),
-            AuthorityPin::Local,
-            ContentOwnership::Salted { local_salt: 0x0001 },
-            &own,
-        )
-        .is_ok()
-    );
 }
 
 #[test]
@@ -480,7 +482,6 @@ fn effect_receipts_are_immutable_even_for_the_governor() {
             Some(&before),
             member(&authority, OWNER),
             AuthorityPin::Device(&authority),
-            ContentOwnership::Registry,
             &rewrite,
         )
         .unwrap_err(),
@@ -519,7 +520,6 @@ fn coverage_never_rewinds_even_from_the_governor() {
             Some(&before),
             member(&authority, OWNER),
             AuthorityPin::Device(&authority),
-            ContentOwnership::Registry,
             &rewind,
         ),
         Err(RoomRefusal::Coverage(_))
@@ -545,7 +545,6 @@ fn durability_never_rewinds_even_from_the_governor() {
             Some(&before),
             member(&authority, OWNER),
             AuthorityPin::Device(&authority),
-            ContentOwnership::Registry,
             &rewind,
         ),
         Err(RoomRefusal::Durability(_))
@@ -564,7 +563,6 @@ fn malformed_media_policy_is_refused_even_from_the_governor() {
             Some(&before),
             member(&authority, OWNER),
             AuthorityPin::Device(&authority),
-            ContentOwnership::Registry,
             &malformed,
         ),
         Err(RoomRefusal::Media(_))
@@ -613,7 +611,6 @@ fn a_shortcut_saved_with_a_certificate_issued_this_second_is_proven() {
             room: ROOM,
             source: member(&writer, EDITOR),
             authority: AuthorityPin::Device(&authority),
-            contents: ContentOwnership::Salted { local_salt: 0x0001 },
             now_ns: NOW_NS + 700_000_000,
         },
         &batch,
@@ -631,7 +628,6 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     let before = governed();
     let authority = key(0xA0);
     let writer = key(0x02);
-    let salted = ContentOwnership::Salted { local_salt: 0x0001 };
     let owner = device(0x11, 0xA0);
     let editor = device(0x22, 0x02);
     let governor = AuthorityPin::Device(&authority);
@@ -645,7 +641,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     unproven.saved_by = Some(owner.person());
     for batch in [saving(&before, forged), saving(&before, unproven)] {
         assert_eq!(
-            admit(Some(&before), as_editor(), governor, salted, &batch).unwrap_err(),
+            admit(Some(&before), as_editor(), governor, &batch).unwrap_err(),
             RoomRefusal::ShortcutAuthorship("water".into()),
             "a member cannot save a shortcut as another person"
         );
@@ -659,7 +655,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     unproven.saved_by = Some(editor.person());
     for batch in [saving(&before, forged), saving(&before, unproven)] {
         assert_eq!(
-            admit(Some(&before), as_governor(), governor, salted, &batch).unwrap_err(),
+            admit(Some(&before), as_governor(), governor, &batch).unwrap_err(),
             RoomRefusal::ShortcutAuthorship("ferns".into()),
             "the governor cannot save a shortcut as a member"
         );
@@ -671,16 +667,16 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
         editor.saves("5e1d9a40-3c2b-4f6e-8a7d-1b2c3d4e5f60", shortcut("lamp")),
     );
     assert_eq!(
-        admit(Some(&before), as_editor(), governor, salted, &copied).unwrap_err(),
+        admit(Some(&before), as_editor(), governor, &copied).unwrap_err(),
         RoomRefusal::ShortcutAuthorship("lamp".into()),
     );
 
     // The person's own device saves it; the governor relaying that change is
     // judged by the device that signed it, not by itself.
     let own = saving(&before, editor.saves(ROOM, shortcut("water")));
-    admit(Some(&before), as_editor(), governor, salted, &own)
+    admit(Some(&before), as_editor(), governor, &own)
         .expect("the editor's own device saves as the editor");
-    let relayed = admit(Some(&before), as_governor(), governor, salted, &own)
+    let relayed = admit(Some(&before), as_governor(), governor, &own)
         .expect("a relayed member change is judged by its signer")
         .candidate;
     assert!(
@@ -688,7 +684,6 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
             Some(&before),
             as_editor(),
             governor,
-            salted,
             &saving(&before, shortcut("nobody")),
         )
         .is_ok(),
@@ -706,9 +701,9 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     )
     .unwrap();
     held.commit();
-    let edit = changes_after(&held, |doc| strip_name(doc, "0002000000000001", "Edited"));
+    let edit = changes_after(&held, |doc| strip_name(doc, EDITORS_STRIP, "Edited"));
     assert!(
-        admit(Some(&held), as_editor(), governor, salted, &edit).is_ok(),
+        admit(Some(&held), as_editor(), governor, &edit).is_ok(),
         "a shortcut held unchanged is not a write"
     );
 }

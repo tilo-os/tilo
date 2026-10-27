@@ -3,13 +3,39 @@
 //! Action and protocol definitions can inspect content without depending on a
 //! device storage client that itself transports those definitions.
 
+mod document;
 mod sniff;
+pub use document::{DocumentFormat, RECORDING, RECORDING_MAGIC, document_format, opened_by};
 pub use sniff::{ImageFormat, image_format, image_size, sniff};
 
 /// Whether `hash` has the shape of a content address (64 lower- or upper-case hex digits).
 /// Addresses arrive from documents and peers, so anything else is refused before it can name a path.
 pub fn valid_hash(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// What content an app is opened with is taken as, from its bytes: its file
+/// extension and media type. A picture or a video by its signature, a
+/// document by its format; anything else is opaque bytes. Content handed to
+/// an app travels without the name its sender gave it, so the bytes alone
+/// say which app's file it is.
+#[must_use]
+pub fn opened_as(bytes: &[u8]) -> (&'static str, &'static str) {
+    if let Some(image) = image_format(bytes) {
+        return (image.extension, image.mime);
+    }
+    if bytes.get(4..8).is_some_and(|header| header == b"ftyp") {
+        return ("mp4", "video/mp4");
+    }
+    if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return ("webm", "video/webm");
+    }
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12).is_some_and(|header| header == b"AVI ") {
+        return ("avi", "video/x-msvideo");
+    }
+    document_format(bytes).map_or(("bin", "application/octet-stream"), |format| {
+        (format.extension, format.mime)
+    })
 }
 
 /// What a document records about content instead of its bytes, so placeholders
@@ -23,4 +49,24 @@ pub struct ContentMeta {
     pub w: u32,
     /// Intrinsic pixel height, 0 when unknown.
     pub h: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opened_content_is_taken_as_what_its_bytes_say() {
+        assert_eq!(opened_as(b"\x89PNG\r\n\x1a\n...."), ("png", "image/png"));
+        assert_eq!(opened_as(b"\0\0\0\x18ftypmp42"), ("mp4", "video/mp4"));
+        assert_eq!(
+            opened_as(&[0x1A, 0x45, 0xDF, 0xA3, 0]),
+            ("webm", "video/webm")
+        );
+        assert_eq!(
+            opened_as(RECORDING_MAGIC),
+            (RECORDING.extension, RECORDING.mime)
+        );
+        assert_eq!(opened_as(&[0, 1, 2]), ("bin", "application/octet-stream"));
+    }
 }

@@ -257,6 +257,7 @@ mod tests {
             mode: RunMode::Unattended,
             steps: vec![],
             output: None,
+            degraded: Vec::new(),
             outcome,
         }
     }
@@ -375,7 +376,13 @@ mod tests {
             path: StepPath::root().child(0),
             step: "post".into(),
             invocation: None,
-            status: StepStatus::Failed { failure: outside() },
+            attempts: Vec::new(),
+            degraded: crate::StepOutcome::None,
+            status: StepStatus::Failed {
+                failure: outside(),
+                attempt: 1,
+                recovered: crate::Recovered::Stopped,
+            },
         });
         let Finished::DeadLettered(letter) = queue.finished(&denied, 5) else {
             panic!("dead-lettered");

@@ -247,6 +247,22 @@ clones cannot extend this lifetime. A legacy client's request connection remains
 its lease. No client reconnects through a global socket to recover a consumed
 launcher capability.
 
+A request with `"end_report":true` reads one line on the lease just before it
+closes, saying how the session ended: `{"ended":"exited"}`;
+`{"ended":"failed","reason":…}` when the guest could not be set up and no shell
+started; and for a relay session `{"ended":"lost","reason":…}` or
+`{"ended":"superseded"}`. The reason is for the log. Terminal says the
+environment could not be set up and offers to try again.
+
+Nothing about setting a guest up is written on its terminal
+(`crates/runtime/ush/src/setup.rs`). The supervisor starts `ush run` with the
+pty as standard input and output, and hands it the pty again as descriptor 3
+(`--terminal-fd 3`). Its standard error is a pipe the supervisor reads and
+logs: `ush run`'s own log, `bwrap`'s refusals, a library's warning, and the
+`{"setup":"failed","reason":…}` line that becomes the `failed` report. The
+guest's first process makes the terminal its standard error just before it
+starts the shell.
+
 ## Command runs
 
 Terminal records what a session **ran**, not what its screen showed. A
@@ -400,7 +416,7 @@ available; the tools an environment already has keep working.
 
 `perm trust-dir ~/src` applies `grant-dir`, which mints a
 `collab_types::caps::CapOverride` — `Subject::App("so.tilo.ush")`,
-`Scope::FsPath`, `Effect::Grant`, `Verb::Write` — into the record, and every
+`Scope::FsPath`, `Effect::Grant`, `Access::Write` — into the record, and every
 question is `decide_capability`. That is the same record the compositor stores,
 renders in its permissions panel and can revoke. A `Restrict` written elsewhere
 narrows the bind here, and an expired grant does not survive into the next
@@ -460,6 +476,35 @@ instead of losing data quietly.
 Outside a guest the same verbs run in the host's own shell, where there is no
 environment record to check: the person's permissions are the only bound, and
 the history lives in `~/.local/share/ush/recoverable`.
+
+## `version` — a file's own history, in the words an agent already knows
+
+A file on a Tilo mount is versioned already: every write appends a version, and
+the mounted file answers that history over the same bounded attributes the file
+manager's History view reads. `version` is that history with git's verbs on it,
+and no store of its own:
+
+```
+$ version status notes.md
+9f14c0aa  notes.md (3 revisions), last edited
+$ version log notes.md          # every revision, with its agent and time
+$ version show notes.md HEAD    # one revision's bytes, for piping
+$ version diff notes.md abc123  # what changed since abc123
+$ version restore notes.md abc123
+notes.md is back to abc123 as a new revision
+```
+
+A revision is named by `HEAD`, a full id, or any unambiguous prefix of one; an
+ambiguous prefix is refused rather than guessed. `restore` goes through the same
+checked-restore path the History view uses, so a file that changed between the
+read and the write is refused instead of overwritten. Every verb takes `--json`
+and prints one object, and a refusal prints a stable `error` code, so a script or
+an agent reads a result instead of parsing prose.
+
+Writing the file *is* the version, so there is no `commit`: a commit a caller
+could forget would let the log disagree with what the person sees. `branch`,
+`merge` and `init` have no meaning here either — a mount is the repository, and
+two people editing one document at once is the CRDT's own collaboration.
 
 ## Commands
 

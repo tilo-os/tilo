@@ -1,5 +1,6 @@
 #pragma once
 #include "page_automation_script.h"
+#include "key_mapping.h"
 #include "include/cef_browser.h"
 #include "include/cef_drag_data.h"
 #include "include/cef_devtools_message_observer.h"
@@ -7,10 +8,13 @@
 #include "include/cef_parser.h"
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <functional>
 #include <chrono>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,8 +53,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   using Key=std::function<void(CefRefPtr<CefDictionaryValue>)>;
   // One step of a pointer gesture, in the same CSS pixels.
   using Pointer=std::function<void(CefRefPtr<CefDictionaryValue>)>;
-  PageAutomation(CefRefPtr<CefBrowser> browser,Emit emit,Click click,Key key,Pointer pointer)
-      :browser_(browser),emit_(std::move(emit)),click_(std::move(click)),key_(std::move(key)),pointer_(std::move(pointer)) {}
+  // One turn of the page's wheel at a point in the page's CSS pixels.
+  using Wheel=std::function<void(double,double,double)>;
+  PageAutomation(CefRefPtr<CefBrowser> browser,Emit emit,Click click,Key key,Pointer pointer,Wheel wheel,
+      std::function<void()> action_began,std::function<void()> action_ended)
+      :browser_(browser),emit_(std::move(emit)),click_(std::move(click)),key_(std::move(key)),pointer_(std::move(pointer)),wheel_(std::move(wheel)),
+       action_began_(std::move(action_began)),action_ended_(std::move(action_ended)) {}
   void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
   void Detach() { registration_=nullptr;browser_=nullptr;pending_.reset();CancelFileDialog(); }
   // A page asked for files. A click this automation is driving holds the
@@ -73,15 +81,81 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // cancelled rather than answered for a page nobody is looking at.
   void NavigationStarted() {
     ++navigations_;CancelFileDialog();
-    if(pending_ && pending_->awaiting_start) { pending_->awaiting_start=false;pending_->awaiting_load=true; }
+    if(!pending_) return;
+    // The document the action ran in is being replaced: a wait for the page's
+    // fence, or for a frame's settle, can no longer be answered from it.
+    // Waiting for the navigation to load is what answers this action now.
+    pending_->awaiting_start=false;
+    pending_->waits_on_document=false;
+    if(!pending_->awaiting_load) pending_->awaiting_load=true;
   }
   void NavigationFinished() {
     if(pending_ && pending_->awaiting_load) Succeed(pending_->message,std::nullopt);
   }
+  // The page's renderer is gone (it crashed, or was replaced): no answer can
+  // come from a document that no longer exists. The action in flight is
+  // answered as an outcome nobody knows, so it never stays accepted.
+  void RendererGone() {
+    if(!pending_) return;
+    Finish(Failure("page_gone","The page's renderer went away while this action ran, so whether "
+      "it took effect is unknown; read the page again before acting on it"));
+  }
+  // The tab asked this action to stop. The page cannot be told mid-request, so
+  // the answer is the one thing that is true: it was not observed to finish,
+  // and whether it took effect is unknown.
+  void Cancel() {
+    if(!pending_) return;
+    Finish(Failure("cancelled","The action was cancelled before the page answered it, so whether "
+      "it took effect is unknown; read the page again to see what it did"));
+  }
+  // Whether an action is running: the tab refuses another one while it is.
+  bool Busy() const { return static_cast<bool>(pending_); }
+  // A request the engine refused before it reached the page is answered in
+  // the order the caller asked, behind anything still running. The tab is
+  // told the request is settled here, so the same request reaching it after
+  // this answer runs nothing.
+  void Refuse(CefRefPtr<CefDictionaryValue> command,const std::string& code,const std::string& message) {
+    const int request=command->GetInt("request_id");
+    if(!browser_ || refused_.count(request)) return;
+    // The tab's copy of each refused request is on its way here, so the set
+    // holds what is still to arrive. A caller that sends refusals faster than
+    // the tab answers them makes room from the oldest, which by then arrived.
+    if(refused_.size()>=kMaxRefused) refused_.erase(refused_.begin());
+    refused_.insert(request);
+    Reply(request,Failure(code,message),command->GetString("op")=="text_input");
+    RunQueued();
+  }
+  // The requests that waited on a refusal run now, in the order they came:
+  // each waits for the one before it, and the queue drains as they answer.
+  void RunQueued() {
+    if(queued_.empty()) return;
+    auto next=queued_.front();queued_.erase(queued_.begin());
+    CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,CefRefPtr<CefDictionaryValue> command) {
+      self->Run(command);
+    },CefRefPtr<PageAutomation>(this),next));
+  }
+  // A request that came while a refusal was still answering waits behind it,
+  // in the order the caller asked, however long that answer takes.
   void Request(CefRefPtr<CefDictionaryValue> command) {
+    if(!queued_.empty()) { queued_.push_back(command->Copy(false));return; }
+    Run(command);
+  }
+  void Run(CefRefPtr<CefDictionaryValue> command) {
     const int request=command->GetInt("request_id");
     if(!browser_) return;
-    if(pending_) { Reply(request,Failure("busy","Another page action is still running in this tab"),command->GetString("op")=="text_input");return; }
+    // An action runs over the page as if it were being looked at: a page the
+    // window is not showing never settles, never loads and takes no wheel.
+    if(action_began_) action_began_();
+    shown_=true;
+    // A request the engine answered for this tab already is not run again:
+    // it was judged before it ever reached the page.
+    if(refused_.erase(request)) { RunQueued();return; }
+    if(pending_) {
+      // The request that is running answers next, and the ones that waited on
+      // a refusal behind this one run as it does.
+      Reply(request,Failure("busy","Another page action is still running in this tab"),command->GetString("op")=="text_input");
+      RunQueued();return;
+    }
     const bool private_text=command->GetString("op")=="text_input";
     auto owned=command->Copy(false);
     if(private_text) {
@@ -92,6 +166,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       }
     }
     native_attempted_=false;native_object_.clear();
+    capture_=Area{};capture_label_.clear();
     // The document generation this action runs against (see host.cc's fences).
     const uint64_t generation=command->GetType("generation")==VTYPE_INT?static_cast<uint64_t>(command->GetInt("generation")):0;
     pending_=Pending(request,++token_,navigations_,false,owned,std::string{},generation);
@@ -145,20 +220,46 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // A drawing path's points are one per frame: pointer moves sent within a
   // single frame are coalesced, and the page would see only the last.
   static constexpr int64_t kPathPointMs=16;
+  // One turn of the scroll wheel is one frame: a page's scroll listeners and
+  // intersection observers run between two turns, as they do under a hand,
+  // so a lazy list loads while the wheel keeps turning.
+  static constexpr int64_t kScrollWheelMs=40;
+  // The most one scroll may turn the wheel, and the most one turn travels:
+  // bounded work whatever the page says is left, and an answer inside the
+  // time an action is waited for.
+  static constexpr int kMaxScrollTurns=64;
+  // The refusals still to be met by the tab's copy of the request.
+  static constexpr size_t kMaxRefused=256;
+  // A scroll answers inside the time an action is waited for, however much
+  // page a lazy list keeps giving: what the wheel reached by then is its
+  // answer, and a caller that wants more scrolls again.
+  static constexpr double kScrollBudgetMs=4000;
+  static constexpr double kMaxScrollTurn=2000;
   // A started navigation is awaited this long; a slower one is reported as
   // still loading and the caller waits for it.
   static constexpr int64_t kLoadWaitMs=10000;
   // A held file chooser waits this long for `fill_files`, then is cancelled so
   // the page is never left waiting on input that will not come.
   static constexpr int64_t kFileDialogWaitMs=60000;
-  enum class Stage { FrameTree, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, Evaluate, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle };
+  enum class Stage { FrameTree, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, TypeKey, FillTyped, Evaluate, Paint, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle, Scroll };
   // A gesture's own stages are numbered above every page stage, so one kind of
   // stage never stands for the other.
   enum class GestureStage { Tree, World, Locate, Place, PlaceWorld };
+  static double Now() {
+    return std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+  }
   static constexpr int kGestureBase=1000;
   static constexpr int Gesture(GestureStage stage) { return kGestureBase+static_cast<int>(stage)+1; }
   // Long enough for hover, the press and the drop to paint what they set.
   static constexpr int64_t kPointerFrameMs=60;
+  // The most lines one fill into a region types, so one action stays bounded.
+  static constexpr size_t kMaxFillRuns=2000;
+  // Long enough for one key of a typed fill to reach the page and be handled
+  // before the next is sent, as a person's keys arrive one at a time.
+  static constexpr int64_t kTypeKeyMs=8;
+  // Long enough for the edit that emptied the region to settle before the first
+  // key is sent.
+  static constexpr int64_t kTypeStartMs=120;
   struct TextFrame { std::string id,loader;int world=0,document=0;bool same_origin=true; };
   struct Pending {
     // Named, so an aggregate initializer names each field once: a member added
@@ -170,6 +271,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // not, and may still navigate later on its own. "frame": what it did, it
     // did inside a frame, which is not a way for the page to leave.
     std::string navigation="none";bool awaiting_start=false,awaiting_load=false;
+    // Whether this action's answer is read from the document it acted in. A
+    // navigation that begins then takes that document away unanswered.
+    bool waits_on_document=false;
     // Where a gesture's two ends are, in the view's space, once it began.
     int from_x=0,from_y=0,to_x=0,to_y=0;int steps=0,step=0;
     // What the page resolved when a drag began, so a drop nothing took can be
@@ -264,6 +368,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     Call(Stage::TextWorld,"Page.createIsolatedWorld",params);
   }
   void Begin() {
+    // A turn of the wheel starts from what the page shows now, like a gesture:
+    // the page's own frame tree says which document the wheel turns in, and
+    // the page then says where to turn it.
+    if(pending_ && Action()=="scroll") { Call(Stage::FrameTree,"Page.getFrameTree",nullptr);return; }
     // The document generation (see host.cc's fences): a page action runs
     // against the document the caller saw. A click inside a frame is the
     // frame's own business, but the page around it is still the one the
@@ -621,6 +729,92 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     params->SetBool("awaitPromise",true);
     Call(stage,"Runtime.evaluate",params);
   }
+  // A turn of the wheel asks the page where the wheel turns and what it has
+  // left to move, in the action's own world: the page resolves the element
+  // the caller named, or the viewport, and the engine turns the wheel there.
+  void BeginScroll() {
+    scroll_=Scroll{};scroll_pending_=false;scroll_.began=Now();
+    auto command=CefDictionaryValue::Create();
+    const auto& source=pending_->command;
+    command->SetString("action","scroll_target");command->SetInt("doc",document_);
+    if(!world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
+    for(const char* key:{"element","into_view","to"}) if(source->HasKey(key)) command->SetString(key,source->GetString(key));
+    if(source->HasKey("by")) command->SetInt("by",source->GetInt("by"));
+    auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("silent",true);params->SetBool("awaitPromise",true);params->SetInt("timeout",5000);
+    Call(Stage::Scroll,"Runtime.evaluate",params);
+  }
+  // One more step of the wheel, after a frame: the page says what is left,
+  // and the request it belongs to is still the one running.
+  void ScrollCall(CefRefPtr<CefDictionaryValue> command,uint64_t token) {
+    if(!pending_ || pending_->token!=token) return;
+    auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("silent",true);params->SetBool("awaitPromise",true);params->SetInt("timeout",5000);
+    Call(Stage::Scroll,"Runtime.evaluate",params);
+  }
+  // One turn of the wheel, or the answer that there is nothing left to turn.
+  // The wheel is real input at a point of the page, so the page's own scroll
+  // listeners, intersection observers and lazy loading run for it, and the
+  // page says after each turn how much of the distance is left.
+  void ScrollTurn(CefRefPtr<CefDictionaryValue> value) {
+    // A wheel whose page left the document under it has turned over nothing,
+    // and a request is never left waiting for a turn that will not come.
+    if(!value) { Fail("not_ready","The page left while the wheel was turning it");return; }
+    if(value->GetType("ok")!=VTYPE_BOOL) { Fail("script","The page did not return a result");return; }
+    if(!value->GetBool("ok")) {
+      const auto code=value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"script";
+      Fail(code.size()<=64?code:"script",Text(value,"message"));return;
+    }
+    const auto x=Number(value,"x"),y=Number(value,"y"),left=Number(value,"left");
+    if(std::isfinite(x) && std::isfinite(y)) { scroll_.x=x;scroll_.y=y; }
+    scroll_.left=std::isfinite(left)?left:0;
+    // A page that still has something to give says so; the wheel turns again
+    // once that has had a frame, as a hand's next turn would.
+    if(scroll_.left==0 || scroll_.turns>=static_cast<int>(kMaxScrollTurns) || Now()-scroll_.began>=kScrollBudgetMs) {
+      // Nothing more to do: the answer is what the page shows, as every other
+      // action reads it back.
+      WorldRead();return;
+    }
+    // The wheel turns by the distance that is left, signed: a positive one
+    // carries the page down — its content up — and a negative one back up.
+    const auto turn=std::max(-kMaxScrollTurn,std::min(kMaxScrollTurn,scroll_.left));
+    scroll_.left-=turn;++scroll_.turns;
+    wheel_(scroll_.x,scroll_.y,-turn);
+    auto command=CefDictionaryValue::Create();
+    command->SetString("action","scroll_left");command->SetInt("doc",document_);
+    // The page is asked what is left after the frame the wheel moved it in.
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,CefRefPtr<CefDictionaryValue> command,uint64_t token) {
+      self->ScrollCall(command,token);
+    },CefRefPtr<PageAutomation>(this),command,pending_->token),kScrollWheelMs);
+  }
+  // What the page shows once the wheel has stopped, read like any other
+  // action: the outline lines the turn added and removed.
+  void WorldRead() {
+    auto read=CefDictionaryValue::Create();
+    read->SetString("action","changes");
+    read->SetString("op",pending_->command->GetString("op"));
+    read->SetInt("request_id",pending_->request);
+    read->SetInt("doc",document_);
+    pending_->command=read;
+    pending_->navigation="none";
+    // The document whose changing the caller waits to hear about is the one
+    // the read runs in: a navigation that began while the action waited means
+    // a new document is here, so what the action changed is unknown.
+    pending_->waits_on_document=true;
+    world_request_.clear();place_frame_=PageFrame{};
+    if(!main_world_ && !world_) {
+      world_request_=main_id_;
+      auto params=CefDictionaryValue::Create();
+      params->SetString("frameId",main_id_);params->SetString("worldName","tilo-page-actions");
+      Call(Stage::World,"Page.createIsolatedWorld",params);return;
+    }
+    if(!main_world_) main_world_=world_;
+    Evaluate();
+  }
   // Where the frame tree leads: the document this action runs in. The tree is
   // read once per page generation, so repeated actions on one page do not each
   // pay for it and none of them acts on a tree an older document described.
@@ -667,6 +861,20 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(named.size()>16 || !ResolveFrame(tree_,path,0,target)) {
         Fail("no_frame","No frame of this page has that id; read the page again for the frames it lists");return;
       }
+    }
+    // A turn of the wheel says where it turns before the page is asked
+    // anything: the box it signs into the page's script is the one the caller
+    // named, and the world it runs in is the frame's own.
+    if(Action()=="scroll") {
+      // The world the wheel turns in is the frame's own: a context left by an
+      // earlier action in that frame is reused, and a frame whose document was
+      // replaced gets a new one, so the wheel never turns in a stale document.
+      if(world_id_==target.id && world_ && target.loader==loader_) { BeginScroll();return; }
+      scroll_pending_=true;
+      // The page's own frame tree names the document, but it is a stale copy
+      // once the page it describes has gone: the world then has to be made
+      // again for the frame's new document, not the one the copy remembers.
+      tree_.reset();tree_generation_=0;
     }
     // An action names its frame: the world left by an earlier action in another
     // frame never stands in for it.
@@ -741,12 +949,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // it is being read. The request is read again in a fresh context, once per
     // request; a page that moved on still fails as changed.
     const bool scripted=At(Stage::Evaluate) || At(Stage::GestureBegin) || At(Stage::Path) ||
-      At(Stage::Hover) || At(Stage::Pointer) || At(Stage::GestureEnd);
+      At(Stage::Hover) || At(Stage::Pointer) || At(Stage::GestureEnd) || At(Stage::Scroll);
     if(scripted && world_ && (!success || !result || (result->GetType("result")!=VTYPE_DICTIONARY && result->GetType("exceptionDetails")!=VTYPE_DICTIONARY))) {
       const auto document=contexts_.count(world_)?contexts_[world_]:0;
       contexts_.erase(world_);world_=0;
       if(document!=document_ && !pending_->retried) { pending_->retried=true;Begin();return; }
     }
+    // The engine painted the area the page named: the picture is the answer.
+    if(At(Stage::Paint)) { Painted(success,result);return; }
     // The answer is handled where CEF delivered it, never from inside this
     // call's own dispatch: every method below is sent after the handler runs.
     if(At(Stage::NativeElement) || At(Stage::NativeDOM) || At(Stage::NativeDocument) ||
@@ -919,6 +1129,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // placing waits on the place of its frame, never on the page's read.
       if(gesture_ && PlaceFramePending()) { PlaceFrameRun();return; }
       if(Gesturing()) { BeginGesture();return; }
+      // A turn of the wheel waited for a world to turn in: it turns now, and
+      // only here is the wheel's own world known to be this action's.
+      if(scroll_pending_) { scroll_pending_=false;BeginScroll();return; }
       Evaluate();
     } else if(At(Stage::Fence)) {
       auto remote=success && result?result->GetDictionary("result"):nullptr;
@@ -930,6 +1143,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // Where the page's own pointer rests is told around the gesture's own
       // step, which drives what happens next; its answer ends nothing.
       return;
+    } else if(At(Stage::Scroll)) {
+      auto remote=success && result?result->GetDictionary("result"):nullptr;
+      auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
+      ScrollTurn(value);return;
     } else if(At(Stage::GestureBegin) || At(Stage::Hover) || At(Stage::GestureEnd) || At(Stage::Path)) {
       auto remote=success && result?result->GetDictionary("result"):nullptr;
       auto value=remote?remote->GetDictionary("value"):nullptr;
@@ -965,6 +1182,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         pending_->retried=true;Begin();return;
       }
       if(At(Stage::FrameOffset)) { FrameOffsetResult(success,result);return; }
+      if(At(Stage::FillTyped)) { FillTypedResult(success,result);return; }
 
       auto remote=result?result->GetDictionary("result"):nullptr;
       auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
@@ -1280,6 +1498,75 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     settling_=settling;
     Call(Stage::FrameOffset,"Runtime.evaluate",params);
   }
+  // A capture of an element inside a frame is placed in the page by the
+  // frame's own place, exactly as a click inside it is.
+  void CaptureRegion(CefRefPtr<CefDictionaryValue> value) {
+    pending_->navigation="none";
+    if(!value || value->GetType("ok")!=VTYPE_BOOL || !value->GetBool("ok")) {
+      Fail(value && value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"script",
+        value && value->GetType("message")==VTYPE_STRING?value->GetString("message").ToString()
+          :"The page gave no area to picture");return;
+    }
+    auto data=value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr;
+    if(!data) { Fail("script","The page gave no area to picture");return; }
+    capture_={Number(data,"x"),Number(data,"y"),Number(data,"width"),Number(data,"height")};
+    capture_label_=Text(value,"message");
+    if(!(capture_.width>0 && capture_.height>0)) { Fail("invalid","The picture's area is empty");return; }
+    // An element read in a frame's document has a box in that document: the
+    // frame's place in the page is what moves it into the page's coordinates.
+    if(!world_frame_.number.empty() && world_frame_.id!=main_id_) {
+      if(main_world_) { MeasureFrameOffset(false);return; }
+      Fail("unavailable","The page around the frame could not be measured");return;
+    }
+    Paint();
+  }
+  // The frame's place is known: a picture of what sits in it moves by it.
+  void CapturePlaced() {
+    capture_.x+=world_frame_.x;capture_.y+=world_frame_.y;
+    Paint();
+  }
+  // Ask the engine to paint the area: the page cannot see, answer or refuse it.
+  void Paint() {
+    auto clip=CefDictionaryValue::Create();
+    clip->SetDouble("x",capture_.x);clip->SetDouble("y",capture_.y);
+    clip->SetDouble("width",capture_.width);
+    // A picture taller than the engine can paint is cut, and the answer says
+    // how much of the area it holds.
+    clip->SetDouble("height",std::min(capture_.height,kMaxCaptureHeight));
+    // A command that names no width asks for the widest picture the engine
+    // paints; one that does is bounded by the same limit.
+    const int max_width=pending_->command->HasKey("max_width")
+      ?std::min(std::max(1,pending_->command->GetInt("max_width")),kMaxCaptureWidth):kMaxCaptureWidth;
+    capture_.max_width=max_width;
+    // Never upscaled: a picture is worth nothing larger than the page paints.
+    clip->SetDouble("scale",std::min(1.0,static_cast<double>(max_width)/capture_.width));
+    auto params=CefDictionaryValue::Create();
+    params->SetString("format","png");
+    params->SetBool("captureBeyondViewport",true);
+    params->SetBool("fromSurface",true);
+    params->SetDictionary("clip",clip);
+    Call(Stage::Paint,"Page.captureScreenshot",params);
+  }
+  // The engine's picture: base64 PNG, which the browser stores as the action's
+  // own output and shows the agent.
+  void Painted(bool success,CefRefPtr<CefDictionaryValue> result) {
+    if(!success || !result) { Fail("unavailable","The engine could not paint the page");return; }
+    const auto data=result->GetType("data")==VTYPE_STRING?result->GetString("data"):CefString();
+    if(data.empty()) { Fail("script","The engine painted nothing");return; }
+    // The box is the page's, in page pixels; the picture is that box scaled
+    // to no wider than the caller asked for (never wider than the page's own
+    // size), so its size is the scaled one, as the pixels that came back.
+    const double scale=std::min(1.0, static_cast<double>(capture_.max_width)/std::max(1.0,capture_.width));
+    const double height=std::min(capture_.height,kMaxCaptureHeight);
+    auto answer=CefDictionaryValue::Create();
+    answer->SetDouble("x",capture_.x);answer->SetDouble("y",capture_.y);
+    answer->SetDouble("width",std::round(capture_.width*scale));
+    answer->SetDouble("height",std::round(height*scale));
+    answer->SetDouble("scale",scale);
+    answer->SetString("format","png");
+    answer->SetString("capture",data);
+    Succeed(capture_label_,std::nullopt,answer);
+  }
   void FrameOffsetResult(bool success,CefRefPtr<CefDictionaryValue> result) {
     auto remote=result?result->GetDictionary("result"):nullptr;
     auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
@@ -1298,10 +1585,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // document, so its step lands at the point the frame's place moves it to.
     // The frame's own world reads the box and reports it moved by that place.
     if(gesture_) { FramePlaceRead(value);return; }
+    if(Action()=="capture") { CapturePlaced();return; }
     ClickTarget(settling_);
   }
   void Act(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
+    if(action=="scroll") { ScrollTurn(value);return; }
     // A click inside a frame is a pointer event in the top document, so its
     // point is moved by the frame's place in the page. The frame is where the
     // click settles: the page's own script hears neither the pointer nor what
@@ -1324,9 +1613,17 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(PrivateText() && (action=="cancel_text_input" || action=="commit_text_input" || action=="undo_text_input" || action=="redo_text_input")) { text_owner_.reset();text_lease_.clear(); }
     // An edit runs the page's input handlers.
     if(action=="commit_text_input" || action=="undo_text_input" || action=="redo_text_input") pending_->navigation="possible";
+    // A fill may end in a key that submits the form it is in.
+    if(action=="fill" || action=="fill_secret") pending_->navigation="possible";
+    // A fill is answered by what it left behind, and by the typing when a
+    // region has to be written key by key.
+    if(action=="fill") { FillResult(value);return; }
     // A read runs none of the page's code, so it cannot have led anywhere.
     if(action=="outline" || action=="changes") { pending_->navigation="none";Succeed(Text(value,"message"),Text(value,"outline"));return; }
     if(action=="fill_files") { FileTarget(value);return; }
+    // A picture of the page is taken after the page says where the area is:
+    // the page's own box, never one the caller made up.
+    if(action=="capture") { CaptureRegion(value);return; }
     if(action=="at" || action=="settle" || action=="reader" || action=="prepare_text_input" || action=="start_text_input" || action=="check_text_input" || action=="commit_text_input" || action=="cancel_text_input" || action=="undo_text_input" || action=="redo_text_input") {
       Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr,
         PrivateText() && value->GetType("history")==VTYPE_DICTIONARY?value->GetDictionary("history"):nullptr);return;
@@ -1339,6 +1636,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(!world_frame_.number.empty()) { MeasureFrameOffset(true);return; }
       ClickTarget(false);
     } else if(action=="press") {
+      // A key the engine cannot press is named back, rather than sent as a key
+      // nothing types: a press the page ignored and a press of a key that does
+      // not exist would otherwise read the same to the caller.
+      if(const auto written=pending_->command->GetString("key").ToString();
+         !tilo::NamedKeyMapping(written) && written.size()!=1)
+        { Fail("invalid_key",NotAKey(written));return; }
       auto key=CefDictionaryValue::Create();key->SetString("key",pending_->command->GetString("key"));
       for(const char* flag:{"ctrl","shift","alt","meta"}) key->SetBool(flag,pending_->command->GetBool(flag));
       key_(key);
@@ -1353,6 +1656,98 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     params->SetBool("awaitPromise",true);params->SetBool("silent",true);
     Call(Stage::Fence,"Runtime.evaluate",params);
   }
+  // What the fill left behind. A field answers as it always has. A region the
+  // page kept as it was given is written again as typing (see `TypeFill`); a
+  // region whose own editor changed it says what it holds instead, so the
+  // fill never claims a text the page is not showing.
+  void FillResult(CefRefPtr<CefDictionaryValue> value) {
+    if(value->GetType("input")!=VTYPE_LIST) { Succeed(Text(value,"message"),std::nullopt);return; }
+    if(value->GetType("kept")==VTYPE_BOOL && value->GetBool("kept")) { TypeFill(value);return; }
+    const auto shown=value->GetType("shown")==VTYPE_STRING?value->GetString("shown").ToString():std::string();
+    const auto asked=pending_->command->GetString("text").ToString();
+    if(shown==asked) { Fail("rejected",Text(pending_->command,"element")+" did not take the text");return; }
+    Fail("rejected",Text(pending_->command,"element")+" did not take the text; it holds \""+
+      CefString(shown.substr(0,200)).ToString()+"\"");
+  }
+  // A fill into a contenteditable region is written as a person writes it:
+  // the region was emptied, and its lines are typed through the browser's own
+  // key input. Only keys ask the page first, with beforeinput, so an editor
+  // that keeps its own model (ProseMirror, Quill and the like) hears the edit
+  // it would hear from the keyboard and writes the text itself.
+  void TypeFill(CefRefPtr<CefDictionaryValue> value) {
+    const auto runs=value->GetList("input");
+    if(!runs || runs->GetSize()==0 || runs->GetSize()>kMaxFillRuns) {
+      Fail("rejected","The field did not keep the edited text");return;
+    }
+    for(size_t run=0;run<runs->GetSize();++run)
+      if(runs->GetType(run)!=VTYPE_STRING) { Fail("rejected","The field did not keep the edited text");return; }
+    // The region is empty and focused, its caret where its text was: what the
+    // keys write is what it holds afterwards.
+    auto region=CefDictionaryValue::Create();
+    region->SetList("lines",runs->Copy());
+    region->SetInt("run",0);region->SetInt("offset",0);
+    pending_->command->SetDictionary("typed",region);
+    // The edit that emptied the region has not settled in the page yet, so the
+    // first key waits a turn, as a person's first key follows their selection.
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) {
+      if(self->pending_) self->TypeStep();
+    },CefRefPtr<PageAutomation>(this)),kTypeStartMs);
+  }
+  // One step: a key at a time while the run has text left, and then the Enter
+  // that starts the next line the way a key press would.
+  void TypeStep() {
+    auto region=pending_->command->GetDictionary("typed");
+    if(!region) { Fail("rejected","The field did not keep the edited text");return; }
+    const int run=region->GetInt("run");
+    const CefRefPtr<CefListValue> lines=region->GetList("lines");
+    if(run>=static_cast<int>(lines->GetSize())) { Typed();return; }
+    const std::u16string line=lines->GetString(run).ToString16();
+    auto offset=static_cast<size_t>(region->GetInt("offset"));
+    // Every line after the first starts the way a person starts it: with Enter.
+    if(offset>=line.size()) {
+      // The run is typed; the next one starts with Enter, and the last one
+      // ends the fill without a line after it.
+      if(run+1>=static_cast<int>(lines->GetSize())) { Typed();return; }
+      region->SetInt("run",run+1);region->SetInt("offset",0);
+      TypeKey(CefDictionaryValue::Create(),"",true);return;
+    }
+    const char16_t unit=line[offset];
+    const bool pair=unit>=0xd800 && unit<=0xdbff && offset+1<line.size() && line[offset+1]>=0xdc00 && line[offset+1]<=0xdfff;
+    const size_t width=pair?2:1;
+    region->SetInt("offset",static_cast<int>(offset+width));
+    TypeKey(CefDictionaryValue::Create(),CefString(line.substr(offset,width)).ToString(),false);
+  }
+  // One key of that typing, sent from the next turn of the loop: a key sent
+  // while a DevTools call of this step is answering is not one the page can
+  // count on, and the page handles each key before the next is sent.
+  void TypeKey(CefRefPtr<CefDictionaryValue> key,const std::string& text,bool enter) {
+    key->SetBool("typed",true);key->SetString("text",text);key->SetBool("enter",enter);
+    for(const char* flag:{"ctrl","shift","alt","meta"}) key->SetBool(flag,false);
+    key_(key);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) {
+      if(self->pending_) self->TypeStep();
+    },CefRefPtr<PageAutomation>(this)),kTypeKeyMs);
+  }
+  void Typed() {
+    auto params=CefDictionaryValue::Create();
+    auto region=CefValue::Create();region->SetDictionary(pending_->command->GetDictionary("typed"));
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.typed("+
+      CefWriteJSON(region,JSON_WRITER_DEFAULT).ToString()+")");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("silent",true);
+    Call(Stage::FillTyped,"Runtime.evaluate",params);
+  }
+  void FillTypedResult(bool success,CefRefPtr<CefDictionaryValue> result) {
+    auto remote=success && result?result->GetDictionary("result"):nullptr;
+    auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
+    if(!value || value->GetType("ok")!=VTYPE_BOOL || !value->GetBool("ok")) {
+      Fail(value && value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"rejected",
+        value && value->GetType("message")==VTYPE_STRING?value->GetString("message").ToString()
+          :"The field did not keep the edited text");return;
+    }
+    Succeed(Text(value,"message"),std::nullopt);
+  }
+  // The page's code has run and the fill into its region has finished: what
+  // the page did with it, if anything, is what the caller is told.
   void Fenced(const std::string& navigation) {
     pending_->navigation=navigation=="started"?"started":"possible";
     // A click that opened the page's file chooser is held, not shown: say so,
@@ -1364,7 +1759,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     else if(browser_->IsLoading()) pending_->awaiting_load=true;
     else { Succeed(pending_->message,std::nullopt);return; }
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
-      if(self->pending_ && self->pending_->token==token) self->Succeed(self->pending_->message,std::nullopt);
+      if(self->pending_ && self->pending_->token==token) self->Succeed(self->pending_->message+
+      "; the page did not finish loading that navigation in time",std::nullopt);
     },CefRefPtr<PageAutomation>(this),pending_->token),kLoadWaitMs);
   }
   // A click inside a frame is a pointer event in the top document, so its point
@@ -1401,6 +1797,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
     const auto message=Text(value,"message");
     Succeed(message.empty()?pending_->message:message,std::nullopt);
+  }
+  // What a key the engine cannot press is answered with: the key it was
+  // given, the keys it could have meant, and the case the caller need not match.
+  static std::string NotAKey(const std::string& written) {
+    std::string names;
+    for(const auto& named:tilo::kNamedKeys) names+=(names.empty()?"":", ")+std::string(named.name);
+    return "\""+written+"\" is not a key the browser has. Name one of "+names+
+      " (in any letter case), or a single character such as an a";
   }
   std::string Chord() const {
     static constexpr std::pair<const char*,const char*> kModifiers[]={{"ctrl","Control+"},{"shift","Shift+"},{"alt","Alt+"},{"meta","Meta+"}};
@@ -1464,7 +1868,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A rest the gesture could not tell mid-step is told now, while the request
     // that asked for it is still the one running.
     if(rest_pending_) { rest_pending_=false;RestPointer(rest_point_);rest_pending_=false;call_=0; }
+    scroll_pending_=false;
     pending_.reset();call_=0;
+    if(!queued_.empty()) { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->RunQueued(); },CefRefPtr<PageAutomation>(this))); }
     if(native_attempted_) {
       auto params=CefDictionaryValue::Create();params->SetString("objectGroup","tilo-private-native-caret");
       browser_->GetHost()->ExecuteDevToolsMethod(0,"Runtime.releaseObjectGroup",params);
@@ -1480,10 +1886,37 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     }
     Reply(request,fields,text_input);
   }
-  void Reply(int request,CefRefPtr<CefDictionaryValue> fields,bool text_input=false) { fields->SetInt("request_id",request);emit_(text_input?"text_input_result":"page_result",fields); }
+  // Every answer to an action goes through here, so the page it was run over
+  // is put back however the action ended.
+  void Reply(int request,CefRefPtr<CefDictionaryValue> fields,bool text_input=false) {
+    // A refusal answers for a request that never ran, and the action that is
+    // running still needs the page: only the action shows and puts it back.
+    if(shown_) { shown_=false;if(action_ended_) action_ended_(); }
+    fields->SetInt("request_id",request);
+    emit_(text_input?"text_input_result":"page_result",fields);
+  }
   CefRefPtr<CefBrowser> browser_;CefRefPtr<CefRegistration> registration_;
-  Emit emit_;Click click_;Key key_;Pointer pointer_;
-  std::optional<Pending> pending_;int stage_=static_cast<int>(Stage::FrameTree);int call_=0;
+  Emit emit_;Click click_;Key key_;Pointer pointer_;Wheel wheel_;
+  // Said around every action: the page is shown for as long as one runs.
+  std::function<void()> action_began_,action_ended_;
+  // Whether the action that is answering is the one the page was shown for.
+  bool shown_=false;
+  // The wheel as it turns: how far down the page is left, the page point it
+  // turns at, how many turns it has taken and since when. A page with more to
+  // load says how much is left after each turn, so the wheel keeps turning
+  // until nothing is, within the turns and the time one scroll is allowed.
+  struct Scroll { double left=0,x=0,y=0,began=0;int turns=0; } scroll_;
+  // A turn of the wheel that is waiting for the world of its own frame.
+  bool scroll_pending_=false;
+  std::optional<Pending> pending_;
+  // The requests the engine refused before they reached this tab, answered
+  // where the page's own answers come from; the tab's copy of each runs
+  // nothing. A request id is answered once.
+  std::set<int> refused_;
+  // Requests that came while a refusal or an action was still answering:
+  // answered behind it, in the order they came.
+  std::vector<CefRefPtr<CefDictionaryValue>> queued_;
+  int stage_=static_cast<int>(Stage::FrameTree);int call_=0;
   // The stage that asked for that call, which its answer is answered in.
   int stage_at_call_=static_cast<int>(Stage::FrameTree);
   std::vector<TextFrame> text_candidates_;TextFrame text_frame_;std::optional<TextFrame> text_owner_;std::string text_lease_;
@@ -1535,6 +1968,15 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // step with the place of the frame it was made for, never another frame's.
   std::string frame_place_id_;
   Clicked clicked_;bool settling_=false;
+  // The widest picture a capture paints and the tallest area it covers: a
+  // picture is never larger than a person could look at, whatever was asked.
+  static constexpr int kMaxCaptureWidth=1600;
+  static constexpr double kMaxCaptureHeight=6000;
+  // The area a picture covers, in the page's own CSS pixels, and what the
+  // page called it.
+  struct Area { double x=0,y=0,width=0,height=0; double max_width=kMaxCaptureWidth; };
+  Area capture_;
+  std::string capture_label_;
   IMPLEMENT_REFCOUNTING(PageAutomation);
 };
 }

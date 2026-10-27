@@ -13,7 +13,12 @@ const MAX_PAGE: usize = 100;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectContact {
     pub public_key: String,
+    /// The name the room keeps for the person; never one of their devices'
+    /// labels.
     pub display_name: Option<String>,
+    /// Whether a conversation between the caller and this person holds
+    /// messages.
+    pub conversation: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -258,6 +263,9 @@ fn contacts(
     own: [u8; 32],
     now: SystemTime,
 ) -> Result<Vec<DirectContact>, String> {
+    let certificates = view.peer().certificates();
+    let own_key = key(own);
+    let pairs = &view.record.private_direct_conversations.pairs;
     Ok(view
         .peer()
         .governance()
@@ -271,9 +279,26 @@ fn contacts(
                     .is_ok_and(|p| !p.foreign && p.delegate.is_none())
             })
         })
-        .map(|m| DirectContact {
-            public_key: key(m.user_public_key),
-            display_name: m.display_name,
+        .map(|m| {
+            let person = key(m.user_public_key);
+            // A device's label ("Browser", "Primary device") never names
+            // its person, even where the room recorded it as their name.
+            let display_name = m.display_name.filter(|name| {
+                !certificates.iter().any(|cert| {
+                    cert.user_public_key == m.user_public_key
+                        && cert.device_label.trim() == name.trim()
+                })
+            });
+            let conversation = pairs.values().any(|pair| {
+                !pair.messages.is_empty()
+                    && pair.people.contains(&person)
+                    && pair.people.contains(&own_key)
+            });
+            DirectContact {
+                public_key: person,
+                display_name,
+                conversation,
+            }
         })
         .collect())
 }

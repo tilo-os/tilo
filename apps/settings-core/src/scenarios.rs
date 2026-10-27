@@ -46,6 +46,13 @@ const CODEC_SCENARIOS: &[&str] = &[
     "codecsdemo-waiting",
     "codecsdemo-failed",
 ];
+const WINDOWS_SCENARIOS: &[&str] = &[
+    "windowsdemo-off",
+    "windowsdemo-installing",
+    "windowsdemo-installed",
+    "windowsdemo-waiting",
+    "windowsdemo-failed",
+];
 const DEVICE_DISPLAYS: &str = "device-displays";
 /// Displays with two displays, in each state its design names.
 const DISPLAYS_TWO: &str = "displays-two";
@@ -180,6 +187,7 @@ pub fn names() -> &'static [&'static str] {
                 SPEAKERS_LAYOUT_DRAG,
             ])
             .chain(CODEC_SCENARIOS.iter().copied())
+            .chain(WINDOWS_SCENARIOS.iter().copied())
             .collect()
     });
     &NAMES
@@ -211,6 +219,8 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
 pub struct CaptureScene {
     /// Fixed formats status for the explicit codecs capture scenarios.
     pub codec_status: Option<crate::codec_pack::CodecPackStatus>,
+    /// Fixed standing of Windows support for its capture scenarios.
+    pub windows_support: Option<os_actions::windows_compat::Readiness>,
     /// Where the capture keeps its account stores.
     pub account_root: Option<PathBuf>,
     /// The account form the scenario shows open.
@@ -365,6 +375,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         .map(|directory| directory.join("tilo"));
     fixture.provide(CaptureScene {
         codec_status: codec_status(fixture.scenario()),
+        windows_support: windows_support(fixture.scenario()),
         account_root,
         account_form,
         input_hardware: keyboard_fixture(fixture.scenario()),
@@ -633,6 +644,33 @@ fn codec_status(scenario: Option<&str>) -> Option<crate::codec_pack::CodecPackSt
     Some(crate::codec_pack::CodecPackStatus::parse(json))
 }
 
+/// The Windows compat helpers status for the explicit scenarios: the same
+/// three verbs the codec pack has, over the sizes this image declares.
+fn windows_support(scenario: Option<&str>) -> Option<os_actions::windows_compat::Readiness> {
+    use os_actions::windows_compat::{Readiness, SizeDisclosure};
+    let disclosure = SizeDisclosure {
+        download_bytes: 1_900_000_000,
+        installed_bytes: 3_100_000_000,
+    };
+    let json = match scenario? {
+        "windowsdemo-off" => r#"{"state":"not-installed"}"#,
+        "windowsdemo-installing" => {
+            r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":900000000,"total":1900000000}}"#
+        }
+        "windowsdemo-installed" => r#"{"state":"installed","desired":true}"#,
+        "windowsdemo-waiting" => r#"{"state":"waiting-for-network","desired":true}"#,
+        "windowsdemo-failed" => {
+            r#"{"state":"failed","desired":true,"last_error":"Could not download the manifest (connection reset)."}"#
+        }
+        _ => return None,
+    };
+    Some(Readiness::from_facts(
+        false,
+        Some(disclosure),
+        &os_actions::windows_compat::ExtensionStatus::parse(json),
+    ))
+}
+
 /// Rich synthetic observations for the explicit display capture only.
 fn person_display_fixture() -> Vec<settings_store::person_displays::PersonDevice> {
     use settings_store::person_displays::{DeviceOutput, PersonDevice};
@@ -760,7 +798,9 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(ACCOUNT_FORM | ACCOUNTS_NARROW | ACCOUNTS_LINKING | ACCOUNTS_LINKED) => {
             Staged::Pane(Category::ExternalAccounts)
         }
-        Some(slug) if CODEC_SCENARIOS.contains(&slug) => Staged::Pane(Category::Updates),
+        Some(slug) if CODEC_SCENARIOS.contains(&slug) || WINDOWS_SCENARIOS.contains(&slug) => {
+            Staged::Pane(Category::Updates)
+        }
         Some(slug) => Staged::Pane(Category::from_slug(slug).unwrap_or(Category::Appearance)),
     }
 }
@@ -900,7 +940,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 44 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 44 + CODEC_SCENARIOS.len() + WINDOWS_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
@@ -940,6 +980,11 @@ mod tests {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Updates));
             assert!(codec_status(Some(scenario)).is_some());
         }
+        for scenario in WINDOWS_SCENARIOS {
+            assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Updates));
+            assert!(windows_support(Some(scenario)).is_some());
+        }
+        assert!(windows_support(None).is_none());
         assert!(codec_status(None).is_none());
         assert!(codec_status(Some("updates")).is_none());
         for category in Category::ALL {

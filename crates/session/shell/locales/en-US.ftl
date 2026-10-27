@@ -23,9 +23,15 @@ continuity-other-device = your other device
 tab-closed-toast = Closed { $title }
 tab-closed-group-toast = Closed { $count } tabs
 tab-closed-undo = Undo
+workspace-first-reached = This is the first workspace
+workspace-last-reached = This is the last workspace
+strip-first-reached = This is the first strip
+strip-last-reached = This is the last strip
 workspace-left-toast = Left { $name }
 # The name of a workspace joined before its host told its name.
 workspace-joined-name = Shared workspace
+# The workspace made for Personal Settings when the person had no workspace only they are in.
+workspace-personal-name = Personal
 # A workspace whose host no longer lets this person in.
 workspace-needs-join-again = Join again to take part
 # A workspace that was being joined when Tilo last closed.
@@ -212,18 +218,9 @@ shortcut-category-accessibility = Accessibility
 keyboard-shortcuts-resource = Keyboard shortcuts
 keyboard-shortcuts-list = List keyboard shortcuts
 keyboard-shortcuts-list-description = Every desktop shortcut with its label, current and default chords, whether it can be changed, and its category
-keyboard-shortcuts-reset-all = Restore all default shortcuts
-keyboard-shortcuts-reset-all-description = Put every changeable desktop shortcut back on its default chord
-keyboard-shortcut-rebind = Change the shortcut for { $shortcut }
-keyboard-shortcut-rebind-description = { $shortcut } is on { $chords } (default { $defaults }). Give it another chord; a chord something else uses is refused, naming what uses it.
-keyboard-shortcut-reset = Restore the default shortcut for { $shortcut }
-keyboard-shortcut-reset-description = Put { $shortcut } back on { $defaults }
-keyboard-shortcut-conflict = { $chord } is already used for “{ $shortcut }”.
-keyboard-shortcut-invalid = That shortcut is not supported.
-
-# Shortcut guide (F1)
 guide-title = Keyboard shortcuts
 guide-reopen-hint = Select a navigation shortcut to change it
+guide-chord-row = Change this shortcut, bound to { $chord }
 guide-done = Done
 guide-press-new-shortcut = Press a new shortcut for “{ $action }” · Esc cancels
 guide-message-esc-cancels = { $message } · Esc cancels
@@ -486,11 +483,12 @@ portal-launcher-reason = Review the launcher before it is added to your applicat
 portal-launcher-confirm = Add launcher
 portal-launcher-icon-supplied = Supplied image (validated)
 portal-launcher-icon-monogram = Tilo monogram
-portal-chooser-nothing-granted = This app has been given no files to choose from.
+portal-chooser-cannot-give = This device can't give apps the files you choose right now. Sign out and back in, then try again.
+portal-chooser-not-managed = Only the people who manage this workspace can give its apps your files. Ask one of them to share the file in the workspace.
 portal-chooser-file-not-granted = This app has not been given { $path }.
 portal-chooser-no-file = There is no file to open.
 portal-chooser-session-closing = The session is closing.
-portal-chooser-other-workspace = The app's workspace is not the one on screen.
+portal-chooser-other-workspace = This app's workspace isn't the one on screen. Switch to it, then try again.
 portal-chooser-open-uri-undeclared = This app has not declared that it opens links.
 portal-chooser-save-disabled = Saving to disk is turned off on this device.
 portal-launcher-icon-compass = Tilo web compass
@@ -574,6 +572,7 @@ host-activity-action-move-boundary = Move work session boundary
 host-activity-action-undo = Undo changes
 host-activity-action-restore = Restore to before
 host-activity-action-undo-run = Undo agent task
+host-activity-action-undo-record = Undo this change
 host-activity-action-open = Open
 host-activity-action-choose-source = Choose morning source
 host-activity-action-source = Use morning source
@@ -1045,6 +1044,7 @@ status-summary-empty = System status
 status-other-displays-a11y = Other displays
 
 # Notification toasts
+notification-sender-claims = App says: { $name }
 notification-source-caption = { $app } · From { $device }
 notification-app-host-apps = Host Apps
 notification-app-power = Power
@@ -1121,7 +1121,9 @@ launch-error-no-display = The desktop is still starting. Try again in a moment.
 launch-error-no-workspace = Choose a workspace, then try again.
 launch-error-shell-owned-intent = Open this destination from the desktop controls.
 launch-error-identity-unavailable = The workspace identity could not be loaded. Try again.
-launch-error-not-listed-here = This app isn't one of this workspace's apps. Ask one of the workspace's administrators to add it.
+launch-error-app-not-in-workspace = This workspace doesn't include { $app }. An administrator can add it.
+launch-error-device-not-admitted = This device is no longer in this workspace. Join it again from the invitation.
+launch-error-app-authorship-refused = This workspace's host did not let you add { $app }.
 launch-error-registry-unreadable = The app list could not be read. Try again.
 launch-error-sandbox-supervision = The app's file permissions could not be supervised. Try again.
 launch-error-host-app-refused = This app's desktop entry cannot be started.
@@ -1169,11 +1171,22 @@ shell-workspace-renamed = Workspace renamed
 shell-tab-menu-close = Close tab
 shell-tab-menu-split-right = Split right
 shell-tab-menu-new-group = Move to new group
+shell-window-menu-reveal = Go to this window
 shell-window-menu-full-screen = Full screen
 shell-window-menu-exit-full-screen = Exit full screen
+# The way out of a window that just filled the display, said over it once.
+# "{ $key }" is the leaving key, labelled as the person's keyboard labels it.
+shell-fullscreen-way-out = Press { $key } to leave full screen.
 shell-window-menu-maximize = Maximize
 shell-window-menu-restore = Restore
+shell-window-menu-width = Width
+shell-window-menu-width-half = Half width
+shell-window-menu-width-narrow = Narrow
+shell-window-menu-width-normal = Normal
+shell-window-menu-width-wide = Wide
+shell-window-menu-width-equal = Equalise all
 shell-window-menu-move-to-strip = Move to strip
+shell-window-menu-move-to-display = Move to display
 shell-window-menu-move-to-workspace = Move to workspace
 shell-window-menu-share = Share with { $place }
 shell-window-menu-stop-sharing = Stop sharing
@@ -1401,6 +1414,13 @@ search-answer-copied = Copied
 search-answer-money-stale = { $amount } = · rates from { $age }
 search-matches = Matches “{ $word }”
 search-answer-open-address = Open { $address }
+search-provider-ask-agent = Ask an agent
+search-kind-agent = Agent
+search-ask-agent = Ask an agent: { $query }
+search-ask-agent-subtitle = A task for { $agent }
+search-ask-agent-no-agent = No agent works in this workspace yet. Add one to ask.
+search-ask-agent-no-model = The agent has no AI model. Choose one in Settings.
+search-ask-agent-offline = You’re offline, and the agent’s model is on the internet.
 search-provider-web = Web
 search-kind-web = Web
 search-kind-websites = Websites
@@ -1480,6 +1500,7 @@ search-action-shortcut-help-toggle-subtitle = F1 opens it anywhere; Super+/ is t
 search-action-desktop-tour-open = Take the desktop tour
 search-action-desktop-tour-open-subtitle = Revisit the three-minute introduction to navigation, organisation and collaboration
 search-provider-device-local = Private windows
+search-provider-focused-window = This window
 search-action-feedback-open = Give feedback
 search-action-feedback-open-subtitle = Report a problem or an idea about the window in front; you review what is sent
 search-action-feedback-point = Give feedback on one part
@@ -2200,7 +2221,6 @@ peer-sync-paste-token = Type a site, or paste a workspace or invitation link
 peer-sync-identity-copied = Copied
 peer-sync-invite-failed = The invite couldn't be created. Try again in a moment.
 peer-sync-identity-unavailable = Your Tilo identity couldn't be copied. Try again in a moment.
-peer-sync-joined-room = Joined room { $room }
 peer-sync-join-refused = This link couldn't be joined. Check that it's complete and hasn't expired, or ask for a new one.
 peer-sync-resend-failed = The invite couldn't be copied again. Try again in a moment.
 peer-sync-invite-canceled = Invite revoked
@@ -2233,9 +2253,30 @@ peer-sync-role-expires = { $role }, { $unit ->
        *[other] { $count } days
     }
 }
+peer-sync-received-role-expires = { $role } access, { $unit ->
+    [now] expires in moments
+    [seconds] expires in { $count ->
+        [one] 1 second
+       *[other] { $count } seconds
+    }
+    [minutes] expires in { $count ->
+        [one] 1 minute
+       *[other] { $count } minutes
+    }
+    [hours] expires in { $count ->
+        [one] 1 hour
+       *[other] { $count } hours
+    }
+   *[days] expires in { $count ->
+        [one] 1 day
+       *[other] { $count } days
+    }
+}
+peer-sync-code-check = Check that the person who invited you sees the same code
 peer-sync-role-viewer = Viewer
 peer-sync-role-commenter = Commenter
 peer-sync-role-editor = Editor
+peer-sync-role-moderator = Moderator
 peer-sync-copy = Copy
 peer-sync-cancel = Cancel
 peer-sync-join = Join
@@ -2243,6 +2284,8 @@ peer-sync-copy-identity = Copy my identity
 peer-sync-role-heading = Access
 peer-sync-recipient-hint = Choose someone you know, or paste the Tilo identity they sent you.
 peer-sync-invite-anyone = Anyone with this invite
+peer-sync-invite-workspace = A shared workspace
+peer-sync-invite-for = Invited as { $name }
 peer-sync-paste-invite-hint = Like tilo.coffee, or a link someone sent you.
 peer-sync-join-site = Joins the workspace at { $host }
 peer-sync-join-invitation-link = An invitation to a workspace at { $host }
@@ -2324,6 +2367,7 @@ window-move-hosted-workspace = That workspace is run by its owner, and this devi
 window-move-not-permitted = That workspace doesn't let you open this app there.
 window-move-already-moving = This window is already being moved.
 window-move-nobody-to-confirm = Moving a window needs the person at this desktop to agree to what crosses, and nobody is here to ask.
+window-move-personal = Settings is yours alone, so it stays in your personal workspace.
 window-transfer-title = Move “{ $window }” to { $to }?
 window-transfer-carries = The document in “{ $window }” goes to { $to } with its full edit history, and the window reopens there where you left it.
 window-transfer-move-detail = Move: it leaves { $from }, whose history keeps a note that it moved to { $to }.
@@ -3095,8 +3139,9 @@ agent-quick-outcome-unknown = No reply yet. Your message is still here.
 agent-quick-refused = { $agent } couldn't take that. Your message is still here.
 agent-quick-stop-refused = Couldn't stop it. Try again.
 ## Search vocabulary: the words people use for actions and settings pages.
-## Each `search-kw-*` message is a comma-separated list; desktop search matches
-## the lists of every language whatever language the desktop speaks.
+## Each `search-kw-*` message is a comma-separated list of plain words, named
+## by the action's declaration beside its title; desktop search matches the
+## lists of every language whatever language the desktop speaks.
 search-kind-settings-pages = Settings
 search-settings-page-subtitle = Settings
 search-toggle-wifi = Wi-Fi
@@ -3114,15 +3159,15 @@ search-kw-navigation-axis-enable = experimental, navigation, axis, arrow navigat
 search-kw-navigation-axis-disable = experimental, navigation, axis, arrow navigation
 search-kw-navigation-axis-gather = find window, bring window back, lost window, center window, scroll to window
 search-kw-overview-toggle = overview, workspaces, mission control, expose, activities, show all workspaces
-search-kw-settings-open = workspace settings, room settings, workspace options, preferences
+search-kw-settings-open = workspace settings, workspace options, preferences
 search-kw-settings-members-open = people, members, collaborators, users, who is here, permissions, roles
 search-kw-settings-privacy-open = privacy, security, permissions, access control
 search-kw-settings-apps-open = apps, files, workspace apps, default apps
 search-kw-identity-connect = identity, account, login, sign in, add account
 search-kw-identity-select = identity, account, switch account, use account
 search-kw-identity-devices-copy = devices, copy list, device list
-search-kw-identity-device-enroll = add device, pair device, new device, link device, enroll
-search-kw-identity-home-peer-enroll = home server, nas, pair server, home peer
+search-kw-identity-device-enroll = add device, pair device, new device, link device
+search-kw-identity-home-peer-enroll = home server, nas, pair server
 search-kw-identity-device-pair-discover = pair device, nearby device, find device, add device, home server
 search-kw-identity-device-pair-approve = approve device, pair device, verification code
 search-kw-identity-device-pair-reject = reject device, cancel pairing, deny device
@@ -3131,7 +3176,7 @@ search-kw-quick-settings-open = quick settings, control center, control centre, 
 search-kw-quick-settings-clipboard = clipboard, copy history, paste history, clipboard manager, copied
 search-kw-quick-settings-devices = devices, media, cast, airplay, audio devices, output, speakers
 search-kw-projection-open = screen mirroring, cast, projector, external display, second screen, extend, mirror, present, hdmi, beamer
-search-kw-capture-open = screenshot, screen capture, snip, snipping tool, screen grab, record screen, print screen, picture in picture, pip, screencast, screenshot tool
+search-kw-capture-open = screenshot, capture, screen capture, snip, snipping tool, screen grab, record screen, print screen, picture in picture, pip, screencast, screenshot tool
 search-kw-capture-screenshot-send = send screenshot, share screenshot, last screenshot, screenshot
 search-kw-collaborators-open = collaborators, people, who is here, participants, presence
 search-kw-presence-follow = follow, spectate, watch someone, follow person
@@ -3190,8 +3235,8 @@ search-kw-notifications-dnd-toggle = do not disturb, dnd, silence, mute notifica
 search-kw-notifications-open = notifications, notification centre, notification center, missed notifications, alerts, messages i missed
 search-kw-notifications-clear = clear notifications, dismiss all, remove notifications, delete notifications, empty notifications
 search-kw-notifications-clear-undo = undo clear, restore notifications, undo clear all, get notifications back
-search-kw-appearance-theme-dark = dark mode, dark theme, night mode, dark, black theme, night
-search-kw-appearance-theme-light = light mode, light theme, day mode, bright, light, white theme
+search-kw-appearance-theme-dark = dark mode, dark theme, night mode, dark, black theme, night, theme
+search-kw-appearance-theme-light = light mode, light theme, day mode, bright, light, white theme, theme
 search-kw-appearance-language = language, locale, translate, german, english, deutsch, switch language
 search-kw-record-bring = add item, import, bring, add document, attach
 search-kw-shortcut-help-toggle = help, shortcuts, keyboard shortcuts, cheat sheet, hotkeys, keys, guide
@@ -3210,6 +3255,57 @@ search-kw-session-suspend = sleep, suspend, standby, hibernate, nap
 search-kw-session-restart = restart, reboot, reset computer, power cycle
 search-kw-session-shut-down = shut down, shutdown, power off, turn off, switch off, halt
 search-kw-session-logout = log out, logout, sign out, sign off, end session, leave
+search-kw-input-source-next = next layout, switch layout, input source, keyboard language, typing language
+search-kw-feedback-open = feedback, report a problem, report bug, send feedback, suggestion, complaint
+search-kw-feedback-point = feedback on this, point at problem, report this, mark problem
+search-kw-identity-device-pair-asking = pairing requests, devices waiting, device requests
+search-kw-identity-device-pair-answer = answer pairing, approve pairing request, reply to device
+search-kw-identity-list = identities, accounts, my accounts, who am i
+search-kw-identity-activate = use account, switch identity, default account
+search-kw-identity-remove = remove account, delete identity, forget account
+search-kw-identity-protect = protect key, secure account, encrypt identity
+search-kw-identity-devices-list = my devices, trusted devices, device list, linked devices
+search-kw-identity-home-peer-remove = remove home server, forget server, unpair server
+search-kw-identity-home-peer-retry-removals = retry removal, finish removing server
+search-kw-quick-settings-network = wifi networks, wi-fi networks, available networks, connect to wifi, choose network, hotspot
+search-kw-quick-settings-bluetooth = bluetooth devices, pair headphones, connect headphones, connect speaker, earbuds
+search-kw-projection-close = stop mirroring, stop casting, stop presenting, close projector
+search-kw-display-shared-inspect = shared screens, shared displays, who sees my screen
+search-kw-display-shared-include = share screen, include display, share display
+search-kw-display-layout-extend = extend screen, extend desktop, second monitor, dual monitor, use both screens
+search-kw-display-layout-mirror = mirror screen, duplicate screen, same on both screens, clone display
+search-kw-display-layout-builtin-only = laptop screen only, internal screen only, turn off external monitor, pc screen only
+search-kw-display-layout-external-only = external monitor only, second screen only, turn off laptop screen, projector only
+search-kw-display-outputs-inspect = displays, monitors, screens, connected displays
+search-kw-display-change-keep = keep changes, keep resolution, confirm display
+search-kw-display-change-revert = undo display change, revert resolution, restore display
+search-kw-bluetooth-pairing-decline = reject pairing, refuse bluetooth, deny pairing
+search-kw-peer-pair-device = add device, link phone, connect phone, new device, pair phone
+search-kw-bot-add = add bot, integration, automation bot
+search-kw-app-uninstall = uninstall, remove app, delete app, get rid of app
+search-kw-app-remove-from-apps = hide app, remove from list, unpin app
+search-kw-bot-remove = remove bot, delete bot, kick bot
+search-kw-member-role-set = change role, permissions, make admin, make editor, access level
+search-kw-member-remove = remove person, kick, remove member, take away access
+search-kw-invitation-issue = invite link, create invite, new invitation, share link
+search-kw-invitation-list = pending invites, open invitations, sent invites
+search-kw-invitation-resend = send invite again, resend invite, remind
+search-kw-invitation-cancel = revoke invite, withdraw invitation, delete invite
+search-kw-agent-remove = remove assistant, remove ai, remove helper
+search-kw-strip-remove = delete strip, remove row, close strip
+search-kw-workspace-create = new workspace, add workspace, new desktop, new project
+search-kw-workspace-rename = rename workspace, name workspace, change workspace name
+search-kw-workspace-delete = delete workspace, remove workspace, archive workspace
+search-kw-workspace-move-earlier = move workspace up, reorder workspaces
+search-kw-workspace-move-later = move workspace down, reorder workspaces
+search-kw-group-move-to-strip = move window to row, send window to strip
+search-kw-group-close = close window, quit, exit, close app
+search-kw-tab-move-to-workspace = send to workspace, move tab, move to other desktop
+search-kw-quick-settings-wifi-set-enabled = wifi on, wifi off, enable wifi, disable wifi
+search-kw-quick-settings-bluetooth-set-enabled = bluetooth on, bluetooth off, enable bluetooth, disable bluetooth
+search-kw-quick-settings-airplane-mode-set-enabled = airplane mode on, airplane mode off, flight mode on, flight mode off
+search-kw-workspace-archived-restore = restore workspace, unarchive, bring back workspace
+search-kw-workspace-archived-delete = delete forever, delete archived workspace, remove permanently
 
 storage-app-name = Storage
 storage-volume-home = your files
@@ -3235,6 +3331,16 @@ host-crash-records-read = Read a problem's details
 host-crash-records-read-detail = Everything the record of one problem holds. It stays on this computer.
 
 ## Desk widgets
+
+desk-widgets-a11y = Desk widgets
+desk-widget-music = Music
+desk-widget-team = People here
+desk-widget-calendar = Calendar
+desk-widget-system-monitor = System monitor
+desk-widget-open = Open { $widget }
+desk-widget-close = Close { $widget }
+desk-widget-pin = Always show this widget on this workspace
+desk-widget-unpin = Stop always showing this widget
 
 desk-team-title = In this workspace
 # Where a person is: their strip, then the window they are on.

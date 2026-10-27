@@ -56,7 +56,7 @@ thread_local! {
 /// What the window's bar was last declared with: the note shown (its title
 /// and anchor), whether the page tree is open, and whether New note is
 /// offered.
-type DeclaredBar = (Option<(String, String)>, bool, bool);
+type DeclaredBar = (Option<(String, String)>, bool, bool, bool);
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
@@ -319,6 +319,8 @@ pub(crate) fn check_image(bytes: &[u8]) -> Result<(), String> {
 pub struct NotesApp {
     workspace: Workspace,
     sidebar: PageSidebar,
+    /// The open note's headings, under the page tree.
+    outline: crate::outline::NotesOutline,
     note_menu: ContextMenu,
     note_menu_target: Option<PageId>,
     note_menu_editor: bool,
@@ -377,6 +379,10 @@ pub struct NotesApp {
     /// the shell shows them (a closed drawer shows no page tree).
     shell_node: Option<NodeId>,
     sidebar_node: Option<NodeId>,
+    /// The column holding the outline above the page tree, and the outline's
+    /// own node while it is shown.
+    sidebar_column_node: Option<NodeId>,
+    outline_node: Option<NodeId>,
     /// The page tree had the keyboard when the shortcut sheet opened, and gets
     /// it back when the sheet closes.
     shortcuts_return_to_tree: bool,
@@ -723,6 +729,7 @@ impl NotesApp {
             note_menu_table: None,
             note_menu_table_source: None,
             sidebar,
+            outline: crate::outline::NotesOutline::new(),
             main,
             status: StatusModel::new(),
             word_count: None,
@@ -743,6 +750,8 @@ impl NotesApp {
             offers_new_note: true,
             shell_node: None,
             sidebar_node: None,
+            sidebar_column_node: None,
+            outline_node: None,
             shortcuts_return_to_tree: false,
             main_node: None,
             theme: Theme::dark(),
@@ -2167,6 +2176,7 @@ impl NotesApp {
         if let Some(transfer) = self.sidebar.take_transfer() {
             self.request(&match transfer {
                 SidebarTransfer::ImportMarkdown => NotesEffect::ImportMarkdownFile,
+                SidebarTransfer::ImportNotion => NotesEffect::ImportNotionExport,
                 SidebarTransfer::CopyLink(page) => NotesEffect::CopyLink { page },
                 SidebarTransfer::ExportMarkdown(page) => NotesEffect::ExportMarkdown { page },
                 SidebarTransfer::InsertImage(page) => NotesEffect::InsertImage { page },
@@ -2219,6 +2229,17 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn status_bar_for_test(&self) -> &crate::status_bar::StatusModel {
         &self.status
+    }
+
+    /// Test hook: set the record's save state as the store would report it,
+    /// so a test can read what the bar says about work at risk.
+    #[doc(hidden)]
+    pub fn set_record_save_status_for_test(&mut self, status: ui::record::RecordSaveStatus) {
+        self.record_save_status = status;
+        // The store's report is what a live window would show, not a
+        // capture's staged one.
+        self.shots_save_status = None;
+        self.refresh_status();
     }
 
     /// Test hook: re-run the real `refresh_status` merge WITHOUT
@@ -2636,6 +2657,22 @@ impl ui::undo::UndoControl for NotesApp {
     }
 }
 
+/// Follow the open note's headings, and reveal the one the outline chose.
+fn refresh_outline(app: &mut NotesApp) {
+    app.outline.follow(&app.main);
+    if let Some(block) = app.outline.take_chosen()
+        && let Some(index) = app
+            .main
+            .editor()
+            .blocks()
+            .iter()
+            .position(|current| current.id == block)
+        && app.main.reveal_block(index)
+    {
+        app.self_dirty = true;
+    }
+}
+
 impl Widget for NotesApp {
     ui::provides!(
         dyn ui::resources::PublishesResources,
@@ -2678,13 +2715,13 @@ impl Widget for NotesApp {
                 .next_wake_deadline()
                 .is_some_and(|deadline| deadline <= ui::time::now());
         // A dragged block's pointer at the page's edge scrolls the page.
-        let dragged = self.main.autoscroll_block_drag();
+        self.main.autoscroll_block_drag();
         // A lifted touchpad gesture glides the page on; only the view moves.
         self.main.advance_glide();
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
-        self.shell.update(state, path) || feedback_expired || dragged
+        self.shell.update(state, path) || feedback_expired
     }
 
     fn native_input_snapshot(
@@ -2805,6 +2842,7 @@ impl Widget for NotesApp {
         self.refresh_search_blocks();
         self.main.set_backlinks(self.selected_backlink_chips());
         self.finish_block_reveal();
+        refresh_outline(self);
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -2822,7 +2860,12 @@ impl Widget for NotesApp {
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         let main = self.main.take_structure_change();
         let shell = self.shell.take_structure_change();
-        main.join(shell)
+        let outline = if self.outline.take_structure_dirty() {
+            ui::widget::StructureChange::Rebuild
+        } else {
+            ui::widget::StructureChange::None
+        };
+        main.join(shell).join(outline)
     }
 
     fn build_layout(
@@ -2846,10 +2889,49 @@ impl Widget for NotesApp {
             Self::fill_slot(taffy, slot, node);
             node
         });
-        self.sidebar_node = self.columns.sidebar.node().map(|slot| {
-            let node = self.sidebar.build_layout(taffy, theme, node_map);
-            Self::fill_slot(taffy, slot, node);
-            node
+        self.sidebar_node = None;
+        self.outline_node = None;
+        self.sidebar_column_node = self.columns.sidebar.node().map(|slot| {
+            let tree = self.sidebar.build_layout(taffy, theme, node_map);
+            if let Ok(existing) = taffy.style(tree).cloned() {
+                let _ = taffy.set_style(
+                    tree,
+                    Style {
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
+                        flex_grow: 1.0,
+                        flex_basis: taffy::style_helpers::length(0.0_f32),
+                        flex_shrink: 1.0,
+                        ..existing
+                    },
+                );
+            }
+            self.sidebar_node = Some(tree);
+            let mut children = vec![tree];
+            if self.outline.is_shown() {
+                let outline = self.outline.build_layout(taffy, theme, node_map);
+                self.outline_node = Some(outline);
+                children.push(outline);
+            }
+            #[allow(
+                clippy::unwrap_used,
+                reason = "inserting a fresh column under the slot the shell made is infallible unless the taffy arena is already corrupted"
+            )]
+            let column = taffy
+                .new_with_children(
+                    Style {
+                        display: taffy::Display::Flex,
+                        flex_direction: taffy::FlexDirection::Column,
+                        size: Size::from_percent(1.0, 1.0),
+                        ..Default::default()
+                    },
+                    &children,
+                )
+                .unwrap();
+            Self::fill_slot(taffy, slot, column);
+            column
         });
 
         let style = Style {
@@ -2889,9 +2971,12 @@ impl Widget for NotesApp {
             self.main
                 .apply_layout(taffy, n, self.columns.content.rect().origin());
         }
+        let sidebar_origin = self.columns.sidebar.rect().origin();
+        if let Some(n) = self.outline_node {
+            self.outline.apply_layout(taffy, n, sidebar_origin);
+        }
         if let Some(n) = self.sidebar_node {
-            self.sidebar
-                .apply_layout(taffy, n, self.columns.sidebar.rect().origin());
+            self.sidebar.apply_layout(taffy, n, sidebar_origin);
         }
         self.note_menu.set_viewport(Some(self.rect));
     }
@@ -2934,6 +3019,10 @@ impl Widget for NotesApp {
             // that reaches past its column.
             self.sidebar
                 .draw(scene, transform, text_renderer, &sidebar_theme, presence);
+            if self.outline_node.is_some() {
+                self.outline
+                    .draw(scene, transform, text_renderer, &sidebar_theme, presence);
+            }
         }
         let sidebar_scene = std::mem::take(scene);
         // The window drew: a save that gave up is said in its bar, not
@@ -3092,6 +3181,9 @@ impl Widget for NotesApp {
             children.push(&self.shell);
         }
         if self.sidebar_shown() {
+            if self.outline_node.is_some() {
+                children.push(&self.outline);
+            }
             children.push(self.sidebar.tree());
         }
         if self.note_menu.is_open() {
@@ -3109,6 +3201,9 @@ impl Widget for NotesApp {
             children.push(&mut self.shell);
         }
         if show_sidebar {
+            if self.outline_node.is_some() {
+                children.push(&mut self.outline);
+            }
             children.push(self.sidebar.tree_mut());
         }
         if self.note_menu.is_open() {
@@ -3127,6 +3222,7 @@ impl Widget for NotesApp {
         self.self_dirty
             || self.shell.needs_redraw()
             || self.sidebar.needs_redraw()
+            || self.outline.needs_redraw()
             || self.main.needs_redraw()
             || self.shortcuts.needs_redraw()
     }
@@ -3157,6 +3253,7 @@ impl Widget for NotesApp {
         self.self_dirty = false;
         self.shell.mark_drawn();
         self.sidebar.mark_drawn();
+        self.outline.mark_drawn();
         self.main.mark_drawn();
         self.shortcuts.mark_drawn();
     }
@@ -3812,18 +3909,23 @@ mod tests {
     /// it up however long the frame takes.
     #[test]
     fn a_capture_keeps_the_import_notice_in_the_window_bar() {
-        ui::clock::freeze_for_capture();
-        let (mut app, mut state, _tmp, _) = app_seeded_into_doc();
-        app.notify(
-            "Imported Project brief",
-            ui::widget::toast::ToastKind::Success,
-        );
-        app.frame(&mut state.doc, &state.root);
-        app.frame(&mut state.doc, &state.root);
-        assert_eq!(
-            ui::window_toolbar::notice().map(|notice| notice.text),
-            Some("Imported Project brief".to_owned())
-        );
+        // A capture pins the clock for the rest of the process, which would
+        // stop it under every test beside this one: the frames that must
+        // keep the notice up run on this thread, held at the capture time.
+        let at = ui::clock::capture_wall().expect("the capture time exists in the local zone");
+        ui::time::testing::with_wall(at, || {
+            let (mut app, mut state, _tmp, _) = app_seeded_into_doc();
+            app.notify(
+                "Imported Project brief",
+                ui::widget::toast::ToastKind::Success,
+            );
+            app.frame(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
+            assert_eq!(
+                ui::window_toolbar::notice().map(|notice| notice.text),
+                Some("Imported Project brief".to_owned())
+            );
+        });
     }
 
     #[test]
@@ -4249,7 +4351,7 @@ mod tests {
             // its text whole.
             assert_eq!(
                 shown.strip.is_some(),
-                width < 1280.0,
+                width < 1280.0, // allow-breakpoint: the test asks the shared bar to choose its compact form
                 "{width} px: {shown:?}"
             );
             assert!(shown.whole && button.labelled, "{width} px: {shown:?}");

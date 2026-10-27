@@ -63,6 +63,7 @@ pub mod infer;
 #[cfg(test)]
 mod interchange_tests;
 pub mod model;
+pub mod notion;
 pub mod ods;
 pub mod records;
 pub mod resource;

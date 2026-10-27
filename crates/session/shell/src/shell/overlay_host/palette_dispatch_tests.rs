@@ -1724,7 +1724,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         }
         assert_eq!(
             h.peer_sync_snapshot().invite_name.as_deref(),
-            Some("Xaver"),
+            Some("Bob"),
             "the field takes the name — the same keys that type a token"
         );
         let mut snapshot = h.peer_sync_snapshot();
@@ -1737,12 +1737,12 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         );
         assert_eq!(
             h.peer_sync_snapshot().invite_token.as_deref(),
-            Some("token-for-Xaver"),
+            Some("token-for-Bob"),
             "the name reached the request, so it can reach the room document"
         );
         assert_eq!(
             h.peer_sync_snapshot().invite_for.as_deref(),
-            Some("Xaver"),
+            Some("Bob"),
             "and the card knows whose invite it is holding"
         );
         assert!(
@@ -1751,7 +1751,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         );
         assert_eq!(
             ui::text_selection::clipboard_paste().as_deref(),
-            Some("token-for-Xaver"),
+            Some("token-for-Bob"),
             "one gesture, one outcome: the token is on the clipboard"
         );
     }
@@ -1855,7 +1855,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
+            invite_name: Some("Bob".to_string()),
             ..PeerSyncSnapshot::default()
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
@@ -2350,7 +2350,7 @@ fn peer_sync_sheet_buttons_fit_their_labels() {
     let mut tr = TextRenderer::new();
     let snapshots = [
         PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
+            invite_name: Some("Bob".to_string()),
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
@@ -2417,11 +2417,11 @@ fn peer_sync_sheets_stay_inside_the_window_at_every_size() {
         .collect();
     let snapshots = [
         PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
+            invite_name: Some("Bob".to_string()),
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
+            invite_name: Some("Bob".to_string()),
             pending_invitations: pending,
             ..PeerSyncSnapshot::default()
         },
@@ -2642,4 +2642,55 @@ fn the_invite_sheet_says_in_plain_words_why_it_cannot_invite_yet() {
         _ => Err("not here".to_string()),
     }));
     assert_eq!(h.peer_sync_snapshot().status, None);
+}
+
+/// An app's button that opens search on one of its actions
+/// (`SearchRequest::asking`) lands on that action's first missing argument,
+/// a picked one on its picker, as soon as search lists the action: no row
+/// for the person to run first, and nothing runs before they pick.
+#[test]
+fn search_opened_on_an_action_starts_on_its_picker() {
+    use crate::shell::search::providers::live_app_actions::PROVIDER_ID;
+    use crate::shell::search::{KindGroup, ResourceKind, SearchResult};
+    let (mut host, _chrome) = host_with_chrome();
+    let issue = "tasks.tracker/issues/7";
+    let sep = '\u{1f}';
+    let row = |action: &str| {
+        let mut result = SearchResult::nullary(
+            ResourceKind::Action,
+            PROVIDER_ID,
+            format!(
+                "so.tilo.tasks{sep}undoable{sep}tasks.tracker.issues{sep}room{sep}{sep}{issue}{sep}{action}"
+            ),
+            action,
+            None,
+            0,
+            |_, _, _| {},
+        );
+        result.params = vec![
+            tilo_actions::ActionParam::required(
+                "note",
+                tilo_actions::ParamType::Object,
+                "The note",
+            )
+            .picking(tilo_actions::Pick::Resource {
+                kind: "notes.notebook.pages".into(),
+            }),
+        ];
+        result
+    };
+    let groups = vec![KindGroup {
+        kind: ResourceKind::Action,
+        results: vec![row("write-note"), row("link-note")],
+        total: 2,
+    }];
+    assert!(!host.start_asked_action(&groups), "nothing was asked for");
+    host.palette_asked = Some(tilo_actions::ActionAddress::new(issue, "link-note"));
+    assert!(!host.start_asked_action(&groups[..0]), "not listed yet");
+    assert!(host.palette_asked.is_some(), "still waiting for it");
+    assert!(host.start_asked_action(&groups));
+    let flow = host.param_flow.as_ref().expect("asking for its arguments");
+    assert!(flow.result.id.ends_with("link-note"), "{}", flow.result.id);
+    assert_eq!(flow.param().map(|param| param.name.as_ref()), Some("note"));
+    assert!(host.palette_asked.is_none(), "asked once");
 }

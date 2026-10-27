@@ -296,3 +296,100 @@ fn every_indexed_switch_names_the_field_its_row_shows() {
         );
     }
 }
+
+/// What `widget` tells assistive technology it holds: whether it is
+/// checked, its value and which of its parts are selected.
+fn held(widget: &dyn Widget) -> String {
+    fn walk(node: &ui::a11y::AccessNode, out: &mut String) {
+        use std::fmt::Write as _;
+        if let Some(checked) = node.state.checked {
+            let _ = write!(out, "checked={checked};");
+        }
+        if let Some(value) = &node.value {
+            let _ = write!(out, "value={value};");
+        }
+        if node.state.selected {
+            let _ = write!(out, "selected={:?};", node.name);
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = String::new();
+    if let Some(access) = widget.accessibility() {
+        walk(&access, &mut out);
+    }
+    for child in widget.children() {
+        out.push_str(&held(child));
+    }
+    out
+}
+
+/// The control of `setting` at or right of `left`.
+fn control_widget<'a>(
+    root: &'a dyn Widget,
+    setting: &index::Setting,
+    left: f64,
+) -> Option<&'a dyn Widget> {
+    let rect = root.get_rect();
+    if root.test_id().is_some_and(|id| setting.is_control(id))
+        && rect.x0 >= left
+        && rect.area() > 0.0
+    {
+        return Some(root);
+    }
+    root.children()
+        .into_iter()
+        .find_map(|child| control_widget(child, setting, left))
+}
+
+/// The palette and agents set a choice to each of its values through the
+/// section field the index names for it ([`index::Choice`]): the field its
+/// row in Settings shows, whatever control draws it (a switch, pictures, a
+/// menu).
+#[test]
+fn every_indexed_choice_names_the_field_its_row_shows() {
+    for setting in index::SETTINGS {
+        let Some(choice) = setting.choice else {
+            continue;
+        };
+        assert!(
+            super::entry(setting.id).is_some(),
+            "{}: a choice the palette offers has its row in Settings",
+            setting.id
+        );
+        let mut app = searching(&crate::i18n::t(&setting.name_key()));
+        let left = content_left();
+        let path: Vec<serde_json::Value> = choice
+            .path()
+            .map(|field| serde_json::json!({ "field": field }))
+            .collect();
+        let mut shown = std::collections::HashSet::new();
+        for option in choice.options {
+            app.call_confirmed_on(
+                &format!("settings:{}", choice.section),
+                "field-edit",
+                serde_json::json!({ "edit": { "path": path, "op": "set", "value": option.json() } }),
+            )
+            .unwrap_or_else(|error| panic!("{} = {}: {error}", setting.id, option.value));
+            settle(&mut app);
+            let holds = match super::entry(setting.id).map(|entry| &entry.shown) {
+                // Listed by name with what it is set to, as its pane reads it.
+                Some(super::Shown::Value(read)) => app
+                    .surface::<SettingsApp, _>(|settings| {
+                        read(settings, &super::Follows::default())
+                    })
+                    .flatten()
+                    .unwrap_or_else(|| panic!("{}: what it is set to is read", setting.id)),
+                _ => control_widget(app.harness().root_widget(), setting, left)
+                    .map_or_else(|| panic!("{}: its control is found", setting.id), held),
+            };
+            assert!(
+                shown.insert(holds.clone()),
+                "{}: the row shows {} as it shows another value ({holds})",
+                setting.id,
+                option.value
+            );
+        }
+    }
+}

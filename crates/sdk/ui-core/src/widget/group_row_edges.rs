@@ -18,6 +18,12 @@ use crate::widget::edge_resize::{
 };
 use crate::widget::{RESIZE_HANDLE_PX, Widget, WindowGroup};
 
+/// How deep the band along the display's edge is in which an edge resize
+/// scrolls the strip. Shallower than the strip's gutter
+/// ([`super::STRIP_EDGE_GUTTER_PX`]), where the outer edge of the first and
+/// last window rests: a drag into the gutter only resizes the window.
+pub(super) const RESIZE_AUTOSCROLL_BAND: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+
 /// An edge resize in flight, with its windows named by id: a window may
 /// close or move while the pointer is down.
 #[derive(Clone, Copy, Debug)]
@@ -448,10 +454,17 @@ impl GroupRow {
     }
 
     /// How fast (px/s, negative leftwards) the strip pans under an edge drag
-    /// whose pointer rests in the lane's edge band: from nothing at the
-    /// band's inner side to full speed against the edge.
+    /// pushed against the display's edge ([`RESIZE_AUTOSCROLL_BAND`]), past
+    /// where it was pressed: a window edge at the display's edge, grabbed and
+    /// held, stays as it is.
     fn edge_autoscroll_velocity(&self, drag: &RowEdgeDrag) -> f64 {
         let view = self.pan_of_lane(drag.lane).viewport;
-        edge_autoscroll::velocity(drag.pointer_x, view.x0, view.x1)
+        edge_autoscroll::velocity_past_press(
+            drag.pointer_x,
+            drag.press_x,
+            view.x0,
+            view.x1,
+            RESIZE_AUTOSCROLL_BAND,
+        )
     }
 }

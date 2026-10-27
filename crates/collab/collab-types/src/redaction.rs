@@ -1,8 +1,8 @@
 //! Cooperative cryptographic redaction.
 //!
 //! A `RedactRequest` is the payload of a [`crate::op::SignedOp`] whose
-//! `kind` is [`crate::role::OpKind::Redaction`]. Only the channel owner
-//! (see `role_permits`) can mint one, declaring "this
+//! `kind` is [`crate::role::OpKind::Redaction`]. Only a member whose grants
+//! allow the redaction action can mint one, declaring "this
 //! earlier op is now compliance-required to be removed; peers, please honour it."
 //!
 //! Redaction is **cooperative**, not adversarial: an honest peer redacts

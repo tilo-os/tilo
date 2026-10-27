@@ -64,9 +64,9 @@ pub fn enable_provider_administration() {
     settings_core::enable_provider_administration();
 }
 
-/// The app as every host mounts it.
+/// The app as every host mounts it: Settings' shell, which the core crate
+/// defines over the resource it declares.
 #[cfg(not(test))]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    install();
-    ui::built_in_definition!(SettingsShell)
+    settings_core::definition()
 }

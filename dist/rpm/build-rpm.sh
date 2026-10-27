@@ -63,7 +63,7 @@ if (( run_cargo )); then
         -p launcher -p tilo-unlock-helper -p tilo-session-record -p tilo-app-package-cli -p install -p runtime-bundle \
         -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
         -p imager -p tilo-relay -p tilo-fs -p legacy-vm \
-        --features tilo-model-gateway/local-models,imager/installation \
+        --features tilo-model-gateway/local-models,tilo-model-gateway/host-backend,imager/installation \
         --bin tilo-launcher --bin tilo-signal-provider --bin tilo-unlock-helper \
         --bin tilo-flight-recorder --bin tilo-session-report \
         --bin tilo-app-package --bin tilo-install --bin tilo-runtime-bundle \

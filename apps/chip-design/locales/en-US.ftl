@@ -146,6 +146,10 @@ chip-graph-connect-from = Connecting from the { $port } output of { $operator }
 chip-graph-port-input = In: { $port }
 chip-graph-port-output = Out: { $port }
 chip-graph-conflict = Concurrent connection excluded:
+chip-graph-conflict-line = { $from_node }.{ $from_port } cannot feed { $to_node }.{ $to_port }: { $reason }
+chip-flow-tool-identity = Version { $version }, executable { $sha }
+chip-flow-dependency-line = { $from } feeds { $to }, { $kind }, artifact { $artifact }
+chip-study-memory-of = { $memory } of { $variant }
 chip-graph-unknown_node = An endpoint no longer exists
 chip-graph-unknown_port = A port no longer exists
 chip-graph-type_mismatch = Port shapes differ
@@ -163,6 +167,16 @@ chip-graph-disconnect = Disconnect
 chip-graph-remove = Remove operator
 chip-graph-node-missing = This operator no longer exists
 chip-graph-port-missing = This output port no longer exists
+chip-graph-operators = Operators
+chip-graph-operator = Operator
+chip-graph-no-operators = No operators yet. Add one to start designing.
+chip-graph-node-at = At { $x }, { $y }
+chip-graph-zoom-out = Zoom out
+chip-graph-zoom-in = Zoom in
+chip-graph-zoom-fit = Fit to window
+chip-graph-zoom-fitted = Fit to window
+chip-graph-zoom-percent = { $percent }%
+chip-graph-zoom-missing = There is no zoom step by that name
 
 chip-synthetic-fixture = Synthetic contract example. No numerical or hardware experiment is represented.
 

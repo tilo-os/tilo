@@ -103,6 +103,12 @@ pub enum NativeDocumentRead {
     /// answered as [`Reply::Unavailable`], the reader withholds readiness
     /// and asks again.
     Pending,
+    /// A record the room's hosts send a device only once it asks
+    /// (`neighbour_wire::record_sync`), which they said they have none of,
+    /// or no host of the room is connected to ask: answered as
+    /// [`Reply::Absent`], no failure either, and a held `Await` wakes when
+    /// that changes.
+    Absent,
     Captured {
         revision: [u8; 32],
         /// The sorted heads `revision` names; empty when the owner does not
@@ -346,6 +352,10 @@ pub(super) struct Slot {
     /// The last revision this channel handed out whole or as changes (its
     /// last piece acknowledged), when its owner named the heads.
     delivered: Option<HeldRevision>,
+    /// Whether the last Open without a revision answered [`Reply::Absent`]
+    /// rather than [`Reply::Unavailable`]: what a held `Await` for `None`
+    /// holds.
+    absent: bool,
 }
 impl Slot {
     /// Close the channel once an unacknowledged capture outlived its
@@ -516,10 +526,25 @@ impl CapnpChannelHandle {
             .as_ref()
             .and_then(|lease| lease.local_media.clone());
         let peer = self.peer_id;
+        let workspace_record = local
+            .as_ref()
+            .and_then(|local| launch_workspace_record(local, &route));
         let creation = local
             .as_ref()
             .filter(|_| admitted.agent_id.is_none())
-            .and_then(|local| local.creation.clone());
+            .and_then(|local| local.creation.clone())
+            .map(|evidence| match workspace_record {
+                // A workspace record's kind is declared by the platform's
+                // list of them, not by the package of the window that
+                // opens it; the launch's signed original still stands for
+                // who creates it, and the room's grants decide whether they
+                // may.
+                Some(record) => crate::services::ApplicationCreationEvidence {
+                    declared_kinds: vec![record.kind.to_owned()],
+                    ..evidence
+                },
+                None => evidence,
+            });
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
         let revalidate = Arc::new(move || {
@@ -532,8 +557,12 @@ impl CapnpChannelHandle {
                     return Err("committed read worker ended".into());
                 }
             } else if let Some(local) = local.as_ref() {
+                // The launch's own routes, or a record every app of its
+                // room opens: the owner's grants decide the rest, below and
+                // in the owner's own authorization.
                 if !local.current()
-                    || local.app_id != checked_route.app_id
+                    || (local.app_id != checked_route.app_id
+                        && launch_workspace_record(local, &checked_route).is_none())
                     || local.workspace_id != checked_route.cluster_id
                     || admitted.agent_id.is_some()
                 {
@@ -577,6 +606,14 @@ impl CapnpChannelHandle {
         else {
             return Ok(None);
         };
+        // Another app's workspace record is no record of this window's own:
+        // it carries no private binding.
+        if local.current()
+            && local.app_id != route.app_id
+            && launch_workspace_record(local, &route).is_some()
+        {
+            return Ok(None);
+        }
         if !local.current()
             || local.app_id != route.app_id
             || local.workspace_id != route.cluster_id
@@ -760,6 +797,18 @@ impl CapnpChannelHandle {
     }
 }
 
+/// The record every app of `local`'s launch room opens that `route` names
+/// ([`collab_types::workspace_record`]), when it does: the one route of
+/// another app a launch reads and commits to, and only in its own room.
+fn launch_workspace_record(
+    local: &super::native_media::LocalAppConnection,
+    route: &CrdtRoute,
+) -> Option<&'static collab_types::WorkspaceRecord> {
+    (local.workspace_id == route.cluster_id)
+        .then(|| collab_types::workspace_record(&route.app_id, &route.record_id))
+        .flatten()
+}
+
 /// What an Open reads with: the channel's checked custody and admission
 /// (`context`), its document owner, the shared byte budget and capture ids.
 struct Reading<'a> {
@@ -802,6 +851,7 @@ fn open_read(
     };
     context.revalidate()?;
     service.authorize(&context)?;
+    slot.absent = matches!(read, NativeDocumentRead::Absent);
     let (revision, body, heads, base) = match read {
         NativeDocumentRead::Unchanged(revision) => {
             return Ok((Reply::Unchanged { revision }, None));
@@ -809,7 +859,10 @@ fn open_read(
         // A record created by this Open is answered with its capture or
         // not at all; only an existing record may be read again later.
         NativeDocumentRead::Pending if created.is_none() => return Ok((Reply::Unavailable, None)),
-        NativeDocumentRead::Pending => return Err("created record capture unavailable".into()),
+        NativeDocumentRead::Absent if created.is_none() => return Ok((Reply::Absent, None)),
+        NativeDocumentRead::Pending | NativeDocumentRead::Absent => {
+            return Err("created record capture unavailable".into());
+        }
         NativeDocumentRead::Captured {
             revision,
             heads,
@@ -845,7 +898,8 @@ fn open_read(
 }
 
 /// Whether an Open for `known_revision` would answer exactly what the caller
-/// holds (`Unchanged` for that revision, `Unavailable` for `None`), with
+/// holds (`Unchanged` for that revision; for `None` `Absent` when `absent`,
+/// else `Unavailable`), with
 /// every check the Open makes, in its order: custody and admission
 /// (`context`), the owner's authorization, the read under the shared byte
 /// budget, then both checks again. `None` when the Open would answer
@@ -856,6 +910,7 @@ fn read_unchanged(
     context: impl FnOnce() -> Result<NativeDocumentReadContext, String>,
     budget: &Arc<Budget>,
     known_revision: Option<[u8; 32]>,
+    absent: bool,
 ) -> Option<NativeDocumentReadContext> {
     if read == RecordRead::Own {
         return None;
@@ -865,7 +920,7 @@ fn read_unchanged(
     let unchanged = service
         .unchanged(&context, known_revision)
         .ok()?
-        .or_else(|| captured_unchanged(service, &context, budget, known_revision))?;
+        .or_else(|| captured_unchanged(service, &context, budget, known_revision, absent))?;
     context.revalidate().ok()?;
     service.authorize(&context).ok()?;
     unchanged.then_some(context)
@@ -879,6 +934,7 @@ fn captured_unchanged(
     context: &NativeDocumentReadContext,
     budget: &Arc<Budget>,
     known_revision: Option<[u8; 32]>,
+    absent: bool,
 ) -> Option<bool> {
     let _reservation = budget.reserve().ok()?;
     Some(
@@ -887,7 +943,8 @@ fn captured_unchanged(
             .ok()?
         {
             NativeDocumentRead::Unchanged(revision) => Some(revision) == known_revision,
-            NativeDocumentRead::Pending => known_revision.is_none(),
+            NativeDocumentRead::Pending => known_revision.is_none() && !absent,
+            NativeDocumentRead::Absent => known_revision.is_none() && absent,
             NativeDocumentRead::Captured { .. } | NativeDocumentRead::Changes { .. } => false,
         },
     )
@@ -1033,12 +1090,14 @@ impl CapnpChannelHandle {
     /// whether every input that can change that is announced or timed.
     fn committed_read_unchanged(&self, known_revision: Option<[u8; 32]>) -> Option<bool> {
         let service = self.state.services.committed_documents.clone()?;
+        let absent = self.committed_read.try_borrow().ok()?.absent;
         let context = read_unchanged(
             service.as_ref(),
             self.record_read(),
             || self.own_record_context(),
             &self.state.committed_read_budget,
             known_revision,
+            absent,
         )?;
         Some(self.register_read_expiry(&context, service.as_ref()))
     }

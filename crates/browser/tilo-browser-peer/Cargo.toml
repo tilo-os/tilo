@@ -56,6 +56,9 @@ iroh = ["dep:iroh", "dep:iroh-base", "dep:tilo-relay-session", "tilo-relay-clien
 toolkit = ["dep:ui"]
 
 [dev-dependencies]
+# A test that must hold the wall clock of its whole process (and the
+# helper threads reading it) takes the process to itself.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-automerge-isolate.workspace = true
 test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }

@@ -32,12 +32,17 @@ use super::driver::ShellDriver;
 
 mod file_chooser;
 pub mod film;
+mod keyboard;
 mod launcher;
 mod motion_gallery;
 mod motion_review;
 mod one_place;
 mod window_bar_reactions;
 mod window_search;
+
+#[cfg(test)]
+#[path = "scenario/strip_pan_and_tab_drag.rs"]
+mod strip_pan_and_tab_drag;
 
 /// One tab of a window seeded for the window-bar shots.
 #[derive(Debug, Clone, Copy)]
@@ -111,6 +116,14 @@ pub enum Action {
     /// Move an active whole-group drag beyond the named group's midpoint,
     /// resolving the after-slot without baking viewport geometry into a shot.
     MoveCursorGroupReorderTarget(usize),
+    /// Move onto a live group's tab bar, where releasing a carried tab drops
+    /// it into that group's tab list after pill `after_tab` (or first, when
+    /// `None`) — the landing spot a person drags a tab to, resolved from the
+    /// bar so it does not bake viewport geometry into a shot.
+    MoveCursorGroupTabBar {
+        group: usize,
+        after_tab: Option<usize>,
+    },
     /// Synthesise a `CursorMoved` without a press/release. Use with
     /// `MousePress`/`MouseRelease` to compose drags that need mid-
     /// gesture snapshots — useful for the new tab-bar `hover_drop_idx`
@@ -234,6 +247,14 @@ pub enum Action {
         from: u32,
         to: u32,
     },
+    /// The on-screen keyboard rises over the focused text field, as the
+    /// compositor shows it on a touch screen: the real keyboard app, laid
+    /// out at the panel the shell gives it and in the purpose the focused
+    /// field asks for. `None` takes the field that already has focus;
+    /// `Some(field)` taps that field first.
+    ShowKeyboard(Option<OskField>),
+    /// The text the active field holds, as the person typing it left it.
+    Typed(&'static str),
     /// Seed real collaborative room changes, a second person's among them.
     SeedRoomHistory,
     /// Add two present collaborators and representative shares to the active
@@ -586,6 +607,50 @@ pub enum OwnApp {
     Files,
 }
 
+/// The field [`Action::ShowKeyboard`] rises over, for a flow whose field is
+/// reached by its app name rather than by the pointer: the scenario taps it
+/// first, so the keyboard takes that field's purpose, as a live desktop's
+/// does when the person taps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OskField {
+    /// A chat channel's message composer.
+    ChatComposer,
+    /// A window bar's search field, open.
+    WindowSearch,
+    /// A terminal at its prompt. Tapped for focus, but the keyboard's
+    /// purpose is [`Self::purpose`]'s: a capture's terminal has no session
+    /// (it would need the person's supervisor socket), so its widget
+    /// reports no content type of its own while its session is unopened.
+    TerminalPrompt,
+}
+
+impl OskField {
+    /// The widget target that holds the field, as the app names it.
+    #[must_use]
+    pub fn target(self) -> &'static str {
+        match self {
+            Self::ChatComposer => "chat-composer",
+            Self::WindowSearch => "window-search-open",
+            Self::TerminalPrompt => "terminal",
+        }
+    }
+
+    /// What the keyboard should lay itself out for. A capture's field is
+    /// what the keyboard asks: an app that reports its own content type is
+    /// checked against it, and one that cannot — a terminal with no session,
+    /// a search field in the shell's chrome rather than the app's tree —
+    /// states the purpose its field declares, which is what a live desktop
+    /// would take off the wire.
+    #[must_use]
+    pub fn purpose(self) -> ui::ime::InputPurpose {
+        match self {
+            Self::ChatComposer => ui::ime::InputPurpose::Text,
+            Self::WindowSearch => ui::ime::InputPurpose::Search,
+            Self::TerminalPrompt => ui::ime::InputPurpose::Terminal,
+        }
+    }
+}
+
 /// What starts the motion a [`Action::MotionFrames`] captures. Only a build
 /// with `test-support` plays motion, so only it reads a cue.
 #[derive(Debug, Clone)]
@@ -724,6 +789,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_open_window(driver, action);
     apply_add_hosted_tab(driver, action);
     apply_hosted_window(driver, action);
+    keyboard::apply(driver, action);
     apply_reveal_samples(driver, action, sink);
     apply_make_space_sample_and_widths(driver, action, sink);
     apply_seed_status_and_file_picker(driver, action);
@@ -1015,6 +1081,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::MoveCursorGroupReorderTarget(index) => {
             if !driver.move_cursor_to_group_reorder_target(*index) {
                 eprintln!("scenario: could not resolve group {index}'s reorder target");
+            }
+        }
+        Action::MoveCursorGroupTabBar { group, after_tab } => {
+            if !driver.move_cursor_to_group_tab_bar(*group, *after_tab) {
+                eprintln!("scenario: could not resolve group {group}'s tab bar");
             }
         }
         Action::MousePress => driver.press(),
@@ -2231,6 +2302,10 @@ const HALF_WIDTH_PERMILLE: u32 = 500;
 /// demo takes when it wants several apps visible together, and it is the
 /// shape a group's tab strip has the least room in.
 const THIRD_WIDTH_PERMILLE: u32 = 333;
+
+/// How far a tab is carried before the strip is asked where it may land:
+/// past the distance a press needs to move before it is a drag.
+const FILES_DRAG_LIFT_PX: f64 = 40.0;
 
 /// Points along the pill's 180 ms reveal curve worth looking at. Dense
 /// at the start, where the ease-out does most of its travelling.
@@ -4925,6 +5000,113 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "strip_pan_and_tab_drag",
+            description: "The scrolling strip as a showcase: Files, Terminal and Editor as \
+                      three working windows along the strip, two of them in the first window, \
+                      one of those tabs dragged into the Terminal window, and a pan across \
+                      them and back.",
+            actions: vec![
+                // Boot hands us one four-tab group. Cut it to a lone window so
+                // the next app lands in a column of its own rather than as
+                // another tab.
+                Action::LoneWindow(0),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                Action::Wait(2),
+                Action::OpenHostedWindow {
+                    app: "Files",
+                    title: "Files",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(4),
+                Action::OpenHostedWindow {
+                    app: "Terminal",
+                    title: "Terminal",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                Action::SelectGroup(Some(2)),
+                Action::Wait(4),
+                Action::OpenHostedWindow {
+                    app: "Editor",
+                    title: "Editor",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                // The first window carries a second tab: a launch only joins
+                // a bar that already holds more than one, so the tab the drag
+                // needs is added rather than opened beside it.
+                Action::SelectGroup(Some(0)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::AddHostedTab {
+                    app: "Notes",
+                    title: "Notes",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                // The window the tab is dragged out of, already holding two:
+                // the Files window, with the strip home before the pan.
+                Action::Snapshot("01-files-two-tabs"),
+                // The two windows it is dragged to, each at its own work.
+                Action::SelectGroup(Some(1)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::Snapshot("02-terminal"),
+                Action::SelectGroup(Some(2)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::Snapshot("03-editor"),
+                // The pill is carried by name: its centre is where the first
+                // window's bar draws it, whatever the viewport. The release
+                // lands on the Terminal window's bar, resolved from the live
+                // bar so it cannot fall into the gap between the windows and
+                // split off a window of its own.
+                Action::SelectGroup(Some(0)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::MoveCursorNamed("tab:Notes"),
+                Action::MousePress,
+                Action::MoveCursorBy(FILES_DRAG_LIFT_PX),
+                Action::Snapshot("04-tab-lifted"),
+                Action::MoveCursorGroupTabBar {
+                    group: 1,
+                    after_tab: Some(0),
+                },
+                Action::Snapshot("05-over-the-next-window"),
+                Action::MouseRelease,
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                // The drop leaves the strip home, so this one frame is both
+                // the tab in its new window and the travel's starting point.
+                Action::Snapshot("06-tab-in-the-next-window"),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                // Held at the far end, then let go there: the released frame
+                // is the one that shows the strip resting past the last
+                // window, and the frame the travel back starts from.
+                Action::StripPan(10_000.0),
+                Action::Relayout,
+                Action::Snapshot("07-held-at-the-last-window"),
+                Action::EndStripPan,
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::Snapshot("08-panned-to-the-last-window"),
+                Action::StripPan(-10_000.0),
+                Action::Relayout,
+                Action::Snapshot("09-panned-back"),
+                Action::EndStripPan,
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::Snapshot("10-settled-back-home"),
+            ],
+        },
+        Scenario {
             name: "narrow_groups_side_by_side",
             description: "Three windows at a third of the strip each, the first \
                       carrying more tabs than fit — the configuration where \
@@ -5725,6 +5907,7 @@ pub fn scenarios() -> &'static [Scenario] {
     static TABLE: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
         [
             build_scenarios(),
+            keyboard::all(),
             motion_review::all(),
             motion_gallery::all(),
         ]

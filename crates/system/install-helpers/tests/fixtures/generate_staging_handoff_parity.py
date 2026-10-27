@@ -26,7 +26,7 @@ BASE = {
     'staging_root': {'partuuid': 'bbbbbbbb-0000-4000-8000-000000000002', 'first_lba': ROOT[0], 'last_lba': ROOT[1]},
     'target_extent': {'first_lba': TARGET[0], 'last_lba': TARGET[1]},
     'owned_boot_entry': '0104', 'original_boot_order': ['0001', '0000'],
-    'profile': {'schema': 1, 'hostname': 'studio', 'username': 'quinten', 'locale': 'en_US.UTF-8', 'keyboard': 'de', 'timezone': 'Europe/Berlin'},
+    'profile': {'schema': 1, 'hostname': 'studio', 'username': 'ada', 'locale': 'en_US.UTF-8', 'keyboard': 'de', 'timezone': 'Europe/Berlin'},
 }
 MIGRATION = {
     'schema': 1, 'operation_id': BASE['operation_id'],

@@ -363,7 +363,8 @@ fn require_author(
     certificate: &tilo_user_identity::DeviceCert,
     package: &str,
 ) -> io::Result<()> {
-    if super::native_app_open_access(owner, room, certificate, package).map_err(io::Error::other)?
+    if super::native_app_open_access(owner, room, certificate, package)
+        .map_err(|error| io::Error::other(error.to_string()))?
         != super::NativeAppOpenAccess::Author
     {
         return Err(refused());

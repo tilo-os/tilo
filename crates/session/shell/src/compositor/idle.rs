@@ -227,6 +227,15 @@ impl SessionManager {
         Some(blank.saturating_sub(DIM_BEFORE_BLANK.min(half)))
     }
 
+    /// Record the display as still dimmed: lifting the dim did not take
+    /// effect, so the next input lifts it again ([`SessionTransition::Undimmed`]).
+    pub fn keep_dimmed(&mut self) {
+        self.panel = match self.panel {
+            Panel::On | Panel::Dimmed => Panel::Dimmed,
+            Panel::Off { .. } => Panel::Off { dimmed: true },
+        };
+    }
+
     /// Clear the dim, reporting [`SessionTransition::Undimmed`] if the display was dimmed.
     fn undim(&mut self, out: &mut Vec<SessionTransition>) {
         let restored = match self.panel {

@@ -59,6 +59,13 @@ fn grant(app: &TestApp<EbookShell>, id: &str) -> Option<PathBuf> {
 
 /// Activate the control the shelf or the reader publishes as `target`, as
 /// assistive technology and a pointer both reach it.
+/// Go back to the library, as the window bar's Back does.
+fn back_to_library(app: &mut TestApp<EbookShell>) {
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+    app.settle();
+}
+
 fn activate(app: &mut TestApp<EbookShell>, target: &str) {
     app.harness()
         .perform_named(target, &ui::a11y::Action::Activate)
@@ -70,7 +77,7 @@ fn activate(app: &mut TestApp<EbookShell>, target: &str) {
 /// the pointer is over its card on the shelf.
 fn press_remove(app: &mut TestApp<EbookShell>, id: &str) {
     if books(app).view != View::Library {
-        activate(app, "books.reader.back");
+        back_to_library(app);
     }
     app.harness().relayout();
     let books = books(app);
@@ -104,7 +111,7 @@ fn opens_after_reopening(app: TestApp<EbookShell>, id: &str) -> TestApp<EbookShe
         books(&mut app).load_error
     );
     if books(&mut app).view != View::Library {
-        activate(&mut app, "books.reader.back");
+        back_to_library(&mut app);
     }
     app.harness().relayout();
     activate(&mut app, &format!("books.book.open:{id}"));

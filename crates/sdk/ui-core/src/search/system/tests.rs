@@ -385,3 +385,50 @@ fn perfect_application_match_beats_an_exact_note_of_the_same_word() {
         strength(ResourceKind::Application, "Open Sheets") > strength(ResourceKind::Note, "Sheets")
     );
 }
+
+/// "power off" names Shut down as well as "shut" does: an action's word
+/// typed whole, which its provider scores as its title begun, counts at the
+/// merge as its title begun, though the title says neither word.
+#[test]
+fn an_actions_word_typed_whole_counts_as_its_title_begun() {
+    let action = merged_strength(
+        "power off",
+        &ResourceKind::Action,
+        "Shut down",
+        None,
+        MAX_PROVIDER_SCORE,
+        MAX_PROVIDER_SCORE,
+        0.0,
+    );
+    let begun = merged_strength(
+        "shut",
+        &ResourceKind::Action,
+        "Shut down",
+        None,
+        MAX_PROVIDER_SCORE,
+        MAX_PROVIDER_SCORE,
+        0.0,
+    );
+    assert!((action - begun).abs() < f32::EPSILON);
+    let setting = merged_strength(
+        "power off",
+        &ResourceKind::Note,
+        "Power off after",
+        None,
+        84,
+        MAX_PROVIDER_SCORE,
+        0.0,
+    );
+    assert!(action > setting);
+    // A word only begun is no reason to lift it.
+    let partial = merged_strength(
+        "power",
+        &ResourceKind::Action,
+        "Shut down",
+        None,
+        60,
+        MAX_PROVIDER_SCORE,
+        0.0,
+    );
+    assert!(partial < begun);
+}

@@ -359,6 +359,20 @@ literals.
   through `Theme::motion()` (`tokens::EffectiveMotion`); the same rule is in
   HIG §9.7.
 
+## Emoji and mentions
+
+A text field offers both by default, from the toolkit: `:name:` becomes the
+emoji the catalogue names, `@name` becomes a person or an agent in the room.
+The catalogue belongs to `ui`, so an app never links one to have emoji; a
+workspace with custom emoji adds to the toolkit's catalogue rather than
+replacing it.
+
+Opting out is a property of the field, not of the app: a search field, a
+password, a code editor, a terminal, a hex view and a URL are plain (UTF-8
+only), because `:` and `@` are syntax there. Say which and why at the call
+site — a field with completion switched off for no stated reason is
+indistinguishable from one where it was forgotten.
+
 ## Words and structure
 
 These rules are the ones that keep generated filler out.

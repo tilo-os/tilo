@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::*;
+use crate::external_broker::tests::speaks;
 use crate::routing::LinkState;
 
 const MODEM_PATH: &str = "/org/freedesktop/ModemManager1/Modem/7";
@@ -1425,7 +1426,7 @@ async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_sha
             .wait_until(ui::time::Duration::from_secs(5), |h| {
                 h.a11y_nodes()
                     .iter()
-                    .any(|(_, node)| node.label() == Some("private incoming SMS"))
+                    .any(|(_, node)| speaks(node.label(), "private incoming SMS"))
             }),
         "SMS arrival must refresh the selected private view"
     );
@@ -1458,7 +1459,7 @@ async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_sha
         app.harness()
             .a11y_nodes()
             .iter()
-            .any(|(_, node)| node.label() == Some("private SMS reply"))
+            .any(|(_, node)| speaks(node.label(), "private SMS reply"))
     );
     assert!(!app.harness().dump_json().contains("private SMS reply"));
     {

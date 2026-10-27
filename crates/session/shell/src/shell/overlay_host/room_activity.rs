@@ -78,8 +78,8 @@ impl ShellOverlayHost {
         // must see an author grant or the document comes up view-only.
         let Some(workspace) = ({
             let state = chrome.borrow();
-            let tree = state.tree();
-            tree.desktop.active_workspace().cloned()
+            let mut tree = state.tree_mut();
+            tree.workspace_after_opening_app(app_id)
         }) else {
             return;
         };

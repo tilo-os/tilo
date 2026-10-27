@@ -5,8 +5,7 @@
 //! policy, coverage, durability, receipts and window contents — so both admit it
 //! here. What differs between them is only data: how the receiver identifies
 //! the sender ([`Writer`]), who it pinned as the governance writer
-//! ([`AuthorityPin`]) and how the room's window contents are owned
-//! ([`ContentOwnership`]). Each caller keeps its own storage and projection.
+//! ([`AuthorityPin`]). Each caller keeps its own storage and projection.
 //!
 //! The whole batch is refused or the whole candidate is returned: a partial
 //! merge would advance local heads past refused operations.
@@ -77,20 +76,6 @@ impl Writer<'_> {
     }
 }
 
-/// Who owns the entries of a room's window contents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContentOwnership {
-    /// The `contents_owners_v1` registry names each namespace's owner; a room
-    /// without one is owned by the pinned authority device
-    /// ([`crate::topology::validate`]).
-    Registry,
-    /// Each machine owns the entries minted under its id salt. The receiver
-    /// refuses a batch that rewrites an entry carrying `local_salt` that both
-    /// sides already hold
-    /// ([`tilo_desktop_model::projection::changed_owned_entries`]).
-    Salted { local_salt: u16 },
-}
-
 /// Everything [`admit_room_changes`] decides a batch against.
 #[derive(Clone, Copy, Debug)]
 pub struct RoomAdmission<'a> {
@@ -100,7 +85,6 @@ pub struct RoomAdmission<'a> {
     pub room: &'a str,
     pub source: Writer<'a>,
     pub authority: AuthorityPin<'a>,
-    pub contents: ContentOwnership,
     /// The instant the batch is judged at, in nanoseconds since the Unix
     /// epoch: grant expiry, and the certificate a saved shortcut's proof
     /// carries. Not whole seconds: a certificate issued earlier in this
@@ -133,15 +117,15 @@ pub enum RoomRefusal {
     DeclaredRoomMismatch,
     /// The batch changes governance and its sender is not the pinned writer.
     GovernanceWriter,
-    /// The batch changes window contents its sender does not own.
-    Topology(String),
+    /// The batch closes, moves, renames or claims a strip or window its
+    /// sender did not make, and the room does not let them
+    /// ([`tilo_desktop_model::ownership::layout_acts`]).
+    NotTheirs(String),
     /// The batch puts window contents into a room whose layout is personal:
     /// each member's windows stay on their device
     /// ([`tilo_desktop_model::projection::RoomLayout::Personal`]). Taking
     /// one's own out is admitted.
     PersonalLayout,
-    /// The batch rewrites `n` window entries this machine owns.
-    OwnedContents(usize),
     /// The batch rewrites an effect receipt.
     ReceiptImmutable,
     Coverage(String),
@@ -160,7 +144,7 @@ impl std::fmt::Display for RoomRefusal {
             Self::GovernanceMissing => f.write_str("room governance missing"),
             Self::WriteForbidden => f.write_str("room write forbidden"),
             Self::Malformed(error)
-            | Self::Topology(error)
+            | Self::NotTheirs(error)
             | Self::Coverage(error)
             | Self::Durability(error) => f.write_str(error),
             Self::DeclaredRoomMismatch => f.write_str("declared room mismatch"),
@@ -168,11 +152,6 @@ impl std::fmt::Display for RoomRefusal {
             Self::PersonalLayout => {
                 f.write_str("the room's layout is personal: it takes no member's windows")
             }
-            Self::OwnedContents(entries) => write!(
-                f,
-                "owned-content conflict: the batch rewrites {entries} window entries this \
-                 machine owns"
-            ),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::Media(error) => write!(f, "{error}"),
             Self::ShortcutAuthorship(shortcut) => write!(
@@ -222,7 +201,7 @@ pub fn admit_room_changes(
             let candidate = super::candidate(None, &changes).map_err(RoomRefusal::Malformed)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
-            let media = checked(&input, &candidate, false)?;
+            let media = checked(&input, &candidate)?;
             Ok(AdmittedRoom {
                 candidate,
                 media,
@@ -242,9 +221,10 @@ pub fn admit_room_changes(
 /// 2. A governance change — owner, capabilities, identities, media,
 ///    coverage, receipts, durability or import proposals — comes from the
 ///    pinned writer ([`super::governance_unchanged`]).
-/// 3. Window contents change only by their owner ([`ContentOwnership`]),
-///    and a member puts none into a room whose layout is personal; the
-///    layout scope changes only by the pinned writer.
+/// 3. A member's change of the layout does to strips and windows someone
+///    else made only what the room lets that member do ([`layout_kept`]),
+///    and puts none into a room whose layout is personal; the layout scope
+///    changes only by the pinned writer.
 /// 4. Effect receipts are immutable ([`super::immutable_receipts`]).
 /// 5. Coverage and durable receipts never rewind
 ///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
@@ -258,20 +238,18 @@ pub fn check_candidate(
     input: &RoomAdmission<'_>,
     candidate: &AutoCommit,
 ) -> Result<Option<media::RoomMediaV1>, RoomRefusal> {
-    checked(input, candidate, true)
+    checked(input, candidate)
 }
 
 fn checked(
     input: &RoomAdmission<'_>,
     candidate: &AutoCommit,
-    salted_owners: bool,
 ) -> Result<Option<media::RoomMediaV1>, RoomRefusal> {
     let RoomAdmission {
         before,
         room,
         source,
         authority,
-        contents,
         now_ns,
     } = *input;
     let governs = authority.admits(&source);
@@ -288,30 +266,11 @@ fn checked(
             // The room's hosts are its governor's to name.
             return Err(RoomRefusal::GovernanceWriter);
         }
+        layout_kept(before, candidate, room, &source, now_ns / 1_000_000_000)?;
     }
     // Every writer, the governor included: it relays and merges what members
     // write, so who sent a batch says nothing about who saved a shortcut.
     saved_shortcuts_proven(before, candidate, room, now_ns)?;
-    match contents {
-        ContentOwnership::Registry => {
-            let AuthorityPin::Device(pinned) = authority else {
-                return Err(RoomRefusal::Topology(
-                    "topology registry requires a pinned authority device".into(),
-                ));
-            };
-            crate::topology::validate(before, candidate, source.key, pinned)
-                .map_err(RoomRefusal::Topology)?;
-        }
-        ContentOwnership::Salted { local_salt } if salted_owners => {
-            let rewritten = tilo_desktop_model::projection::changed_owned_entries(
-                before, candidate, local_salt,
-            );
-            if rewritten > 0 {
-                return Err(RoomRefusal::OwnedContents(rewritten));
-            }
-        }
-        ContentOwnership::Salted { .. } => {}
-    }
     if !super::immutable_receipts(before, candidate) {
         return Err(RoomRefusal::ReceiptImmutable);
     }
@@ -321,11 +280,73 @@ fn checked(
         .map_err(RoomRefusal::Media)
 }
 
+/// A batch from a sender that is not the governance writer does to strips
+/// and windows someone else made (closing, moving, renaming, claiming them)
+/// only what the room lets that sender's person do on each one's moderation
+/// node, decided against the policy already held. Everything a person made
+/// is theirs on every device of theirs; a sender whose person is not known
+/// may change nothing a person made.
+fn layout_kept(
+    before: Option<&AutoCommit>,
+    candidate: &AutoCommit,
+    room: &str,
+    source: &Writer<'_>,
+    caps_now: u64,
+) -> Result<(), RoomRefusal> {
+    use tilo_desktop_model::ownership::{act_node, layout_acts, rebound_windows};
+    if let Some(window) = rebound_windows(before, candidate).first() {
+        return Err(RoomRefusal::NotTheirs(format!(
+            "window {window} shows its record for good: it cannot be bound to another"
+        )));
+    }
+    let person = source.person().map(hex::encode).unwrap_or_default();
+    let members = before.and_then(tilo_desktop_model::projection::room_members);
+    let mut acts = layout_acts(before, candidate, &person, members.as_ref());
+    if person.is_empty() {
+        // A sender whose person is not known was let write by the transport
+        // ([`Standing::TransportAuthorized`]); what no person made (written
+        // by a device without an identity) is as much its as anyone's.
+        acts.retain(|act| act.owner.is_some());
+    }
+    let Some(first) = acts.first() else {
+        return Ok(());
+    };
+    let refused = |act: &tilo_desktop_model::ownership::Touched| {
+        RoomRefusal::NotTheirs(format!(
+            "{} may not {} {} on the room's layout, which {} made",
+            if person.is_empty() {
+                "this device"
+            } else {
+                &person
+            },
+            act.act.verb(),
+            act.id,
+            act.owner.as_deref().unwrap_or("nobody")
+        ))
+    };
+    let (Some(before), Standing::Member { foreign, .. }) = (before, source.standing) else {
+        return Err(refused(first));
+    };
+    let policy = tilo_desktop_model::projection::room_policy_of(before, room);
+    let bound = tilo_action_policy::roles::foreign_device_bound();
+    let authority = policy.person_on_device(&person, foreign, &bound);
+    let cx = Context::at_secs(caps_now);
+    match acts.iter().find(|act| {
+        authority
+            .decide(&act_node(room, act), ActionKind::Undoable, &cx)
+            .answer
+            != Answer::Allow
+    }) {
+        Some(act) => Err(refused(act)),
+        None => Ok(()),
+    }
+}
+
 /// A batch from a sender that is not the governance writer leaves the room's
 /// layout scope as its governor set it, and in a room whose layout is
 /// personal ([`tilo_desktop_model::projection::RoomLayout::Personal`]), as
 /// the room held it before, puts no window contents in: a member may only
-/// take its own out (which entries are whose is [`ContentOwnership`]'s to
+/// take its own out (which entries are whose is [`layout_kept`]'s to
 /// decide).
 fn personal_layout_kept(
     before: Option<&AutoCommit>,
@@ -336,7 +357,7 @@ fn personal_layout_kept(
         return Err(RoomRefusal::GovernanceWriter);
     }
     if before.is_some_and(|before| room_layout(before).is_personal())
-        && crate::topology::adds_to(before, candidate).map_err(RoomRefusal::Topology)?
+        && crate::topology::adds_to(before, candidate)
     {
         return Err(RoomRefusal::PersonalLayout);
     }

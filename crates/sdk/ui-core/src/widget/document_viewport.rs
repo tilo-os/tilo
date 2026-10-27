@@ -11,9 +11,15 @@
 //! `screen = content * zoom + viewport_top_left + pad - scroll`, recovered
 //! exactly by [`ViewportState::content_to_screen`] /
 //! [`ViewportState::screen_to_content`].
+//!
+//! A toolbar outside the viewport reaches its zoom through
+//! [`DocumentViewport::with_zoom`]: the buttons write what they want, the
+//! viewport writes back the factor it shows, and the level a person reads is
+//! never a frame behind the canvas it names.
 
 use crate::widget::{AppModel, ModelPath};
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use taffy::{NodeId, Size, TaffyTree};
 use vello::Scene;
@@ -42,6 +48,9 @@ pub const DEFAULT_PAN_STEP: f64 = 80.0;
 /// A drag shorter than this (screen px) is a click, not a pan — lets a host
 /// distinguish a selection tap from a drag-to-pan gesture.
 pub const PAN_SLOP: f64 = 4.0;
+/// How far the zoom may be from the factor a toolbar asked for and still be
+/// the same zoom. Guards the publish-back loop against float noise.
+const ZOOM_EPSILON: f64 = 1e-9;
 /// Thickness (screen px) of a scrollbar track/thumb.
 const SCROLLBAR_THICKNESS: f64 = 8.0;
 /// Inset (screen px) of the scrollbar from the viewport edge.
@@ -68,6 +77,39 @@ pub enum SmallContentAlign {
     /// Centre the content in the viewport (the PDF reader's behaviour for
     /// the horizontal axis when the page fits).
     Center,
+}
+
+/// What a control outside a [`DocumentViewport`] — a toolbar's Zoom out, its
+/// level, its Zoom in — asks the content's zoom to be.
+///
+/// The viewport applies the request and writes back the
+/// [`Self::Factor`] it now shows, so the level a person reads follows a
+/// gesture (Ctrl+wheel, a pinch, the keyboard) as well as a button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ViewportZoom {
+    /// Fit the whole content into the viewport.
+    Fit,
+    /// A factor of the content's own size.
+    Factor(f64),
+}
+
+impl ViewportZoom {
+    /// The level as a whole percentage, for the label beside the buttons
+    /// (`crate::format::percent`), or `None` for [`Self::Fit`].
+    #[must_use]
+    pub fn percent(self) -> Option<f64> {
+        match self {
+            Self::Fit => None,
+            Self::Factor(factor) =>
+            {
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "a zoom factor is a small positive float and 100 is a constant"
+                )]
+                Some((factor * 100.0).round())
+            }
+        }
+    }
 }
 
 /// The pure zoom/pan state kernel. Owns the zoom factor and the scroll
@@ -831,6 +873,13 @@ pub struct DocumentViewport {
     /// (`dirty` is cleared by the draw itself, before the host collects
     /// damage).
     repaint: bool,
+    /// What a toolbar outside the viewport asks its zoom to be, and where the
+    /// viewport writes back what it shows.
+    zoom_state: Option<crate::LocalState<ViewportZoom>>,
+    /// Where the scroll stands, kept across the rebuilds an app's view takes
+    /// when something else on screen changes (a selection, an inspector
+    /// opening): a canvas a person panned must stay panned.
+    scroll_cell: Option<std::rc::Rc<Cell<(f32, f32)>>>,
 }
 
 /// Where a frame shows the content: where its origin lands and at what
@@ -890,6 +939,8 @@ impl DocumentViewport {
             layout_theme: Theme::dark(),
             shown: crate::scroll_copy::ShownFrames::default(),
             repaint: true,
+            zoom_state: None,
+            scroll_cell: None,
         }
     }
 
@@ -911,6 +962,90 @@ impl DocumentViewport {
             layout_theme: Theme::dark(),
             shown: crate::scroll_copy::ShownFrames::default(),
             repaint: true,
+            zoom_state: None,
+            scroll_cell: None,
+        }
+    }
+
+    /// Share this viewport's zoom with controls outside it: a toolbar's Zoom
+    /// out, its level and its Zoom in write [`ViewportZoom`]s here, and the
+    /// viewport writes back the [`ViewportZoom::Factor`] it shows. A gesture
+    /// in the viewport itself (Ctrl+wheel, a pinch, Ctrl+`+`) is published
+    /// the same way, so the level a person reads never disagrees with the
+    /// canvas.
+    #[must_use]
+    pub fn with_zoom(mut self, zoom: &crate::LocalState<ViewportZoom>) -> Self {
+        self.zoom_state = Some(zoom.clone());
+        self
+    }
+
+    /// Keep the scroll in `cell`, so a rebuilt viewport (the app's view is
+    /// built again when the selection or the inspector changes) opens where
+    /// the last one was left.
+    #[must_use]
+    pub fn with_scroll(mut self, cell: &std::rc::Rc<Cell<(f32, f32)>>) -> Self {
+        let (x, y) = cell.get();
+        self.state.set_scroll(f64::from(x), f64::from(y));
+        self.scroll_cell = Some(std::rc::Rc::clone(cell));
+        self
+    }
+
+    /// Tell `cell` where the scroll stands now.
+    fn publish_scroll(&self) {
+        let Some(cell) = &self.scroll_cell else {
+            return;
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "scroll offsets are logical pixels, far inside f32"
+        )]
+        let shown = (self.state.scroll_x() as f32, self.state.scroll_y() as f32);
+        if cell.get() != shown {
+            cell.set(shown);
+        }
+    }
+
+    /// Take the zoom `state` asks for, and answer with the factor the
+    /// viewport shows now.
+    fn apply_requested_zoom(&mut self) -> f64 {
+        if let Some(state) = &self.zoom_state {
+            match state.with(|wanted| *wanted) {
+                ViewportZoom::Fit => self.state.reset_to_fit(),
+                ViewportZoom::Factor(factor)
+                    if factor.is_finite() && (factor - self.state.zoom()).abs() > ZOOM_EPSILON =>
+                {
+                    self.state.set_zoom(factor);
+                }
+                ViewportZoom::Factor(_) => {}
+            }
+        }
+        self.state.zoom()
+    }
+
+    /// Whether a toolbar has asked for a zoom the viewport has not taken
+    /// yet: the frame that repaints takes it, so a button outside the
+    /// viewport needs no rebuild of its own to be obeyed.
+    fn zoom_requested(&self) -> bool {
+        let Some(state) = &self.zoom_state else {
+            return false;
+        };
+        match state.with(|wanted| *wanted) {
+            ViewportZoom::Fit => true,
+            ViewportZoom::Factor(factor) => {
+                !factor.is_finite() || (factor - self.state.zoom()).abs() > ZOOM_EPSILON
+            }
+        }
+    }
+
+    /// Tell `state` the factor the viewport shows now, when it says something
+    /// else: a gesture or a fit resolved to a factor the toolbar is showing.
+    fn publish_zoom(&self) {
+        let Some(state) = &self.zoom_state else {
+            return;
+        };
+        let shown = ViewportZoom::Factor(self.state.zoom());
+        if state.with(|known| *known) != shown {
+            state.set(shown);
         }
     }
 
@@ -949,6 +1084,25 @@ impl DocumentViewport {
     pub fn state(&self) -> &ViewportState {
         &self.state
     }
+
+    /// Where a point of the content is drawn: the transform a host that must
+    /// name a place on screen (a test clicking a control on a canvas, a
+    /// pointer a person sees) needs, since the content's own widgets are laid
+    /// out in content coordinates.
+    #[must_use]
+    pub fn content_point_on_screen(&self, point: Point) -> Point {
+        self.state.content_point_to_screen(point)
+    }
+
+    /// The first viewport in `root`'s tree, if any: for a host that has to
+    /// say where a control inside a canvas is on screen.
+    #[must_use]
+    pub fn first_in(root: &dyn Widget) -> Option<&Self> {
+        if let Some(viewport) = root.as_any().and_then(|it| it.downcast_ref::<Self>()) {
+            return Some(viewport);
+        }
+        root.children().into_iter().find_map(Self::first_in)
+    }
     /// Mutable access to the underlying [`ViewportState`].
     pub fn state_mut(&mut self) -> &mut ViewportState {
         self.dirty = true;
@@ -957,46 +1111,86 @@ impl DocumentViewport {
 
     /// Lay the wrapped child widget out at its own (content-space) size, so
     /// it has rects for hit-testing. Cheap; only runs for the widget form.
+    ///
+    /// The child may place its own children (a graph canvas does), so this
+    /// runs the host's solver — manual policies included — rather than a
+    /// plain Taffy measure: a canvas laid out without them stacks its nodes
+    /// in a row instead of drawing its graph.
     fn place_child(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let Content::Widget(child) = &mut self.content else {
             return;
         };
         let (cw, ch) = self.state.content_size();
         let mut taffy = TaffyTree::<()>::new();
-        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = child.build_layout(&mut taffy, theme, &mut map);
+        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = child.build_layout(&mut taffy, theme, &mut nodes);
         if cw > 0.0 && ch > 0.0 {
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "narrowing content-space layout dimensions for taffy; never near f32::MAX"
             )]
             let (w, h) = (cw as f32, ch as f32);
-            let _ = super::layout::solve_layout(
-                &mut taffy,
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(w),
-                    height: taffy::AvailableSpace::Definite(h),
-                },
-                &mut |known, available, node_id| {
-                    if let Some(&ptr) = map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, text_renderer) }
-                    } else {
-                        Size::ZERO
-                    }
-                },
-            );
+            let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+            // SAFETY: `child`, `taffy` and `nodes` come from the build above
+            // and stay exclusively borrowed until layout has been applied.
+            unsafe {
+                bindings.rebuild(child.as_ref(), &taffy, node, &nodes);
+                let _ = super::layout::compute_widget_layout(
+                    &mut taffy,
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(w),
+                        height: taffy::AvailableSpace::Definite(h),
+                    },
+                    &nodes,
+                    &bindings,
+                    text_renderer,
+                );
+            }
         }
         // Lay the child out at content-space origin (0,0). Its draw happens
         // under the content→screen transform, so this gives content-space
         // rects directly.
         child.apply_layout(&taffy, node, Point::ZERO);
+        // The child knows how big it really is (a graph's nodes reach past
+        // the size it was given); the scroll extent follows it, so the last
+        // node is reachable rather than cut off by a guess.
+        let (right, bottom) = content_extent(child.as_ref());
+        if (right > cw || bottom > ch) && right.is_finite() && bottom.is_finite() {
+            self.state.set_content_size(cw.max(right), ch.max(bottom));
+        }
         self.inner_taffy = Some(taffy);
         self.content_node = Some(node);
     }
 }
 
+/// How far `w` and everything under it reach, in content space: the union of
+/// the placed rects, except under a widget that clips its children.
+fn content_extent(w: &dyn Widget) -> (f64, f64) {
+    let rect = w.get_rect();
+    let mut right = rect.x1;
+    let mut bottom = rect.y1;
+    if w.child_clip_rect().is_none() {
+        for child in w.children() {
+            let (child_right, child_bottom) = content_extent(child);
+            right = right.max(child_right);
+            bottom = bottom.max(child_bottom);
+        }
+    }
+    (right, bottom)
+}
+
 impl Widget for DocumentViewport {
+    crate::provides!(dyn crate::content_zoom::ContentZoom);
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Content::Widget(c) = &mut self.content {
             c.sync(state, path);
@@ -1028,6 +1222,10 @@ impl Widget for DocumentViewport {
         crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
             self.place_child(&theme, tr)
         });
+        // A toolbar's request is solved once the rect it fits into, and how
+        // big the content really is, are both known.
+        self.apply_requested_zoom();
+        self.publish_zoom();
     }
 
     fn draw(
@@ -1038,6 +1236,13 @@ impl Widget for DocumentViewport {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A request from a toolbar outside the viewport is taken here: the
+        // frame that draws is the frame that answers it, so the level a
+        // person reads and the canvas agree at once.
+        if self.zoom_requested() {
+            self.apply_requested_zoom();
+            self.publish_zoom();
+        }
         // Reconcile with the live renderer before paint so custom font
         // metrics cannot diverge from the pre-paint layout/hit targets.
         if self.dirty {
@@ -1058,6 +1263,7 @@ impl Widget for DocumentViewport {
             Content::Draw(draw) => draw(scene, content_xf, text_renderer, theme, self.rect),
         }
         self.state.draw_scrollbars(scene, transform, theme);
+        self.publish_scroll();
         self.dirty = false;
     }
 
@@ -1137,6 +1343,7 @@ impl Widget for DocumentViewport {
                         ctx.scale_factor,
                     );
                     self.dirty = true;
+                    self.publish_zoom();
                     *ctx.handled = true;
                     return;
                 }
@@ -1149,6 +1356,7 @@ impl Widget for DocumentViewport {
                     .on_key(&key_event.logical_key, &ctx.modifiers.state()) =>
             {
                 self.dirty = true;
+                self.publish_zoom();
                 *ctx.handled = true;
                 return;
             }
@@ -1188,7 +1396,10 @@ impl Widget for DocumentViewport {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.state.is_panning() || self.state.scrollbar_dragging()
+        self.dirty
+            || self.state.is_panning()
+            || self.state.scrollbar_dragging()
+            || self.zoom_requested()
     }
 
     /// A pan offers the host a copy of what stays on screen: the bars'
@@ -1241,10 +1452,38 @@ impl Widget for DocumentViewport {
     }
 }
 
+/// A canvas viewport is a widget whose content zooms by itself: the window's
+/// Zoom in, Zoom out and Actual size reach the content, and the window bar
+/// says the factor, instead of the whole window's text growing.
+impl crate::content_zoom::ContentZoom for DocumentViewport {
+    fn zoom_content(&mut self, step: crate::content_zoom::ZoomStep) -> Option<f32> {
+        use crate::content_zoom::ZoomStep;
+        match step {
+            ZoomStep::In => self.state.zoom_by(1.15),
+            ZoomStep::Out => self.state.zoom_by(1.0 / 1.15),
+            // Actual size for content with a frame of its own is the frame's
+            // fit, exactly as a picture fitted to its window.
+            ZoomStep::Reset => self.state.reset_to_fit(),
+        }
+        self.dirty = true;
+        self.repaint = true;
+        self.publish_zoom();
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a zoom factor is a small positive float"
+        )]
+        Some(self.state.zoom() as f32)
+    }
+}
+
 impl DocumentViewport {
-    /// Route an event to the wrapped child, if any. Events reach the child
-    /// in window/screen coordinates; its inner taffy node is passed through
-    /// so child containers can recurse.
+    /// Route an event to the wrapped child, if any.
+    ///
+    /// The child's widgets were laid out in *content* space, while a pointer
+    /// event names a place in the window: a pointer event is mapped through
+    /// the viewport's own transform first, so a control on a zoomed or
+    /// panned canvas is pressed where a person sees it. The child's inner
+    /// taffy node is passed through so child containers can recurse.
     fn route_to_child(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let (Content::Widget(c), Some(taffy), Some(node)) = (
             &mut self.content,
@@ -1253,6 +1492,40 @@ impl DocumentViewport {
         ) else {
             return;
         };
+        let mapped;
+        let event =
+            match event {
+                WindowEvent::CursorMoved {
+                    device_id,
+                    position,
+                    ..
+                } => {
+                    let content = self.state.screen_to_content(ctx.logical(position));
+                    mapped = WindowEvent::CursorMoved {
+                        device_id: *device_id,
+                        position: winit::dpi::PhysicalPosition::new(
+                            content.x * ctx.scale_factor,
+                            content.y * ctx.scale_factor,
+                        ),
+                    };
+                    &mapped
+                }
+                // A touch names its place the same way, in physical pixels.
+                WindowEvent::Touch(touch) => {
+                    let content = self.state.screen_to_content(ctx.logical(
+                        winit::dpi::PhysicalPosition::new(touch.location.x, touch.location.y),
+                    ));
+                    mapped = WindowEvent::Touch(winit::event::Touch {
+                        location: winit::dpi::PhysicalPosition::new(
+                            content.x * ctx.scale_factor,
+                            content.y * ctx.scale_factor,
+                        ),
+                        ..*touch
+                    });
+                    &mapped
+                }
+                other => other,
+            };
         c.handle_event(
             event,
             &mut crate::widget::EventCtx {
@@ -1330,6 +1603,178 @@ mod tests {
         v.set_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
         v.set_content_size(1000.0, 1400.0);
         v
+    }
+
+    /// A button of `label` inside a canvas at content point (`x`, `y`), the
+    /// content 600×600.
+    fn canvas_with_button(label: &str, x: f64, y: f64) -> (Element, f64, f64) {
+        let button = crate::widget::Button::new("canvas-button", label);
+        let manual = crate::widget::Manual::new(move |cx| {
+            let size = cx
+                .measure_child(
+                    0,
+                    Size {
+                        width: crate::widget::MeasureConstraint::Intrinsic,
+                        height: crate::widget::MeasureConstraint::Intrinsic,
+                    },
+                )?
+                .size;
+            cx.place(
+                0,
+                Rect::from_origin_size((x, y), (f64::from(size.width), f64::from(size.height))),
+            )?;
+            Ok(Size {
+                width: 600.0,
+                height: 600.0,
+            })
+        })
+        .child(Box::new(button));
+        (Box::new(manual), x, y)
+    }
+
+    fn canvas_rect(harness: &crate::headless::FrameHarness, id: &str) -> Rect {
+        fn find(node: &crate::headless::InspectionNode, id: &str) -> Option<Rect> {
+            if node.test_id.as_deref() == Some(id) {
+                let [x, y, w, h] = node.rect;
+                return Some(Rect::new(x, y, x + w, y + h));
+            }
+            node.children.iter().find_map(|child| find(child, id))
+        }
+        find(&harness.inspection().root, id).expect("the canvas button is laid out")
+    }
+
+    /// A control on a zoomed canvas is pressed where a person sees it, and
+    /// not where its content-space rect would put it.
+    #[test]
+    fn a_zoomed_canvas_control_is_pressed_where_it_is_drawn() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let presses = Rc::new(Cell::new(0_u32));
+        let counter = Rc::clone(&presses);
+        let button = crate::widget::Button::new("canvas-button", "Inspect")
+            .on_effect(move || counter.set(counter.get() + 1));
+        let manual = crate::widget::Manual::new(|cx| {
+            let size = cx
+                .measure_child(
+                    0,
+                    Size {
+                        width: crate::widget::MeasureConstraint::Intrinsic,
+                        height: crate::widget::MeasureConstraint::Intrinsic,
+                    },
+                )?
+                .size;
+            cx.place(
+                0,
+                Rect::from_origin_size(
+                    (300.0, 300.0),
+                    (f64::from(size.width), f64::from(size.height)),
+                ),
+            )?;
+            Ok(Size {
+                width: 600.0,
+                height: 600.0,
+            })
+        })
+        .child(Box::new(button));
+        let mut viewport = DocumentViewport::new(Box::new(manual));
+        viewport.set_content_size(600.0, 600.0);
+        viewport.state_mut().set_zoom(2.0);
+        let mut harness =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(viewport), (800, 900));
+        let content = canvas_rect(&harness, "canvas-button");
+        // The transform the canvas draws with: content × 2, its own gutter in.
+        let pad = f64::from(crate::tokens::Spacing::default().s6);
+        let drawn = Point::new(
+            pad + content.center().x * 2.0,
+            pad + content.center().y * 2.0,
+        );
+        assert!(
+            !content.contains(drawn),
+            "the drawn place and the content rect must differ for this test to say anything"
+        );
+        harness.click_at(drawn.x, drawn.y);
+        assert_eq!(presses.get(), 1, "the press lands on the drawn control");
+        harness.click_at(content.center().x, content.center().y);
+        assert_eq!(
+            presses.get(),
+            1,
+            "a press at the control's content-space rect hits nothing on screen"
+        );
+    }
+
+    /// A toolbar's Zoom out, Fit and Zoom in reach the viewport, and the
+    /// viewport answers with the factor it shows.
+    #[test]
+    fn a_toolbar_sets_the_zoom_and_the_viewport_answers_with_the_factor_it_shows() {
+        let (content, _, _) = canvas_with_button("Inspect", 0.0, 0.0);
+        let zoom = crate::LocalState::new(ViewportZoom::Fit);
+        let mut viewport = DocumentViewport::new(content).with_zoom(&zoom);
+        viewport.set_content_size(600.0, 600.0);
+        let mut harness =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(viewport), (800, 600));
+        let _ = harness.recompose();
+        let fit = match zoom.with(|shown| *shown) {
+            ViewportZoom::Factor(factor) => factor,
+            ViewportZoom::Fit => panic!("the viewport answers Fit with the factor it used"),
+        };
+        assert!(
+            fit < 1.0,
+            "a 600×600 content in an 800×600 frame fits at {fit}"
+        );
+        zoom.set(ViewportZoom::Factor(1.0));
+        let _ = harness.recompose();
+        assert_eq!(
+            zoom.with(|shown| *shown),
+            ViewportZoom::Factor(1.0),
+            "the factor a toolbar asks for is kept"
+        );
+        zoom.set(ViewportZoom::Fit);
+        let _ = harness.recompose();
+        assert_eq!(
+            zoom.with(|shown| *shown),
+            ViewportZoom::Factor(fit),
+            "Fit is answered with the factor it resolved to"
+        );
+        assert_eq!(ViewportZoom::Factor(1.25).percent(), Some(125.0));
+        assert_eq!(ViewportZoom::Fit.percent(), None);
+    }
+
+    /// The window's own Zoom in / Zoom out / Actual size reach a canvas that
+    /// has a scale of its own, and the level the toolbar shows follows.
+    #[test]
+    fn the_windows_zoom_reaches_a_canvas_that_has_one_of_its_own() {
+        use crate::content_zoom::{ContentZoom, ZoomStep};
+        let (content, _, _) = canvas_with_button("Inspect", 0.0, 0.0);
+        let zoom = crate::LocalState::new(ViewportZoom::Fit);
+        let mut viewport = DocumentViewport::new(content).with_zoom(&zoom);
+        viewport.set_content_size(600.0, 600.0);
+        let mut text = TextRenderer::new();
+        crate::widget::layout::lay_out_detached(
+            &mut viewport,
+            Rect::new(0.0, 0.0, 800.0, 900.0),
+            &Theme::dark(),
+            &mut text,
+        )
+        .expect("the canvas lays out");
+        let fitted = viewport.state().zoom();
+        let factor = viewport
+            .zoom_content(ZoomStep::In)
+            .expect("a canvas with a scale of its own takes the window's zoom");
+        assert!(
+            f64::from(factor) > fitted,
+            "Zoom in draws the canvas larger: {factor} from {fitted}"
+        );
+        let shown = zoom.with(|shown| *shown);
+        assert!(
+            matches!(shown, ViewportZoom::Factor(level) if (level - f64::from(factor)).abs() < 1e-6),
+            "and the toolbar is told what the canvas shows: {shown:?} for {factor}"
+        );
+        let reset = viewport.zoom_content(ZoomStep::Reset).expect("actual size");
+        assert!(
+            (f64::from(reset) - fitted).abs() < 1e-6,
+            "actual size is the whole canvas fitted: {reset} vs {fitted}"
+        );
     }
 
     #[test]

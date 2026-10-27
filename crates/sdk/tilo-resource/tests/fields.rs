@@ -361,6 +361,96 @@ fn a_guarded_field_asks_before_any_edit_and_a_weakening_one_is_privileged() {
     assert!(!need(&paths.label.set(String::new())).privileged);
 }
 
+/// The field edit setting `value` at the fields `path`, as a caller sends
+/// it.
+fn set_at<R: tilo_resource::Resource>(path: &[&str], value: &str) -> Invoke<R> {
+    let path = path
+        .iter()
+        .map(|key| tilo_resource::Segment::Field((*key).to_owned()))
+        .collect();
+    let op = tilo_resource::EditOp::Set {
+        value: serde_json::json!(value),
+    };
+    Invoke::edit(&tilo_resource::Edit::new(path, op)).unwrap()
+}
+
+/// A record read that nests its fields under the record's name is written
+/// back as `board.title`: a path starting at the record's own name (the
+/// last part of its kind, or its label) edits the field after it, through
+/// the published field edit and when built from JSON alike.
+#[test]
+fn a_field_edit_may_start_at_the_record_s_own_name() {
+    let mut board = Replica::<Board>::new();
+    board.apply(set_at(&["board", "title"], "Plan")).unwrap();
+    board.apply(set_at(&["Board", "author"], "Ada")).unwrap();
+    let state = board.state().unwrap();
+    assert_eq!(
+        (state.title.as_str(), state.author.as_str()),
+        ("Plan", "Ada")
+    );
+
+    let built = tilo_resource::build_action::<Board>(
+        tilo_resource::FIELD_EDIT,
+        &serde_json::Map::from_iter([(
+            "edit".to_owned(),
+            serde_json::json!({ "path": [{ "field": "board" }, { "field": "title" }], "op": "set", "value": "Sprint" }),
+        )]),
+        0,
+    );
+    assert!(built.is_ok(), "{built:?}");
+}
+
+/// A field edit naming no field, nor the record, still says which fields
+/// there are; one naming the record alone says to start at a field.
+#[test]
+fn a_field_edit_naming_neither_a_field_nor_the_record_lists_the_fields() {
+    let mut board = Replica::<Board>::new();
+    let unknown = format!(
+        "{:?}",
+        board.apply(set_at(&["deck", "title"], "Plan")).unwrap_err()
+    );
+    assert!(
+        unknown.contains("no field `deck`; the fields here are layer, title, author"),
+        "{unknown}"
+    );
+    let below = format!(
+        "{:?}",
+        board.apply(set_at(&["board", "deck"], "Plan")).unwrap_err()
+    );
+    assert!(
+        below.contains("no field `deck`; the fields here are"),
+        "the field after the record's name is the one refused: {below}"
+    );
+    let bare = format!("{:?}", board.apply(set_at(&["board"], "Plan")).unwrap_err());
+    assert!(
+        bare.contains("`board` is the record itself") && bare.contains("title"),
+        "{bare}"
+    );
+    assert_eq!(board.state().unwrap().title, "");
+}
+
+/// A door decides an edit's confirmation from the path as sent: a guarded
+/// field under the record's name is not edited, but sent again from the
+/// root, where the door sees which field it is.
+#[test]
+fn a_guarded_field_under_the_record_s_name_is_sent_again_from_the_root() {
+    let mut lock = Replica::<Lock>::new();
+    for field in ["minutes", "shown_name"] {
+        let refused = format!(
+            "{:?}",
+            lock.apply_confirmed(set_at(&["lock", field], "5"))
+                .unwrap_err()
+        );
+        assert!(
+            refused.contains(&format!("start the path at `{field}`")),
+            "{refused}"
+        );
+    }
+    lock.apply(set_at(&["lock", "label"], "Desk")).unwrap();
+    let state = lock.state().unwrap();
+    assert_eq!((state.minutes, state.label.as_str()), (0, "Desk"));
+}
+
 /// A screen whose lock delay weakens when longer (`0` is never) and whose
 /// notifications on the lock screen weaken it when shown.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -1039,9 +1129,9 @@ fn items_of_a_nested_collection_are_resources_of_their_own() {
 
 #[test]
 fn a_verb_reads_who_its_invoker_acted_for() {
-    let mut board = Replica::<Board>::new().as_agent_for("claude", "quinten");
+    let mut board = Replica::<Board>::new().as_agent_for("claude", "ada");
     board.apply(Board::ADD_CARD_FOR.with(())).unwrap();
-    assert_eq!(board.state().unwrap().author, "Agent for quinten");
+    assert_eq!(board.state().unwrap().author, "Agent for ada");
 }
 
 #[test]
@@ -1134,4 +1224,107 @@ fn a_nested_item_verb_is_known_offered_without_building_children() {
         "an element"
     );
     assert_eq!(Deck::children_offer_bound(&deck), ["nudge"]);
+}
+
+/// A record whose fields declare what they may hold.
+#[derive(Model, Debug, Clone, PartialEq)]
+#[model(defaults)]
+pub struct Comfort {
+    /// How large text is drawn.
+    #[model(range = 0.5..=3.0)]
+    pub text_scale: f64,
+    /// When the dark look starts.
+    #[model(choices = ["sun", "custom"])]
+    pub schedule: String,
+    /// The cursor's size in pixels, when it is not the theme's.
+    #[model(range = 24..=64)]
+    pub cursor: Option<u32>,
+    pub note: String,
+}
+
+impl Default for Comfort {
+    fn default() -> Self {
+        Self {
+            text_scale: 1.0,
+            schedule: "sun".into(),
+            cursor: None,
+            note: String::new(),
+        }
+    }
+}
+
+#[resource(kind = "test.comfort", label = "Comfort")]
+impl Comfort {
+    /// Draw text at `scale`.
+    #[action]
+    pub fn scale_text(&mut self, scale: f64) {
+        self.text_scale = scale;
+    }
+}
+
+fn comfort_schema(key: &str) -> serde_json::Value {
+    let fields = match Comfort::SHAPE {
+        tilo_resource::Shape::Record(fields) => fields,
+        _ => &[],
+    };
+    let field = fields.iter().find(|field| field.key == key).unwrap();
+    (field.schema)()
+}
+
+/// What a field declares is published with it, so an agent knows the
+/// bounds, the choices and the default before it changes the field.
+#[test]
+fn a_field_publishes_what_it_declares() {
+    let scale = comfort_schema("text_scale");
+    assert_eq!(
+        (&scale["minimum"], &scale["maximum"], &scale["default"]),
+        (
+            &serde_json::json!(0.5),
+            &serde_json::json!(3.0),
+            &serde_json::json!(1.0)
+        )
+    );
+    let schedule = comfort_schema("schedule");
+    assert_eq!(schedule["enum"], serde_json::json!(["sun", "custom"]));
+    assert_eq!(schedule["default"], serde_json::json!("sun"));
+    let cursor = comfort_schema("cursor").to_string();
+    assert!(
+        cursor.contains("\"minimum\":24") && cursor.contains("\"maximum\":64"),
+        "{cursor}"
+    );
+    assert_eq!(comfort_schema("note")["default"], serde_json::json!(""));
+}
+
+/// A change outside what a field declares is refused, through a field edit
+/// and through a verb alike; within it, it applies.
+#[test]
+fn a_field_holds_only_what_it_declares() {
+    let paths = Comfort::paths();
+    let mut comfort = Replica::<Comfort>::new();
+    comfort.apply(paths.text_scale.set(2.0)).unwrap();
+    let refused = format!(
+        "{:?}",
+        comfort.apply(paths.text_scale.set(9.0)).unwrap_err()
+    );
+    assert!(refused.contains("between 0.5 and 3"), "{refused}");
+    assert!(comfort.apply(Comfort::SCALE_TEXT.with(0.1)).is_err());
+    assert!(
+        comfort
+            .apply(paths.schedule.set("dusk".to_owned()))
+            .is_err()
+    );
+    comfort
+        .apply(paths.schedule.set("custom".to_owned()))
+        .unwrap();
+    comfort.apply(paths.cursor.set(Some(32))).unwrap();
+    assert!(comfort.apply(paths.cursor.set(Some(8))).is_err());
+    comfort.apply(paths.cursor.set(None)).unwrap();
+    comfort
+        .apply(paths.note.set("anything".to_owned()))
+        .unwrap();
+    let state = comfort.state().unwrap();
+    assert_eq!(
+        (state.text_scale, state.schedule.as_str(), state.cursor),
+        (2.0, "custom", None)
+    );
 }

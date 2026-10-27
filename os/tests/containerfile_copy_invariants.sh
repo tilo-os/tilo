@@ -194,6 +194,10 @@ containerfile="$repo/os/Containerfile"
 # The cache cleanup's policy (/etc/tilo/cache-gc.toml, beside desktop.toml) and
 # its system and user tilo-cache-gc.service/.timer units ride existing COPY
 # instructions; they are the intentional payload rows.
+# The OS image collection's tilo-os-image-gc.service, the disk-pressure
+# tilo-cache-gc-pressure.service/.timer and the update service drop-in that
+# starts the collection after an update ride existing COPY instructions; they
+# are the intentional payload rows.
 # The background app update's user tilo-app-update.service/.timer ride the
 # existing user-unit COPY instruction; they are the intentional payload rows.
 # systemd-bless-boot's drop-in, which lets blessing rename the booted entry on
@@ -321,7 +325,12 @@ containerfile="$repo/os/Containerfile"
 # The one sign-in service, tilo-auth, and the polkit-1 and sudo services that
 # take their authentication from it ride the existing PAM COPY: three payload
 # rows.
-expected_contract=b12e85d601eb1b5250e429dc1eaac0044e2f88656dd8b406b6af4442609a120f
+# The 93tilo-boot-face dracut module, which carries the login screen's face
+# into the initramfs for the boot screen, is one payload row with a COPY of its
+# own. The separate COPY of fex-emulator.json and fex-graphics-provider.json is
+# gone: the COPY of os/usr/share/tilo/windows/ already installs both, so their
+# two file rows leave the contract while the installed files are unchanged.
+expected_contract=93919120185809339fc263289ee0047cde929d5da8e28c8eabe35f6a0c43a35a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

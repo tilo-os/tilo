@@ -80,10 +80,9 @@ pub(crate) fn rail(
     let requests = Rc::clone(requests);
     NavList::new(vec![NavSection::untitled("destinations", items)])
         .rail()
-        .with_id("remote.rail")
         .with_accessible_name("Remote")
         .selected(selected.id())
-        .on_select(move |id| {
+        .on_view("remote.rail", move |id| {
             if let Some(destination) = Destination::from_id(&id) {
                 requests.borrow_mut().push(Action::Show(destination));
             }
@@ -124,7 +123,7 @@ fn connection_row(requests: &Requests, row: &RowModel) -> ListRow {
         .secondary(&row.address)
         .meta(&row.meta)
         .selected(row.selected)
-        .on_activate(queue(requests, Action::RequestConnect(row.id)))
+        .on_effect(queue(requests, Action::RequestConnect(row.id)))
         .action(
             Icon::Pencil,
             "Edit connection",
@@ -288,9 +287,8 @@ fn protocol_field(requests: &Requests, model: &FormModel) -> Field {
     let selected = kinds.iter().position(|k| *k == model.kind).unwrap_or(0);
     let segments = kinds.iter().map(|k| Segment::new(k.label())).collect();
     let queue_to = Rc::clone(requests);
-    let protocol = ToggleGroup::new(segments, selected)
-        .with_id("remote.form.protocol")
-        .on_change(move |index| {
+    let protocol =
+        ToggleGroup::new(segments, selected).on_view("remote.form.protocol", move |index| {
             if let Some(kind) = kinds.get(index) {
                 queue_to.borrow_mut().push(Action::SetKind(*kind));
             }
@@ -307,7 +305,7 @@ fn device_list(requests: &Requests, devices: &[DeviceModel]) -> Element {
             let row = ListRow::new(format!("remote.device:{index}"), &device.name)
                 .icon(kind_icon(ConnectionKind::Tilo))
                 .selected(device.picked)
-                .on_activate(queue(requests, Action::PickTiloDevice(index)));
+                .on_view(queue(requests, Action::PickTiloDevice(index)));
             Box::new(if device.online {
                 row.active()
             } else {
@@ -396,13 +394,11 @@ fn sign_in_fields(
         let selected = methods.iter().position(|a| *a == model.auth).unwrap_or(0);
         let segments = methods.iter().map(|a| Segment::new(a.label())).collect();
         let queue_to = Rc::clone(requests);
-        let auth = ToggleGroup::new(segments, selected)
-            .with_id("remote.form.auth")
-            .on_change(move |index| {
-                if let Some(method) = methods.get(index) {
-                    queue_to.borrow_mut().push(Action::SetAuth(*method));
-                }
-            });
+        let auth = ToggleGroup::new(segments, selected).on_view("remote.form.auth", move |index| {
+            if let Some(method) = methods.get(index) {
+                queue_to.borrow_mut().push(Action::SetAuth(*method));
+            }
+        });
         section = section.field(Field::new("Sign in with", auth).with_trailing_control());
     }
     let (label, placeholder) = match model.auth {

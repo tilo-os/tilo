@@ -15,7 +15,7 @@ ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
 OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude", "crash_record",
-               "dmi"}
+               "dmi", "hardening_defaults"}
 # A board whose firmware describes its devices (ACPI, as every x86-64 handheld
 # does) has no device tree for a model-bound quirk to match on. `dmi` names the
 # DMI system identity instead, so such a quirk stays confined to that model.
@@ -73,6 +73,15 @@ CRASH_LOCKUP_ARGS = {
 # Every argument any detector panics from, so a board that declares its stuck
 # CPU only logs is refused when its own command line makes one panic.
 CRASH_PANIC_ARGS = frozenset(arg for detector in CRASH_LOCKUP_ARGS.values() for arg in detector)
+# The view actions `tilo harden` offers as `--accept` values, and the hardening
+# each one relaxes. A board may default an action on when a hardware fact makes
+# the feature unusable there (a handset's built-in camera and speakers need their
+# kernel options built in), and that is checked here rather than by each release
+# step trusting the board.
+HARDENING_ACTIONS = {
+    "camera": frozenset({"CONFIG_MEDIA_SUPPORT"}),
+    "microphone": frozenset({"CONFIG_SND", "CONFIG_MEDIA_SUPPORT"}),
+}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
 DEFAULT_TARGET_IMGREF = "registry.tilo.so/tilo/tilo:latest"
@@ -89,8 +98,10 @@ def validate_target_imgref(value, *, root=None):
         if isinstance(value, str) and re.fullmatch(
             r"registry\.tilo\.so/tilo/tilo-vm(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
         ):
-            # Ordinary tilo-vm images admit unsigned development updates;
-            # opt-in signed boards tighten that scope to the existing OS key.
+            # A dev image admits the dev channel signed with the development
+            # key (os/scripts/finalize-dev-image.py); opt-in signed boards
+            # tighten that scope to the existing OS key; older dev images
+            # admitted it unsigned.
             # Both immutable flavour and the repository's actual
             # policy must agree; a live medium or environment variable alone
             # cannot enable this origin for a production target.
@@ -102,13 +113,17 @@ def validate_target_imgref(value, *, root=None):
                 raise ValueError("development container policy is too large")
             admission = json.loads(policy.read_bytes()).get("transports", {}).get("docker", {}).get(
                 "registry.tilo.so/tilo/tilo-vm")
-            signed = [{"type": "sigstoreSigned", "keyPath": "/usr/share/tilo/cosign.pub",
-                       "signedIdentity": {"type": "matchRepository"}}]
-            if admission not in ([{"type": "insecureAcceptAnything"}], signed):
-                raise ValueError("tilo-vm update origin requires its development repository policy")
-            if admission == signed:
-                trusted_path(root, Path("usr/share/tilo/cosign.pub"), regular=True)
-            return value
+            def signed(key):
+                return [{"type": "sigstoreSigned", "keyPath": "/" + key,
+                         "signedIdentity": {"type": "matchRepository"}}]
+            keys = ("usr/share/tilo/cosign-dev.pub", "usr/share/tilo/cosign.pub")
+            if admission == [{"type": "insecureAcceptAnything"}]:
+                return value
+            for key in keys:
+                if admission == signed(key):
+                    trusted_path(root, Path(key), regular=True)
+                    return value
+            raise ValueError("tilo-vm update origin requires its development repository policy")
     # Board images carry private firmware and follow the forge's private
     # repository; every other image follows the public one. Both require
     # the release signature.
@@ -360,6 +375,7 @@ def validate_definition(data):
     # Every board declares where its record of a crash goes, so a board that
     # keeps none is a written-down decision rather than an omission.
     validate_crash_record(data, schema)
+    validate_hardening_defaults(data)
     kernel_args = data.get("kernel_args", [])
     if not isinstance(kernel_args, list) or len(kernel_args) > 16:
         raise ValueError("hardware definition kernel arguments must be a bounded list")
@@ -373,6 +389,35 @@ def validate_definition(data):
     if len(set(kernel_args)) != len(kernel_args):
         raise ValueError("hardware definition kernel arguments must be unique")
     return data
+
+
+def validate_hardening_defaults(data):
+    """The hardening actions a board accepts by default, and why it may.
+
+    A board whose kernel carries no camera or audio support cannot offer them
+    at all, so the hardening that removes those interfaces is meaningless there
+    and the board says so once, in the definition the image is built from,
+    instead of every release step carrying a list of board names. The driver is
+    named as well as the action: relaxing hardening without the feature behind
+    it would be a hole opened for nothing.
+    """
+    actions = data.get("hardening_defaults", [])
+    if not isinstance(actions, list) or len(actions) > len(HARDENING_ACTIONS):
+        raise ValueError("hardware definition hardening defaults must be a bounded action list")
+    seen = set()
+    for entry in actions:
+        if not isinstance(entry, dict) or set(entry) != {"action", "driver"}:
+            raise ValueError("hardware definition hardening default has missing or unknown fields")
+        action, driver = entry["action"], entry["driver"]
+        if not isinstance(action, str) or action not in HARDENING_ACTIONS:
+            raise ValueError("hardware definition hardening default names an unsupported action")
+        if not isinstance(driver, str) or not re.fullmatch(r"CONFIG_[A-Z0-9_]+", driver):
+            raise ValueError("hardware definition hardening default driver must name a kernel option")
+        if driver not in HARDENING_ACTIONS[action]:
+            raise ValueError("hardware definition hardening default names a driver its action does not cover")
+        if action in seen:
+            raise ValueError("hardware definition hardening defaults must be unique")
+        seen.add(action)
 
 
 def validate_internal_keyboards(data):

@@ -74,7 +74,7 @@ class CommitHookTests(unittest.TestCase):
         self.stage("source", b"text\n")
         self.git("commit", "-qm", "fix(ui): handle focus")
         # Spelled in pieces so this file does not trip the check it tests.
-        bad = "xaver/ti" + "l-" + "42-focus"
+        bad = "bob/ti" + "l-" + "42-focus"
         result = self.ci(head_ref=bad)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("branch name", result.stderr)
@@ -205,7 +205,7 @@ class CommitHookTests(unittest.TestCase):
         self.assertIn("internal issue tracker", result.stderr)
 
     def test_generated_merge_subjects_keep_historical_references(self):
-        branch = "xaver/" + "til" + "-136-focus"
+        branch = "bob/" + "til" + "-136-focus"
         self.git("switch", "-qc", branch)
         self.stage("feature", b"feature\n")
         self.git("commit", "-qm", "feat(ui): add feature")

@@ -10,8 +10,8 @@ pub(crate) mod private_policy;
 pub(crate) mod read;
 pub mod saved_shortcut;
 pub use admit::{
-    AdmittedRoom, AuthorityPin, ContentOwnership, RoomAdmission, RoomRefusal, Standing, Writer,
-    admit_room_changes, check_candidate,
+    AdmittedRoom, AuthorityPin, RoomAdmission, RoomRefusal, Standing, Writer, admit_room_changes,
+    check_candidate,
 };
 pub use adopt::adopt_room;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};

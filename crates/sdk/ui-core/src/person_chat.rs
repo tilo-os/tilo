@@ -13,7 +13,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Contact {
     pub public_key: String,
+    /// The name the room keeps for the person, empty when it has none
+    /// (it never answers one of their devices' labels).
     pub display_name: String,
+    /// Whether a conversation with them holds messages.
+    #[serde(default)]
+    pub conversation: bool,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Message {
@@ -491,6 +496,7 @@ fn bound_conversation(
     if value.generation != generation {
         return Err("private conversation channel was replaced".into());
     }
+    note_conversation(&mut value, &conversation);
     // Only selected views retain private bodies. Sending or explicitly reading
     // another peer must not evict any open floating conversation.
     if value.active.contains_key(peer) {
@@ -499,6 +505,22 @@ fn bound_conversation(
             .insert(peer.to_owned(), (crate::time::now(), conversation.clone()));
     }
     Ok(conversation)
+}
+
+/// A conversation that holds messages is one its contact has, from the
+/// moment it is seen: the first message sent or come in lists them among
+/// the person's direct messages without waiting for the room's next list.
+fn note_conversation(value: &mut Cache, conversation: &Conversation) {
+    if conversation.messages.is_empty() {
+        return;
+    }
+    if let Some((_, contacts)) = value.contacts.as_mut()
+        && let Some(contact) = contacts
+            .iter_mut()
+            .find(|contact| contact.public_key == conversation.peer)
+    {
+        contact.conversation = true;
+    }
 }
 
 fn generation() -> Result<u64, String> {
@@ -728,6 +750,7 @@ fn store_snapshot(token: uuid::Uuid, peer: &str, snapshot: Conversation) -> Resu
     {
         return Ok(());
     }
+    note_conversation(&mut value, &snapshot);
     // An already accepted send may have overtaken this refresh.
     if value
         .conversations

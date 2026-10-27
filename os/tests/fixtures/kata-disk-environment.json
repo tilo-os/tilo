@@ -57,8 +57,8 @@
       ],
       "nodeName": "kata-node-a.internal.example",
       "nodeSelector": {
-        "agent-sandbox.podesta.ai/disk-kernel": "e23e6ab7f708",
-        "agent-sandbox.podesta.ai/kata": "true",
+        "agent-sandbox.sandbox.example/disk-kernel": "e23e6ab7f708",
+        "agent-sandbox.sandbox.example/kata": "true",
         "katacontainers.io/kata-runtime": "true",
         "kubernetes.io/arch": "arm64",
         "kubernetes.io/hostname": "kata-node-a.internal.example"
@@ -79,7 +79,7 @@
       "tolerations": [
         {
           "effect": "NoSchedule",
-          "key": "agent-sandbox.podesta.ai/dedicated",
+          "key": "agent-sandbox.sandbox.example/dedicated",
           "operator": "Equal",
           "value": "true"
         },

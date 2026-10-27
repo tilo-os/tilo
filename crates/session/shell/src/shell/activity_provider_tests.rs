@@ -282,3 +282,48 @@ fn marking_what_is_new_as_viewed_moves_the_summary() {
     drop(fixture);
     assert!(item::<wire::Summary>(&moved).is_some());
 }
+
+/// Undo and Restore overwrite the room's documents with what they held
+/// before, past everybody's later changes, and Undo does not bring that back:
+/// they ask before they run. Narrating a work group writes the activity
+/// record alone and Undo takes it back, so it runs at once (`APP-activity-02`).
+#[test]
+#[serial_test::serial]
+fn rewriting_the_history_asks_before_it_runs() {
+    use tilo_actions::{ActionKind, ConfirmationPolicy, RiskLevel};
+
+    let published: std::collections::HashMap<String, tilo_actions::ActionContract> =
+        super::broker_door()
+            .descriptors()
+            .into_iter()
+            .map(|descriptor| (descriptor.address.action.clone(), descriptor.contract))
+            .collect();
+    for action in [wire::UNDO, wire::RESTORE, wire::UNDO_RUN, wire::UNDO_RECORD] {
+        let contract = published.get(action).expect("rewinding is published");
+        assert!(
+            contract.validate_declaration().is_empty(),
+            "{action}: {:?}",
+            contract.validate_declaration()
+        );
+        assert_eq!(contract.kind, ActionKind::Undoable, "{action}");
+        assert_eq!(contract.risk, RiskLevel::Destructive, "{action}");
+        assert!(!contract.can_be_undone(), "{action} outlives Undo");
+        assert!(contract.requires_confirmation(), "{action} asks first");
+        assert_eq!(
+            contract.confirmation,
+            ConfirmationPolicy::Confirm,
+            "{action} asks with a click that names the action"
+        );
+    }
+    for action in [wire::NAME, wire::SPLIT, wire::MERGE, wire::MOVE_BOUNDARY] {
+        let contract = published.get(action).expect("narrating is published");
+        assert!(
+            contract.can_be_undone(),
+            "{action} is a change Undo takes back"
+        );
+        assert!(
+            !contract.requires_confirmation(),
+            "{action} runs at once and offers Undo"
+        );
+    }
+}

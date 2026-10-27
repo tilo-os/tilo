@@ -2511,7 +2511,7 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
     env.set("HOME", home.path());
     env.set("XDG_CONFIG_HOME", home.path().join(".config"));
     env.set("TILO_IDENTITY_ROOT", &identity_root);
-    env.set("USER", "quickuser");
+    env.set("USER", "tester");
     env.remove("TILO_USER_ID");
 
     let mut tree = WorkspaceTree::default();
@@ -2527,7 +2527,7 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         chrome.borrow().tree().desktop.workspaces[0]
             .owner()
             .map(String::as_str),
-        Some("quickuser"),
+        Some("tester"),
         "before setup the session acts as the account"
     );
 
@@ -2583,7 +2583,7 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         .find(|w| w.room() == room)
         .expect("home");
     assert_eq!(home.role_of(&principal), Some(CapRole::Owner));
-    assert_eq!(home.role_of("quickuser"), None);
+    assert_eq!(home.role_of("tester"), None);
     assert_eq!(state.local_user_id, principal);
 }
 

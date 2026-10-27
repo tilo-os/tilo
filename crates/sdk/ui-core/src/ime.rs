@@ -75,6 +75,10 @@ pub struct InputHints {
     pub hidden: bool,
     /// Learn nothing from what is typed and suggest nothing from it.
     pub sensitive: bool,
+    /// The field brings its own on-screen keys, such as a calculator's
+    /// keypad: a soft keyboard would only cover them, so none is raised.
+    /// Hardware keys and the input method still type into it.
+    pub own_keys: bool,
 }
 
 /// A field's purpose and hints, as the toolkit tells an input method.
@@ -129,6 +133,7 @@ impl InputContent {
                 multiline: false,
                 hidden: false,
                 sensitive: false,
+                own_keys: false,
             },
         }
     }
@@ -143,6 +148,13 @@ impl InputContent {
     }
 
     /// Whether the input method must neither show nor learn what is typed.
+    /// The same content, typed from the field's own on-screen keys.
+    #[must_use]
+    pub const fn own_keys(mut self) -> Self {
+        self.hints.own_keys = true;
+        self
+    }
+
     #[must_use]
     pub const fn is_secret(self) -> bool {
         self.hints.hidden || self.hints.sensitive || matches!(self.purpose, InputPurpose::Password)
@@ -229,6 +241,7 @@ impl InputContent {
     #[must_use]
     pub const fn html(self) -> HtmlInputHints {
         let inputmode = match self.purpose {
+            _ if self.hints.own_keys => "none",
             InputPurpose::Search => "search",
             InputPurpose::Email => "email",
             InputPurpose::Url => "url",
@@ -469,6 +482,11 @@ mod tests {
         assert_eq!(
             html(InputContent::PASSWORD),
             attrs("text", "", "off", "off", false)
+        );
+        // A field with its own keys asks for no virtual keyboard.
+        assert_eq!(
+            html(of(InputPurpose::Decimal).own_keys()),
+            attrs("none", "", "off", "off", false)
         );
     }
 

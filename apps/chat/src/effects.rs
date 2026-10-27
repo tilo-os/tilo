@@ -621,6 +621,17 @@ impl ChatApp {
     }
 
     pub(crate) fn reveal_message(&mut self, message: &str) -> Result<(), String> {
+        // A message no held part has may be in an earlier one: revealed
+        // once the parts before are opened and one has it.
+        if !self.search_messages.iter().any(|item| item.id == message) && self.seek_earlier(message)
+        {
+            return Ok(());
+        }
+        self.reveal_held_message(message)
+    }
+
+    /// Reveal `message`, which a held part has.
+    pub(crate) fn reveal_held_message(&mut self, message: &str) -> Result<(), String> {
         let found = self
             .search_messages
             .iter()
@@ -1096,14 +1107,17 @@ impl ChatApp {
 
     fn report_row(&self, id: &str) -> Option<LiveRow> {
         let (_, text) = self.reports.iter().find(|(report, _)| report == id)?;
-        Some(
-            LiveRow::new(item_row_id("feedback", id), "chat.workspace.feedback", text)
-                .effect(&ChatEffect::RevealMessage {
-                    message: crate::feedback::message_id(id),
-                })
-                .operation(crate::feedback::receipt_read::spec(id))
-                .operation(crate::feedback::status_read::spec(id)),
-        )
+        let message = crate::feedback::message_id(id);
+        let row = LiveRow::new(item_row_id("feedback", id), "chat.workspace.feedback", text)
+            .effect(&ChatEffect::RevealMessage {
+                message: message.clone(),
+            })
+            .operation(crate::feedback::receipt_read::spec(id))
+            .operation(crate::feedback::status_read::spec(id));
+        Some(match self.report_recordings.get(message.as_str()) {
+            Some(recording) => row.operation(crate::feedback::replay_spec(recording)),
+            None => row,
+        })
     }
 
     /// Who wrote a message, as the room names them.

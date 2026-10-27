@@ -452,27 +452,17 @@ pub(crate) fn entry_device(id: &str) -> Option<&str> {
     id.strip_prefix(ENTRY_PREFIX)
 }
 
-/// Route through `device` (hex), or stop routing through it.
+/// Route through `device` (hex), or stop routing through it: the person's
+/// change of their `device-vpn` section, as Settings makes it.
 ///
 /// # Errors
 ///
-/// The change could not be queued.
+/// Why the section refused the change.
 pub(crate) fn choose(device: &str, on: bool) -> Result<(), String> {
-    let device = device.to_owned();
-    crate::shell::durable_writer::global()
-        .submit_ordered(move || {
-            let changed = settings::THROUGH.update(|through| {
-                if on {
-                    Some(Through::device(device))
-                } else {
-                    through.filter(|through| through.device != device)
-                }
-            });
-            if let Err(error) = changed {
-                tracing::warn!(%error, "could not change the device VPN route");
-            }
-        })
-        .map_err(|error| error.to_string())
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("device".into(), device.into());
+    arguments.insert("on".into(), on.into());
+    change("route-through", &arguments)
 }
 
 /// Stop `device` (hex) routing through this one.
@@ -482,19 +472,32 @@ pub(crate) fn stop_device(device: &str) {
     }
 }
 
-/// Turn this device's exit on or off.
+/// Turn this device's exit on or off: the person's change of their
+/// `device-vpn` section, as Settings makes it.
 ///
 /// # Errors
 ///
-/// The change could not be queued.
+/// Why the section refused the change.
 pub(crate) fn set_exit(on: bool) -> Result<(), String> {
-    crate::shell::durable_writer::global()
-        .submit_ordered(move || {
-            if let Err(error) = settings::EXIT.set(on) {
-                tracing::warn!(%error, "could not change whether this device shares its connection");
-            }
-        })
-        .map_err(|error| error.to_string())
+    change(
+        tilo_resource::FIELD_EDIT,
+        &crate::shell::settings_records::set_field("exit", &on.into()),
+    )
+}
+
+/// Run the person's `device-vpn` section's `action` with `arguments`, as
+/// their own step.
+fn change(
+    action: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    crate::shell::settings_records::change(
+        &crate::shell::settings_records::address("settings.device-vpn", action),
+        arguments,
+        true,
+        &settings_store::InvokingAction::action(format!("device-vpn.{action}")),
+    )
+    .map_err(|error| format!("{error:?}"))
 }
 
 /// The client's link while the helper holds it.

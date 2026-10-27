@@ -252,6 +252,29 @@ selection core:
 - Selection: shift+arrows, drag-select, word-wise (ctrl+arrows), select-all.
 - Clipboard: Ctrl+C / X / V.
 - Collaborative multi-cursor.
+- **Emoji by default**: typing `:name:` offers the catalogue's matching emoji and
+  accepting replaces the token with the character.
+- **Mentions by default**: typing `@name` offers the people and agents in the
+  room, and accepting replaces the token with the name it will resolve to.
+
+Both come from the field. The catalogue is the toolkit's, so every app has the
+emoji picker and custom emoji without linking a catalogue crate; an app with
+workspace emoji *adds* to it, it does not provide it. One inline candidate list
+serves both triggers: arrows move, Enter or Tab accepts, Escape dismisses.
+
+A field that should not offer them says so, once, at the field — and the reason
+is visible there:
+
+| Field | Setting | Why |
+|---|---|---|
+| a message, note, document body, task, description | *(default)* | people write emoji and names in prose |
+| a search or filter field | plain (UTF-8 only) | the query is matched, not written |
+| a password, a secret, a one-time code | plain | nothing may insert into it, and nothing may echo it |
+| a code editor, a terminal, a hex view, SQL, a URL | plain | `:` and `@` are syntax there, not an invitation |
+
+"Plain" is not a degraded field: it is a field where completion is *wrong*
+rather than unavailable. Never disable one of the two and leave the other on
+without saying why.
 
 If an app hand-rolls text editing, it will get these wrong — use the shared core.
 
@@ -299,6 +322,7 @@ answer:
 | **find something the app holds** (a message, a video, a note) | a `SearchProvider` per findable kind, rows that say what a hit is (`SearchRow`), scopes (`ScopeDecl`), facets (`Facet`) | the one platform palette, opened by Ctrl+K, `/`, or the app's magnifier button (`search::search_button`) |
 | **narrow the list already on screen** | `Filterable` on the list | `SearchField::filter()` in the navigation shell's filter slot (or `Filtered`), with a "3 of 120" count; Enter or "Search everywhere" escalates to the platform search |
 | **find in the document on screen** | `Findable` on the document view | the `FindBar` band at the top of the content region (`FindScope`), opened by Ctrl+F |
+| **narrow what the app holds** (a history, a library), as the app's own view | `Queryable` on the app widget, or `QueryView` around a view that is a function | the bar's field searches the app in place (“Search Activity”), with a “3 of 6” count; Enter or Down hands the keyboard to the results |
 
 - **In a Tilo window, the window bar searches in place.** The bar's search
   control, right after the window's place, expands into a field where it
@@ -315,6 +339,14 @@ answer:
   drops its own whole-app search button (`search::APP_SEARCH_BUTTON_ID`) while
   the bar presents search. The `FindBar` band and the filter slot stay for
   windows the shell does not frame.
+- **An app whose view is a function is a query view.** A framework
+  `ResourceApp` returns the view it draws rather than being a widget, so it
+  wraps that view in `widget::QueryView`: the bar offers the app's own search
+  in place, hands over what is typed as it changes (`""` when the search
+  closes), and shows the count the view kept, which is the count a
+  `Filterable` list reports. The query lives in the app's resource, written
+  through the same door as every other edit: the search writes no state of
+  its own, and the view draws no field.
 - **Typing in a focused list jumps.** A `TreeView` (and so a `NavList`) moves
   to the first row whose name begins with what was typed; a `VirtualList`
   does when its model names its rows (`ListModel::label`).
@@ -462,6 +494,20 @@ completeness does not exempt a screen from these requirements.
   above or painted over the app's controls. An app may put its header *in*
   the bar (`NavShell::with_header_in_window_bar`): maximized, the header
   then hides with the bar and comes back over the content with it.
+- **The window's controls are a group of their own.** History, Full screen
+  and Close stand at the bar's trailing edge, `rhythm.group` apart from the
+  app's controls and the window's search before them; space parts the two
+  groups, never a drawn line. That edge never moves when the app's slots
+  change. The app's controls are its slots in declared order, at most
+  three in the row; a narrow bar folds the last of them into the app's
+  More menu before it squeezes the location, and the window's own
+  controls never fold.
+- **Every control gets its slot before the location.** The location takes
+  what the controls leave; only where that is less than its least width (a
+  phone's) do Forward and then the sidebar's toggle fold into More, Back
+  staying. A breadcrumb that does not fit folds its middle
+  levels into the `…`, then cuts the current level short, then shows the
+  current level alone, cut short; it never paints past its own bounds.
 - **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
   (§ toolkit) so light/dark and every temperature look intentional; no hard-coded
   colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping
@@ -838,7 +884,7 @@ its own is a defect of the same class as a hand-rolled text field (§8).
 | `AttachmentSummary`, `AttachmentAction` | The ladder: the inline preview, the picture at full size, a copy saved where the person says, and the saved copy shown in the file manager. Rungs that cannot be offered are absent, with the reason where they would have been. |
 | `DraftBook`, `draft::line` | A draft is per conversation, blank is not a draft, sending clears it only while it is still what was sent, and the words are shown wherever the conversation is listed ("Draft: …"). A draft you cannot find is a draft you have lost. |
 | `ComposerRule` | Enter sends, Shift+Enter breaks the line, Escape lets the draft go. One rule, both apps; a comment field inside a document is the one other rule (`ModEnter`). |
-| `ConversationList` | The message list for a widget-tree app: the same day breaks, the same clock, the same delivery line, measured by the same code as the pieces above. A painting app composes its own rows from the same pieces. |
+| `ConversationList` | The message list for a widget-tree app: the same day breaks, the same clock, the same delivery line, measured by the same code as the pieces above — and measured once. A frame keeps the boxes it measured and shapes only the rows its viewport shows, so a thread of a few hundred messages costs what is on screen. A painting app composes its own rows from the same pieces. |
 
 Consequences a person feels: a screenshot in Chat opens full size, a message in
 Messages has a time, a draft in either app is visible in the list, and Enter
@@ -1761,22 +1807,22 @@ enforcement stay together.*
 
 ## 10. Truth: every value carries its measure and its as-of
 
-A number on screen is a claim. `ui::fact::Fact` keeps the claim and its
+A number on screen is a claim. `ui::fact::Measured` keeps the claim and its
 provenance together so a view cannot draw the number without answering
 "measured how?", "from where?" and "when?".
 
-- **Measure first.** A `Fact` has a `Measure` naming what the number counts
+- **Measure first.** A `Measured` has a `Measure` naming what the number counts
   (`Memory in use`, `Memory (RSS)`, `Packets dropped`) and its unit when it has
   one. Two values called "Memory" are two different claims; name them
   differently on screen as well as in the model.
 - **Provenance is the caption line under the value, always.** Use
-  `Fact::value_or_dash()` in the value position and `Fact::caption(now)` under
+  `Measured::value_or_dash()` in the value position and `Measured::caption(now)` under
   it. The caption carries the source and the age ("measured 2 s ago · this
   device"). It is never beside the value and never omitted.
-- **Age makes the claim honest.** `Fact::is_stale(now)` is true when the
+- **Age makes the claim honest.** `Measured::is_stale(now)` is true when the
   reading is older than the interval it was measured for. Dim the caption, not
   the value: dimming a good number teaches people to distrust good data.
-- **Unknown is a designed state.** `Fact::unknown(measure, reason)` renders an
+- **Unknown is a designed state.** `Measured::unknown(measure, reason)` renders an
   em dash (`—`) plus why, and the app offers the action that would resolve it.
   Zero is a measurement, not a stand-in for "we did not measure". Do not show
   a healthy state, a count or a rate you did not read.

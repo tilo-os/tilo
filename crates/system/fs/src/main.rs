@@ -901,6 +901,17 @@ async fn run_command(cli: Cli) -> Result<()> {
             relay_service_id,
         } => unregister_content_peer(cache_dir, &relay_service_id).await,
         Command::RefreshPublicContent { blob_sock } => {
+            // fs.service starts only on a device with its certified identity
+            // (before setup, and in a development VM's session, it does not):
+            // with no daemon there are no copies to refresh, which is no
+            // failure of the timer that asks.
+            if matches!(blob_sock.try_exists(), Ok(false)) {
+                println!(
+                    "no fs daemon serves this device ({} is absent): no public copies to refresh",
+                    blob_sock.display()
+                );
+                return Ok(());
+            }
             let changed = tokio::task::spawn_blocking(move || {
                 runtime_fs::blobs::BlobClient::connect_session(&blob_sock)?.refresh_public()
             })

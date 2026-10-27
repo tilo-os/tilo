@@ -1,6 +1,6 @@
 # Chat — user-facing strings.
 
-chat-contacts-section = Contacts
+chat-direct-messages-section = Direct messages
 chat-channels-title = Channels
 chat-person-chat-private = Private conversation
 # A message's author or a member, opening their profile card.
@@ -30,18 +30,17 @@ chat-call-camera-off = Stop camera
 chat-call-share-screen = Share screen
 chat-call-stop-sharing = Stop sharing
 
-# Emoji picker: the add-reaction button, the search field's name, the
-# composer's emoji button and a group tab without a name of its own.
+# Emoji picker: the add-reaction button, the search field's name and a group
+# tab without a name of its own.
 chat-emoji-add-reaction = Add reaction
 chat-emoji-search = Search emoji
 chat-emoji-add = Add emoji
-chat-emoji-insert = Insert emoji
 chat-emoji-group = Emoji group
 # A picker cell; the name is the emoji's name in the desktop's language.
 chat-emoji-choose = Choose { $name }
 
 # Governed voice status, shared by native and browser hosts.
-chat-call-issue-unavailable = Voice isn't available in this room yet
+chat-call-issue-unavailable = Call audio can't start on this device
 chat-call-issue-denied = You can't join calls in this room
 chat-call-issue-permission-denied = Microphone blocked. Allow it in settings, then unmute.
 chat-call-issue-source-lost = Microphone disconnected
@@ -351,6 +350,15 @@ chat-feedback-action = { $outcome ->
 # An action whose app gave it no label, by its id and resource kind.
 chat-feedback-action-unnamed = { $action } on { $resource }
 chat-feedback-recent = Just before: { $actions }
+# The recording a report carries: the app whose record it recorded, the
+# times it starts and ends, and how many changes it steps through.
+chat-feedback-recording = Recording of { $app } from { $from } to { $to }, { $steps ->
+    [one] one change
+   *[other] { $steps } changes
+}
+chat-feedback-replay = Replay the recording
+chat-feedback-replay-failed = The recording did not open
+chat-feedback-replay-description = Open the recording in { $app } and step through it
 chat-feedback-slow = Slow: { $slow } of the last { $frames } frames over { $budget } ms, the slowest { $worst } ms
 # A hidden span of a reported text, by what it hid.
 chat-feedback-hidden = { $kind ->
@@ -367,6 +375,7 @@ chat-feedback-hidden = { $kind ->
 chat-surface = Chat
 chat-surface-detail = Channels in the current Tilo workspace
 chat-messages = Messages
+chat-earlier-arriving = Earlier messages are on their way
 chat-add-channel = Add channel
 chat-create-menu = Create channel or category
 chat-composer = Message composer

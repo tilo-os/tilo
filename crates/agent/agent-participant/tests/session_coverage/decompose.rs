@@ -15,6 +15,7 @@ use super::{
     CHAT, RelayRoom, SHEETS, ana_said, answered_model_endpoint, chat_parts_text, last_turn,
     message_text, offered, plan_call, post_in_chat, posts, wait_for,
 };
+use crate::common::pdf;
 
 /// Every message of the planning request `body`, as one text.
 fn request_text(body: &str) -> String {
@@ -909,5 +910,203 @@ async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
     );
     answer.send(reply_only("c3", "Done.")).unwrap();
     assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(room.close()).await;
+}
+
+/// An item's agent has the room's content as one agent has it: after an
+/// item imported a document the room keeps, the next item imports the PDF
+/// the room keeps by its address and reads its text, rather than being
+/// handed the document the item before it imported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_item_s_agent_imports_a_pdf_the_room_keeps_and_reads_it() {
+    const WRITER: &str = "so.tilo.word-processor";
+    const PDF: &str = "so.tilo.pdf-viewer";
+    let content = tilo_content::ContentStore::memory();
+    let details = content
+        .put(b"# Details\n\nSofia Moreira, Data Analyst\n")
+        .unwrap();
+    let payslips = content
+        .put(&pdf(&["Payslip September net pay 2140.55"]))
+        .unwrap();
+    let (url, sent, answer) = answered_model_endpoint();
+    let mut room = Box::pin(RelayRoom::granting_with(
+        &url,
+        &[CHAT, WRITER, PDF],
+        content,
+    ))
+    .await;
+    room.ana.0.decompose(true);
+    let task = room
+        .ana
+        .1
+        .message(&format!(
+            "Open Sofia's details tilo.content:{details} in the Word Processor, then read her \
+             payslips, the PDF tilo.content:{payslips}"
+        ))
+        .unwrap();
+    room.next_request(&sent, "the coordinator's list").await;
+    answer
+        .send(plan_call(
+            "c1",
+            &serde_json::json!({"steps": [], "obligations": [
+                {"text": "open the details", "apps": [WRITER]},
+                {"text": "read the payslips", "apps": [PDF], "after": [1]}]}),
+        ))
+        .unwrap();
+
+    let first = room.next_request(&sent, "item 1's agent").await;
+    answer
+        .send(plan_call(
+            "i1",
+            &serde_json::json!({"steps": [{"operation": offered(&first, "import-docx-content"),
+                "arguments": {"content": format!("tilo.content:{details}"),
+                    "name": "details.md"}}]}),
+        ))
+        .unwrap();
+
+    let second = past_check(&mut room, &sent, &answer, "item 2's agent").await;
+    assert!(
+        last_turn(&second).contains("1. open the details (done)"),
+        "{}",
+        last_turn(&second)
+    );
+    // The details' record offers its read-text too: the PDF's is the one
+    // on the resource that imports the PDF.
+    let import = offered(&second, "import-pdf-content");
+    let read = import.replace("#import-pdf-content", "#read-text");
+    answer
+        .send(plan_call(
+            "i2",
+            &serde_json::json!({"steps": [
+                {"operation": import, "arguments": {
+                    "content": format!("tilo.content:{payslips}"), "name": "payslips.pdf"}},
+                {"operation": read, "arguments": {}}]}),
+        ))
+        .unwrap();
+
+    let check = last_turn(&past_check(&mut room, &sent, &answer, "the coordinator's check").await);
+    assert!(
+        check.contains("2. read the payslips (done)") && check.contains("net pay 2140.55"),
+        "the PDF was imported and read: {check}"
+    );
+    answer
+        .send(plan_call(
+            "c2",
+            &serde_json::json!({"steps": [], "reply": "Read."}),
+        ))
+        .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(room.close()).await;
+}
+
+/// The next planning request, once the running item's agent was answered
+/// with nothing more to do if it is first asked to check what its steps
+/// wrote.
+async fn past_check(
+    room: &mut RelayRoom,
+    sent: &std::sync::mpsc::Receiver<String>,
+    answer: &std::sync::mpsc::Sender<serde_json::Value>,
+    what: &str,
+) -> String {
+    let next = room.next_request(sent, what).await;
+    if !last_turn(&next).contains("what they wrote may still be wrong") {
+        return next;
+    }
+    answer
+        .send(plan_call(
+            "check",
+            &serde_json::json!({"steps": [], "reply": "It is done."}),
+        ))
+        .unwrap();
+    room.next_request(sent, what).await
+}
+
+/// The model of the request `body`.
+fn model_of(body: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(body).unwrap();
+    request["model"].as_str().unwrap_or_default().to_owned()
+}
+
+/// With an item model, the coordinator's list and check go to the agent's
+/// own model and every item's agent's turns to the item model: two
+/// endpoints, each answering only its own turns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinated_task_plans_its_items_with_the_item_model() {
+    let (own_url, to_own, own) = answered_model_endpoint();
+    let (item_url, to_items, items) = answered_model_endpoint();
+    let endpoint = |url: &str, model: &str| {
+        Box::new(tilo_agent_participant::OpenAiModel::new(
+            url,
+            model,
+            tilo_agent_participant::ApiKey::None,
+            tilo_test_env::hang_bound(),
+            tilo_model_gateway::openai::Target::Standard,
+        ))
+    };
+    let planner =
+        tilo_agent_participant::ModelPlanner::new(endpoint(&own_url, "canned-coordinator"))
+            .with_item_model(endpoint(&item_url, "canned-items"));
+    let mut room = Box::pin(RelayRoom::planned_by(
+        Box::new(planner),
+        &[CHAT],
+        tilo_content::ContentStore::memory(),
+    ))
+    .await;
+    room.ana.0.decompose(true);
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    let task = room
+        .ana
+        .1
+        .message("In Chat, post Alpha ready and Bravo ready")
+        .unwrap();
+    let list = room.next_request(&to_own, "the coordinator's list").await;
+    assert_eq!(model_of(&list), "canned-coordinator");
+    assert!(last_turn(&list).contains("List the request's items"));
+    own.send(plan_call(
+        "c1",
+        &serde_json::json!({"steps": [], "obligations": [
+            {"text": "post Alpha ready", "apps": ["chat"]},
+            {"text": "post Bravo ready", "apps": ["chat"]}]}),
+    ))
+    .unwrap();
+
+    for (number, word) in [(1, "Alpha"), (2, "Bravo")] {
+        let body = room.next_request(&to_items, "an item's agent").await;
+        assert_eq!(model_of(&body), "canned-items");
+        assert!(
+            last_turn(&body).contains(&format!(
+                "you are the agent of item {number} only: post {word} ready"
+            )),
+            "{}",
+            last_turn(&body)
+        );
+        assert!(
+            to_own.try_recv().is_err(),
+            "an item's turn went to the coordinator"
+        );
+        let post = offered(&body, "post");
+        items
+            .send(plan_call(
+                &format!("i{number}"),
+                &serde_json::json!({"steps": posts(&post, &[(&format!("{word} ready"), None)])}),
+            ))
+            .unwrap();
+    }
+
+    let check = room.next_request(&to_own, "the coordinator's check").await;
+    assert_eq!(model_of(&check), "canned-coordinator");
+    assert!(last_turn(&check).contains("Every item has ended"));
+    own.send(plan_call(
+        "c2",
+        &serde_json::json!({"steps": [], "reply": "All posted."}),
+    ))
+    .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    let held = chat_parts_text(&room.ana.0, &ours);
+    for word in ["Alpha", "Bravo"] {
+        assert!(held.contains(&format!("{word} ready")), "{held}");
+    }
+    room.pump_for(Duration::from_millis(300)).await;
+    assert!(to_own.try_recv().is_err() && to_items.try_recv().is_err());
     Box::pin(room.close()).await;
 }

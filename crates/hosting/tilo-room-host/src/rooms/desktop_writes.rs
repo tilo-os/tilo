@@ -4,7 +4,7 @@
 //! Whoever may edit the room may write its desktop. What a write does to a
 //! strip or window someone else made (closing, moving, renaming it) is
 //! moderation, decided on that item's `moderation` node with the writer's
-//! own grants ([`crate::desktop_guard`]). Every door a member's write enters
+//! own grants ([`tilo_desktop_model::shared_record::guard`]). Every door a member's write enters
 //! by asks [`Rooms::decide_desktop_write`] first; a refused write is neither
 //! kept nor forwarded, like any change the room does not grant.
 
@@ -13,12 +13,9 @@ use tilo_action_policy::ActionKind;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, act_node};
 
 use super::{GovernedRoom, Rooms, SystemTime};
-use crate::desktop_guard::DesktopGuard;
+use tilo_desktop_model::shared_record::guard::{self, DesktopGuard};
 
-/// Whether `(app, record)` is a room's shared desktop.
-pub(crate) fn is_desktop(app: &str, record: &str) -> bool {
-    app == DESKTOP_APP && record == DESKTOP_RECORD
-}
+pub(crate) use tilo_desktop_model::shared_record::guard::is_shared_desktop as is_desktop;
 
 /// Whether `body`, a member's retained write, is one of the room's shared
 /// desktop: what a door asks before taking the room's lock for it.
@@ -193,7 +190,14 @@ impl Rooms {
         };
         let guard = governed.desktop_guard().await?;
         guard
-            .decide(&mutation, &member.person, members.as_ref(), &allows)
+            .decide(
+                &mutation,
+                &guard::Writer {
+                    person: &member.person,
+                    members: members.as_ref(),
+                    allows: &allows,
+                },
+            )
             .map_err(|refusal| refusal.to_string())
     }
 }

@@ -63,7 +63,13 @@ fn slot_show_reads_imported_provenance_and_keeps_it_after_failed_activation() {
     ]);
     let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
     daemon
-        .create("proof", SlotKind::Headless, Owner::default(), &[], false)
+        .create(
+            "proof",
+            SlotKind::Headless,
+            Owner::default(),
+            &[],
+            IdentityRequest::None,
+        )
         .unwrap();
     assert!(daemon.show("proof").unwrap().provenance.is_empty());
     let info = Some(ComponentInfo::new(Scope::Session, vec![]));
@@ -125,7 +131,13 @@ fn failed_swap_restores_generation_and_reports_failed_recovery() {
         let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
         if slot != DEVICE_SLOT {
             daemon
-                .create(slot, SlotKind::Headless, Owner::default(), &[], false)
+                .create(
+                    slot,
+                    SlotKind::Headless,
+                    Owner::default(),
+                    &[],
+                    IdentityRequest::None,
+                )
                 .unwrap();
         }
         // Start with a real prior generation, then exercise the production
@@ -188,8 +200,8 @@ const TOOLKIT: &str = "2026.07+native.0123456789abcdef0123456789abcdef";
 fn user_package(id: &str, runtime: &str) -> package_store::registry::InstalledPackage {
     serde_json::from_value(serde_json::json!({
         "id": id,
-        "payload_root": format!("/home/quickuser/.local/share/tilo-apps/pkgs/{id}"),
-        "manifest_path": format!("/home/quickuser/.local/share/tilo-apps/pkgs/{id}.pkg/manifest.toml"),
+        "payload_root": format!("/home/tester/.local/share/tilo-apps/pkgs/{id}"),
+        "manifest_path": format!("/home/tester/.local/share/tilo-apps/pkgs/{id}.pkg/manifest.toml"),
         "runtime": runtime,
     }))
     .unwrap()
@@ -205,7 +217,7 @@ fn roll_cohort_back_to_image(
 ) -> (Result<ApplyResult, DaemonError>, usize, usize, u64) {
     let root = tempfile::tempdir().unwrap();
     let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut apply = RecordingApply::with_login("quickuser");
+    let mut apply = RecordingApply::with_login("tester");
     apply.mirror = Some(mirror.clone());
     apply.user_packages = packages;
     apply.image_runtimes = image_runtimes.iter().map(|v| (*v).to_owned()).collect();
@@ -325,15 +337,25 @@ fn only_a_single_tilo_runtime_directory_names_a_native_toolkit() {
 /// longer, reports it, and releases it, and the next hello takes it again.
 #[test]
 fn every_connection_keeps_the_machine_awake_until_released() {
-    // The lease is read against the clock it was taken by.
-    tilo_clock::freeze_wall(tilo_clock::wall());
+    // The lease is read against the clock it was taken by, and this test's
+    // daemon reads one of its own: no other test of the process sees the
+    // time this one took the lease at.
+    fn read_at() -> u64 {
+        READ_AT.with(std::cell::Cell::get)
+    }
+    thread_local! {
+        static READ_AT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    let taken_at = tilo_clock::unix_now();
+    READ_AT.with(|at| at.set(taken_at));
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::new(
         root.path(),
         Box::new(RecordingApply::default()),
         None,
         BaseInfo::default(),
-    );
+    )
+    .with_clock(read_at);
     let hello = |daemon: &mut Daemon| -> HelloResult {
         serde_json::from_value(
             daemon
@@ -353,17 +375,17 @@ fn every_connection_keeps_the_machine_awake_until_released() {
         )
         .unwrap()
     };
-    let now = tilo_clock::unix_now();
+    let now = read_at();
     let lease = hello(&mut daemon).awake.unwrap();
     assert!(lease.held, "{lease:?}");
     assert_eq!(lease.problem, None);
     let until = lease.until.unwrap();
-    assert_eq!(until, now + 1800);
+    assert_eq!(until, now.saturating_add(1800));
     assert!(root.path().join(awake::LEASE_FILE).is_file());
 
     let held = awake(&mut daemon, Some(7200), false);
     assert!(held.held);
-    assert!(held.until.unwrap() >= now + 7200);
+    assert!(held.until.unwrap() >= now.saturating_add(7200));
     assert_eq!(held.hold_until, held.until);
     // Reporting changes nothing; a new connection keeps the hold.
     assert_eq!(awake(&mut daemon, None, false).until, held.until);
@@ -426,7 +448,7 @@ fn a_swap_that_leaves_the_app_host_unable_to_read_the_declaration_is_refused() {
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::new(
         root.path(),
-        Box::new(RecordingApply::with_login("quickuser")),
+        Box::new(RecordingApply::with_login("tester")),
         None,
         BaseInfo::default(),
     );
@@ -497,7 +519,7 @@ fn an_fs_swap_serving_another_runtime_version_than_the_device_reads_is_refused()
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::new(
         root.path(),
-        Box::new(RecordingApply::with_login("quickuser")),
+        Box::new(RecordingApply::with_login("tester")),
         None,
         BaseInfo::default(),
     );
@@ -579,7 +601,7 @@ fn an_fs_swap_serving_another_runtime_version_than_the_device_reads_is_refused()
 fn vm_component_refresh_restarts_declared_live_owner_user_services() {
     let root = tempfile::tempdir().unwrap();
     let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut apply = RecordingApply::with_login("quickuser");
+    let mut apply = RecordingApply::with_login("tester");
     apply.mirror = Some(mirror.clone());
     let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
     daemon
@@ -606,11 +628,11 @@ fn vm_component_refresh_restarts_declared_live_owner_user_services() {
     )
     .unwrap();
     let user_service = Action::RestartUserUnit {
-        user: "quickuser".into(),
+        user: "tester".into(),
         unit: "tilo-fs-cloud.service".into(),
     };
     let desktop = Action::RestartDesktop {
-        user: "quickuser".into(),
+        user: "tester".into(),
     };
     let user_ix = result
         .actions
@@ -631,7 +653,7 @@ fn vm_component_refresh_restarts_declared_live_owner_user_services() {
     assert!(
         calls
             .iter()
-            .any(|call| call == "restart_user_unit quickuser tilo-fs-cloud.service")
+            .any(|call| call == "restart_user_unit tester tilo-fs-cloud.service")
     );
     assert!(
         !calls.iter().any(|call| call == "restart user@1000.service"),
@@ -644,7 +666,7 @@ fn a_vm_component_outside_sessions_leaves_desktops_running() {
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::new(
         root.path(),
-        Box::new(RecordingApply::with_login("quickuser")),
+        Box::new(RecordingApply::with_login("tester")),
         None,
         BaseInfo::default(),
     );
@@ -676,7 +698,7 @@ fn a_vm_component_outside_sessions_leaves_desktops_running() {
         .unwrap()
     };
     let restarted = Action::RestartDesktop {
-        user: "quickuser".into(),
+        user: "tester".into(),
     };
     let vmd = swap("vmd", 1, true);
     assert_eq!(vmd.policy, Policy::VmRefresh);
@@ -697,7 +719,7 @@ fn a_vm_component_outside_sessions_leaves_desktops_running() {
 fn a_laptops_device_slot_shares_the_system_wide_layers_with_the_vm_slot() {
     let root = tempfile::tempdir().unwrap();
     let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut apply = RecordingApply::with_login("quickuser");
+    let mut apply = RecordingApply::with_login("tester");
     apply.mirror = Some(mirror.clone());
     let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
     daemon
@@ -723,7 +745,7 @@ fn a_laptops_device_slot_shares_the_system_wide_layers_with_the_vm_slot() {
         })
     };
     let restarted = Action::RestartDesktop {
-        user: "quickuser".into(),
+        user: "tester".into(),
     };
 
     let shell = apply(swap(DEVICE_SLOT, "shell", &layer(1), Scope::Session));
@@ -790,6 +812,7 @@ fn creating_with_outputs_applies_the_layout_every_time() {
             owner: Owner::default(),
             outputs: tilo_vm_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
             identity: false,
+            device_identity: false,
         })
     };
     for _ in 0..2 {
@@ -846,6 +869,7 @@ fn slot_create_identity_mints_in_the_session_and_restarts_it_fresh() {
             owner: Owner::default(),
             outputs: Vec::new(),
             identity,
+            device_identity: false,
         })
     };
     let session = session_unit("a");
@@ -1041,7 +1065,7 @@ fn a_board_session_running_before_restore_restarts_onto_its_view() {
     let slots = SlotStore::new(root.path());
     let layers = LayerStore::new(root.path());
     let locks = Locks::new(root.path());
-    let mut apply = RecordingApply::with_device("quickuser");
+    let mut apply = RecordingApply::with_device("tester");
     let mut record = slots.load_with(DEVICE_SLOT, apply.device.clone()).unwrap();
     slots.save(&record).unwrap();
     let hash = "07".repeat(32);
@@ -1056,7 +1080,7 @@ fn a_board_session_running_before_restore_restarts_onto_its_view() {
         .unwrap()
         .unwrap();
     slots.set_current(&mut record, generation.number).unwrap();
-    let unit = "tilo-board-headless-session@quickuser.service";
+    let unit = "tilo-board-headless-session@tester.service";
     // Enabled at boot, it started before the restore.
     apply.start_unit(unit).unwrap();
     let issues = restore_slots(&slots, &layers, &locks, &mut apply);
@@ -1370,4 +1394,187 @@ fn dev_base() -> BaseInfo {
         target: Some("x86_64-unknown-linux-gnu".into()),
         cargo_lock_hash: Some("0123456789abcdef0123".into()),
     }
+}
+
+/// Onboarding's controls are pressed in a person's order, a checkbox once.
+#[test]
+fn onboarding_is_pressed_through_in_a_persons_order() {
+    let shown = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
+    };
+    let page = shown(&["onboarding.understood.box", "onboarding.create.button"]);
+    assert_eq!(
+        next_onboarding_press(&page, &[]),
+        Some("onboarding.understood.box")
+    );
+    assert_eq!(
+        next_onboarding_press(&page, &shown(&["onboarding.understood.box"])),
+        Some("onboarding.create.button")
+    );
+    assert_eq!(
+        next_onboarding_press(&shown(&["onboarding.import.button"]), &[]),
+        None
+    );
+    assert_eq!(
+        onboarding_target_names(
+            r#"{"targets":[{"name":"onboarding.begin.button"},{"name":"shell.search"}]}"#
+        ),
+        ["onboarding.begin.button"]
+    );
+    assert_eq!(
+        onboarding_target_names(r#"{"answer":{"targets":[{"name":"onboarding.finish.button"}]}}"#),
+        ["onboarding.finish.button"]
+    );
+}
+
+/// A session whose onboarding shows its pages one after another as its
+/// controls are pressed, then the desktop.
+fn onboarding_session() -> RecordingApply {
+    use tilo_vm_protocol::ControlResult;
+    let reply = |stdout: String| ControlResult {
+        exit_code: 0,
+        stdout,
+        stderr: String::new(),
+    };
+    let targets = |names: &[&str]| {
+        let targets: Vec<_> = names
+            .iter()
+            .map(|name| serde_json::json!({ "name": name }))
+            .collect();
+        reply(serde_json::json!({ "targets": targets }).to_string())
+    };
+    let pages: [&[&str]; 5] = [
+        &["onboarding.begin.button"],
+        &["onboarding.understood.box", "onboarding.create.button"],
+        &["onboarding.understood.box", "onboarding.create.button"],
+        &[
+            "onboarding.backup.skip-acknowledged.box",
+            "onboarding.backup.continue.button",
+        ],
+        &[
+            "onboarding.backup.skip-acknowledged.box",
+            "onboarding.backup.continue.button",
+        ],
+    ];
+    let mut apply = RecordingApply::default();
+    for page in pages {
+        apply.control_replies.push_back(targets(page));
+        apply.control_replies.push_back(reply("{}".into()));
+    }
+    apply
+        .control_replies
+        .push_back(targets(&["onboarding.finish.button"]));
+    apply.control_replies.push_back(reply("{}".into()));
+    apply.control_replies.push_back(targets(&["shell.search"]));
+    apply
+}
+
+/// `slot create --identity device`: the session's own onboarding is pressed
+/// through by name, which certifies the machine and starts fs; a second
+/// person, or a VM that already holds an identity, is refused.
+#[test]
+fn slot_create_device_identity_goes_through_onboarding_and_starts_fs() {
+    let mut apply = onboarding_session();
+    let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    apply.mirror = Some(mirror.clone());
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+    daemon
+        .handle(Request::Hello(tilo_vm_protocol::Hello {
+            protocol: PROTOCOL_VERSION,
+            client_version: String::new(),
+        }))
+        .unwrap();
+    let create = |name: &str| {
+        Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+            name: name.into(),
+            kind: SlotKind::Headless,
+            owner: Owner::default(),
+            outputs: Vec::new(),
+            identity: false,
+            device_identity: true,
+        })
+    };
+    let result: SlotCreateResult =
+        serde_json::from_value(daemon.handle(create("me")).unwrap()).unwrap();
+    let identity = result.identity.expect("the identity answer");
+    assert!(identity.created && !identity.throwaway);
+    assert!(
+        result
+            .actions
+            .contains(&Action::CompleteOnboarding { created: true })
+    );
+    assert!(result.actions.contains(&Action::ResetDesktopState));
+    let pressed: Vec<String> = mirror
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|call| {
+            let (_, rest) = call.split_once(r#""name":""#)?;
+            Some(rest.split('"').next()?.to_owned())
+        })
+        .collect();
+    assert_eq!(
+        pressed,
+        [
+            "onboarding.begin.button",
+            "onboarding.understood.box",
+            "onboarding.create.button",
+            "onboarding.backup.skip-acknowledged.box",
+            "onboarding.backup.continue.button",
+            "onboarding.finish.button",
+        ]
+    );
+    // Phase `a_second_person_is_refused`.
+    {
+        let error = daemon.handle(create("other")).unwrap_err();
+        assert!(
+            matches!(error, DaemonError::DeviceIdentity { .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("'me'"), "{error}");
+    }
+    // Phase `the_person_is_kept_on_a_second_create`.
+    {
+        let result: SlotCreateResult =
+            serde_json::from_value(daemon.handle(create("me")).unwrap()).unwrap();
+        assert_eq!(
+            result.identity.map(|identity| identity.created),
+            Some(false)
+        );
+        assert!(!result.actions.contains(&Action::ResetDesktopState));
+    }
+}
+
+/// A VM whose identity tree already holds someone is never given a person.
+#[test]
+fn a_vm_holding_an_identity_gets_no_person() {
+    let mut apply = RecordingApply::default();
+    apply.machine.person = true;
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+    daemon
+        .handle(Request::Hello(tilo_vm_protocol::Hello {
+            protocol: PROTOCOL_VERSION,
+            client_version: String::new(),
+        }))
+        .unwrap();
+    let error = daemon
+        .handle(Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+            name: "me".into(),
+            kind: SlotKind::Headless,
+            owner: Owner::default(),
+            outputs: Vec::new(),
+            identity: false,
+            device_identity: true,
+        }))
+        .unwrap_err();
+    assert!(
+        matches!(error, DaemonError::DeviceIdentity { .. }),
+        "{error}"
+    );
+    assert!(error.to_string().contains("never replaces"), "{error}");
 }

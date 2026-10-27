@@ -805,15 +805,18 @@ pub(crate) fn restart_on_new_build(package_id: &str) -> bool {
     if pids.is_empty() {
         return false;
     }
-    lock(&RESTARTING_ON_NEW_BUILD).insert(
-        package_id.to_owned(),
-        Instant::now() + RESTART_ON_NEW_BUILD_WITHIN,
-    );
+    lock(&RESTARTING_ON_NEW_BUILD).insert(package_id.to_owned(), restart_deadline());
     #[cfg(any(test, target_os = "linux"))]
     for pid in pids {
         terminate_process_tree(pid);
     }
     true
+}
+
+/// When a restart on a new build stops being told apart from a crash.
+fn restart_deadline() -> Instant {
+    let now = Instant::now();
+    now.checked_add(RESTART_ON_NEW_BUILD_WITHIN).unwrap_or(now)
 }
 
 /// Whether `package_id`'s launch ended because [`restart_on_new_build`]
@@ -828,10 +831,7 @@ pub(crate) fn restarting_on_new_build(package_id: &str) -> bool {
 /// [`restart_on_new_build`] does, without a process to end.
 #[cfg(test)]
 pub(crate) fn mark_restarting_for_test(package_id: &str) {
-    lock(&RESTARTING_ON_NEW_BUILD).insert(
-        package_id.to_owned(),
-        Instant::now() + RESTART_ON_NEW_BUILD_WITHIN,
-    );
+    lock(&RESTARTING_ON_NEW_BUILD).insert(package_id.to_owned(), restart_deadline());
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -967,9 +967,14 @@ pub enum LaunchError {
     ShellOwnedIntent,
     /// The workspace's selected identity could not be resolved safely.
     IdentityUnavailable { detail: String },
-    /// The app is not one of the workspace's apps, and the person opening
-    /// it may not add it: only the workspace's administrators can.
-    NotListedHere,
+    /// The room does not let this person open this app, and only an
+    /// administrator can extend that: nothing about trying again changes it.
+    AppNotInWorkspace { package_id: String },
+    /// The device that asked for the open is no longer admitted to the room;
+    /// the person has to be admitted again on it.
+    DeviceNotAdmitted { detail: String },
+    /// The room's governor refused to let this person author the app.
+    AppAuthorshipRefused { package_id: String, detail: String },
     /// The registry file exists but could not be read or parsed.
     RegistryUnreadable { detail: String },
     /// No `.desktop` entry with this id (distinct from
@@ -1023,9 +1028,14 @@ impl LaunchError {
             LaunchError::IdentityUnavailable { detail } => {
                 format!("the workspace identity could not be loaded: {detail}")
             }
-            LaunchError::NotListedHere => {
-                "the app is not one of this workspace's apps, and only its administrators can add it"
-                    .to_string()
+            LaunchError::AppNotInWorkspace { package_id } => {
+                format!("this workspace does not include {package_id}")
+            }
+            LaunchError::DeviceNotAdmitted { detail } => {
+                format!("this device is no longer in this workspace: {detail}")
+            }
+            LaunchError::AppAuthorshipRefused { package_id, detail } => {
+                format!("this workspace's host did not allow {package_id} for you: {detail}")
             }
             LaunchError::RegistryUnreadable { detail } => {
                 format!("the app registry could not be read: {detail}")
@@ -1046,7 +1056,7 @@ impl LaunchError {
     /// ids, paths, and backend errors belong in the session log and in the
     /// fallible caller's error, not in top-right chrome.
     pub(crate) fn notification_message(&self) -> String {
-        use crate::shell::i18n::t;
+        use crate::shell::i18n::{t, t_args};
         match self {
             Self::ProviderUnavailable { .. } => t("launch-error-provider-unavailable"),
             Self::NotInstalled { .. } | Self::HostAppNotFound { .. } => {
@@ -1064,7 +1074,15 @@ impl LaunchError {
             Self::NoWorkspace => t("launch-error-no-workspace"),
             Self::ShellOwnedIntent => t("launch-error-shell-owned-intent"),
             Self::IdentityUnavailable { .. } => t("launch-error-identity-unavailable"),
-            Self::NotListedHere => t("launch-error-not-listed-here"),
+            Self::AppNotInWorkspace { package_id } => t_args(
+                "launch-error-app-not-in-workspace",
+                &[("app", package_id.as_str().into())],
+            ),
+            Self::DeviceNotAdmitted { .. } => t("launch-error-device-not-admitted"),
+            Self::AppAuthorshipRefused { package_id, .. } => t_args(
+                "launch-error-app-authorship-refused",
+                &[("app", package_id.as_str().into())],
+            ),
             Self::RegistryUnreadable { .. } => t("launch-error-registry-unreadable"),
             Self::HostAppRefused { .. } => t("launch-error-host-app-refused"),
             Self::SystemBehind { .. } => t("launch-failed-system-behind"),
@@ -1089,9 +1107,13 @@ pub enum LaunchFailure {
     NoWorkspace,
     ShellOwnedIntent,
     IdentityUnavailable,
-    /// The app is not one of the workspace's apps, and only its
-    /// administrators can add it.
-    NotListedHere,
+    /// The room does not include this app for this person, and only its
+    /// administrator can.
+    AppNotInWorkspace,
+    /// This device is no longer admitted to the room.
+    DeviceNotAdmitted,
+    /// The room's governor refused to let this person author the app.
+    AppAuthorshipRefused,
     RegistryUnreadable,
     HostAppRefused,
     /// The room's file permissions changed between choosing to open the app
@@ -1143,7 +1165,9 @@ impl LaunchFailure {
             Self::NoWorkspace => "launch-error-no-workspace",
             Self::ShellOwnedIntent => "launch-error-shell-owned-intent",
             Self::IdentityUnavailable => "launch-error-identity-unavailable",
-            Self::NotListedHere => "launch-error-not-listed-here",
+            Self::AppNotInWorkspace => "launch-error-app-not-in-workspace",
+            Self::DeviceNotAdmitted => "launch-error-device-not-admitted",
+            Self::AppAuthorshipRefused => "launch-error-app-authorship-refused",
             Self::RegistryUnreadable => "launch-error-registry-unreadable",
             Self::HostAppRefused => "launch-error-host-app-refused",
             Self::AuthorityChanged => "launch-failed-authority-changed",
@@ -1176,7 +1200,9 @@ impl LaunchError {
             Self::NoWorkspace => LaunchFailure::NoWorkspace,
             Self::ShellOwnedIntent => LaunchFailure::ShellOwnedIntent,
             Self::IdentityUnavailable { .. } => LaunchFailure::IdentityUnavailable,
-            Self::NotListedHere => LaunchFailure::NotListedHere,
+            Self::AppNotInWorkspace { .. } => LaunchFailure::AppNotInWorkspace,
+            Self::DeviceNotAdmitted { .. } => LaunchFailure::DeviceNotAdmitted,
+            Self::AppAuthorshipRefused { .. } => LaunchFailure::AppAuthorshipRefused,
             Self::RegistryUnreadable { .. } => LaunchFailure::RegistryUnreadable,
             Self::HostAppRefused { .. } => LaunchFailure::HostAppRefused,
             Self::SystemBehind { .. } => LaunchFailure::SystemBehind,
@@ -4361,12 +4387,10 @@ pub(crate) fn queue_native_authoring_launch(
                 .read()
                 .installed_native_owner()
                 .ok_or_else(|| unavailable("native app owner disappeared".into()))?;
-            // An app the room does not list, opened by a person who may not
-            // add it, is refused in its own words: whom to ask, not why the
-            // identity machinery said no.
-            let access = admit_native_app(&owner, room, &certificate, &package, opening.as_ref())
-                .map_err(unavailable)?
-                .map_err(|NotListedHere| LaunchError::NotListedHere)?;
+            // A refusal the room gives (an app it does not include, a device
+            // it no longer admits, an authorship its host refused) is told in
+            // its own words, not as why the identity machinery said no.
+            let access = admit_native_app(&owner, room, &certificate, &package, opening.as_ref())?;
             let workspace = native_launch_workspace(&tree, room).map_err(unavailable)?;
             if access != NativeAppOpenAccess::Delegate {
                 return Ok(native_launch_capabilities(&workspace, &package, access));
@@ -4391,46 +4415,65 @@ pub(crate) fn admit_native_app(
     certificate: &tilo_user_identity::DeviceCert,
     package: &str,
     opening: Option<&NativeAppOpening>,
-) -> Result<Result<NativeAppOpenAccess, NotListedHere>, String> {
-    let access = match open_access_in(owner, room, certificate, package)? {
-        Ok(access) => access,
-        Err(refused) => return Ok(Err(refused)),
-    };
+) -> Result<NativeAppOpenAccess, LaunchError> {
+    let access = native_app_open_access(owner, room, certificate, package)?;
     if access != NativeAppOpenAccess::Delegate {
-        return Ok(Ok(access));
+        return Ok(access);
     }
-    let opening = opening.ok_or("native app authorship broker unavailable")?;
-    // A room this device just made or joined has its membership actions
-    // published on the broker's next refresh of them: the grant is asked
-    // once the broker's loop has looked, never refused for coming first.
-    let published = opening
-        .0
-        .upgrade()?
-        .await_membership_surface(&room.to_string())?;
-    let _ = published.recv();
-    let broker = opening.0.upgrade()?;
-    let job = broker.change_workspace_membership(
-        &room.to_string(),
-        &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-            app: package.to_owned(),
-        },
-        certificate,
-    )?;
-    drop(broker);
-    let completed = job
-        .completion
-        .recv_timeout(Duration::from_secs(30))
-        .map_err(|error| format!("native app authorship did not durably complete: {error}"))?;
-    if !completed.code.is_empty() {
-        return Err(format!(
-            "native app authorship refused: {}",
-            completed.message
-        ));
-    }
-    Ok(Ok(NativeAppOpenAccess::Delegate))
+    let delegate = || -> Result<(), String> {
+        let opening = opening.ok_or("native app authorship broker unavailable")?;
+        // A room this device just made or joined has its membership actions
+        // published on the broker's next refresh of them: the grant is asked
+        // once the broker's loop has looked, never refused for coming first.
+        let published = opening
+            .0
+            .upgrade()?
+            .await_membership_surface(&room.to_string())?;
+        let _ = published.recv();
+        let broker = opening.0.upgrade()?;
+        let job = broker.change_workspace_membership(
+            &room.to_string(),
+            &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                app: package.to_owned(),
+            },
+            certificate,
+        )?;
+        drop(broker);
+        let completed = job
+            .completion
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|error| format!("native app authorship did not durably complete: {error}"))?;
+        if !completed.code.is_empty() {
+            return Err(format!(
+                "native app authorship refused: {}",
+                completed.message
+            ));
+        }
+        Ok(())
+    };
+    delegate().map_err(|detail| {
+        if let Some(detail) = app_authorship_refusal(&detail) {
+            return LaunchError::AppAuthorshipRefused {
+                package_id: package.to_owned(),
+                detail,
+            };
+        }
+        classify_app_open_refusal(room, package, detail)
+    })?;
+    Ok(NativeAppOpenAccess::Delegate)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The room's refusal to delegate authorship, `"native app authorship
+/// refused: …"`, as what the person is told; `None` when `detail` is some
+/// other failure.
+fn app_authorship_refusal(detail: &str) -> Option<String> {
+    const MARKER: &str = "native app authorship refused:";
+    detail
+        .split_once(MARKER)
+        .map(|(_, refusal)| refusal.trim().to_string())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum NativeAppOpenAccess {
     Delegate,
     Author,
@@ -4449,8 +4492,15 @@ pub(crate) fn queue_observed_native_launch(
         app,
         room,
         move || {
-            prepare_observed_native_launch(&tree, room, &package, &original)
-                .map_err(|detail| LaunchError::IdentityUnavailable { detail })
+            prepare_observed_native_launch(&tree, room, &package, &original).map_err(|detail| {
+                if let Some(detail) = app_authorship_refusal(&detail) {
+                    return LaunchError::AppAuthorshipRefused {
+                        package_id: package.clone(),
+                        detail,
+                    };
+                }
+                classify_app_open_refusal(room, &package, detail)
+            })
         },
         QueuedOpen::default(),
         native_owner,
@@ -4499,7 +4549,8 @@ fn prepare_observed_native_launch(
         .read()
         .installed_native_owner()
         .ok_or("native app owner disappeared")?;
-    let access = native_app_open_access(&owner, room, &certificate, package)?;
+    let access = native_app_open_access(&owner, room, &certificate, package)
+        .map_err(|error| error.to_string())?;
     if access == NativeAppOpenAccess::Delegate {
         let job = original.delegate_authorship()?;
         let completed = job
@@ -4515,7 +4566,8 @@ fn prepare_observed_native_launch(
         if original.certificate()? != certificate {
             return Err("original launch certificate changed during admission".into());
         }
-        if native_app_open_access(&owner, room, &certificate, package)?
+        if native_app_open_access(&owner, room, &certificate, package)
+            .map_err(|error| error.to_string())?
             != NativeAppOpenAccess::Author
         {
             return Err("native app authorship was not admitted by the canonical owner".into());
@@ -4556,70 +4608,140 @@ pub(crate) fn native_app_open_access(
     room: RoomId,
     certificate: &tilo_user_identity::DeviceCert,
     package: &str,
-) -> Result<NativeAppOpenAccess, String> {
-    open_access_in(owner, room, certificate, package)?.map_err(|NotListedHere| {
-        "creating an application requires governor-authorized authorship".into()
-    })
+) -> Result<NativeAppOpenAccess, LaunchError> {
+    owner
+        .with_current(room, |view| {
+            native_room_app_open_access(view, certificate, package)
+                .map_err(|refusal| refusal.to_string())
+        })
+        .map_err(|detail| classify_app_open_refusal(room, package, detail))
 }
 
-/// An app that is not one of a room's apps, opened by a person who may not
-/// add it there: only the room's administrators can.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NotListedHere;
+/// Why opening `package` in this room was refused, when the room itself says
+/// so. Each is a state nothing on this device can retry into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AppOpenRefusal {
+    /// This device is no longer a member's device in the room.
+    DeviceRefused(String),
+    /// The room's governor does not let this person author the app, so the
+    /// app cannot be created here. The common case: the workspace's host has
+    /// not let anyone add this app.
+    AppNotInWorkspace { package_id: String },
+    /// The person may only read in this app here, so it cannot be created.
+    AppNotReadable { package_id: String },
+}
 
-/// [`native_app_open_access`], with an app the room does not list for the
-/// person told apart from every other refusal.
-fn open_access_in(
-    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
-    room: RoomId,
+impl std::fmt::Display for AppOpenRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeviceRefused(detail) => formatter.write_str(detail),
+            Self::AppNotInWorkspace { package_id } => {
+                write!(
+                    formatter,
+                    "creating an application requires governor-authorized authorship: {package_id}"
+                )
+            }
+            Self::AppNotReadable { package_id } => {
+                write!(formatter, "record read forbidden: {package_id}")
+            }
+        }
+    }
+}
+
+/// Which refusal `detail` (what [`AppOpenRefusal`] renders as) stands for, so
+/// the person reads what happened instead of a broken identity.
+fn classify_app_open_refusal(room: RoomId, package: &str, detail: String) -> LaunchError {
+    match app_open_refusal(&detail) {
+        Some(AppOpenRefusal::DeviceRefused(_)) => LaunchError::DeviceNotAdmitted { detail },
+        Some(AppOpenRefusal::AppNotInWorkspace { .. } | AppOpenRefusal::AppNotReadable { .. }) => {
+            LaunchError::AppNotInWorkspace {
+                package_id: package.to_string(),
+            }
+        }
+        None => LaunchError::IdentityUnavailable {
+            detail: format!("room {room}: {detail}"),
+        },
+    }
+}
+
+/// The room's own refusal `detail` was rendered from, if it was one.
+fn app_open_refusal(detail: &str) -> Option<AppOpenRefusal> {
+    let marker = "native app opening certificate is no longer admitted";
+    if detail.contains(marker) {
+        return Some(AppOpenRefusal::DeviceRefused(detail.to_string()));
+    }
+    let marker = "creating an application requires governor-authorized authorship";
+    if let Some(package) = detail.split_once(marker) {
+        return Some(AppOpenRefusal::AppNotInWorkspace {
+            package_id: package.1.trim_start_matches([':', ' ']).to_string(),
+        });
+    }
+    let marker = "record read forbidden";
+    if let Some(package) = detail.split_once(marker) {
+        return Some(AppOpenRefusal::AppNotReadable {
+            package_id: package.1.trim_start_matches([':', ' ']).to_string(),
+        });
+    }
+    None
+}
+
+/// [`native_app_open_access`] against a room already held open.
+fn native_room_app_open_access(
+    view: &super::native_workspace_owner::NativeCommittedView,
     certificate: &tilo_user_identity::DeviceCert,
     package: &str,
-) -> Result<Result<NativeAppOpenAccess, NotListedHere>, String> {
-    owner.with_current(room, |view| {
-        if !view.peer().certificates().contains(certificate) {
-            return Err("native app opening certificate is no longer admitted".into());
+) -> Result<NativeAppOpenAccess, AppOpenRefusal> {
+    if !view.peer().certificates().contains(certificate) {
+        return Err(AppOpenRefusal::DeviceRefused(
+            "native app opening certificate is no longer admitted".into(),
+        ));
+    }
+    let now = std::time::SystemTime::now();
+    let member = view
+        .peer()
+        .permissions(certificate.device_public_key, now)
+        .map_err(AppOpenRefusal::DeviceRefused)?;
+    let administrator = view
+        .peer()
+        .workspace()
+        .check_workspace_administration(certificate.device_public_key, now)
+        .is_ok();
+    let person_writes = member.allows(
+        &member.policy.node().app(package),
+        tilo_action_policy::ActionKind::Undoable,
+        now,
+    );
+    let application_writes = member
+        .policy
+        .app_authors(package, &tilo_action_policy::Context::at_time(now));
+    // A member who just joined holds the room's governance before any of
+    // its app data: an app the governor lets write in the room opens
+    // before this device has its document.
+    //
+    // The authorship decides, not whether this device happens to hold a
+    // copy of the app's document. A member whose device already has one
+    // opens the app exactly as a member whose device is still catching up
+    // does, so every launch path gives the same answer for the same
+    // member, room and app.
+    if !administrator && !application_writes {
+        if view.peer().document(package, "").is_none() {
+            return Err(AppOpenRefusal::AppNotInWorkspace {
+                package_id: package.to_string(),
+            });
         }
-        let now = std::time::SystemTime::now();
-        let member = view
-            .peer()
-            .permissions(certificate.device_public_key, now)?;
-        let administrator = view
-            .peer()
-            .workspace()
-            .check_workspace_administration(certificate.device_public_key, now)
-            .is_ok();
-        let person_writes = member.allows(
-            &member.policy.node().app(package),
-            tilo_action_policy::ActionKind::Undoable,
-            now,
-        );
-        let application_writes = member
-            .policy
-            .app_authors(package, &tilo_action_policy::Context::at_time(now));
-        // A member who just joined holds the room's governance before any of
-        // its app data: an app the governor lets write in the room opens
-        // before this device has its document.
-        //
-        // The authorship decides, not whether this device happens to hold a
-        // copy of the app's document. A member whose device already has one
-        // opens the app exactly as a member whose device is still catching up
-        // does, so every launch path gives the same answer for the same
-        // member, room and app.
-        if !administrator && !application_writes {
-            if view.peer().document(package, "").is_none() {
-                return Ok(Err(NotListedHere));
-            }
-            view.peer()
-                .check_document_read(certificate.device_public_key, package, "", now)?;
-        }
-        if person_writes && application_writes {
-            return Ok(Ok(NativeAppOpenAccess::Author));
-        }
-        Ok(Ok(if administrator {
-            NativeAppOpenAccess::Delegate
-        } else {
-            NativeAppOpenAccess::Viewer
-        }))
+        view.peer()
+            .check_document_read(certificate.device_public_key, package, "", now)
+            .map_err(|_| AppOpenRefusal::AppNotReadable {
+                package_id: package.to_string(),
+            })?;
+    }
+    if person_writes && application_writes {
+        return Ok(NativeAppOpenAccess::Author);
+    }
+    Ok(if administrator {
+        NativeAppOpenAccess::Delegate
+    } else {
+        NativeAppOpenAccess::Viewer
     })
 }
 
@@ -6192,18 +6314,6 @@ fn display_name_among(
 
 /// Whether a client's wayland app-id belongs to `package_id`: either the
 /// app-id *is* the package id, or its trailing component.
-/// Whether `package_id` runs in `room` and opens further windows in its
-/// process ([`window_doors`]): asking for it again is a new window of it.
-pub(crate) fn opens_more_windows(package_id: &str, room: RoomId) -> bool {
-    #[cfg(target_os = "linux")]
-    return window_doors::opens_more_windows(package_id, room);
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (package_id, room);
-        false
-    }
-}
-
 pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
     let needle = app_id.to_ascii_lowercase();
     let pid = package_id.to_ascii_lowercase();

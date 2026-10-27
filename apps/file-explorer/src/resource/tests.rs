@@ -70,6 +70,52 @@ fn a_new_document_publishes_the_standard_places() {
     );
 }
 
+/// What the document publishes reads as a person reads it: each bookmark
+/// by its folder's name, never the form it is stored in (`xdg:home`), and
+/// each action by a short title, never the first line of what it is
+/// written up as for agents.
+#[test]
+fn bookmarks_and_actions_are_named_as_a_person_reads_them() {
+    crate::i18n::set_locale("en-US");
+    let state = Replica::<FileExplorer>::new().state().unwrap();
+    let published = ui::tilo_resource::publish::<FileExplorer>("files", "Folder", &state);
+    let names: Vec<&str> = published
+        .children
+        .iter()
+        .map(|child| child.label.as_str())
+        .collect();
+    for place in [
+        "Home",
+        "Documents",
+        "Downloads",
+        "Pictures",
+        "Music",
+        "Videos",
+    ] {
+        assert!(names.contains(&place), "{place} is published: {names:?}");
+    }
+    assert!(
+        names.iter().all(|name| !name.contains("xdg:")),
+        "no bookmark is published under its stored form: {names:?}"
+    );
+    let title = |id: &str| {
+        published
+            .actions
+            .iter()
+            .find(|action| action.id == id)
+            .map(|action| action.label.as_str())
+    };
+    for (id, short) in [
+        ("new-folder", "New folder"),
+        ("rename", "Rename"),
+        ("copy-into", "Copy entries to folder"),
+        ("cloud-import", "Import from account"),
+        ("revert", "Take back change"),
+    ] {
+        assert_eq!(title(id), Some(short), "`{id}` has a short title");
+    }
+}
+
 fn sync(a: &mut TestApp<FileExplorerShell>, b: &mut TestApp<FileExplorerShell>) {
     let mut doc = b.peer_document();
     a.merge_peer(&mut doc).unwrap();

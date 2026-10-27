@@ -122,6 +122,7 @@ macro_rules! read_through_json_value {
 }
 
 pub mod action;
+pub mod adapter;
 pub mod appearance;
 pub mod compact;
 pub mod content;
@@ -146,12 +147,17 @@ pub mod remote;
 pub mod resource;
 pub mod schema;
 pub mod selection;
+pub mod selectors;
 pub mod surface;
 pub mod task_step;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
     undo_takes_back,
+};
+pub use adapter::{
+    ADAPTER_OPERATION_TYPE, ActionAdapter, AdapterAction, AdapterInvocation, Check, Implementation,
+    Layer, Observation, Skipped, Step, Undo,
 };
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{
@@ -168,8 +174,8 @@ pub use contract::{
     ExecutionMode, HOST_RENDER_TAG, HOUSEKEEPING_TAG, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
     IRREVERSIBLE_TAG, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES,
     MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG,
-    OWN_DEVICE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, ResultSpec, RetryPolicy, RiskLevel,
-    UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful,
+    OWN_DEVICE_SCOPE, OWN_RECORD_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, ResultSpec, RetryPolicy,
+    RiskLevel, UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
@@ -201,7 +207,8 @@ pub use outcome::{
 pub use params::{
     ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ArgViolation,
     CHOICE_LABELS_ANNOTATION, CONTENT_ANNOTATION, PEOPLE_ANNOTATION, PICK_ANNOTATION,
-    PLACE_ANNOTATION, ParamType, Pick, place_schema, validate_json_schema,
+    PLACE_ANNOTATION, ParamType, Pick, picked_resource_schema, place_schema,
+    resource_reference_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};

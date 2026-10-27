@@ -312,7 +312,7 @@ static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::
 fn sample_iso() -> Source {
     Source {
         kind: crate::model::SourceKind::IsoFile,
-        path: "/home/quinten/Downloads/Fedora-Workstation-Live-42.iso".into(),
+        path: "/home/user/Downloads/Fedora-Workstation-Live-42.iso".into(),
         name: "Fedora-Workstation-Live-42.iso".into(),
         size: 2_113_929_216,
         label: "Fedora-WS-Live-42-1-1".into(),

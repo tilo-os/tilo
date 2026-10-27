@@ -1582,6 +1582,10 @@ impl Task {
                 Ok(client) => {
                     attempt = 0;
                     refusals = 0;
+                    // Waiting for admission is timed from when this page
+                    // subscribes, not from the moment the host answers, so a
+                    // host that holds the connection open still reports.
+                    self.admission_since = Some(tilo_clock::unix_now_ms());
                     match self.serve_naming_proxy(client, &mut commands).await {
                         Exit::Closed => return self.closed(),
                         Exit::Reconnect => continue,
@@ -1700,7 +1704,7 @@ impl Task {
 
     /// The session is up: connected and authenticated, its transport
     /// failures cleared, every room waiting to be admitted again.
-    fn connected(&mut self) {
+    fn connected(&self) {
         self.update(|status| {
             status.phase = TransportPhase::Connected;
             status.authenticated = true;
@@ -1713,7 +1717,6 @@ impl Task {
                 *ready = false;
             }
         });
-        self.admission_since = Some(tilo_clock::unix_now_ms());
     }
 
     async fn serve(
@@ -1756,7 +1759,6 @@ impl Task {
                         if !self.resubscribe(&client) {
                             return Exit::Lost("host session saturated".into());
                         }
-                        self.admission_since = Some(tilo_clock::unix_now_ms());
                     }
                     Some(command) => {
                         if !self.apply(command, Some(&client)).await {
@@ -1978,10 +1980,6 @@ impl Task {
     /// Subscribe to `workspace_id`, now or once connected.
     fn join(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
         self.rooms.insert(workspace_id);
-        if client.is_some() {
-            self.admission_since
-                .get_or_insert_with(tilo_clock::unix_now_ms);
-        }
         self.update(|status| {
             status.rooms.entry(workspace_id).or_insert(false);
         });

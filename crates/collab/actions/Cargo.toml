@@ -6,7 +6,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "The Tilo action model: resources, the actions on them, and their registry."
+description = "The Tilo action model: resources, the actions on them, their registry, and adapters for legacy apps."
 
 [lib]
 name = "tilo_actions"
@@ -21,6 +21,8 @@ path = "src/lib.rs"
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
+# What a skill's selector reads over a published resource.
+tilo-selector = { version = "0.1.0", path = "../../platform/tilo-selector" }
 hex.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true

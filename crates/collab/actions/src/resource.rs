@@ -617,6 +617,11 @@ pub struct Resource {
     pub presentation: Option<ResourcePresentation>,
     /// Exact original typed identity retained before host namespacing.
     pub semantic_identity: Option<ResourceSemanticIdentity>,
+    /// The app that publishes it, as the [`ActionKey`](crate::ActionKey)s
+    /// of its actions name it: the one whose resource this is, not the
+    /// provider keeping it in a room. `None` for a resource published
+    /// outside an app.
+    pub app_id: Option<String>,
     pub children: Vec<Resource>,
     pub actions: Vec<ActionSpec>,
     /// Explicit presentations of this resource. Actions remain invocation
@@ -632,10 +637,18 @@ impl Resource {
             label: label.into(),
             presentation: None,
             semantic_identity: None,
+            app_id: None,
             children: Vec::new(),
             actions: Vec::new(),
             views: Vec::new(),
         }
+    }
+
+    /// The app that publishes it, as an [`ActionKey`](crate::ActionKey) of
+    /// one of its actions names it ([`Self::app_id`]).
+    #[must_use]
+    pub fn app(&self) -> Option<&str> {
+        self.app_id.as_deref()
     }
 
     #[must_use]
@@ -849,6 +862,14 @@ pub struct ActionSpec {
     /// Stable id within the resource (e.g. `"like"`, `"reply"`).
     pub id: String,
     pub label: String,
+    /// The other words people use for this action, in plain language
+    /// ("mkdir" and "make directory" for New folder): search finds the
+    /// action by them as it does by its label. Declared with the label, so
+    /// every surface that lists the action knows them; never a list kept
+    /// inside a search provider.
+    pub keywords: Vec<String>,
+    /// The action's own picture beside its label, by its Lucide name.
+    pub icon: Option<String>,
     pub description: Option<String>,
     /// Declared execution locus (mirrors the concrete action's
     /// [`Action::locus`]), so the palette can show/route it before the
@@ -924,6 +945,8 @@ impl Clone for ActionSpec {
         Self {
             id: self.id.clone(),
             label: self.label.clone(),
+            keywords: self.keywords.clone(),
+            icon: self.icon.clone(),
             description: self.description.clone(),
             locus: self.locus,
             kind: self.kind,
@@ -1212,6 +1235,8 @@ impl ActionSpec {
         Self {
             id,
             label,
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus,
             kind,
@@ -1262,6 +1287,8 @@ impl ActionSpec {
         Ok(Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1300,6 +1327,8 @@ impl ActionSpec {
         Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1348,6 +1377,8 @@ impl ActionSpec {
         Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1425,6 +1456,8 @@ impl ActionSpec {
         Ok(Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
@@ -1464,6 +1497,8 @@ impl ActionSpec {
         Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
@@ -1578,6 +1613,8 @@ impl ActionSpec {
         Self {
             id: seed.id,
             label: seed.label,
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: seed.locus,
             kind: seed.kind,
@@ -1654,6 +1691,22 @@ impl ActionSpec {
         spec
     }
 
+    /// Declare the other words people use for this action
+    /// ([`Self::keywords`]): plain words, one phrase each, no repetition of
+    /// the label.
+    #[must_use]
+    pub fn with_keywords<S: Into<String>>(mut self, keywords: impl IntoIterator<Item = S>) -> Self {
+        self.keywords = keywords.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Give the action its own picture ([`Self::icon`]), by its Lucide name.
+    #[must_use]
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
@@ -1675,14 +1728,14 @@ impl ActionSpec {
         self
     }
 
+    /// A deletion: its kind is
+    /// [`deletion_kind`](ActionContract::deletion_kind), and the tags the spec
+    /// already carries settle its confirmation — asked with a click unless a
+    /// compensated undo says Undo takes it back.
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.contract.risk = RiskLevel::Destructive;
-        // A deletion reaches outside its resource only once Undo takes the
-        // change back.
         self.contract.kind = self.contract.deletion_kind();
-        // Asked with a click when Undo cannot take it back; run at once,
-        // with Undo offered, when it can ([`ActionContract::settle_confirmation`]).
         self.contract.settle_confirmation();
         self
     }
@@ -1746,6 +1799,30 @@ impl ActionSpec {
         self.contract.reaches_agents()
     }
 
+    /// Whether a row a person picks can supply what it asks for: nothing, or
+    /// the one line its prompt collects (a name, a number, a date). One that
+    /// needs several arguments, or a list, an object or another resource's
+    /// address, is taken by callers that name them (agents, scripts, the
+    /// controls bound to where the person is), never from a row.
+    pub fn takes_a_row_answer(&self) -> bool {
+        let mut required = self.params.iter().filter(|param| param.required);
+        match (required.next(), required.next()) {
+            (None, _) => true,
+            (Some(param), None) => {
+                matches!(self.input, ActionInput::Prompted { .. })
+                    && matches!(
+                        param.ty,
+                        ParamType::Text
+                            | ParamType::Integer
+                            | ParamType::Number
+                            | ParamType::DateTime
+                            | ParamType::Secret
+                    )
+            }
+            (Some(_), Some(_)) => false,
+        }
+    }
+
     /// Declare that this action carries the resource's other actions (a
     /// generic typed edit, a group of edits): history records the actions
     /// it carried, never this one.
@@ -1799,10 +1876,10 @@ impl ActionSpec {
     /// What one invocation with these bound arguments is: the classifier's
     /// verdict, else the declared contract's.
     pub fn need_for_args(&self, args: &ActionArgs) -> ActionNeed {
-        let mut need = self
-            .need_of
-            .as_ref()
-            .map_or_else(|| self.contract.need(), |classify| classify(args));
+        let mut need = self.need_of.as_ref().map_or_else(
+            || self.contract.need(),
+            |classify| self.contract.scoped(classify(args)),
+        );
         need.privileged |= self.risk_for(args) == RiskLevel::Privileged;
         need
     }
@@ -1986,7 +2063,7 @@ impl ActionSpec {
     /// builds passes through `wrap`, which re-encodes it as the action of the
     /// resource that contains this one (a rich-text edit becomes the note's
     /// edit of its body, registered under `wrapped_type`). Parameters,
-    /// permission, risk and confirmation stay this action's. A builder's
+    /// kind, field, risk and confirmation stay this action's. A builder's
     /// refusal passes through unchanged. An effect or view operation is
     /// returned as it is: it writes nothing to wrap.
     #[must_use]
@@ -2273,79 +2350,9 @@ impl FlatAction<'_> {
     }
 }
 
-/// One action as a person reads it in a list: what it does, and under it
-/// what it acts on.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ListedRow {
-    pub title: String,
-    pub subtitle: Option<String>,
-}
-
-/// The row for an action labelled `label`, which acts on the item named
-/// `item` (none for the app or document itself): the label alone as the
-/// title, the outcome in the person's words, and the item's name under it
-/// when it acts on one. An action's description is written for agents and
-/// scripts (what it takes, what it answers) and is never the line under a
-/// person's row; it still finds the row in a search. Never the label joined
-/// to the resource's name, a kind of control ("— Focus"), an id or a
-/// separator glyph: every list of actions people see (an app's palette,
-/// desktop search) builds its rows here.
-#[must_use]
-pub fn listed_row(label: &str, item: Option<&str>) -> ListedRow {
-    let title = label.trim().to_owned();
-    let subtitle = item
-        .map(str::trim)
-        .filter(|item| !item.is_empty() && *item != title)
-        .map(str::to_owned);
-    ListedRow { title, subtitle }
-}
-
-/// What is wrong with how `row` reads, if anything: a raw id (a run of ten
-/// or more digits, a long hex string) anywhere, or in its label a separator
-/// glyph joining facts or a control's own verb ("— Focus"). Empty for a row
-/// that reads as an outcome in the person's words. The line under the label
-/// may quote the person's own content (an article's title), so only ids are
-/// looked for there. Every list of actions people see is held to this
-/// ([`listed_row`] builds rows that pass).
-#[must_use]
-pub fn listed_row_problems(row: &ListedRow) -> Vec<&'static str> {
-    let mut problems = Vec::new();
-    for (index, text) in std::iter::once(row.title.as_str())
-        .chain(row.subtitle.as_deref())
-        .enumerate()
-    {
-        if text
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|word| {
-                (word.len() >= 10 && word.chars().all(|c| c.is_ascii_digit()))
-                    || (word.len() >= 16
-                        && word.chars().all(|c| c.is_ascii_hexdigit())
-                        && word.chars().any(|c| c.is_ascii_digit()))
-            })
-        {
-            problems.push("a raw id");
-        }
-        if index > 0 {
-            continue;
-        }
-        if ['\u{b7}', '\u{2022}', '|']
-            .iter()
-            .any(|glyph| text.contains(*glyph))
-            || text.contains(" \u{2014} ")
-            || text.contains(" \u{2013} ")
-        {
-            problems.push("a separator glyph");
-        }
-        if ["Focus", "Activate", "Show context menu", "Set value"]
-            .iter()
-            .any(|verb| text.ends_with(&format!(" {verb}")) || text == *verb)
-        {
-            problems.push("a control's own verb");
-        }
-    }
-    problems.dedup();
-    problems
-}
+#[path = "resource/listed_row.rs"]
+mod listed_row;
+pub use listed_row::{ListedRow, listed_row, listed_row_problems};
 
 /// Depth-first flatten of a resource forest into every exported action,
 /// parents before children — what the palette lists.
@@ -2948,48 +2955,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod history_context_tests {
-    use super::*;
-
-    fn spec() -> ActionSpec {
-        ActionSpec::immediate_encoded(
-            "set-block-text",
-            "Set block text",
-            ExecutionLocus::default(),
-            EncodedAction {
-                type_id: "notes.notebook".into(),
-                payload: Vec::new(),
-            },
-        )
-    }
-
-    /// A nested resource's action is the enclosing record's field edit, so
-    /// its history names the record's kind, which the change's claim is
-    /// decided by, and keeps the body it was addressed through as a facet.
-    #[test]
-    fn a_nested_action_is_named_as_the_resource_whose_action_it_is() {
-        let id = "notes.notebook/pages/p1/body";
-        let own = spec().history_context(id, "tilo.rich-text", "Body");
-        let own_resource = own.resource.expect("a resource");
-        assert_eq!(own_resource.kind, "tilo.rich-text");
-        assert!(own.facets.is_empty());
-
-        let nested = spec()
-            .applied_as("notes.notebook", "Notebook")
-            .history_context(id, "tilo.rich-text", "Body");
-        let resource = nested.resource.expect("a resource");
-        assert_eq!(
-            resource.id, id,
-            "still the resource it was addressed through"
-        );
-        assert_eq!(resource.kind, "notes.notebook");
-        assert_eq!(resource.label, "Notebook");
-        assert_eq!(
-            nested.facets,
-            [crate::ActionFacet::new(NESTED_RESOURCE_FACET, "Body")]
-        );
-    }
-}
+#[path = "resource/history_tests.rs"]
+mod history_tests;
 
 #[cfg(test)]
 #[path = "resource/effective_invocation_tests.rs"]

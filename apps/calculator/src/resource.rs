@@ -195,6 +195,8 @@ const SCENARIOS: &[&str] = &[
     "narrow-graph3d",
     "long-formula",
     "error",
+    "convert",
+    "convert-currency",
     "remote-cursor",
 ];
 

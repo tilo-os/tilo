@@ -25,7 +25,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.open", "files.save", "files.paths", "app-files"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files"]
 
 [resources]
 kinds = ["hex-editor.document"]

@@ -21,7 +21,7 @@
 //!
 //! `Identity::attestations` is a *cache* of what the local device has
 //! observed, not authoritative — fresh attestations may arrive later.
-//! Callers must re-query the issuer (or the channel's role table) before
+//! Callers must re-query the issuer (or the channel's live grants) before
 //! making a security decision.
 
 use serde::{Deserialize, Serialize};

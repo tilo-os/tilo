@@ -5,7 +5,6 @@
 //! surface it publishes, `--bench` captures its fixtures, and `--data-dir`
 //! and `--shots` open it on a profile of their own.
 
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -17,7 +16,7 @@ use ui_core::application::{
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{PermissionContext, Role, UserId};
+use ui_core::permissions::{PermissionContext, Role, SharedPermissions, UserId};
 
 pub(super) const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordId, RecordStore};
@@ -153,7 +152,7 @@ pub struct HeadlessApp<A: ResourceApp> {
     room: Option<ui_core::state::DocumentFrontier>,
     /// Shared with the host: changing it is a role change the running app
     /// sees, as when the record's owner changes someone's access.
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
     marker: std::marker::PhantomData<A>,
 }
 
@@ -555,6 +554,26 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// The app replaying the recording `file` holds, as the session opens a
+    /// recording a report carries: in a private window of its own.
+    ///
+    /// # Errors
+    /// Returns any launch or construction failure, and the refusal of bytes
+    /// that are no recording.
+    pub fn replaying(file: OpenFile) -> Result<Self, LaunchError> {
+        let profile = Rc::new(profile_directory().map_err(operation)?);
+        Self::open(
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Role::Owner,
+            AUTHOR,
+            &[],
+            Some(file),
+            None,
+            None,
+            HostContext::provide_private,
+        )
+    }
+
     /// The app on the profile `--data-dir directory` opens, as its owner.
     /// Only one writer may hold a profile: this fails while the app (or
     /// another `HeadlessApp`) has it open.
@@ -636,7 +655,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// owner changing their access does. Takes effect on the next frame,
     /// which this runs.
     pub fn set_role(&mut self, role: Role) {
-        *self.permissions.borrow_mut() = PermissionContext::member(self.author.as_str(), role);
+        self.permissions
+            .set(PermissionContext::member(self.author.as_str(), role));
         self.role = role;
         self.harness().relayout();
     }
@@ -651,14 +671,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// does when the room's grants change. Takes effect on the next frame,
     /// which this runs.
     pub fn set_permissions(&mut self, permissions: PermissionContext) {
-        *self.permissions.borrow_mut() = permissions;
+        self.permissions.set(permissions);
         self.harness().relayout();
     }
 
     /// Take the participant out of the room while the app runs: no role and
     /// no grant left, as when the owner removes them.
     pub fn leave_room(&mut self) {
-        *self.permissions.borrow_mut() = PermissionContext::stranger(self.author.as_str());
+        self.permissions
+            .set(PermissionContext::stranger(self.author.as_str()));
         self.harness().relayout();
     }
 
@@ -758,6 +779,38 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .merge_peer_changes(other.checkout(), changes)?;
         other.harness().relayout();
         Ok(took_in)
+    }
+
+    /// Deliver what this window holds of `id`, a record the app keeps
+    /// beside its own (a part of a chain), to `other`, which holds it too,
+    /// as the room's record sync sends a device a record it opened: `other`
+    /// takes it in and draws its next frame. Whether `other` changed.
+    ///
+    /// # Errors
+    /// Returns why either window does not hold the record, or why `other`
+    /// refused it.
+    pub fn deliver_record_to(&mut self, other: &mut Self, id: &RecordId) -> Result<bool, String> {
+        let checkout = other
+            .records
+            .open_records()
+            .into_iter()
+            .find(|checkout| checkout.id == *id)
+            .ok_or_else(|| format!("the other window does not hold {id}"))?;
+        let mut frontier = ui_core::DocumentFrontier::default();
+        let (changes, _) = self
+            .records
+            .replication_delta(id, &mut frontier)
+            .map_err(|error| error.to_string())?;
+        let took_in = other.records.merge_peer_changes(&checkout, changes)?;
+        other.harness().relayout();
+        Ok(took_in)
+    }
+
+    /// The room's hosts sent everything they hold of `id`, a record this
+    /// window asked for, or none is connected to ask
+    /// ([`ui_core::record::RecordStore::note_room_answered`]).
+    pub fn room_answered(&mut self, id: RecordId) {
+        self.records.note_room_answered(id);
     }
 
     /// The room's default records of the app's windows kept on this
@@ -1816,7 +1869,7 @@ struct Opened {
     checkout: RecordCheckout,
     instance: u64,
     profile: Profile,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
 }
 
 /// The application host `profile` opens in, and the instance its window
@@ -1824,7 +1877,7 @@ struct Opened {
 fn profile_host(
     profile: &Profile,
     author: UserId,
-    permissions: &Rc<RefCell<PermissionContext>>,
+    permissions: &SharedPermissions,
 ) -> Result<(ApplicationHost, u64), LaunchError> {
     Ok(match profile {
         Profile::Temporary(directory, room, device)
@@ -1834,7 +1887,7 @@ fn profile_host(
                 device.clone(),
                 room,
                 author,
-                Rc::clone(permissions),
+                permissions.clone(),
                 tilo_actions::ActionContext::default(),
                 directory.clone(),
             )?,
@@ -1844,7 +1897,7 @@ fn profile_host(
             },
         ),
         Profile::DataDir(directory) => (
-            data_dir_host(directory, &author, Rc::clone(permissions))?,
+            data_dir_host(directory, &author, permissions.clone())?,
             DATA_DIR_INSTANCE,
         ),
     })

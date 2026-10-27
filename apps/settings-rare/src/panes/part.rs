@@ -1,5 +1,5 @@
 //! The panes people rarely open' part of Settings: the areas, panes, effect
-//! families, live areas and settings sections they bring ([`crate::area::Part`]).
+//! families, live areas and settings rows they bring ([`crate::area::Part`]).
 
 use crate::categories::Category;
 use crate::effects::AreaVocabulary as _;
@@ -112,6 +112,8 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
             background: Some(crate::effects::BackgroundRead {
                 start: |app| users::area(app).is_some_and(users::UsersArea::start_read),
                 finished: |app| users::area(app).is_none_or(users::UsersArea::read_finished),
+                wait: |app| users::area(app).and_then(users::UsersArea::wait_read),
+                answers: <users::UsersEffect as ui::tilo_resource::Effect>::declarations,
             }),
         },
     ),
@@ -150,6 +152,11 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
                 finished: |app| {
                     agent_models::area(app).is_none_or(agent_models::AgentModelsArea::read_finished)
                 },
+                wait: |app| {
+                    agent_models::area(app).and_then(agent_models::AgentModelsArea::wait_read)
+                },
+                answers:
+                    <agent_models::AgentModelsEffect as ui::tilo_resource::Effect>::declarations,
             }),
         },
     ),
@@ -171,6 +178,8 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
                 finished: |app| {
                     device_mesh::area(app).is_none_or(device_mesh::DeviceMeshArea::read_finished)
                 },
+                wait: |app| device_mesh::area(app).and_then(device_mesh::DeviceMeshArea::wait_read),
+                answers: <device_mesh::DeviceMeshEffect as ui::tilo_resource::Effect>::declarations,
             }),
         },
     ),
@@ -190,6 +199,8 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
                 finished: |app| {
                     accounts::area(app).is_none_or(accounts::AccountsArea::read_finished)
                 },
+                wait: |app| accounts::area(app).and_then(accounts::AccountsArea::wait_read),
+                answers: <accounts::AccountsEffect as ui::tilo_resource::Effect>::declarations,
             }),
         },
     ),
@@ -223,15 +234,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
             background: None,
         },
     ),
-];
-
-/// The sections of the person's settings the panes own.
-pub(crate) const SECTIONS: &[(u16, crate::area::SectionEntry)] = &[
-    (
-        20,
-        crate::area::section_entry!(agent_models::AgentProviders),
-    ),
-    (30, crate::area::section_entry!(time_date::ClockPrefs)),
 ];
 
 /// Every pane, by the categories it shows.
@@ -325,6 +327,5 @@ pub const PART: crate::area::Part = crate::area::Part {
     panes: PANES,
     families: FAMILIES,
     live_areas: LIVE_AREAS,
-    sections: SECTIONS,
     settings: SETTINGS,
 };

@@ -26,7 +26,7 @@ pub(super) struct WindowShown {
 /// Where everything is and what the window shows.
 #[derive(Clone, Debug, PartialEq)]
 struct Layout {
-    rects: [Rect; 7],
+    rects: [Rect; 6],
     panes: (bool, bool, bool, bool),
     colors: [Color; 3],
 }
@@ -39,7 +39,6 @@ impl TypstApp {
             layout: Layout {
                 rects: [
                     self.rect,
-                    self.bar_rect,
                     self.editor_rect,
                     self.preview_rect,
                     self.diag_rect,

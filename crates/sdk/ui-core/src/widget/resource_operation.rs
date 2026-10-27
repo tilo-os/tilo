@@ -450,7 +450,7 @@ pub fn poll_resource_operation(
     poll_by_default(widget, invocation, cancellation_requested, doc, path)
 }
 
-fn local_history_handlers(widget: &(impl Widget + ?Sized)) -> &'static [&'static str] {
+pub(crate) fn local_history_handlers(widget: &(impl Widget + ?Sized)) -> &'static [&'static str] {
     if crate::undo::has_deferred_local_history(widget) {
         &[crate::undo::EDIT_OPERATION]
     } else {

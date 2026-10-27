@@ -22,7 +22,7 @@ pub const CREDENTIAL: &str = "ssh.authorized_keys.root";
 
 /// The dev image's password login (`os/account.env`), the way in before root
 /// has a key.
-pub const DEV_ACCOUNT: &str = "quickuser";
+pub const DEV_ACCOUNT: &str = "tester";
 
 /// Where VM `name`'s private key lives; the public key is beside it as `.pub`.
 pub fn key_path(registry_path: &Path, name: &str) -> PathBuf {
@@ -176,7 +176,7 @@ mod tests {
             };
             let command = install_command(&endpoint, PUBLIC);
             assert!(
-                command.starts_with("ssh -t -o StrictHostKeyChecking=accept-new -p 22 quickuser@192.168.64.5 'sudo install -d -m 0700 /root/.ssh && echo "),
+                command.starts_with("ssh -t -o StrictHostKeyChecking=accept-new -p 22 tester@192.168.64.5 'sudo install -d -m 0700 /root/.ssh && echo "),
                 "{command}"
             );
             assert!(command.contains(&encoded(PUBLIC)));

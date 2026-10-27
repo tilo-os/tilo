@@ -58,6 +58,10 @@ pub(super) struct Running {
     /// content (a read, a view, an edit), opening a record or planning
     /// again keeps it.
     pub(super) last: Option<ActionOutput>,
+    /// Whether [`Self::last`] only hands on content its step was given,
+    /// as an import answers with the content it imported: nothing made
+    /// for the next step to take ([`hands_on`]).
+    pub(super) last_handed_on: bool,
     /// Content addresses the task's steps produced, oldest first.
     pub(super) produced: Vec<String>,
     /// The app whose step made each of [`Self::produced`], in step.
@@ -109,6 +113,9 @@ pub(super) struct Running {
     /// The pictures its steps and its plans' reads rendered (a canvas
     /// look), by content address, oldest first, at most [`MOST_LOOKED`].
     pub(super) looked: Vec<String>,
+    /// The room's pictures its steps read as content since its last plan
+    /// ([`crate::vision::read_picture`]), oldest first: shown to the next.
+    pub(super) read_pictures: Vec<String>,
     /// Apps an import of the task was refused in for what the record held:
     /// its plans are offered a new document of each
     /// ([`PlanContext::new_documents`]).
@@ -603,6 +610,7 @@ impl Running {
             steps: steps.into(),
             performed: 0,
             last: None,
+            last_handed_on: false,
             produced: Vec::new(),
             produced_by: Vec::new(),
             observed: VecDeque::new(),
@@ -621,6 +629,7 @@ impl Running {
             ran: Vec::new(),
             invoked: Vec::new(),
             looked: Vec::new(),
+            read_pictures: Vec::new(),
             new_documents: Vec::new(),
             checklist: Checklist::default(),
         };
@@ -642,6 +651,15 @@ impl Running {
         };
         let rendered = self.looked.iter().chain(&self.produced).cloned().collect();
         (newest, rendered)
+    }
+
+    /// Whether the picture at `address` was rendered or made for the task
+    /// (a look, an export), rather than being one of the room's own.
+    pub(super) fn rendered(&self, address: &str) -> bool {
+        self.looked
+            .iter()
+            .chain(&self.produced)
+            .any(|rendered| rendered == address)
     }
 
     /// Keep the addresses of `pictures`, rendered for the task, newest last.
@@ -705,10 +723,42 @@ impl Running {
             self.observe(step.app.clone(), observed);
         }
         self.looked_at(rendered_picture(&output));
+        // A picture read as content: one the task rendered is looked at
+        // again; one of the room's own is shown to the next plan alone.
+        if let Some(picture) = output.value.as_ref().and_then(crate::vision::read_picture) {
+            if self.rendered(&picture) {
+                self.looked_at([picture]);
+            } else if !self.read_pictures.contains(&picture) {
+                self.read_pictures.push(picture);
+            }
+        }
         if !produced(&output).is_empty() {
+            self.last_handed_on = hands_on(step, &output);
             self.last = Some(output);
         }
     }
+}
+
+/// Whether every piece of content `output` names is content `step` was
+/// given by address: an import answers with what it imported, which the
+/// room kept already.
+pub(super) fn hands_on(step: &Step, output: &ActionOutput) -> bool {
+    let StepAction::Invoke { arguments, .. } = &step.action else {
+        return false;
+    };
+    let given = |hash: &str| {
+        arguments.values().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|text| text == hash || tilo_actions::content_hash(text) == Some(hash))
+        })
+    };
+    let made = produced(output);
+    !made.is_empty()
+        && made
+            .iter()
+            .filter_map(|address| tilo_actions::content_hash(address))
+            .all(given)
 }
 
 /// Why `address` names nothing, with what the record offers instead: the

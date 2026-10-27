@@ -239,13 +239,18 @@ impl App {
             // A change the workspace refused stops sync just as a lost
             // connection does, but reconnecting will not resume it, and the
             // person is not offline: say which one happened.
-            (self.native_document_chrome && manager.sync_lost()).then_some(
-                if manager.document_change_refused() {
-                    "history-sync-refused"
-                } else {
-                    "history-sync-offline"
-                },
-            )
+            if self.native_document_chrome && manager.joining_late_route() {
+                // Opened on the local replica while the route is joined.
+                Some("history-sync-reconnecting")
+            } else {
+                (self.native_document_chrome && manager.sync_lost()).then_some(
+                    if manager.document_change_refused() {
+                        "history-sync-refused"
+                    } else {
+                        "history-sync-offline"
+                    },
+                )
+            }
         } else if !self.document_routes.primary.is_empty()
             || self
                 .document_routes
@@ -290,6 +295,11 @@ impl App {
 
     pub(super) fn refresh_document_routes(&mut self) {
         self.restore_failed_document_publications();
+        self.reconcile_document_routes();
+    }
+
+    /// Follow the document owners the tree holds now with the routes.
+    pub(super) fn reconcile_document_routes(&mut self) {
         #[cfg(test)]
         DOCUMENT_ROUTE_REFRESHES.set(DOCUMENT_ROUTE_REFRESHES.get() + 1);
         let before = self
@@ -318,7 +328,9 @@ impl App {
                     .map(|owner| owner.route.clone()),
             )
             .collect();
-        self.collaboration.manager.set_document_owner_routes(routes);
+        self.collaboration
+            .manager
+            .set_document_owner_routes(routes, self.autosave_generation);
         // The exact live owner map exists before any join can deliver callbacks.
         for route in joins {
             self.collaboration.manager.join_route(route);
@@ -527,6 +539,57 @@ impl App {
             .iter()
             .filter_map(|record| crate::record::RecordId::parse(record))
             .collect();
+        for store in &self.live_record_stores() {
+            store.announce(records.iter().cloned());
+        }
+        self.needs_sync = true;
+    }
+
+    /// The room's hosts have nothing of the on-demand record on `route`, or
+    /// none is connected: every store a live owner reads from is told
+    /// ([`crate::record::RecordStore::note_room_answered`]).
+    pub(super) fn record_unavailable(&mut self, route: &crate::collaboration::RouteSpec) {
+        let Some(id) = route
+            .record
+            .as_deref()
+            .and_then(crate::record::RecordId::parse)
+        else {
+            return;
+        };
+        for store in &self.live_record_stores() {
+            store.note_room_answered(id.clone());
+        }
+        self.needs_sync = true;
+    }
+
+    /// The committed history of a record no window holds arrived (an
+    /// on-demand record a store asked for and could not open yet): every
+    /// store a live owner reads from looks again
+    /// ([`crate::record::RecordStore::note_kept`]), and what asked for it
+    /// opens it.
+    pub(super) fn unheld_record_arrived(&mut self, route: &crate::collaboration::RouteSpec) {
+        let held = self
+            .document_routes
+            .owners
+            .iter()
+            .any(|entry| entry.route == *route);
+        if held
+            || !route
+                .record
+                .as_deref()
+                .and_then(crate::record::RecordId::parse)
+                .is_some_and(|id| id.arrives_on_demand())
+        {
+            return;
+        }
+        for store in &self.live_record_stores() {
+            store.note_kept();
+        }
+        self.needs_sync = true;
+    }
+
+    /// Every store a live document owner reads from, once each.
+    fn live_record_stores(&self) -> Vec<crate::record::RecordStore> {
         let mut stores: Vec<crate::record::RecordStore> = Vec::new();
         for owner in live_document_owners(self.root_widget.as_ref()) {
             let (store, _) = owner.store_checkout();
@@ -534,10 +597,7 @@ impl App {
                 stores.push(store.clone());
             }
         }
-        for store in &stores {
-            store.announce(records.iter().cloned());
-        }
-        self.needs_sync = true;
+        stores
     }
 
     pub(super) fn pump_document_routes(&mut self) {

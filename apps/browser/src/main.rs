@@ -9,7 +9,9 @@ extern crate runtime_dylib;
 // not the tapp.
 #[cfg(feature = "runtime-engine")]
 extern crate tilo_browser_import_engine;
-// Website-session custody comes from the accounts engine.
+// Website-session custody comes from the accounts engine, which the import
+// engine's service sessions link: named here so the crates it provides are
+// taken from it, not linked into the tapp.
 #[cfg(feature = "runtime-engine")]
 extern crate tilo_accounts_engine;
 

@@ -215,9 +215,33 @@ class TTomlTests(unittest.TestCase):
         # checks pass at, not the peak they use: as t's default for cargo jobs, 4 cores.
         config = t_matrix.load(ROOT)
         families = {family["name"]: family for family in config["cargo"]}
-        for name in ("test", "test-x86_64", "clippy"):
+        for name in ("test", "test-x86_64", "test-aarch64", "clippy", "clippy-x86_64", "clippy-aarch64"):
             with self.subTest(family=name):
                 self.assertEqual(families[name]["requirement"]["cores"], 4)
+
+    def test_a_package_whose_code_differs_between_architectures_is_tested_and_linted_on_each(self):
+        config = t_matrix.load(ROOT)
+        families = {family["name"]: family for family in config["cargo"]}
+        packages = {p["name"]: p for p in t_toml.workspace_graph.cargo_metadata(ROOT)["packages"]}
+        per_arch = t_toml.package_sets.per_arch(packages)
+        tested = per_arch - set(t_toml.untested(packages)) - set(t_toml.micro_vm_tested())
+        self.assertIn("shell", tested)
+        for arch, node in (("x86_64", "arch=x86_64"), ("aarch64", "arch=aarch64")):
+            with self.subTest(arch=arch):
+                self.assertEqual(families[f"test-{arch}"]["requires"], [node])
+                self.assertEqual(set(families[f"test-{arch}"]["packages"]), tested)
+                self.assertEqual(families[f"clippy-{arch}"]["requires"], [node])
+                self.assertEqual(set(families[f"clippy-{arch}"]["packages"]), per_arch)
+                # Their tests start sandboxes as the `test` family's do.
+                self.assertEqual(set(families[f"test-{arch}"]["nested_sandboxes"]),
+                                 set(families["test"]["nested_sandboxes"]) & tested)
+        # No family whose result stands for both architectures takes one of them.
+        for name, family in families.items():
+            if family.get("requires") != ["arch=any"]:
+                continue
+            with self.subTest(family=name):
+                members = set(family.get("packages") or packages) - set(family.get("exclude", []))
+                self.assertEqual(sorted(members & per_arch), [])
 
     def test_suite_inputs_cover_directories(self):
         self.assertEqual(t_toml.glob("os/"), "os/**")
@@ -354,7 +378,8 @@ class PlanTests(unittest.TestCase):
         # Nor would it run it on main's newest head or suggest it: its key holds only the shell
         # files its invariants name.
         self.assertFalse(any(matches(path, glob) for path in paths for glob in self.checks["security"]["inputs"]))
-        self.assertIn("clippy/shell", self.planned(paths))
+        self.assertIn("clippy-x86_64/shell", self.planned(paths))
+        self.assertIn("clippy-aarch64/shell", self.planned(paths))
 
     # t keys a package's family checks by every file of the package's directory, and t.toml can't
     # yet say that clippy doesn't read a package's .ftl files (they reach it only as include_str!
@@ -376,7 +401,7 @@ class PlanTests(unittest.TestCase):
             with self.subTest(paths=paths):
                 planned = self.planned(paths)
                 run = pre_push.select({"base": "b" * 40, "checks": sorted(planned)}, paths)["run"]
-                self.assertEqual([name for name in run if name.startswith(("test/", "test-x86_64/", "goldens/",
+                self.assertEqual([name for name in run if name.startswith(("test/", "test-x86_64/", "test-aarch64/", "goldens/",
                                                                             "suite-", "policy/tests/"))], [])
                 self.assertEqual([name for name in run if self.vm(name)], [])
 

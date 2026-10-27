@@ -123,9 +123,11 @@ impl ShellNetwork {
         background: bool,
     ) -> Result<Option<SiteJoin>, SiteError> {
         if tree.read().holds_room(room) {
+            self.arrive_elsewhere(site, room, background);
             return Ok(Some(SiteJoin::Held { room }));
         }
         if let Some((local, enrollment)) = self.enrolling_site_room(room) {
+            self.arrive_elsewhere(site, room, background);
             return Ok(Some(SiteJoin::Enrolling {
                 room,
                 local,
@@ -160,7 +162,9 @@ impl ShellNetwork {
     }
 
     /// Join the workspace a site's entry named; its enrollment installs in
-    /// the `background`, else by its caller.
+    /// the `background`, else by its caller. The person arrives in the
+    /// workspace once it installs, as someone following a site link does: a
+    /// join is entered on the site, not from a list that would show it.
     pub(super) fn join_site_workspace(
         &self,
         site: &SiteWorkspace,
@@ -231,7 +235,7 @@ impl ShellNetwork {
             .join_native_room(&site.name, room)
             .ok_or_else(|| SiteError::Refused("the door named a room that is not joined".into()))?;
         tracing::info!(%room, name = %site.name, "joining a site's workspace");
-        self.enroll_site(
+        let joined = self.enroll_site(
             site,
             SiteEnrollment {
                 room,
@@ -240,7 +244,15 @@ impl ShellNetwork {
                 via,
             },
             background,
-        )
+        )?;
+        if let SiteJoin::Enrolling { enrollment, .. } = joined
+            && !background
+        {
+            // Its caller installs the enrollment, so the workspace is here
+            // now: installing it arrives in it, as from a site link.
+            let _ = self.poll_enrollment(enrollment);
+        }
+        Ok(joined)
     }
 
     /// Where the person arrives in `room` once its join installs, the same
@@ -383,6 +395,22 @@ impl ShellNetwork {
     /// joining, or failed and why.
     pub(crate) fn site_joins(&self) -> Vec<SiteJoinState> {
         self.hosted_sites.joins()
+    }
+
+    /// Arrive in `room`, `site`'s workspace, when its caller installs the
+    /// enrollment itself: a join installing in the background arrives
+    /// through [`Self::take_arrivals`] like any other.
+    fn arrive_elsewhere(&self, site: &SiteWorkspace, room: RoomId, background: bool) {
+        if !background {
+            self.expect_arrival(
+                room,
+                &Arriving {
+                    site: site.app.as_deref(),
+                    ..Arriving::default()
+                },
+            );
+            self.hosted_sites.arrive(room);
+        }
     }
 
     /// The workspaces whose joins installed since this was last asked:

@@ -57,6 +57,7 @@ mod archives;
 use archives::archive_member_copy;
 use archives::{ArchiveMembers, archive_member_cached};
 mod clash;
+mod context_menu;
 mod notice;
 mod preview;
 use preview::Preview;
@@ -726,6 +727,9 @@ pub struct FileExplorerWidget {
     /// the renaming row's name (list) or label (grid), published by `FileView`
     /// each paint. `None` when not renaming or the row is scrolled off-screen.
     rename_rect: Rc<Cell<Option<vello::kurbo::Rect>>>,
+    /// What the rename editor painted, this frame and last: the window's
+    /// own paint over the shell, which damages where it changed.
+    rename_paint: ui::own_paint::OwnPaint,
     /// Set on `begin_rename` so the first `sync` after the seed selects the
     /// whole name (typing then replaces it, Finder-style).
     rename_select_pending: bool,
@@ -951,6 +955,9 @@ pub struct FileExplorerWidget {
     /// column widths and scroll anchor (the list scrolls itself; only the grid
     /// scrolls under `scroll_offset`).
     list_slot: crate::views::file_list::ListSlot,
+    /// The column widths when the press that may turn into a drag of a
+    /// column's edge began, so the release knows whether it resized anything.
+    widths_at_press: Option<std::collections::BTreeMap<String, u32>>,
     /// The shared, off-thread thumbnail service (content-addressed cache +
     /// worker pool). Cloned into each rebuilt file view so a folder of images /
     /// PDFs / ebooks shows real previews (and workspace files show the host's
@@ -1395,6 +1402,86 @@ impl FileExplorerWidget {
         }
     }
 
+    /// What the person selected, named: a single entry by its name, more by
+    /// how many there are. `None` while nothing is selected.
+    pub(crate) fn selection_named(&self) -> Option<(usize, String)> {
+        let selected = self.selected_paths();
+        let first = selected.first()?;
+        let name = first.file_name().map_or_else(
+            || first.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        Some((selected.len(), name))
+    }
+
+    /// `key` naming the selection (`files-trash-selected`): "Move
+    /// “report.pdf” to Trash", or "Move 3 items to Trash".
+    pub(crate) fn selection_label(key: &str, (count, name): &(usize, String)) -> String {
+        crate::i18n::t_args(
+            key,
+            &[
+                crate::i18n::arg("count", *count),
+                crate::i18n::arg("name", name.as_str()),
+            ],
+        )
+    }
+
+    /// Filesystem changes bound to what the person selected, each naming it:
+    /// rename the one selected entry, move the selection to Trash. They act
+    /// on the selection (their contract says so, and an app's search lists
+    /// them first) and are offered only while there is one.
+    pub(crate) fn selection_declarations(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::FileExplorer>> {
+        use crate::resource::{FileExplorer, file_explorer};
+        const SELECTION: &str = ui::tilo_actions::ContextRequirement::Selection.tag();
+        let Some(device) = self.device.clone() else {
+            return Vec::new();
+        };
+        if self.is_trash_view() {
+            return Vec::new();
+        }
+        let Some(named) = self.selection_named() else {
+            return Vec::new();
+        };
+        let paths: Vec<String> = self
+            .selected_paths()
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        let mut declarations = Vec::new();
+        if let [path] = paths.as_slice() {
+            declarations.extend(
+                FileExplorer::RENAME
+                    .bind(file_explorer::Rename::paths().device, device.clone())
+                    .and(file_explorer::Rename::paths().folder, String::new())
+                    .and(file_explorer::Rename::paths().entry, path.clone())
+                    .declaration(
+                        "rename-selected",
+                        Self::selection_label("files-rename-selected", &named),
+                    ),
+            );
+        }
+        declarations.extend(
+            FileExplorer::TRASH
+                .bind(file_explorer::Trash::paths().device, device)
+                .and(file_explorer::Trash::paths().folder, String::new())
+                .and(file_explorer::Trash::paths().entries, paths)
+                .declaration(
+                    "trash-selected",
+                    Self::selection_label("files-trash-selected", &named),
+                )
+                .map(|mut trash| {
+                    trash.destructive = true;
+                    trash
+                }),
+        );
+        declarations
+            .into_iter()
+            .map(|decl| decl.tagged(SELECTION))
+            .collect()
+    }
+
     /// Filesystem changes bound to the entry row `row`: rename, move to a
     /// folder, move to Trash — the resource's queued, undoable verbs with
     /// this device and the entry bound, for an agent acting on the row.
@@ -1482,7 +1569,7 @@ impl FileExplorerWidget {
         let new_folder = FileExplorer::NEW_FOLDER
             .bind(file_explorer::NewFolder::paths().device, device.clone())
             .and(file_explorer::NewFolder::paths().parent, folder.clone())
-            .declaration("new-folder-here", "New folder here");
+            .declaration("new-folder-here", t("files-menu-new-folder"));
         let rename = FileExplorer::RENAME
             .bind(file_explorer::Rename::paths().device, device.clone())
             .and(file_explorer::Rename::paths().folder, folder.clone())
@@ -1514,8 +1601,15 @@ impl FileExplorerWidget {
             .bind(file_explorer::Extract::paths().device, device)
             .and(file_explorer::Extract::paths().to, Some(folder))
             .declaration("extract-here", "Extract an archive into this folder");
-        [
-            new_folder,
+        // Each of these names the entries it changes by name or path, which
+        // an agent or a script passes and a person picks in the listing: a
+        // person renames, moves or trashes what they selected, or a row's
+        // entry, through the actions bound to it. Only a new folder asks
+        // nothing but its name.
+        let for_agents = |decl: ui::tilo_resource::ActionDecl<FileExplorer>| {
+            decl.for_audience(ui::tilo_actions::Audience::Agents)
+        };
+        let by_entry = [
             rename,
             trash,
             moving,
@@ -1526,8 +1620,8 @@ impl FileExplorerWidget {
         ]
         .into_iter()
         .flatten()
-        .map(shown)
-        .collect()
+        .map(for_agents);
+        new_folder.into_iter().chain(by_entry).map(shown).collect()
     }
 
     /// Show the bookmarked `places`, resolved on this device.
@@ -1570,7 +1664,7 @@ impl FileExplorerWidget {
 
     /// Keep the widths the person dragged as their preferences, so a column
     /// stays where they put it after a relaunch.
-    fn store_widths(&mut self) {
+    fn store_widths(&self) {
         let widths = self.list_slot.widths();
         let stored = self.preferences.as_ref().map(ui::framework::Setting::get);
         if stored.as_ref().is_some_and(|prefs| prefs.widths == widths) {
@@ -1934,6 +2028,7 @@ impl FileExplorerWidget {
                 .with_id("files.rename_input")
                 .with_placeholder(t("files-new-name-placeholder")),
             rename_rect: Rc::new(Cell::new(None)),
+            rename_paint: ui::own_paint::OwnPaint::default(),
             rename_select_pending: false,
             rect: vello::kurbo::Rect::ZERO,
             // Placeholder panes; the real places list + file view are swapped
@@ -2035,6 +2130,7 @@ impl FileExplorerWidget {
             marquee: None,
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             list_slot: crate::views::file_list::ListSlot::default(),
+            widths_at_press: None,
             thumbs,
             recent: crate::recent::RecentFiles::default(),
             recent_setting: None,
@@ -5780,15 +5876,19 @@ impl FileExplorerWidget {
     }
 
     /// Open what a launch names: a received share link (`tilo-file://…`) is
-    /// admitted through the recipient service, anything else is a folder,
-    /// resolved against the launcher's working directory. A folder that is
-    /// missing or unreadable shows the ordinary navigation error.
+    /// admitted through the recipient service; a path, resolved against the
+    /// launcher's working directory, is a folder to show, or a file to show
+    /// selected in its folder ("Show in Files"). A folder that is missing or
+    /// unreadable shows the ordinary navigation error.
     pub fn open_launch_argument(&mut self, argument: &str) {
         if argument.starts_with(crate::received_shares::LINK_SCHEME) {
             self.admit_received_share(argument.to_owned());
             return;
         }
         match std::path::absolute(argument) {
+            Ok(path) if path.is_file() => {
+                self.apply_reveal_in_folder(&path);
+            }
             Ok(path) => self.navigate(path),
             Err(error) => self.set_external_status(error.to_string()),
         }
@@ -6014,7 +6114,17 @@ impl FileExplorerWidget {
                 ]);
             }
         }
-        if self.selected_paths().is_empty() {
+        if let Some(named) = self.selection_named() {
+            // What they act on, named: "Copy “report.pdf”".
+            statuses.push(ui::framework::EffectStatus::labelled(
+                FilesEffect::COPY_SELECTION,
+                Self::selection_label("files-copy-selected", &named),
+            ));
+            statuses.push(ui::framework::EffectStatus::labelled(
+                FilesEffect::CUT_SELECTION,
+                Self::selection_label("files-cut-selected", &named),
+            ));
+        } else {
             for id in [FilesEffect::COPY_SELECTION, FilesEffect::CUT_SELECTION] {
                 statuses.push(ui::framework::EffectStatus::unavailable(
                     id,
@@ -6023,6 +6133,46 @@ impl FileExplorerWidget {
                 ));
             }
         }
+        if self.selected_paths().is_empty() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::CLEAR_SELECTION,
+                "selection_empty",
+                t("files-selection-empty"),
+            ));
+        }
+        // Pasting from this window's own clipboard needs something on it; a
+        // hosted clipboard is the workspace's, which this window cannot see.
+        let hosted_paste =
+            matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard();
+        if !hosted_paste && self.clipboard.is_empty() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::PASTE,
+                "clipboard_empty",
+                "The clipboard is empty",
+            ));
+        }
+        if self.history.is_empty() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::BACK,
+                "no_previous_folder",
+                "No folder before this one",
+            ));
+        }
+        if self.forward.is_empty() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::FORWARD,
+                "no_next_folder",
+                "No folder after this one",
+            ));
+        }
+        if self.current_path.parent().is_none() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::UP,
+                "at_root",
+                "This folder has no parent",
+            ));
+        }
+        statuses.extend(self.cloud_statuses());
         if !self.is_trash_view() {
             statuses.push(ui::framework::EffectStatus::unavailable(
                 FilesEffect::EMPTY_TRASH,
@@ -7201,14 +7351,20 @@ impl FileExplorerWidget {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if self.renaming.is_none() {
+        let Some(rect) = self.rename_rect.get().filter(|_| self.renaming.is_some()) else {
+            self.rename_paint.skip();
             return;
-        }
-        if let Some(rect) = self.rename_rect.get() {
-            self.rename_input.apply_layout_external(rect);
-            self.rename_input
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        };
+        self.rename_input.apply_layout_external(rect);
+        let input = &mut self.rename_input;
+        self.rename_paint.record(scene, transform, |scene| {
+            input.draw(scene, transform, text_renderer, theme, presence);
+            // The field, its focus ring and the correction chip it floats
+            // past itself.
+            let reach = f64::from(theme.tokens.spacing.s2);
+            let ring = input.get_rect().inflate(reach, reach);
+            input.overhang().map_or(ring, |chip| ring.union(chip))
+        });
     }
 
     /// Mark the folder (or Up affordance) a live drag is hovering, so the drop
@@ -7511,537 +7667,6 @@ impl FileExplorerWidget {
     /// The template files currently available for the "New File ▸" submenu.
     pub fn available_templates(&self) -> Vec<PathBuf> {
         self.templates.templates()
-    }
-
-    /// The menu item specs for the current selection / clipboard / state, given
-    /// the available `templates`. Returns `(label, command)` pairs; a `None`
-    /// command with an empty label is a separator. Pure (templates injected) so
-    /// the menu contents — including the "New File ▸" gating — are unit-testable.
-    // This declarative menu state machine intentionally keeps visibility and
-    // command gating adjacent for auditability and accessibility parity.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one declarative menu specification keeps visibility, enablement, and command identity auditable"
-    )]
-    fn context_menu_spec(&self, templates: &[PathBuf]) -> Vec<(String, Option<FileCommand>)> {
-        let has_sel = !self.selection.is_empty();
-        let can_paste = self.can_paste_clipboard();
-        let has_templates = !templates.is_empty();
-        let in_trash = self.is_trash_view();
-        let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
-
-        // Recent gathers files from many folders: it is for finding and
-        // reopening, not for editing in place.
-        if self.is_recent_view() {
-            return self.recent_menu_spec();
-        }
-        if let Some(spec) = self.applications_menu_spec() {
-            return spec;
-        }
-
-        // An archive is a read-only folder view. Synthetic member paths must
-        // never leak into filesystem mutation commands such as rename, trash,
-        // drag, paste, sharing, or terminal launch.
-        if crate::archive::location(&self.current_path).is_some() {
-            if has_sel {
-                spec.push((
-                    t("files-menu-open"),
-                    self.selection.primary().map(FileCommand::Activate),
-                ));
-                spec.push((String::new(), None));
-            }
-            spec.push((
-                t("files-archive-extract-here"),
-                Some(FileCommand::ExtractCurrentArchive),
-            ));
-            spec.push((t("files-archive-extract-to"), Some(FileCommand::ExtractTo)));
-            return tidy_menu(spec);
-        }
-
-        // The Trash is a restore/purge surface, not an editing one: offer Open
-        // plus Restore / permanent-delete / Empty, and nothing that would edit
-        // in place.
-        if in_trash {
-            if has_sel {
-                spec.push((
-                    t("files-menu-open"),
-                    self.selection.primary().map(FileCommand::Activate),
-                ));
-                spec.push((String::new(), None));
-                spec.push((t("files-menu-restore"), Some(FileCommand::RestoreFromTrash)));
-                if !self
-                    .selected_paths()
-                    .iter()
-                    .any(|path| self.is_native_trash_entry(path))
-                {
-                    spec.push((
-                        t("files-menu-delete-permanently"),
-                        Some(FileCommand::Delete),
-                    ));
-                }
-            }
-            spec.push((String::new(), None));
-            if !self.has_native_trash_entries() {
-                spec.push((t("files-menu-empty-trash"), Some(FileCommand::EmptyTrash)));
-            }
-            return tidy_menu(spec);
-        }
-
-        // A file's menu is about the file: open it, change it, organise it,
-        // collaborate on it. What belongs to the folder (new items, sorting,
-        // hidden files, a terminal) is the menu of the folder's empty space.
-        if has_sel {
-            let single = self.selection.selected().len() == 1;
-            spec.push((
-                t("files-menu-open"),
-                self.selection.primary().map(FileCommand::Activate),
-            ));
-            if self.open_with_available() {
-                spec.push((t("files-menu-open-with"), Some(FileCommand::OpenWithMenu)));
-            }
-            if single {
-                if !self
-                    .shortcut_menu
-                    .offered_on(&self.selected_entry_identities())
-                    .is_empty()
-                {
-                    spec.push((
-                        t("files-menu-run-shortcut"),
-                        Some(FileCommand::OpenShortcutsMenu),
-                    ));
-                }
-                // Only offered while one of the person's devices is there
-                // to receive.
-                if self
-                    .nearby_send
-                    .targets()
-                    .iter()
-                    .any(|target| target.online)
-                {
-                    spec.push((
-                        t("files-menu-send-nearby"),
-                        Some(FileCommand::OpenNearbySend),
-                    ));
-                }
-            }
-            spec.push((String::new(), None));
-            spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
-            spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
-            if can_paste {
-                spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
-            }
-            spec.push((t("files-menu-rename"), Some(FileCommand::Rename)));
-            spec.push((t("files-menu-move-trash"), Some(FileCommand::Delete)));
-            spec.push((String::new(), None));
-            let displayed = self.displayed_entries();
-            if self.selection.selected().iter().any(|index| {
-                displayed
-                    .get(*index)
-                    .is_some_and(|entry| crate::archive::is_supported(&entry.path))
-            }) {
-                spec.push((
-                    t("files-archive-extract-here"),
-                    Some(FileCommand::ExtractHere),
-                ));
-                spec.push((t("files-archive-extract-to"), Some(FileCommand::ExtractTo)));
-            }
-            spec.push((
-                t("files-archive-compress-zip"),
-                Some(FileCommand::CompressSelection(crate::archive::Packing::Zip)),
-            ));
-            spec.push((
-                t("files-archive-compress-tar-zst"),
-                Some(FileCommand::CompressSelection(
-                    crate::archive::Packing::TarZst,
-                )),
-            ));
-            // Favourites: add the single selected folder.
-            if let Some(dir) = self.single_selected_dir() {
-                spec.push((
-                    t("files-menu-add-favourite"),
-                    Some(FileCommand::AddFavorite(dir)),
-                ));
-            }
-            let collaborative: Vec<_> = self
-                .selection
-                .selected()
-                .iter()
-                .filter_map(|index| displayed.get(*index))
-                .filter(|entry| entry.availability.is_some())
-                .collect();
-            if !collaborative.is_empty() {
-                let any_automatic = collaborative.iter().any(|entry| {
-                    entry.availability.as_ref().is_some_and(|availability| {
-                        availability.policy == fs_protocol::AvailabilityPolicy::Automatic
-                    })
-                });
-                let any_directly_pinned = collaborative.iter().any(|entry| {
-                    entry.availability.as_ref().is_some_and(|availability| {
-                        availability.policy == fs_protocol::AvailabilityPolicy::Pinned
-                            && !availability.policy_inherited
-                    })
-                });
-                spec.push((String::new(), None));
-                let any_inherited = collaborative.iter().any(|entry| {
-                    entry
-                        .availability
-                        .as_ref()
-                        .is_some_and(|availability| availability.policy_inherited)
-                });
-                if any_automatic {
-                    spec.push((t("files-keep-offline"), Some(FileCommand::KeepOffline)));
-                }
-                if any_directly_pinned {
-                    spec.push((
-                        t("files-use-automatic-storage"),
-                        Some(FileCommand::RemoveOfflinePin),
-                    ));
-                }
-                if any_inherited && !any_directly_pinned {
-                    spec.push((t("files-pinned-by-parent"), None));
-                }
-                let any_releasable = collaborative.iter().any(|entry| {
-                    !entry.is_dir
-                        && entry.availability.as_ref().is_some_and(|availability| {
-                            availability.policy == fs_protocol::AvailabilityPolicy::Automatic
-                                && !availability.policy_inherited
-                                && availability.transfer.phase == fs_protocol::TransferPhase::Idle
-                                && matches!(
-                                    availability.residency,
-                                    fs_protocol::Residency::Partial { .. }
-                                        | fs_protocol::Residency::Resident { .. }
-                                )
-                        })
-                });
-                if any_releasable {
-                    spec.push((
-                        t("files-free-local-space"),
-                        Some(FileCommand::FreeLocalSpace),
-                    ));
-                }
-                let any_retryable = collaborative.iter().any(|entry| {
-                    entry.availability.as_ref().is_some_and(|availability| {
-                        !matches!(
-                            availability.residency,
-                            fs_protocol::Residency::Resident { .. }
-                        ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle
-                    })
-                });
-                if any_retryable {
-                    spec.push((t("files-retry-download"), Some(FileCommand::RetryTransfer)));
-                }
-            }
-            if self.selection.selected().len() == 1
-                && let Some(entry) = self
-                    .selection
-                    .primary()
-                    .and_then(|index| displayed.get(index))
-            {
-                spec.push((
-                    t("files-menu-properties"),
-                    Some(FileCommand::ShowProperties),
-                ));
-                if !entry.is_dir
-                    && entry.record_id.is_some()
-                    && crate::model::share_control_socket(&entry.path, &self.workspace_roots)
-                        .is_some()
-                {
-                    for human in self
-                        .trusted_humans
-                        .humans()
-                        .iter()
-                        .filter(|human| !human.devices.is_empty())
-                        .take(16)
-                    {
-                        // Keep the concise default, then expose every named
-                        // permission/expiry choice without ever placing the
-                        // display label into the authority command.
-                        spec.push((
-                            t_args(
-                                "files-share-with",
-                                &[arg("person", human.display_name.clone())],
-                            ),
-                            Some(FileCommand::ShareWithPerson {
-                                person: human.person,
-                            }),
-                        ));
-                        for permission in [
-                            fs_protocol::FilePermission::View,
-                            fs_protocol::FilePermission::Edit,
-                        ] {
-                            for expiry in [
-                                crate::sharing::ShareExpiryChoice::Day,
-                                crate::sharing::ShareExpiryChoice::Week,
-                                crate::sharing::ShareExpiryChoice::Month,
-                                crate::sharing::ShareExpiryChoice::Never,
-                            ] {
-                                spec.push((
-                                    t_args(
-                                        "files-share-composer-named",
-                                        &[
-                                            arg("person", human.display_name.clone()),
-                                            arg("permission", share_permission_label(permission)),
-                                            arg("expiry", share_expiry_label(expiry)),
-                                        ],
-                                    ),
-                                    Some(FileCommand::CreateShare(
-                                        crate::sharing::ShareComposerRequest {
-                                            subject: crate::sharing::ShareSubjectChoice::Named(
-                                                human.person,
-                                            ),
-                                            permission,
-                                            expiry,
-                                            link_uses: None,
-                                            recipient_devices: human
-                                                .devices
-                                                .iter()
-                                                .map(|device| device.device)
-                                                .collect(),
-                                        },
-                                    )),
-                                ));
-                            }
-                        }
-                    }
-                    spec.push((
-                        t("files-copy-one-time-link"),
-                        Some(FileCommand::CreateOneTimeShareLink),
-                    ));
-                    for permission in [
-                        fs_protocol::FilePermission::View,
-                        fs_protocol::FilePermission::Edit,
-                    ] {
-                        for expiry in [
-                            crate::sharing::ShareExpiryChoice::Day,
-                            crate::sharing::ShareExpiryChoice::Week,
-                            crate::sharing::ShareExpiryChoice::Month,
-                        ] {
-                            for link_uses in [
-                                crate::sharing::LinkUseChoice::OneUse,
-                                crate::sharing::LinkUseChoice::Bounded(10),
-                            ] {
-                                let uses = match link_uses {
-                                    crate::sharing::LinkUseChoice::OneUse => {
-                                        t("files-share-choice-one-use")
-                                    }
-                                    crate::sharing::LinkUseChoice::Bounded(count) => t_args(
-                                        "files-share-choice-bounded-uses",
-                                        &[arg("count", i64::from(count))],
-                                    ),
-                                };
-                                spec.push((
-                                    t_args(
-                                        "files-share-composer-link",
-                                        &[
-                                            arg("permission", share_permission_label(permission)),
-                                            arg("expiry", share_expiry_label(expiry)),
-                                            arg("uses", uses),
-                                        ],
-                                    ),
-                                    Some(FileCommand::CreateShare(
-                                        crate::sharing::ShareComposerRequest {
-                                            subject: crate::sharing::ShareSubjectChoice::Link,
-                                            permission,
-                                            expiry,
-                                            link_uses: Some(link_uses),
-                                            recipient_devices: Vec::new(),
-                                        },
-                                    )),
-                                ));
-                            }
-                        }
-                    }
-                }
-                if entry.share.is_some() {
-                    spec.push((t("files-sharing-access"), Some(FileCommand::ShowSharing)));
-                }
-                if entry.availability.is_some() {
-                    spec.push((
-                        t("files-availability-title-short"),
-                        Some(FileCommand::ShowAvailability),
-                    ));
-                }
-                if crate::model::share_control_socket(&entry.path, &self.workspace_roots).is_some()
-                    && let Some(share) = &entry.share
-                {
-                    for grant in share
-                        .grants
-                        .iter()
-                        .filter(|grant| grant.status == fs_protocol::ShareGrantStatus::Active)
-                    {
-                        let grant_id = grant.grant_id;
-                        let subject = match grant.subject {
-                            fs_protocol::ShareSubjectProjection::Person { person } => {
-                                self.trusted_humans.display_name_or_fingerprint(&person)
-                            }
-                            fs_protocol::ShareSubjectProjection::BearerLink => {
-                                t("files-shared-link")
-                            }
-                        };
-                        spec.push((
-                            t_args("files-revoke-subject", &[arg("subject", subject)]),
-                            Some(FileCommand::RevokeShare { grant_id }),
-                        ));
-                    }
-                }
-                if entry.history.is_some() {
-                    spec.push((t("files-version-history"), Some(FileCommand::ShowHistory)));
-                    if let Some(version_id) = entry.history.as_ref().and_then(|history| {
-                        history.versions.iter().rev().find_map(|version| {
-                            (!history.heads.contains(&version.id) && version.content_hash.is_some())
-                                .then_some(version.id)
-                        })
-                    }) {
-                        spec.push((
-                            t("files-restore-previous"),
-                            Some(FileCommand::RestoreVersion { version_id }),
-                        ));
-                    }
-                    if let (Some(history), Some(current_hash)) =
-                        (entry.history.as_ref(), entry.content_hash)
-                    {
-                        for conflict in history.open_conflicts() {
-                            let members = conflict
-                                .versions
-                                .iter()
-                                .filter_map(|id| {
-                                    history.versions.iter().find(|version| version.id == *id)
-                                })
-                                .collect::<Vec<_>>();
-                            let current = members
-                                .iter()
-                                .copied()
-                                .filter(|version| {
-                                    version.content_hash.map(|hash| hash.0) == Some(current_hash)
-                                })
-                                .collect::<Vec<_>>();
-                            // An exact unique hash match is the strongest fact
-                            // this bounded V1 projection exposes. The daemon
-                            // additionally CAS-checks its signed revision, so a
-                            // stale menu action fails instead of changing meaning.
-                            if current.len() != 1 {
-                                continue;
-                            }
-                            let Some(current_version) = current.first() else {
-                                continue;
-                            };
-                            let current_id = current_version.id;
-                            spec.push((String::new(), None));
-                            spec.push((
-                                t_args(
-                                    "files-resolve-keep-current",
-                                    &[arg("conflict", short_uuid(conflict.id))],
-                                ),
-                                Some(FileCommand::ResolveConflict {
-                                    conflict_id: conflict.id,
-                                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
-                                    version_id: current_id,
-                                }),
-                            ));
-                            for other in members
-                                .into_iter()
-                                .filter(|version| version.id != current_id)
-                            {
-                                let other_id = other.id;
-                                spec.push((
-                                    t_args(
-                                        "files-resolve-use-other",
-                                        &[
-                                            arg("conflict", short_uuid(conflict.id)),
-                                            arg("device", short_fingerprint(&other.actor.device.0)),
-                                        ],
-                                    ),
-                                    Some(FileCommand::ResolveConflict {
-                                        conflict_id: conflict.id,
-                                        strategy: fs_protocol::ConflictStrategy::UseOther,
-                                        version_id: other_id,
-                                    }),
-                                ));
-                                if merge_supported_path(&entry.path) {
-                                    spec.push((
-                                        format!(
-                                            "{} ({})",
-                                            t("files-merge-review-menu"),
-                                            short_fingerprint(&other.actor.device.0),
-                                        ),
-                                        Some(FileCommand::ReviewConflictMerge {
-                                            conflict_id: conflict.id,
-                                            version_id: other_id,
-                                            other_device: other.actor.device.0,
-                                        }),
-                                    ));
-                                }
-                                spec.push((
-                                    format!(
-                                        "{} ({})",
-                                        conflict_strategy_label(
-                                            fs_protocol::ConflictStrategy::KeepBoth,
-                                        ),
-                                        short_fingerprint(&other.actor.device.0),
-                                    ),
-                                    Some(FileCommand::ResolveConflict {
-                                        conflict_id: conflict.id,
-                                        strategy: fs_protocol::ConflictStrategy::KeepBoth,
-                                        version_id: other_id,
-                                    }),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-            return tidy_menu(spec);
-        }
-
-        // The folder's own menu (nothing is selected).
-        spec.push((t("files-menu-new-folder"), Some(FileCommand::NewFolder)));
-        // Only offer "New file…" when the Templates dir actually has files.
-        if has_templates {
-            spec.push((
-                t("files-menu-new-file"),
-                Some(FileCommand::OpenTemplatesMenu),
-            ));
-        }
-        if can_paste {
-            spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
-        }
-        if self.hosted_clipboard() {
-            spec.push((
-                t("files-menu-recover-transfers"),
-                Some(FileCommand::RecoverClipboardTransfers),
-            ));
-        }
-        spec.push((
-            t("files-menu-open-terminal"),
-            Some(FileCommand::OpenTerminal),
-        ));
-        // Remove the current directory from the favourites when it is one.
-        if self.current_is_removable_favourite() {
-            spec.push((
-                t("files-menu-remove-favourite"),
-                Some(FileCommand::RemoveFavorite(self.current_path.clone())),
-            ));
-        }
-        // How the folder is shown. Sorting lives here too: a grid has no
-        // column header, and "Sort by type" is reached only from this menu.
-        spec.push((String::new(), None));
-        for (label, by) in [
-            ("files-menu-sort-name", SortBy::Name),
-            ("files-menu-sort-size", SortBy::Size),
-            ("files-menu-sort-type", SortBy::Type),
-            ("files-menu-sort-date", SortBy::Modified),
-        ] {
-            spec.push((t(label), Some(FileCommand::SetSort(by))));
-        }
-        spec.push((
-            if self.show_hidden {
-                t("files-menu-hide-hidden")
-            } else {
-                t("files-menu-show-hidden")
-            },
-            Some(FileCommand::ToggleHidden),
-        ));
-        tidy_menu(spec)
     }
 
     /// Host entries cannot be purged through private-data Trash controls.
@@ -9943,7 +9568,7 @@ impl ui::widget::Filterable for FileExplorerWidget {
         if self.find == query {
             return;
         }
-        self.find = query.to_owned();
+        query.clone_into(&mut self.find);
         self.structure_dirty = true;
     }
 
@@ -10221,6 +9846,18 @@ impl Widget for FileExplorerWidget {
             return;
         }
         let panel_was_open = self.collab_panel.is_some();
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            // What a column drag would start from: a press on a column's
+            // edge resizes as the pointer moves and ends on the release.
+            self.widths_at_press = Some(self.list_slot.widths());
+        }
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
@@ -10345,6 +9982,21 @@ impl Widget for FileExplorerWidget {
         }
 
         self.finish_event(event, ctx);
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self.widths_at_press.take() != Some(self.list_slot.widths())
+        {
+            // The press resized a column and this is where it ended: the
+            // width the person dragged is theirs from here on
+            // (`APP-file-explorer-02`). A press that resized nothing keeps
+            // the widths it began with, and nothing is stored.
+            self.store_widths();
+        }
         if !panel_was_open && self.collab_panel.is_some() {
             // The dialog replaced the semantic subtree during this event.
             // Focus its real backing widget so AccessKit never points at a
@@ -10381,6 +10033,24 @@ impl Widget for FileExplorerWidget {
 
     fn needs_idle_sync(&self) -> bool {
         self.collaborative_record_pager.borrow().has_more() || self.nav.needs_idle_sync()
+    }
+
+    /// What the shell changed, and the rename editor where it changed. The
+    /// window's other paint (menus, the preview, the drag ghost) is in its
+    /// overlay, which the host repaints whole.
+    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        if self.collab_panel.is_none() {
+            self.nav.collect_damage(regions);
+        }
+        self.rename_paint.damage(regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.rename_paint.present();
+        self.rename_input.mark_drawn();
+        for child in self.children_mut() {
+            child.mark_drawn();
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -10666,6 +10336,14 @@ mod tests;
 #[path = "files_app/notice_action_tests.rs"]
 mod notice_action_tests;
 
+#[cfg(test)]
+#[path = "files_app/launch_argument_tests.rs"]
+mod launch_argument_tests;
+
+#[cfg(test)]
+#[path = "files_app/sidebar_button_tests.rs"]
+mod sidebar_button_tests;
+
 /// What the palette, agents and scripts reach of a Files window, for the
 /// tests that drive the widget without a framework host: the resource's
 /// publication with the window's effects beside it and its live rows
@@ -10687,6 +10365,15 @@ pub(crate) mod published {
             "Files",
             &FileExplorer::default(),
         );
+        // What the window binds over the folder shown and the selection,
+        // as the framework's surface host publishes it.
+        for decl in <FileExplorerWidget as ui::framework::ResourceSurface<
+            FileExplorer,
+            FilesEffect,
+        >>::bound_declarations(files)
+        {
+            root = ui::tilo_resource::bind_declaration(root, &decl);
+        }
         root.actions.extend(FilesEffect::specs());
         let _ = doc;
         root.children.extend(files.published_rows());

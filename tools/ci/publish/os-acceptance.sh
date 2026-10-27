@@ -48,7 +48,7 @@ rm -rf "$out"
 mkdir -p "$out"
 status=0
 
-export TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=quickuser TILO_PASS=tilo
+export TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
 
 # A host without a usable render node boots the guests on the 2D virtio display; the
 # compositor paints on the CPU there, and every gate must pass either way.

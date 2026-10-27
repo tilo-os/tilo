@@ -1668,7 +1668,7 @@ async function main() {
       && /invited/i.test(inviteMail?.subject ?? '') && Boolean(mailLink(inviteMail, 'wait-list-remove'))
       && /^Invited (just now|1 minute ago)$/.test(listed.after?.invited ?? '')
       && listed.after?.buttons?.includes('Invite again') && listed.after.buttons.includes('Remove'),
-    {listedBefore, handConfirmed: handConfirmed.body, handRemoved, relisted: relisted.state, mailsAfterRelisting, unconfirmedHidden,
+    {listedBefore, handConfirmed: handConfirmed.body, handRemoved, relisted: {state: relisted.state, note: relisted.note, error: relisted.error}, mailsAfterRelisting, unconfirmedHidden,
       reconfirmed: reconfirmed.body,
       listed, inviteSubject: inviteMail?.subject ?? null});
 

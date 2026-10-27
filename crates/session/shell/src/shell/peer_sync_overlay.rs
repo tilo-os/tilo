@@ -620,14 +620,15 @@ impl PeerSyncOverlay {
                 PeerSyncRequest::PollEnrollment(requested),
                 Ok(PeerSyncResponse::EnrollmentPending { id }),
             ) if *requested == id && self.enrollment == Some(id) => {}
+            // The workspace is joined: the person is taken to it, so the
+            // sheet has nothing left to ask and closes without a word.
             (
                 PeerSyncRequest::PollEnrollment(requested),
-                Ok(PeerSyncResponse::EnrollmentJoined { id, room }),
+                Ok(PeerSyncResponse::EnrollmentJoined { id, .. }),
             ) if *requested == id && self.enrollment == Some(id) => {
                 self.enrollment = None;
                 self.enrollment_poll_at = None;
-                self.state.connect_input = None;
-                self.say(format!("Joined room {room}"));
+                self.dismiss();
             }
             (PeerSyncRequest::PollEnrollment(id), Err(error)) if self.enrollment == Some(*id) => {
                 self.enrollment = None;
@@ -681,9 +682,10 @@ impl PeerSyncOverlay {
             (PeerSyncRequest::ExportIdentity, Err(error)) => {
                 self.fail(failure(&error, "peer-sync-identity-unavailable"));
             }
-            (PeerSyncRequest::AcceptInvite(_), Ok(PeerSyncResponse::Message(room))) => {
-                self.state.connect_input = None;
-                self.say(t_args("peer-sync-joined-room", &[("room", room.into())]));
+            // The room is joined already: the person is taken there, so the
+            // sheet closes without naming the room by its id.
+            (PeerSyncRequest::AcceptInvite(_), Ok(PeerSyncResponse::Message(_))) => {
+                self.dismiss();
             }
             (PeerSyncRequest::AcceptInvite(_), Err(error)) => {
                 self.fail(failure(&error, "peer-sync-join-refused"));
@@ -1890,6 +1892,79 @@ mod tests {
         long_tokens_are_elided_without_changing_short_ones();
     }
 
+    /// The sheet a join is typed into, holding `text` in its field.
+    fn sheet_joining_with(text: &str) -> FrameHarness {
+        let mut join = PeerSyncOverlay::default();
+        join.prompt_connect_with(text);
+        mounted(join, Theme::dark())
+    }
+
+    /// An invitation minted as a room's host issues one for whoever holds
+    /// it, carrying the room and role it grants.
+    fn shared_invitation() -> String {
+        use tilo_peer_state::join::{InviteGrant, MemberRole};
+        let root = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let mut host = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Host".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::host(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut host, &root).unwrap();
+        let grant = InviteGrant {
+            workspace_id: 41,
+            room: crate::shell::state::RoomId::new().to_string(),
+            authority: host.clone(),
+            issuer: host,
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [5; 16],
+            recipient_user_public_key: None,
+            invitee_name: None,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+            transport: Vec::new(),
+        };
+        tilo_peer_state::join::encode_invitation_text(
+            &tilo_peer_state::join::issue_invitation(grant, &device).unwrap(),
+        )
+    }
+
+    /// Text that is an invitation is shown as the invitation it is, under
+    /// the field the person pasted it into, so the one button Join says what
+    /// pressing Enter does: never that nothing was found.
+    #[test]
+    fn a_typed_invitation_shows_the_invite_under_the_join_field() {
+        let text = shared_invitation();
+        let frame = sheet_joining_with(&text);
+        let dialog = overlay(&frame).sheet.dialog().expect("the sheet is up");
+        let invite = find(dialog, sheet::JOIN_INVITE).expect("the invitation's row");
+        assert_eq!(invite.name(), "ListRow", "the shared row, not a line");
+        let spoken = invite
+            .accessibility()
+            .expect("the row is read out")
+            .value
+            .unwrap_or_default();
+        assert!(
+            spoken.contains("Editor"),
+            "the row says what the invitation grants: {spoken}"
+        );
+        // What the invitation is for is the row's title, never a name and a
+        // fact strung together: the person it names, else the workspace.
+        assert_eq!(
+            invite.accessibility().and_then(|node| node.name).as_deref(),
+            Some(t("peer-sync-invite-workspace").as_str()),
+            "the row is named for what the invitation is for"
+        );
+        assert!(
+            find(dialog, sheet::JOIN_CODE).is_some(),
+            "the code is what the host checks the invitation by"
+        );
+    }
+
     #[test]
     fn the_invite_sheet_is_built_from_the_shared_sheet_field_segmented_control_and_buttons() {
         let mut invite = PeerSyncOverlay::default();
@@ -1951,9 +2026,13 @@ mod tests {
                 }),
                 false,
             );
-            assert_eq!(
-                overlay.snapshot().status.as_deref(),
-                Some("Joined room actual")
+            assert!(
+                !overlay.visible(),
+                "a join that finished closes the sheet, as the person is taken to the workspace"
+            );
+            assert!(
+                overlay.snapshot().status.is_none(),
+                "nothing is said about a join that finished: the workspace is on screen"
             );
             assert_eq!(overlay.enrollment, None);
         }

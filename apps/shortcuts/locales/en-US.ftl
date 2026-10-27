@@ -28,6 +28,12 @@ shortcuts-remove = Remove
 shortcuts-move-up = Move up
 shortcuts-move-down = Move down
 shortcuts-add-step-button = Add step
+shortcuts-when-it-fails = When this step fails
+shortcuts-stop-the-shortcut = Stop the shortcut
+shortcuts-try-again = Try it again
+shortcuts-do-these-instead = Do other steps instead
+shortcuts-go-on-with-a-value = Go on with a value
+shortcuts-add-the-steps-to-do-instead = Add the steps to do instead under this one
 shortcuts-close = Close
 shortcuts-condition = Condition
 shortcuts-then = Then
@@ -52,11 +58,19 @@ shortcuts-drafting = The agent is drafting…
 shortcuts-draft-failed = The agent could not draft it
 shortcuts-draft-problems = Check these before saving
 shortcuts-open-drafted = Open as a draft
+shortcuts-proposal = A shortcut for what you keep doing
+shortcuts-ignore-proposal = Don't offer this again
+shortcuts-grant = What it would be allowed to do
+shortcuts-refine = Change it after a run
+shortcuts-refine-placeholder = For example: skip the ones that are archived
+shortcuts-refine-it = Propose the change
 
 ## History
 
 shortcuts-draft-name = Renamed the shortcut { $item }
 shortcuts-draft-shortcut = Started a shortcut draft from a suggestion
+shortcuts-draft-proposal = Started a shortcut draft from repeated work
+shortcuts-ignore-proposal-history = Stopped offering a shortcut for repeated work
 shortcuts-set-schedule = Changed the daily schedule of { $item }
 shortcuts-draft-output = Changed what { $item } reports back
 shortcuts-new-draft = Started the shortcut { $name }

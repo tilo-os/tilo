@@ -96,6 +96,16 @@ impl SlotRecord {
     }
 }
 
+/// The machine's own identity tree, as a device's first login leaves it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MachineIdentity {
+    /// A person's identity holds the machine (`user-identity/pubkey.bin`).
+    pub person: bool,
+    /// The machine's device key is certified (`device/cert.bin`), which is
+    /// what starts `fs.service`.
+    pub certified: bool,
+}
+
 pub fn user_unit(uid: u32) -> String {
     format!("user@{uid}.service")
 }
@@ -134,6 +144,8 @@ pub trait Apply {
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError>;
     /// Private device identity for a disposable slot, inside its removable home.
     fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError>;
+    /// What the machine's own identity tree (`/var/lib/tilo`) holds.
+    fn machine_identity(&mut self) -> MachineIdentity;
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError>;
     fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError>;
     /// Prepare one readonly combined filesystem view for a stand-in slot.
@@ -600,7 +612,9 @@ pub fn activate(
     }
 
     let mut dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
-    if session.stand_in {
+    // This VM's person runs on the machine's identity tree, as a device's
+    // first login does; every other stand-in gets a private, removable one.
+    if session.stand_in && !record.device_identity {
         dropin.push_str(&apply.slot_identity_environment(&session.user)?);
     }
     for unit in layered_units(&session, uid) {
@@ -831,6 +845,8 @@ pub struct RecordingApply {
     pub notices: BTreeMap<String, String>,
     /// Every call is copied here too, for a test that hands this to a daemon.
     pub mirror: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
+    /// What the machine's identity tree holds; onboarding a person sets both.
+    pub machine: MachineIdentity,
 }
 
 impl RecordingApply {
@@ -912,6 +928,22 @@ impl Apply for RecordingApply {
     fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError> {
         slot_identity_environment(std::path::Path::new(&format!("/home/{user}")))
     }
+    /// Pressing onboarding's last control makes the user the machine's person
+    /// and certifies its device key, as the session's onboarding would.
+    fn machine_identity(&mut self) -> MachineIdentity {
+        if self
+            .calls
+            .iter()
+            .any(|call| call.contains("onboarding.finish.button"))
+        {
+            MachineIdentity {
+                person: true,
+                certified: true,
+            }
+        } else {
+            self.machine
+        }
+    }
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
         self.call(format!("remove_user {user}"));
         self.users.remove(user);
@@ -974,6 +1006,15 @@ impl Apply for RecordingApply {
         // A login's scope runs as long as the login does.
         if unit.starts_with("session-") || unit == GREETER_UNIT {
             return "active".into();
+        }
+        // fs-identity.path starts fs once the device key is certified.
+        if unit == "fs.service" && !self.units.contains_key(unit) {
+            return if self.machine_identity().certified {
+                "active"
+            } else {
+                "inactive"
+            }
+            .into();
         }
         if self.units.get(unit).copied().unwrap_or(false) {
             "active"
@@ -1244,6 +1285,7 @@ mod tests {
             seat0: None,
             outputs: Vec::new(),
             device: None,
+            device_identity: false,
         }
     }
 
@@ -1329,6 +1371,29 @@ mod tests {
                     "Environment=\"TILO_IDENTITY_ROOT=/home/tds-cpu/.local/share/tilo/test-identity\"\n"
                 ));
             }
+        }
+    }
+
+    /// This VM's person runs on the machine's identity tree, as a device's
+    /// first login does; other stand-ins keep their private, removable root.
+    #[test]
+    fn only_the_vms_person_runs_without_a_private_identity_root() {
+        for (device_identity, private) in [(false, true), (true, false)] {
+            let mut apply = RecordingApply::default();
+            let mut slot = record("a", SlotKind::Headless);
+            slot.device_identity = device_identity;
+            activate(
+                &mut apply,
+                &mut slot,
+                &Generation::default(),
+                &[],
+                Policy::NoRestart,
+                &Restarts::default(),
+                SessionChange::Ensure,
+            )
+            .unwrap();
+            let dropin = &apply.dropins[&(session_unit("a"), LAYERS_DROPIN.into())];
+            assert_eq!(dropin.contains("TILO_IDENTITY_ROOT"), private, "{dropin}");
         }
     }
 
@@ -1498,17 +1563,17 @@ mod tests {
     #[test]
     fn vm_greeter_update_preserves_only_a_verified_active_owner_login() {
         for (name, mut apply, defer) in [
-            ("owner", RecordingApply::with_login("quickuser"), true),
+            ("owner", RecordingApply::with_login("tester"), true),
             ("ordinary-vm", RecordingApply::default(), false),
             (
                 "board-session",
-                RecordingApply::with_device("quickuser"),
+                RecordingApply::with_device("tester"),
                 false,
             ),
             (
                 "logged-out",
                 {
-                    let mut apply = RecordingApply::with_login("quickuser");
+                    let mut apply = RecordingApply::with_login("tester");
                     apply.device = apply.device.take().map(DeviceSession::logged_out);
                     apply
                 },
@@ -1517,7 +1582,7 @@ mod tests {
             (
                 "incomplete-login",
                 {
-                    let mut apply = RecordingApply::with_login("quickuser");
+                    let mut apply = RecordingApply::with_login("tester");
                     apply
                         .device
                         .as_mut()
@@ -1661,7 +1726,7 @@ mod tests {
             }
         }
         {
-            let mut apply = RecordingApply::with_device("quickuser");
+            let mut apply = RecordingApply::with_device("tester");
             let mut device = record("device", SlotKind::Device);
             device.device = apply.device.clone();
             let g = generation(1, &[("shell", "h1", Scope::Session, &[])]);
@@ -1676,11 +1741,11 @@ mod tests {
                 SessionChange::Keep,
             )
             .unwrap();
-            let unit = "tilo-board-headless-session@quickuser.service";
+            let unit = "tilo-board-headless-session@tester.service";
             assert_eq!(
                 apply.calls,
                 [
-                    "account_uid quickuser",
+                    "account_uid tester",
                     "write_dropin user@1000.service 50-tilo-vm-layers.conf",
                     &format!("write_dropin {unit} 50-tilo-vm-layers.conf"),
                     "write_dropin tilo-board-drm-session.service 50-tilo-vm-layers.conf",
@@ -1705,7 +1770,7 @@ mod tests {
             );
             let session = device.session().unwrap();
             assert!(!session.stand_in);
-            assert_eq!(session.user, "quickuser");
+            assert_eq!(session.user, "tester");
             assert_eq!(
                 session.control_socket,
                 PathBuf::from("/run/user/1000/tilo-session/test-control.sock")
@@ -1714,7 +1779,7 @@ mod tests {
             assert_eq!(device.session(), None);
         }
         {
-            let mut apply = RecordingApply::with_login("quickuser");
+            let mut apply = RecordingApply::with_login("tester");
             let mut device = record("device", SlotKind::Device);
             device.device = apply.device.clone();
             let g = generation(1, &[("shell", "h1", Scope::Session, &[])]);
@@ -1739,11 +1804,11 @@ mod tests {
             assert_eq!(
                 apply.calls,
                 [
-                    "account_uid quickuser",
+                    "account_uid tester",
                     "link_sysext 2",
                     "sysext_refresh",
-                    "restart_user_unit quickuser tilo-ush.service",
-                    "restart_desktop quickuser",
+                    "restart_user_unit tester tilo-ush.service",
+                    "restart_desktop tester",
                 ],
                 "no drop-ins, no unit stopped: the login stays"
             );
@@ -1751,7 +1816,7 @@ mod tests {
             assert_eq!(
                 actions.last(),
                 Some(&Action::RestartDesktop {
-                    user: "quickuser".into()
+                    user: "tester".into()
                 })
             );
             // Logged out: the layers still merge and wait for the next login.
@@ -1773,7 +1838,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 apply.calls,
-                ["account_uid quickuser", "link_sysext 2", "sysext_refresh"]
+                ["account_uid tester", "link_sysext 2", "sysext_refresh"]
             );
             assert!(
                 matches!(actions.last(), Some(Action::Deferred { reason }) if reason.contains("next login")),

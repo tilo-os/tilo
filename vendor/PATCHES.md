@@ -651,6 +651,16 @@ again and fails unless it validates with the same workgroup size, bindings and
 workgroup buffers as the original (`check_minified`). The MSL translation
 still reads the original source.
 
+## `vendor/vello/src/lib.rs`: a renderer made in canonical segment order
+
+`Renderer::new_with_canonical_segment_order(device, options)` is
+`Renderer::new` with the tiles summing their segments in a fixed order from
+the start, so its shader set compiles once. `enable_canonical_segment_order`
+on a built renderer registers and compiles a second full set and keeps the
+first, which a software GPU (lavapipe) holds in the process heap: about
+40 MiB in the idle compositor, whose headless frames and captures need the
+fixed order from their first render.
+
 ## `vendor/vello/src/lib.rs`, `shaders.rs`, `wgpu_engine.rs`: deferred pipelines
 
 `Renderer::new_deferring(device, options, deferral)` registers every shader

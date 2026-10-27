@@ -217,6 +217,28 @@ case $group in
     done
     python3 tools/perf/adapters.py room-load --env-json "$out/env.json" "$out"/room-load-*.json \
       > "$out/hosting-room.jsonl"
+    # The same host at its declared capacity under a host nobody shares, and
+    # past the room's cap (docs/architecture/hosting-capacity.md): three runs
+    # through tools/ci/perf-room-degraded.sh, which steals CPU from the host's
+    # own process tree and slows the loopback the guests dial, so nothing else
+    # on the node is shaped. room_capacity.py judges them against the service
+    # level; adapters.py records each run as its own series. Root is needed for
+    # the cgroup and the qdisc, and the probe refuses rather than measure an
+    # undegraded host, so a node without them fails here instead of passing.
+    state=$(mktemp -d /dev/shm/room-degraded.XXXXXX)
+    status=0
+    TMPDIR=$state TOKIO_WORKER_THREADS=40 \
+      python3 tools/perf/room_capacity.py degraded --bin "$target/release/tilo-room-load" \
+      --out "$out/probe" 2>&1 | tee "$out/probe.txt" || status=$?
+    rm -rf "$state"
+    python3 tools/perf/room_capacity.py summarize "$out/probe" --degraded \
+      --json "$out/probe.json" > "$out/probe-summary.txt" || status=$?
+    cat "$out/probe-summary.txt"
+    if compgen -G "$out/probe/*.json" > /dev/null; then
+      python3 tools/perf/adapters.py room-degraded --env-json "$out/env.json" "$out"/probe/*.json \
+        >> "$out/hosting-room.jsonl"
+    fi
+    exit "$status"
     ;;
   browser)
     commit_checkout

@@ -1086,9 +1086,15 @@ impl FsStore {
             .writer_lock
             .and_then(|file| advisory_lock::FileLock::try_exclusive(file).ok());
         if access == Access::Shared && writer_lock.is_none() {
-            tracing::warn!(
+            // Designed, not a fault: `open_shared_owner`'s primary holds the
+            // writer lock and continues the stored actor; every other owner
+            // appends under an actor of its own that is never stored. The
+            // document keeps merging them, so a second window of the app
+            // works beside the first without touching its identity.
+            tracing::info!(
                 directory = %directory.display(),
-                "another instance holds the state lock; running on a fresh automerge actor"
+                "joining another instance's document as a secondary writer (fresh actor for \
+                 this session); the first instance keeps the stored author"
             );
         }
         let primary = access == Access::Exclusive || writer_lock.is_some();
@@ -1284,9 +1290,12 @@ fn open_shared_owner(directory: &Path) -> Result<Owner, StoreError> {
     let gate = acquire_gate(&directory.join(CANONICAL_GATE), false)?;
     let writer_lock = acquire_writer_lock(&directory.join(LOCK_FILE));
     if writer_lock.is_none() {
-        tracing::warn!(
+        // Designed, not a fault: the instance that won the writer lock is the
+        // stored author, and this one appends under a fresh session actor.
+        tracing::info!(
             directory = %directory.display(),
-            "another instance holds the state lock; running on a fresh automerge actor"
+            "joining another instance's document as a secondary writer (fresh actor for this \
+             session); the first instance keeps the stored author"
         );
     }
     let owner = Owner {

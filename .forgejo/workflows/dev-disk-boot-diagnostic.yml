@@ -86,7 +86,7 @@ jobs:
       TILO_DISTROBOX: ""
       TILO_VM_ARCH: ${{ github.event.inputs.architecture || 'aarch64' }}
       TILO_ACCEL: kvm
-      TILO_USER: quickuser
+      TILO_USER: tester
       TILO_PASS: tilo
       TILO_RUN: /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}
       CANDIDATE_MANIFEST: ${{ github.event.inputs.candidate_manifest }}

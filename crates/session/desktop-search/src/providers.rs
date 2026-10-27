@@ -88,6 +88,7 @@ impl Source for Applications {
                     } else {
                         matched
                     },
+                    icon: None,
                     target: Target::Launch {
                         app: app.id.clone(),
                     },
@@ -137,6 +138,7 @@ impl Source for Windows {
                     subtitle: None,
                     facts: window.place.clone(),
                     score,
+                    icon: None,
                     target: Target::Window {
                         tab: window.tab,
                         app: window.app.clone(),
@@ -188,6 +190,7 @@ impl Source for Commands {
                     subtitle: command.subtitle.clone(),
                     facts: Vec::new(),
                     score,
+                    icon: None,
                     target: Target::Command {
                         id: command.id.clone(),
                     },
@@ -258,7 +261,12 @@ impl Source for Actions {
                 // the item named: "edit message" must not list the same edit
                 // once for every message there is.
                 let score = if records.contains(flat.resource_id.as_str()) {
-                    rank::action_match_score(needle, &flat.action.label, &flat.resource_label)?
+                    rank::action_match_score(
+                        needle,
+                        &flat.action.label,
+                        &flat.action.keywords,
+                        &flat.resource_label,
+                    )?
                 } else {
                     rank::item_action_match_score(needle, &flat.resource_label)?
                 };
@@ -270,6 +278,7 @@ impl Source for Actions {
                     subtitle: Some(flat.resource_label.clone()),
                     facts: Vec::new(),
                     score,
+                    icon: crate::window::action_icon(flat.action),
                     target: Target::Action(Box::new(ActionTarget {
                         resource: flat.resource_id.clone(),
                         resource_kind: flat.resource_kind.clone(),
@@ -317,6 +326,9 @@ pub struct Content {
     /// [`ui::search::ScopeDecl`] anchor).
     scope: Option<String>,
     limit: usize,
+    /// Whether nothing typed asks the providers for what they list unasked
+    /// (a file manager's places, a notebook's notes).
+    browse: bool,
     /// The answers still coming, by provider.
     pending: RefCell<Vec<(usize, PendingToken)>>,
 }
@@ -331,8 +343,18 @@ impl Content {
             resources,
             scope: None,
             limit: 16,
+            browse: false,
             pending: RefCell::default(),
         }
+    }
+
+    /// With nothing typed, list what the providers list unasked: a search
+    /// of one window shows what it holds before anything is typed, as the
+    /// app shows it.
+    #[must_use]
+    pub fn browsing(mut self) -> Self {
+        self.browse = true;
+        self
     }
 
     /// Narrow every query to `scope`, one part of the application.
@@ -373,7 +395,7 @@ impl Source for Content {
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
-        if needle.trim().is_empty() {
+        if needle.trim().is_empty() && !self.browse {
             return Vec::new();
         }
         let resources = index(&self.resources);
@@ -431,6 +453,7 @@ impl Source for Content {
                     subtitle: result.subtitle.clone(),
                     facts: Vec::new(),
                     score,
+                    icon: result.icon,
                     target: Target::Action(Box::new(target)),
                 });
             }
@@ -1025,6 +1048,7 @@ mod tests {
                     subtitle: None,
                     facts: Vec::new(),
                     score: MAX_PROVIDER_SCORE,
+                    icon: None,
                     target: Target::Window { tab: 1, app: None },
                 }]
             }

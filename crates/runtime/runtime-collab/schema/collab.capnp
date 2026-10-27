@@ -706,6 +706,12 @@ struct ExportedAction {
   view @10 :ResourceViewDescriptor;
   # Descriptive source identity, never permission or an invocation alias.
   semanticIdentity @11 :ResourceSemanticIdentity;
+  # The other words people use for the action, in the app's own language:
+  # search ranks them as it ranks the label. Empty when it declares none.
+  keywords @12 :List(Text);
+  # The action's own picture, by its Lucide name ("folder-plus"); empty when
+  # it wears its app's.
+  icon @13 :Text;
 }
 
 struct ResourceSemanticIdentity {

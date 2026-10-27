@@ -1565,6 +1565,11 @@ if [ "$ENCRYPT" -eq 1 ]; then
     install -d -m 0700 /run/tilo-install
     ( umask 0077; printf '%s' "$PIN" > "$PIN_FILE" )
     ENROL_ARGS+=(--pin-file "$PIN_FILE")
+    # The wizard's one secret: the disk's startup secret is the account
+    # password, and the boot prompt should call it that.
+    if [ "$PASSWORD_IS_HASH" -eq 0 ] && [ "$PIN" = "$PASSWORD" ]; then
+      ENROL_ARGS+=(--pin-is-account-password)
+    fi
     TILO_GENERATION="$(cat /usr/lib/tilo/generation 2>/dev/null || true)"
     case "$TILO_GENERATION" in ''|*[!0-9]*) die "installed image has no valid generation" ;; esac
     if [ -z "${AUTHENTICATED_PREPARED:-}" ] && [ "$FORCE_PASSPHRASE" -eq 0 ]; then

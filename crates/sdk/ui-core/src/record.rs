@@ -1344,6 +1344,10 @@ pub struct RecordSet {
     /// Records of this store's trees peers wrote that it does not hold yet
     /// ([`RecordStore::announce`]).
     announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
+    /// Records the room's hosts sent everything they hold of
+    /// ([`RecordStore::note_room_answered`]), until something of them
+    /// arrives.
+    answered: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     /// The windows that read this store's records
     /// ([`RecordStore::wake_on_arrival`]): woken when another replica's
     /// change arrives, which no input or wake of theirs announces.
@@ -1416,6 +1420,7 @@ impl RecordSet {
             native_initial: crate::collaboration::native_initial::capture_bridge(),
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
+            answered: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
@@ -1445,6 +1450,7 @@ impl RecordSet {
             native_initial: None,
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
+            answered: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
@@ -1787,9 +1793,11 @@ impl RecordSet {
             .map(|bridge| {
                 bridge
                     .record(&self.package_id, &self.home, want)
-                    .map_err(|error| {
-                        crate::collaboration::native_initial::fail(&error);
-                        RecordOpenError::Initialization(error)
+                    .inspect_err(|error| {
+                        // A record on its way fails nothing.
+                        if let RecordOpenError::Initialization(error) = error {
+                            crate::collaboration::native_initial::fail(error);
+                        }
                     })
             })
             .transpose()?
@@ -2078,8 +2086,7 @@ impl RecordSet {
                     .as_ref()
                     .ok_or(RecordOpenError::IdentityMismatch)?;
                 let read = bridge
-                    .record(&self.package_id, &self.home, want)
-                    .map_err(RecordOpenError::Initialization)?
+                    .record(&self.package_id, &self.home, want)?
                     .ok_or(RecordOpenError::IdentityMismatch)?;
                 validate_creation_capture(doc, want, &self.home, &read)?;
             }
@@ -2091,8 +2098,7 @@ impl RecordSet {
             .native_initial
             .as_ref()
             .map(|bridge| bridge.record(&self.package_id, &self.home, want))
-            .transpose()
-            .map_err(RecordOpenError::Initialization)?
+            .transpose()?
             .flatten()
         {
             let store = if want.id.is_package_primary() {
@@ -2129,6 +2135,7 @@ impl RecordSet {
                     action_state: crate::bound_dispatch::RecordActionState::default(),
                 },
             );
+            self.answered.borrow_mut().remove(&want.id);
             return Ok(RecordOpenOutcome::Loaded);
         }
         // On a thread that may not wait on the disk, whether there is a
@@ -2506,6 +2513,7 @@ impl RecordOwners {
                 .flatten(),
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
+            answered: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: self.profile_lifetime.clone(),
         });
@@ -2703,6 +2711,13 @@ pub enum RecordOpenError {
     AlreadyExists,
     #[error("record initialization failed: {0}")]
     Initialization(String),
+    /// A record the room sends this device only once it asks
+    /// ([`RecordId::arrives_on_demand`]) is not here yet: it was asked for,
+    /// and the store wakes its readers when it arrives
+    /// ([`RecordStore::wake_on_arrival`]) or when the room's hosts say they
+    /// have none of it ([`RecordStore::room_answered`]).
+    #[error("the record is on its way from the room")]
+    Arriving,
     /// The record left this room (see [`transfer`]); its history stays, but
     /// it is never opened as a live document again.
     #[error("record was moved out of this room")]
@@ -3203,8 +3218,7 @@ impl RecordStore {
                     .as_ref()
                     .ok_or(RecordOpenError::IdentityMismatch)?;
                 let read = bridge
-                    .record(&set.package_id, &set.home, checkout)
-                    .map_err(RecordOpenError::Initialization)?
+                    .record(&set.package_id, &set.home, checkout)?
                     .ok_or(RecordOpenError::IdentityMismatch)?;
                 validate_creation_capture(doc, checkout, &set.home, &read)?;
                 return set.wire_route(&checkout.id);
@@ -3312,7 +3326,8 @@ impl RecordStore {
     /// this store holds, in order: those open here, and those kept on this
     /// device without being open (synced in while no window had them).
     /// Listing what is kept reads the store's index, so a caller on a frame
-    /// loop asks now and then, not every frame.
+    /// loop asks when the store was told something arrived
+    /// ([`Self::kept_revision`]), not every frame.
     #[must_use]
     pub fn held_parts(&self, base: &RecordId) -> Vec<u64> {
         let Ok(set) = self.0.try_borrow() else {
@@ -3353,9 +3368,9 @@ impl RecordStore {
 
     /// Tell the store that a record it does not have open was just kept in
     /// its backend by someone else (a room's replication, delivering a part
-    /// another device started): what follows the records it keeps
-    /// ([`Self::held_parts`]) looks again at once instead of at its next
-    /// round. Callable while a frame reads the store.
+    /// another device started), or arrived for it to open: what follows the
+    /// records it keeps ([`Self::held_parts`]) looks again, which nothing
+    /// else makes it do. Callable while a frame reads the store.
     pub fn note_kept(&self) {
         if let Ok(set) = self.0.try_borrow() {
             set.kept.set(set.kept.get().wrapping_add(1));
@@ -3393,7 +3408,8 @@ impl RecordStore {
             .collect()
     }
 
-    /// Moves whenever [`Self::note_kept`] is called.
+    /// Moves whenever the store is told something arrived for what follows
+    /// it: [`Self::note_kept`], [`Self::announce`], [`Self::note_room_answered`].
     #[must_use]
     pub fn kept_revision(&self) -> u64 {
         self.0.try_borrow().map_or(0, |set| set.kept.get())
@@ -4266,6 +4282,7 @@ impl RecordStore {
         })
         .map_err(|error| error.to_string())?;
         if let Ok((true, _)) = &merged {
+            self.arrived(&checkout.id);
             self.wake_readers();
         }
         merged

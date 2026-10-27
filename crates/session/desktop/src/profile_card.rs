@@ -1039,7 +1039,7 @@ impl ProfileCard {
             ))
     }
 
-    /// Someone's account elsewhere: "Linked to @quik2007 on Discord".
+    /// Someone's account elsewhere: "Linked to @ada on Discord".
     fn linked_to(link: &tilo_app::linked_accounts::ProfileLink) -> Box<dyn Widget> {
         let icon = tilo_app::linked_accounts::service_name_icon(&link.service);
         Box::new(
@@ -1463,7 +1463,7 @@ mod tests {
             let mut card = ProfileCard::new();
             card.toggle(
                 &ProfileModel {
-                    name: "xaver".into(),
+                    name: "bob".into(),
                     can_rename: false,
                     ask_name,
                     ..model()
@@ -2041,13 +2041,13 @@ mod tests {
         if let Some(other) = &mut model.other {
             other.linked = vec![tilo_app::linked_accounts::ProfileLink {
                 service: "Discord".into(),
-                handle: "quik2007".into(),
+                handle: "ada".into(),
                 picture: None,
             }];
         }
         let mut frame = framed_model(&model);
         let said = says(&mut frame);
-        assert!(said.contains("Linked to @quik2007 on Discord"), "{said}");
+        assert!(said.contains("Linked to @ada on Discord"), "{said}");
         assert!(
             !said.contains("Unlink"),
             "only their own card unlinks: {said}"

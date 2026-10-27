@@ -21,7 +21,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use accounts::person::PersonAccounts;
@@ -295,8 +295,18 @@ fn with_records<T>(work: impl FnOnce(&SettingsRecords) -> T) -> Result<T, String
     Holder::of(&crate::shell::state::local_user_id())?.run(work)
 }
 
+/// How many times the person's provider settings changed in this session:
+/// what a reader that keeps them compares to know they moved.
+static PROVIDER_SETTINGS_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// See [`PROVIDER_SETTINGS_EPOCH`].
+pub(crate) fn provider_settings_epoch() -> u64 {
+    PROVIDER_SETTINGS_EPOCH.load(Ordering::Relaxed)
+}
+
 /// The person's provider settings changed: offer the models they offer now.
 pub(crate) fn provider_settings_changed() {
+    PROVIDER_SETTINGS_EPOCH.fetch_add(1, Ordering::Relaxed);
     if let Err(error) = with_records(offer_models) {
         tracing::warn!(%error, "the offered models were not updated");
     }
@@ -560,6 +570,50 @@ fn on_in(records: &SettingsRecords, switch: settings_store::index::Switch) -> Op
         .path()
         .try_fold(&stored, |value, field| value.get(field))?
         .as_bool()
+}
+
+/// What each of the choices `choices` holds as stored now, read where the
+/// person's settings are held in one go; `None` for no choice, or a section
+/// the session does not keep.
+pub(crate) fn chosen(
+    choices: impl IntoIterator<Item = Option<settings_store::index::Choice>>,
+) -> Vec<Option<serde_json::Value>> {
+    let choices: Vec<_> = choices.into_iter().collect();
+    let asked = choices.len();
+    with_records(move |records| {
+        choices
+            .into_iter()
+            .map(|choice| {
+                let choice = choice?;
+                let stored = records.stored(choice.section)?;
+                choice
+                    .path()
+                    .try_fold(&stored, |value, field| value.get(field))
+                    .cloned()
+            })
+            .collect()
+    })
+    .unwrap_or_else(|_| vec![None; asked])
+}
+
+/// Set the setting `choice` to its value `option` through its section's
+/// field edit, on behalf of the action `invoked_by`. One whose field edit
+/// asks first runs only once the person `confirmed` it.
+///
+/// # Errors
+/// As [`change`].
+pub(crate) fn choose(
+    choice: settings_store::index::Choice,
+    option: settings_store::index::ChoiceOption,
+    confirmed: bool,
+    invoked_by: &settings_store::InvokingAction,
+) -> Result<(), ActionError> {
+    change(
+        &address(choice.section, "field-edit"),
+        &set_path(choice.path(), &option.json()),
+        confirmed,
+        invoked_by,
+    )
 }
 
 /// Flip the yes-or-no setting `switch` through its section's field edit,
@@ -990,6 +1044,116 @@ mod tests {
         );
         super::change(&undo, &serde_json::Map::new(), false, &palette).unwrap();
         assert_eq!(settings_store::power::LOCK_MINUTES.get(), before);
+        drop(settings);
+    }
+
+    /// The desktop's own sections are the session's too: with no window of
+    /// Settings, the palette or an agent turns on the Vim keys and reads the
+    /// default apps, the clock and the keyboard's layouts.
+    #[test]
+    #[serial_test::serial]
+    fn with_settings_closed_the_desktop_sections_are_changed_through_the_session() {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let palette = settings_store::InvokingAction::action("shortcuts.vim");
+        super::change(
+            &super::address("settings.desktop-controls", "field-edit"),
+            &super::set_field("vim_mode", &serde_json::json!(true)),
+            false,
+            &palette,
+        )
+        .unwrap();
+        assert_eq!(
+            settings_store::load_section("desktop_controls").get("vim_mode"),
+            Some(&serde_json::json!(true))
+        );
+        let published = super::with_records(|records| {
+            records
+                .resources()
+                .iter()
+                .map(|resource| resource.kind.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+        for kind in [
+            "settings.default-apps",
+            "settings.clock",
+            "settings.display-arrangement",
+            "settings.automatic-display",
+            "settings.agent-providers",
+            "settings.osk-sources",
+        ] {
+            assert!(
+                published.iter().any(|published| published == kind),
+                "the session publishes {kind}: {published:?}"
+            );
+        }
+        drop(settings);
+    }
+
+    /// A magnifier shortcut steps the person's accessibility section: the
+    /// zoom and what the toggle comes back to are one step of theirs, which
+    /// undo takes back.
+    #[test]
+    #[serial_test::serial]
+    fn a_magnifier_step_is_a_step_the_person_undoes() {
+        use settings_store::magnifier::{MagnifierState, SECTION};
+
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let zoom = || MagnifierState::from_section(&settings_store::load_section(SECTION)).zoom;
+        let shortcut = settings_store::InvokingAction::action("magnifier.zoom-in");
+        let mut step = serde_json::Map::new();
+        step.insert("step".into(), "zoom-in".into());
+        let address = super::address("settings.accessibility", "step-magnifier");
+        super::change(&address, &step, true, &shortcut).unwrap();
+        super::change(&address, &step, true, &shortcut).unwrap();
+        assert_eq!(zoom(), 3);
+        let undo = super::address("settings.accessibility", "undo");
+        super::change(&undo, &serde_json::Map::new(), false, &shortcut).unwrap();
+        assert_eq!(zoom(), 2, "undo takes back one step");
+        drop(settings);
+    }
+
+    /// Quick settings routes this device through another of the person's
+    /// and shares its connection through their `device-vpn` section's
+    /// actions, as Settings does: changes of theirs, kept in the section.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn quick_settings_change_the_device_vpn_section_through_its_actions() {
+        use settings_store::device_vpn::{EXIT, SECTION, THROUGH};
+
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        crate::shell::device_vpn::choose("desk", true).unwrap();
+        crate::shell::device_vpn::set_exit(true).unwrap();
+        let section = settings_store::load_section(SECTION);
+        assert_eq!(
+            THROUGH.from_section(&section).map(|through| through.device),
+            Some("desk".to_owned())
+        );
+        assert!(EXIT.from_section(&section));
+        // Each is a step of the person's: undo takes back the last.
+        super::change(
+            &super::address("settings.device-vpn", "undo"),
+            &serde_json::Map::new(),
+            false,
+            &settings_store::InvokingAction::action("device-vpn.undo"),
+        )
+        .unwrap();
+        assert!(!EXIT.from_section(&settings_store::load_section(SECTION)));
+        crate::shell::device_vpn::choose("desk", false).unwrap();
+        assert_eq!(
+            THROUGH.from_section(&settings_store::load_section(SECTION)),
+            None
+        );
         drop(settings);
     }
 }

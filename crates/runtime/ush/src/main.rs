@@ -92,6 +92,7 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         Some("quarantine") => guest::quarantine(rest),
         Some("undo") => guest::undo_file_action(rest),
         Some("history") => guest::file_history(rest),
+        Some("version") => Ok(guest::version(rest)),
         Some(name) if ush::file_actions::cli::Tool::of(name).is_some() => {
             guest::file_action(name, rest)
         }
@@ -124,6 +125,10 @@ Inside a guest:
   cp | mv | rm | mkdir | rmdir | ln | truncate   one action each, undoable
   history [--json]                 what was removed or replaced, and its id
   undo file-action ID              put one back
+  version status | log | show | diff | restore
+                                   a file's own history: revisions, their
+                                   contents, what changed, and a checked
+                                   restore (see `version --help`)
 ";
 
 // host side
@@ -171,6 +176,14 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
                 opts.editor = Some(Arc::new(runtime_portal::editor::Socket::adopt(fd)?));
                 i = i.saturating_add(2);
             }
+            ush::setup::TERMINAL_FD_ARG => {
+                anyhow::ensure!(
+                    opts.terminal.is_none(),
+                    "invalid inherited terminal descriptor"
+                );
+                opts.terminal = Some(Arc::new(ush::setup::adopt_terminal(&value()?)?));
+                i = i.saturating_add(2);
+            }
             "--" => {
                 // A program, as the supervisor passes one for a served session.
                 opts.command = args.get(i.saturating_add(1)..).unwrap_or(&[]).to_vec();
@@ -185,22 +198,35 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
     }
 
     init_tracing(opts.verbose);
-    let store = Store::discover();
-    let images = images();
-    let builder = Arc::new(SharedBuilds::new(builder(), Arc::clone(&images)));
-    let mut session = Session::new(store, opts, images, builder);
-    if let Some(script) = script {
-        let resolved = session.resolve()?;
-        let trees: Vec<PathBuf> = resolved.images.into_iter().map(|(_, p)| p).collect();
-        session.opts.command = vec![
-            ush::supervisor::guest_shell(&trees)
-                .to_string_lossy()
-                .into_owned(),
-            "-c".into(),
-            script,
-        ];
+    let served = opts.terminal.is_some();
+    let run = || -> anyhow::Result<i32> {
+        let store = Store::discover();
+        let images = images();
+        let builder = Arc::new(SharedBuilds::new(builder(), Arc::clone(&images)));
+        let mut session = Session::new(store, opts, images, builder);
+        if let Some(script) = script {
+            let resolved = session.resolve()?;
+            let trees: Vec<PathBuf> = resolved.images.into_iter().map(|(_, p)| p).collect();
+            session.opts.command = vec![
+                ush::supervisor::guest_shell(&trees)
+                    .to_string_lossy()
+                    .into_owned(),
+                "-c".into(),
+                script,
+            ];
+        }
+        session.run()
+    };
+    match run() {
+        // Served, standard error is the supervisor's: the reason is its to
+        // log, and the app says the environment could not be set up.
+        Err(error) if served => {
+            let reason = format!("{error:#}");
+            eprint!("{}", ush::setup::SetupReport::Failed { reason }.line());
+            Ok(1)
+        }
+        other => other,
     }
-    session.run()
 }
 
 /// Where images come from on this device: the package store, or fixture
@@ -537,7 +563,22 @@ explain when the host does not offer them.\n";
     /// The guest's first process: installs Landlock inside the namespace, where
     /// the rules name paths the guest will actually use, then becomes the shell.
     pub fn init(args: &[String]) -> anyhow::Result<i32> {
+        use std::os::fd::AsFd as _;
         use std::os::unix::process::CommandExt;
+        // A served session's terminal, which becomes standard error only
+        // once the shell starts: until then setup errors are the
+        // supervisor's to log (`ush::setup`).
+        let own = args
+            .iter()
+            .position(|a| a == "--")
+            .map_or(args, |end| args.get(..end).unwrap_or_default());
+        let terminal = match own.iter().position(|a| a == ush::setup::TERMINAL_FD_ARG) {
+            Some(at) => Some(ush::setup::adopt_terminal(
+                own.get(at.saturating_add(1))
+                    .ok_or_else(|| anyhow::anyhow!("--terminal-fd needs a value"))?,
+            )?),
+            None => None,
+        };
         let rest: Vec<String> = args
             .iter()
             .skip_while(|a| *a != "--")
@@ -572,10 +613,18 @@ explain when the host does not offer them.\n";
         let cmd = rest
             .first()
             .ok_or_else(|| anyhow::anyhow!("guest-init needs a command after `--`"))?;
-        Err(std::process::Command::new(cmd)
+        let saved = terminal
+            .as_ref()
+            .map(ush::setup::attach_stderr)
+            .transpose()?;
+        drop(terminal);
+        let error = std::process::Command::new(cmd)
             .args(rest.get(1..).unwrap_or(&[]))
-            .exec()
-            .into())
+            .exec();
+        if let Some(saved) = &saved {
+            ush::setup::restore_stderr(saved.as_fd());
+        }
+        Err(error.into())
     }
 
     pub fn pkg(args: &[String]) -> anyhow::Result<i32> {
@@ -918,6 +967,15 @@ explain when the host does not offer them.\n";
         }
         println!("\n`undo file-action ID` puts one back.");
         Ok(0)
+    }
+
+    /// `version`: a file's own history, with the verbs an agent already
+    /// knows. Nothing here keeps a store of its own — the mount's history is
+    /// the history, which is the same one the file manager's History view
+    /// shows. It reports a refusal as an exit code, never as an error, because
+    /// a caller reads the answer either way.
+    pub fn version(args: &[String]) -> i32 {
+        ush::version::run(args)
     }
 
     /// `undo file-action ID` — the second half of what `rm` printed.

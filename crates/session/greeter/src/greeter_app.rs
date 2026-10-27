@@ -998,7 +998,7 @@ impl GreeterApp {
             username: username.to_string(),
             display_name: display_name.to_string(),
         };
-        let personal = personal.then(|| person("quinten", "Quinten Example"));
+        let personal = personal.then(|| person("ada", "Ada Example"));
         // A fixed personal account has a known enrollment result. The
         // multi-account fixture exposes the action only as a route: its
         // enrollment is resolved for the username entered before PAM starts.
@@ -1043,7 +1043,7 @@ impl GreeterApp {
             AuthScenario::Accounts => {
                 app.users = vec![
                     person("ada", "Ada Lovelace"),
-                    person("quinten", "Quinten Example"),
+                    person("ada", "Ada Example"),
                     person("grace", "Grace Hopper"),
                 ];
             }
@@ -2633,8 +2633,8 @@ mod tests {
 
     fn quick_user() -> LoginUser {
         LoginUser {
-            username: "quickuser".into(),
-            display_name: "Quinten Quick".into(),
+            username: "tester".into(),
+            display_name: "Ada Quick".into(),
         }
     }
 
@@ -3357,13 +3357,13 @@ mod tests {
     fn fingerprint_login_is_offered_only_for_enrolled_accounts_and_sends_no_password() {
         {
             assert!(fingerprint_list_has_enrollment(
-                "Fingerprints for user quickuser:\n - #0: right-index-finger\n"
+                "Fingerprints for user tester:\n - #0: right-index-finger\n"
             ));
             assert!(fingerprint_list_has_enrollment(
-                "Fingerprints for user quickuser:\n - right-index-finger\n"
+                "Fingerprints for user tester:\n - right-index-finger\n"
             ));
             assert!(!fingerprint_list_has_enrollment(
-                "Fingerprints for user quickuser:\nnone\n"
+                "Fingerprints for user tester:\nnone\n"
             ));
             assert!(!fingerprint_list_has_enrollment("right-index-finger"));
         }
@@ -3647,7 +3647,7 @@ mod tests {
             app.sync(&doc, &automerge::ROOT);
             assert_eq!(
                 typed_username(&app),
-                "quickuser",
+                "tester",
                 "the username is seeded without asking the user to type it"
             );
             assert_eq!(
@@ -3666,12 +3666,12 @@ mod tests {
             let card = card_of(&app);
             assert_eq!(
                 accessible_name_for(card.as_ref(), "greeter.welcome").as_deref(),
-                Some("Quinten Quick"),
+                Some("Ada Quick"),
                 "the person, not the product, gets the headline"
             );
             assert_eq!(
                 accessible_name_for(card.as_ref(), "greeter.account").as_deref(),
-                Some("quickuser")
+                Some("tester")
             );
             assert_eq!(
                 accessible_name_for(card.as_ref(), "greeter.password").as_deref(),
@@ -3720,7 +3720,7 @@ mod tests {
         {
             let app = GreeterApp::for_shot(AuthScenario::Personal);
             let said = spoken(card_of(&app).as_ref());
-            let person = said.iter().position(|s| s == "Quinten Example");
+            let person = said.iter().position(|s| s == "Ada Example");
             let passcode = said.iter().position(|s| s == "Password");
             assert!(person.is_some() && person < passcode, "{said:?}");
         }
@@ -4376,10 +4376,10 @@ mod tests {
             "{ids:?}"
         );
         assert!(
-            !ids.contains(&"greeter.account.quinten".to_string()),
+            !ids.contains(&"greeter.account.ada".to_string()),
             "the chosen account is the one shown, not listed again"
         );
-        seed_password(&app, "typed for quinten");
+        seed_password(&app, "typed for ada");
         let _ = Widget::take_focus_reset(&mut app);
         let ada = app
             .users

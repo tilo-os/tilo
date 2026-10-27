@@ -191,6 +191,16 @@ pub enum MessagesEffect {
         label = "messages-refresh-history"
     )]
     ReadHistory { choice: String },
+    /// Read the page before the conversation's oldest message: the history
+    /// older SMS waits in.
+    #[effect(
+        job,
+        cancellable,
+        idempotent,
+        kind = "read",
+        label = "messages-load-older"
+    )]
+    ReadOlderHistory { choice: String },
     /// Return to the person overview.
     #[effect(view, idempotent)]
     Back,

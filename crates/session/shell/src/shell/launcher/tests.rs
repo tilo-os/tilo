@@ -306,6 +306,18 @@ fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
             (LaunchFailure::NotInstalled, "launch-error-not-installed"),
             (LaunchFailure::NoWorkspace, "launch-error-no-workspace"),
             (
+                LaunchFailure::AppNotInWorkspace,
+                "launch-error-app-not-in-workspace",
+            ),
+            (
+                LaunchFailure::DeviceNotAdmitted,
+                "launch-error-device-not-admitted",
+            ),
+            (
+                LaunchFailure::AppAuthorshipRefused,
+                "launch-error-app-authorship-refused",
+            ),
+            (
                 LaunchFailure::PreviousInstanceBusy,
                 "launch-failed-previous-instance",
             ),
@@ -324,15 +336,18 @@ fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
         // An app the workspace does not list, opened by a member who may
         // not add it: said in plain words, with whom to ask, never as the
         // policy's own wording or an identity failure.
+        let refusal = LaunchError::AppNotInWorkspace {
+            package_id: "org.example.Broken".into(),
+        };
         let not_listed = launch_event(LaunchEventKind::SpawnFailed {
-            reason: LaunchError::NotListedHere.failure(),
-            detail: LaunchError::NotListedHere.user_message(),
+            reason: refusal.failure(),
+            detail: refusal.user_message(),
         })
         .failure_notice()
         .unwrap();
         assert_eq!(
             not_listed.body,
-            "This app isn't one of this workspace's apps. Ask one of the workspace's administrators to add it."
+            crate::shell::i18n::t("launch-error-app-not-in-workspace")
         );
         assert!(!not_listed.body.contains("authorship"));
         assert_ne!(

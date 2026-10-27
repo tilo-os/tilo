@@ -23,8 +23,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -429,15 +427,15 @@ fn publisher_of(item: &StoreItem) -> (String, String) {
 
 type LaunchCompletion = Result<(String, Option<serde_json::Value>), String>;
 
-/// Root widget.
-
-/// An operation as a job: what the whole system sees, and the flag the
-/// person's Stop sets. The package manager cannot be interrupted from here,
-/// so what stops is the Store's part — and the job's outcome says exactly
-/// that.
+/// An operation as a job the whole system sees. It offers no Stop, because
+/// there is nothing here that could honour one: the package manager runs the
+/// operation to the end in a process of its own, and the Store holds no
+/// handle to that child (the app host's `flatpak` call has no cancel), so
+/// stopping here would only stop the Store watching (`APP-store-01`). The
+/// job's row and the app's page say that, and what the person can do instead:
+/// leave it running, or close the window.
 pub(crate) struct OperationJob {
     job: ui::jobs::Running,
-    stopped: Arc<AtomicBool>,
 }
 
 /// The verb a failure's row carries: open the app's page, where its own
@@ -1265,23 +1263,11 @@ impl StoreApp {
         }
     }
 
-    /// End the job the operation ran as: what came of it, or that the person
-    /// stopped following it.
+    /// End the job the operation ran as: what came of it.
     fn finish_operation_job(&mut self, app: &str, outcome: Result<String, String>) {
-        let Some(OperationJob { job, stopped }) = self.operation_jobs.remove(app) else {
+        let Some(OperationJob { job }) = self.operation_jobs.remove(app) else {
             return;
         };
-        if stopped.load(Ordering::Acquire) {
-            job.stopped();
-            self.status_line =
-                "Stopped following this operation. The package manager may still be finishing it."
-                    .to_owned();
-            ui::attention::publish(ui::attention::Notice::did(
-                store_owner(),
-                self.status_line.clone(),
-            ));
-            return;
-        }
         match outcome {
             Ok(status) => {
                 // The ledger records it: `publish_status` writes the same
@@ -1296,7 +1282,7 @@ impl StoreApp {
                         ui::i18n!("store-operation-failed"),
                         ui::attention::Action::new(
                             SHOW_OPERATION,
-                            &ui::i18n!("store-error-refresh"),
+                            ui::i18n!("store-error-refresh"),
                         ),
                     )
                     .because(error),
@@ -2049,9 +2035,11 @@ impl StoreApp {
             self.status_line = view::progress_label(action, &item.name);
             self.structure_dirty = true;
             // The operation is a job of the whole system: it keeps running
-            // when the person leaves this page, and its row says what the
-            // package manager is doing.
-            let stopped = Arc::new(AtomicBool::new(false));
+            // when the person leaves this page. No Stop: the package manager
+            // runs it in a process of its own, and the Store holds no handle
+            // to signal it, so a Stop here would only stop the watching. What
+            // the job's row says instead is what stopping would mean and what
+            // the person can do about it (`APP-store-01`).
             let job = ui::jobs::start(
                 ui::jobs::Spec::new(self.status_line.clone())
                     .subject(
@@ -2059,14 +2047,10 @@ impl StoreApp {
                             .opens(item.id.clone()),
                     )
                     .unit(ui::jobs::Unit::Steps)
-                    .phase(self.status_line.clone())
-                    .stoppable({
-                        let stopped = Arc::clone(&stopped);
-                        move || stopped.store(true, Ordering::Release)
-                    }),
+                    .phase(ui::i18n!("store-job-continues")),
             );
             self.operation_jobs
-                .insert(item.id.clone(), OperationJob { job, stopped });
+                .insert(item.id.clone(), OperationJob { job });
             return Ok(Job::admitted(
                 Request::Act(Box::new(item), action),
                 Finish::Package,
@@ -2627,7 +2611,7 @@ impl StoreApp {
         }
         if *finish == Finish::Package {
             self.active_operation = None;
-            if let Some(app) = operating.clone() {
+            if let Some(app) = operating {
                 match &outcome {
                     Ok(finished) => self.finish_operation_job(&app, Ok(finished.status.clone())),
                     Err(error) => self.finish_operation_job(&app, Err(error.clone())),
@@ -5689,6 +5673,22 @@ mod tests {
         }
     }
 
+    /// An operation has no Stop the Store could honour, so the app's own page
+    /// says what stopping would mean and what the person can do instead
+    /// (`APP-store-01`).
+    #[test]
+    fn a_running_apps_page_says_what_stopping_would_mean() {
+        let mut app = seeded_app();
+        app.focus_detail("id.chess");
+        app.active_operation = Some(("id.chess".into(), ActionKind::FlatpakInstall));
+        let frame = frame_composition(app.compose(&Theme::dark()), 900.0);
+        let page = frame.inspection_json().unwrap();
+        assert!(
+            page.contains(&ui::i18n!("store-progress-continues")),
+            "the page says why there is no Stop: {page}"
+        );
+    }
+
     /// Operation notices, root accessibility, trust summary and bounded, printable live status.
     #[test]
     #[expect(
@@ -5906,6 +5906,17 @@ mod tests {
                 app.operation_jobs.values().filter(|_| true).count() >= 1,
                 "the operation is a job the whole system sees"
             );
+            // Nothing here can signal the package manager's process, so the
+            // job offers no Stop, and says instead what stopping would mean
+            // and what the person can do about it (`APP-store-01`).
+            let row = ui::jobs::rows()
+                .into_iter()
+                .find(|row| row.title() == app.status_line())
+                .expect("the operation has a job row");
+            assert!(!row.can_stop(), "no Stop the Store could not honour");
+            // The row's second line says why, instead of repeating the title.
+            assert_eq!(row.phase(), ui::i18n!("store-job-continues"));
+            assert_ne!(row.live_line(), row.title());
             app.set_worker_busy(true);
             app.set_worker_busy(false);
             assert!(app.active_operation.is_none());

@@ -11,8 +11,8 @@
 use super::{
     Affine, ArgValue, Background, BlendMode, DeckAssets, DeckLook, Element, ElementKind,
     FILL_ROLES, Fill, HashMap, Hit, Icon, PaintCtx, Palette, PaletteKind, Point, PresenceCtx, Rect,
-    SLIDE_H, SLIDE_W, STROKE_ROLES, Scene, SidebarDrawer, SlidesApp, SplitLayout, TextAlign,
-    TextRenderer, Theme, custom_colour_hex, tr, tr_args,
+    SLIDE_H, SLIDE_W, STROKE_ROLES, Scene, SidebarDrawer, SlideZoom, SlidesApp, SplitLayout,
+    TextAlign, TextRenderer, Theme, custom_colour_hex, tr, tr_args,
 };
 
 use ui::TextRole;
@@ -564,18 +564,49 @@ impl SlidesApp {
         Some((canvas, area))
     }
 
-    /// Fit the 16:9 slide inside `canvas` with the content gutter round it.
-    /// Returns the destination rect and the slide→pixel scale factor.
+    /// Fit the 16:9 slide inside `canvas` with the content gutter round it,
+    /// or place it at the zoom the person chose, moved by however far they
+    /// have panned. Returns the destination rect and the slide→pixel scale
+    /// factor.
+    ///
+    /// A zoomed slide is centred on the pane and may be larger than it: the
+    /// pane clips it, and the wheel moves it, so every part stays reachable.
     pub(super) fn fit_slide(&self, canvas: Rect) -> (Rect, f64) {
         let pad = self.chrome_metrics.s6;
         let avail_w = (canvas.width() - 2.0 * pad).max(1.0);
         let avail_h = (canvas.height() - 2.0 * pad).max(1.0);
-        let s = (avail_w / SLIDE_W).min(avail_h / SLIDE_H);
+        // What the pan is clamped to, for the keys and the wheel, which run
+        // between frames.
+        self.slide_pane.set((avail_w, avail_h));
+        let fit = (avail_w / SLIDE_W).min(avail_h / SLIDE_H);
+        let s = match self.slide_zoom {
+            SlideZoom::Fit => fit,
+            SlideZoom::Pinned(pinned) => pinned,
+        };
         let sw = SLIDE_W * s;
         let sh = SLIDE_H * s;
-        let sx = canvas.x0 + (canvas.width() - sw) / 2.0;
-        let sy = canvas.y0 + (canvas.height() - sh) / 2.0;
+        let (pan_x, pan_y) = self.slide_pan_within(canvas);
+        let sx = canvas.x0 + (canvas.width() - sw) / 2.0 + pan_x;
+        let sy = canvas.y0 + (canvas.height() - sh) / 2.0 + pan_y;
         (Rect::new(sx, sy, sx + sw, sy + sh), s)
+    }
+
+    /// How far the slide can be moved from the pane's centre: half of what
+    /// does not fit, along each axis, and nothing while it fits.
+    pub(super) fn slide_pan_within(&self, canvas: Rect) -> (f64, f64) {
+        let pad = self.chrome_metrics.s6;
+        let avail_w = (canvas.width() - 2.0 * pad).max(1.0);
+        let avail_h = (canvas.height() - 2.0 * pad).max(1.0);
+        let s = match self.slide_zoom {
+            SlideZoom::Fit => return (0.0, 0.0),
+            SlideZoom::Pinned(pinned) => pinned,
+        };
+        let reach_x = ((SLIDE_W * s - avail_w) / 2.0).max(0.0);
+        let reach_y = ((SLIDE_H * s - avail_h) / 2.0).max(0.0);
+        (
+            self.slide_pan.0.clamp(-reach_x, reach_x),
+            self.slide_pan.1.clamp(-reach_y, reach_y),
+        )
     }
 
     /// The slide sidebar: the footer actions and, above them, the

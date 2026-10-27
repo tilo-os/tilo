@@ -19,8 +19,8 @@ pub use groups::{
     MAX_GROUPS, MembershipFuture,
 };
 pub use history::{
-    Delivery, Direction, HistoryClient, HistoryError, HistoryFuture, HistoryHost, HistoryPage,
-    MAX_HISTORY_MESSAGES, Message,
+    Delivery, Direction, HistoryClient, HistoryCursor, HistoryError, HistoryFuture, HistoryHost,
+    HistoryPage, MAX_HISTORY_MESSAGES, Message,
 };
 
 mod sending;

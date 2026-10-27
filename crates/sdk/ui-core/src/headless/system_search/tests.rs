@@ -514,7 +514,7 @@ fn mounted_provider() -> (
     crate::application_test_support::ProbeHost,
     FrameHarness,
     std::rc::Rc<std::cell::RefCell<crate::application_test_support::ProviderObservations>>,
-    std::rc::Rc<std::cell::RefCell<crate::permissions::PermissionContext>>,
+    crate::permissions::SharedPermissions,
     GlobalSearchSourceData,
 ) {
     use crate::application::{LaunchTarget, RestoreInput};
@@ -565,8 +565,7 @@ fn mounted_provider_uses_exact_admitted_instance_and_current_permissions() {
     sources.tabs[0].instance_id = 11;
     f.replace_global_search_data(sources);
     assert!(!f.system_search.rows.is_empty());
-    *permissions.borrow_mut() =
-        crate::permissions::PermissionContext::stranger("outsider").at_unix_time(100);
+    permissions.set(crate::permissions::PermissionContext::stranger("outsider").at_unix_time(100));
     // The painted hit is revalidated against current component authority at activation.
     enter(&mut f);
     assert!(f.take_global_search_intent().is_none());
@@ -612,8 +611,7 @@ fn layout_refreshes_content_without_retargeting_or_losing_keyboard_selection() {
     );
     f.open_global_search_all("body-only-query").unwrap();
     let old = f.a11y_node_named("Probe").unwrap();
-    *permissions.borrow_mut() =
-        crate::permissions::PermissionContext::stranger("outsider").at_unix_time(100);
+    permissions.set(crate::permissions::PermissionContext::stranger("outsider").at_unix_time(100));
     f.relayout();
     assert!(
         f.a11y_node_named("Probe").is_none(),

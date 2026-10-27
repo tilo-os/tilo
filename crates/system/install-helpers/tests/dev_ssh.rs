@@ -56,14 +56,14 @@ fn pending_oobe_and_key_only_recovery() {
     fs::create_dir(&etc).unwrap();
     keygen(&root.join("key"));
     let labels = Labels::default();
-    apply(&labels, &etc, "xaver", &root.join("key.pub")).unwrap();
+    apply(&labels, &etc, "bob", &root.join("key.pub")).unwrap();
     assert_eq!(
-        words(&fs::read_to_string(etc.join("ssh/authorized_keys/xaver")).unwrap()),
+        words(&fs::read_to_string(etc.join("ssh/authorized_keys/bob")).unwrap()),
         words(&fs::read_to_string(root.join("key.pub")).unwrap())
     );
     let config = fs::read_to_string(etc.join("ssh/sshd_config.d/00-tilo-bringup.conf")).unwrap();
     for directive in [
-        "AllowUsers xaver",
+        "AllowUsers bob",
         "PasswordAuthentication no",
         "PermitRootLogin no",
         "AuthorizedKeysFile /etc/ssh/authorized_keys/%u",
@@ -72,7 +72,7 @@ fn pending_oobe_and_key_only_recovery() {
     }
     assert_eq!(
         config,
-        "AllowUsers xaver\nPermitRootLogin no\nPasswordAuthentication no\n\
+        "AllowUsers bob\nPermitRootLogin no\nPasswordAuthentication no\n\
          KbdInteractiveAuthentication no\nPubkeyAuthentication yes\n\
          AuthorizedKeysFile /etc/ssh/authorized_keys/%u\n"
     );
@@ -87,13 +87,13 @@ fn pending_oobe_and_key_only_recovery() {
             "/etc/ssh/authorized_keys",
             "/etc/ssh/sshd_config.d",
             "/etc/systemd/system/multi-user.target.wants",
-            "/etc/ssh/authorized_keys/xaver",
+            "/etc/ssh/authorized_keys/bob",
             "/etc/ssh/sshd_config.d/00-tilo-bringup.conf",
             "/etc/systemd/system/multi-user.target.wants/sshd.service",
         ]
     );
     for written in [
-        "ssh/authorized_keys/xaver",
+        "ssh/authorized_keys/bob",
         "ssh/sshd_config.d/00-tilo-bringup.conf",
     ] {
         let mode = std::os::unix::fs::PermissionsExt::mode(
@@ -103,7 +103,7 @@ fn pending_oobe_and_key_only_recovery() {
     }
     assert!(!etc.join("tilo/.firstboot-done").exists());
     assert!(!root.join("var/lib/tilo/device-private").exists());
-    let again = apply(&Labels::default(), &etc, "xaver", &root.join("key.pub")).unwrap_err();
+    let again = apply(&Labels::default(), &etc, "bob", &root.join("key.pub")).unwrap_err();
     assert!(again.0.contains("already exists"), "{again}");
 }
 
@@ -124,8 +124,8 @@ fn several_owner_keys() {
             + &fs::read_to_string(root.join("b.pub")).unwrap(),
     )
     .unwrap();
-    apply(&Labels::default(), &etc, "xaver", &request).unwrap();
-    let installed = fs::read_to_string(etc.join("ssh/authorized_keys/xaver")).unwrap();
+    apply(&Labels::default(), &etc, "bob", &request).unwrap();
+    let installed = fs::read_to_string(etc.join("ssh/authorized_keys/bob")).unwrap();
     let installed: Vec<Vec<String>> = installed.lines().map(words).collect();
     let expected: Vec<Vec<String>> = ["a", "b"]
         .iter()
@@ -142,12 +142,12 @@ fn symlink_and_key_options_refused() {
     fs::create_dir(&etc).unwrap();
     let key = root.join("key");
     fs::write(&key, "command=\"id\" ssh-ed25519 AAAA\n").unwrap();
-    assert!(apply(&Labels::default(), &etc, "xaver", &key).is_err());
+    assert!(apply(&Labels::default(), &etc, "bob", &key).is_err());
     keygen(&root.join("real"));
     let outside = root.join("outside");
     fs::create_dir(&outside).unwrap();
     std::os::unix::fs::symlink(&outside, etc.join("ssh")).unwrap();
-    let error = apply(&Labels::default(), &etc, "xaver", &root.join("real.pub")).unwrap_err();
+    let error = apply(&Labels::default(), &etc, "bob", &root.join("real.pub")).unwrap_err();
     assert!(error.0.contains("symlink"), "{error}");
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
 }
@@ -164,9 +164,7 @@ fn malformed_requests_refuse_with_the_scripts_messages() {
     let refuse = |name: &str, content: &str| {
         let path = root.join(name);
         fs::write(&path, content).unwrap();
-        apply(&Labels::default(), &etc, "xaver", &path)
-            .unwrap_err()
-            .0
+        apply(&Labels::default(), &etc, "bob", &path).unwrap_err().0
     };
     assert_eq!(refuse("empty", " \n\n"), "expected 1 to 16 SSH public keys");
     assert_eq!(
@@ -190,11 +188,9 @@ fn malformed_requests_refuse_with_the_scripts_messages() {
     let crlf = format!("{} {}\r\n", real_words[0], real_words[1]);
     let path = root.join("crlf");
     fs::write(&path, crlf).unwrap();
-    apply(&Labels::default(), &etc, "xaver", &path).unwrap();
+    apply(&Labels::default(), &etc, "bob", &path).unwrap();
 
-    let invalid = apply(&Labels::default(), &etc, "Xaver", &path)
-        .unwrap_err()
-        .0;
+    let invalid = apply(&Labels::default(), &etc, "Bob", &path).unwrap_err().0;
     assert_eq!(invalid, "invalid installed /etc or account");
     let long = "a".repeat(33);
     let invalid = apply(&Labels::default(), &etc, &long, &path).unwrap_err().0;
@@ -211,7 +207,7 @@ fn malformed_requests_refuse_with_the_scripts_messages() {
     let fresh = root.join("etc3");
     fs::create_dir(&fresh).unwrap();
     assert_eq!(
-        apply(&Labels::default(), &fresh, "xaver", &linked)
+        apply(&Labels::default(), &fresh, "bob", &linked)
             .unwrap_err()
             .0,
         "SSH key must be a bounded, non-linked regular file"
@@ -231,12 +227,12 @@ fn enablement_must_be_cleared_first() {
     .unwrap();
     keygen(&root.join("key"));
     assert_eq!(
-        apply(&Labels::default(), &etc, "xaver", &root.join("key.pub"))
+        apply(&Labels::default(), &etc, "bob", &root.join("key.pub"))
             .unwrap_err()
             .0,
         "SSH enablement must first be cleared by the installer"
     );
-    assert!(!etc.join("ssh/authorized_keys/xaver").exists());
+    assert!(!etc.join("ssh/authorized_keys/bob").exists());
 }
 
 #[test]

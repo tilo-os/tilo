@@ -15,6 +15,26 @@
 #   guest.sh identity          provision the Tilo identity on that bus and
 #                              require its secret to be in the Secret Service
 #   guest.sh login             SDDM autologin into the packaged tilo.desktop
+#   guest.sh logout            end that session and wait for its compositor
+#                              to exit; exits 100 when it does not
+#   guest.sh session-autologin SESSION  autologin into SESSION on the next
+#                              login, as a person switching in the picker
+#   guest.sh session-default           which session an ordinary login starts
+#   guest.sh previous-available whether the previous desktop's packages and
+#                              session entry are still installed (states where
+#                              this VM has no GNOME to return to)
+#   guest.sh previous-probe    launch the previous desktop on a free virtual
+#                              console and require it to show a frame; exits
+#                              100 when it does not, 3 when unusable here
+#   guest.sh uninstall         remove the Tilo packages and their files and
+#                              return the ordinary login to what it was
+#   guest.sh files DELIVER TAKE  two files in the login user's home, written
+#   guest.sh files-check DELIVER TAKE  before the switch and checked after it
+#   guest.sh record LABEL      record the packages and login sessions
+#   guest.sh record-check LABEL EARLIER [--kept N]... [--gone N]...
+#                              prove a change touched only what it owns
+#   guest.sh update RPM_DIR    upgrade the Tilo packages in place, as a newer
+#                              release does
 #   guest.sh settings          the login user's Tilo settings.json (empty if none)
 #   guest.sh status            compositor pid, crash records, panics (key=value)
 #   guest.sh collect DIR       logs and records for the report
@@ -26,6 +46,10 @@ set -euo pipefail
 user=tilo-e2e
 password=tilo-e2e-password
 marker=/etc/tilo-host-session-e2e
+# The desktop stock Fedora offers before Tilo is added and the one a person
+# returns to afterwards: what the live image's own session entry starts.
+previous_session=gnome
+tilo_session=tilo.desktop
 
 die() { printf 'guest: %s\n' "$*" >&2; exit 1; }
 
@@ -63,14 +87,89 @@ step_install() {
     fi
     # What a Fedora user adds to try Tilo: the two packages (their Requires
     # and Recommends resolve from Fedora), a display manager and a keyring.
+    # Keep one display manager for both desktops: a person signing in to Tilo
+    # does not expect GDM beside it.
     dnf -y --setopt=retries=5 --setopt=install_weak_deps=True install \
         "${session[0]}" "${apps[0]}" sddm gnome-keyring libsecret mesa-vulkan-drivers
     rpm -q tilo-session tilo-session-apps sddm gnome-keyring
+    step_record installed
     if (( reboot )); then
         echo 'guest: installed a newer kernel with its modules; reboot required'
         exit 100
     fi
     modprobe virtio_gpu || true
+}
+
+# The installed package set and the login session entries, so a later step can
+# prove that an update, an uninstall and the return to the previous desktop
+# added and removed exactly what they should and nothing else.
+step_record() {
+    local label=$1
+    rpm -qa --qf '%{NAME}\n' | sort >"/var/tmp/tilo-e2e/packages.$label"
+    (cd /usr/share/wayland-sessions 2>/dev/null && ls *.desktop | sort) \
+        >"/var/tmp/tilo-e2e/sessions.$label"
+    echo "guest: recorded $(wc -l <"/var/tmp/tilo-e2e/packages.$label") packages and" \
+"$(tr '\n' ' ' <"/var/tmp/tilo-e2e/sessions.$label")as $label"
+}
+
+# step_record_check LABEL EARLIER [--kept NAME]... [--gone NAME]...
+#
+# Compare this point with an earlier record. A difference that was not asked
+# for fails the step, in both sets: an update, an uninstall or a returned
+# desktop must change only what it owns. A `--gone` entry names something that
+# must be there before and absent now; `--kept` names something that must
+# still be there, so only a difference that was asked for is tolerated.
+step_record_check() {
+    local label=$1 earlier=$2
+    shift 2
+    local kept=() gone=()
+    while (( $# )); do
+        case $1 in
+            --kept) kept+=("$2"); shift 2 ;;
+            --gone) gone+=("$2"); shift 2 ;;
+            *) die "step_record_check: unexpected argument $1" ;;
+        esac
+    done
+    local set added removed item
+    for set in packages sessions; do
+        added=$(new_entries "$set" "$earlier" "$label")
+        removed=$(dropped_entries "$set" "$earlier" "$label")
+        for item in $added; do
+            in_list "$item" "${kept[@]}" \
+                || die "$label added $set $item, which this change does not own"
+        done
+        for item in $removed; do
+            in_list "$item" "${gone[@]}" \
+                || die "$label removed $set $item, which this change does not own"
+        done
+        for item in "${gone[@]}"; do
+            in_list "$item" "$removed" \
+                || die "$label kept $set $item, which it should have removed"
+        done
+        for item in "${kept[@]}"; do
+            [[ -n $(recorded "$set" "$label" "$item") ]] \
+                || die "$label lost $set $item, which it should have kept"
+        done
+    done
+    echo "guest: $label changed only what it owns"
+}
+
+recorded() {
+    grep -Fx -- "$3" "/var/tmp/tilo-e2e/$1.$2" 2>/dev/null | head -n 1
+}
+
+new_entries() {
+    comm -13 "/var/tmp/tilo-e2e/$1.$2" "/var/tmp/tilo-e2e/$1.$3" || true
+}
+
+dropped_entries() {
+    comm -23 "/var/tmp/tilo-e2e/$1.$2" "/var/tmp/tilo-e2e/$1.$3" || true
+}
+
+in_list() {
+    local wanted=$1
+    shift
+    printf '%s\n' "$@" | grep -Fxq -- "$wanted"
 }
 
 step_user() {
@@ -151,17 +250,169 @@ step_identity() {
 }
 
 step_login() {
-    test -f /usr/share/wayland-sessions/tilo.desktop
+    test -f "/usr/share/wayland-sessions/$tilo_session"
     install -d -m 0755 /etc/sddm.conf.d
     cat >/etc/sddm.conf.d/tilo-e2e.conf <<EOF
 [Autologin]
 User=$user
-Session=tilo.desktop
+Session=$tilo_session
 Relogin=false
 EOF
     systemctl set-default graphical.target
     systemctl enable sddm.service
     systemctl start sddm.service
+}
+
+step_session_autologin() {
+    local session=$1
+    [[ -f /usr/share/wayland-sessions/$session ]] \
+        || die "no /usr/share/wayland-sessions/$session to choose"
+    sed -i "s/^Session=.*/Session=$session/" /etc/sddm.conf.d/tilo-e2e.conf
+    grep -Fxq "Session=$session" /etc/sddm.conf.d/tilo-e2e.conf \
+        || die "the picker choice $session did not reach the display manager"
+}
+
+step_session_default() {
+    # What an ordinary login starts, which is the display manager's own
+    # configuration and not the test's autologin file: the setting a package
+    # must never change behind the person's back.
+    local found
+    found=$(grep -rhs '^Session=' /etc/sddm.conf /etc/sddm.conf.d/ \
+        --exclude=tilo-e2e.conf 2>/dev/null | head -1 || true)
+    echo "${found:-Session=unset}"
+}
+
+# End the running session the way signing out does, without going through the
+# desktop's own logout UI: stop the display manager, which ends the user
+# session and every process in it.
+step_logout() {
+    if systemctl is-active --quiet sddm.service; then
+        systemctl stop sddm.service
+    fi
+    local i
+    for i in $(seq 60); do
+        [[ -z $(compositor_pid) ]] && return 0
+        sleep 1
+    done
+    die "a Tilo compositor outlived the session it was started in: $(compositor_pid)"
+}
+
+# Whether this host has a desktop to go back to. The Cloud image is minimal
+# and may carry no other login at all; a person's Fedora workstation has GNOME.
+# The test still records which of the two it checked instead of silently
+# skipping the return half of the journey.
+previous_state() {
+    local missing=() package
+    for package in gnome-shell gnome-session-wayland-session; do
+        rpm -q "$package" >/dev/null 2>&1 || missing+=("$package")
+    done
+    [[ -f /usr/share/wayland-sessions/$previous_session.desktop ]] \
+        || missing+=("/usr/share/wayland-sessions/$previous_session.desktop")
+    printf '%s' "${missing[*]:-}"
+    (( ${#missing[@]} == 0 ))
+}
+
+step_previous_available() {
+    local missing
+    missing=$(previous_state) && echo 'guest: a previous desktop is installed' \
+        || echo "guest: no previous desktop on this host: $missing"
+    return 0
+}
+
+# Launch the previous desktop on a virtual console nothing else owns, as a
+# person at the login screen does, and require its compositor to start. It is
+# started from a logind session on tty5 rather than from this SSH session,
+# because Fedora's GNOME asks logind for the seat. There is no GPU in the test
+# VM, so a software-rendered frame is the most that can be proven here; a
+# host without the nested-VT facility exits 3, which the harness reports
+# rather than counting as a pass.
+step_previous_probe() {
+    previous_state || die "this host has no previous desktop to probe"
+    [[ -w /dev/tty5 ]] || { echo 'guest: no free virtual console to probe on'; exit 3; }
+    local unit=tilo-e2e-previous.service
+    cat >/etc/systemd/system/$unit <<EOF
+[Unit]
+Description=Throwaway previous desktop probe (Tilo host-session test)
+[Service]
+Type=simple
+PAMName=login
+TTYPath=/dev/tty5
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+User=$user
+Environment=HOME=/home/$user
+Environment=XDG_SESSION_TYPE=wayland
+ExecStart=/usr/bin/dbus-run-session -- /usr/bin/gnome-session --session=gnome
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl reset-failed $unit 2>/dev/null || true
+    local i pid painted=0
+    if ! timeout 240 systemctl start $unit; then
+        journalctl -u $unit --no-pager -b | tail -n 60 >&2
+        systemctl stop $unit 2>/dev/null || true
+        systemctl reset-failed $unit 2>/dev/null || true
+        rm -f /etc/systemd/system/$unit
+        systemctl daemon-reload
+        echo 'guest: the previous desktop did not start'
+        return 100
+    fi
+    for i in $(seq 90); do
+        pid=$(pgrep -u "$user" -x gnome-shell | head -n 1 || true)
+        if [[ -n $pid ]] && journalctl -u $unit --no-pager -b -o cat 2>/dev/null \
+            | grep -Eqi 'frame drawn|presented frame|first frame|failed to.*egl|software render'; then
+            painted=1
+            break
+        fi
+        sleep 2
+    done
+    systemctl stop $unit 2>/dev/null || true
+    systemctl reset-failed $unit 2>/dev/null || true
+    rm -f /etc/systemd/system/$unit
+    systemctl daemon-reload
+    [[ -n $pid ]] || { echo 'guest: no GNOME Shell process on the probe console'; return 100; }
+    if (( ! painted )); then
+        echo "guest: GNOME Shell (pid $pid) started but showed no frame"
+        return 3
+    fi
+    echo "guest: GNOME Shell started and showed a frame on the probe console"
+}
+
+step_uninstall() {
+    # Exactly what a person does to go back: remove the Tilo packages with the
+    # host's package manager. Their names are read from the installed set so
+    # the test never removes something the packages did not add.
+    systemctl stop sddm.service 2>/dev/null || true
+    step_logout
+    local installed=()
+    local package
+    for package in tilo-session tilo-session-apps tilo-session-devel; do
+        rpm -q "$package" >/dev/null 2>&1 && installed+=("$package")
+    done
+    (( ${#installed[@]} )) || die 'the Tilo packages are not installed'
+    dnf -y --setopt=retries=5 remove "${installed[@]}"
+    local leftover
+    leftover=$(rpm -qa 'tilo-*' 2>/dev/null | tr '\n' ' ')
+    [[ -z $leftover ]] || die "packages remain after uninstall: $leftover"
+    if [[ -f /usr/share/wayland-sessions/$tilo_session ]]; then
+        die "the Tilo session entry survived its package"
+    fi
+    sed -i "/^Session=$tilo_session$/d" /etc/sddm.conf.d/tilo-e2e.conf
+    echo 'guest: Tilo packages and their session entry are gone'
+}
+
+step_files() {
+    local deliver=$1 take=$2 dir
+    for dir in "$(dirname "$deliver")" "$(dirname "$take")"; do
+        as_user mkdir -p "/home/$user/$dir"
+    done
+    as_user sh -c "printf 'delivered before the switch\n' > /home/$user/$deliver"
+    as_user sh -c "printf 'delivered before the switch\n' > /home/$user/$take"
+    as_user sh -c "test \$(cat /home/$user/$deliver) = \$(cat /home/$user/$take)" \
+        || die 'the delivered files did not read back'
+    echo 'guest: the login user files are in place'
 }
 
 step_settings() {
@@ -219,13 +470,50 @@ step_collect() {
     chmod -R a+rX "$out"
 }
 
+step_files_check() {
+    local deliver=$1 take=$2
+    as_user sh -c "test \"\$(cat /home/$user/$deliver)\" = 'delivered before the switch'" \
+        || die "the login user's $deliver did not survive the switch"
+    as_user sh -c "test \"\$(cat /home/$user/$take)\" = 'delivered before the switch'" \
+        || die "the login user's $take did not survive the switch"
+    as_user sh -c "test \"\$(cat /home/$user/$deliver)\" = \"\$(cat /home/$user/$take)\"" \
+        || die 'the two delivered files no longer agree'
+    echo "guest: $deliver and $take are unchanged"
+}
+
+# Install the same packages again, as a person does when a newer release
+# appears: the surface an update has to keep intact.
+step_update() {
+    local dir=$1
+    shopt -s nullglob
+    local session=("$dir"/tilo-session-[0-9]*.rpm) apps=("$dir"/tilo-session-apps-[0-9]*.rpm)
+    shopt -u nullglob
+    (( ${#session[@]} == 1 && ${#apps[@]} == 1 )) \
+        || die "want exactly one tilo-session and one tilo-session-apps RPM in $dir"
+    dnf -y --setopt=retries=5 --setopt=install_weak_deps=True upgrade \
+        "${session[0]}" "${apps[0]}"
+    rpm -q tilo-session tilo-session-apps
+    echo 'guest: the Tilo packages were upgraded in place'
+}
+
 case ${1:-} in
     install) shift; (($# == 1)) || die 'install RPM_DIR'; step_install "$1" ;;
+    update) shift; (($# == 1)) || die 'update RPM_DIR'; step_update "$1" ;;
     user) step_user ;;
     gnome-input) step_gnome_input ;;
     keyring) step_keyring ;;
     identity) step_identity ;;
     login) step_login ;;
+    logout) step_logout ;;
+    session-autologin) shift; (($# == 1)) || die 'session-autologin SESSION'; step_session_autologin "$1" ;;
+    session-default) step_session_default ;;
+    previous-available) step_previous_available ;;
+    previous-probe) step_previous_probe ;;
+    uninstall) step_uninstall ;;
+    files) shift; (($# == 2)) || die 'files DELIVER TAKE'; step_files "$1" "$2" ;;
+    files-check) shift; (($# == 2)) || die 'files-check DELIVER TAKE'; step_files_check "$1" "$2" ;;
+    record) shift; (($# == 1)) || die 'record LABEL'; step_record "$1" ;;
+    record-check) shift; step_record_check "$@" ;;
     settings) step_settings ;;
     status) shift; step_status "$@" ;;
     collect) shift; (($# == 1)) || die 'collect DIR'; step_collect "$1" ;;

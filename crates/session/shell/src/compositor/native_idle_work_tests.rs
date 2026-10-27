@@ -123,7 +123,7 @@ impl Desktop {
     /// in this fixture. The initial frame's layout is already built.
     fn tick(&mut self) -> Option<Duration> {
         let changed = self.frame.pump_apps(&mut self.doc, &automerge::ROOT);
-        let app_tick = NativeAppTick::after_pump(&self.frame, changed, self.now);
+        let app_tick = NativeAppTick::after_pump(changed, self.now);
         let reasons = NativeRedrawReasons {
             apps: app_tick.redraw,
             ..Default::default()

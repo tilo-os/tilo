@@ -11,6 +11,7 @@
 //! exists only on the bundled offline basemap (captures and tests), never on
 //! the live map.
 
+use crate::failure;
 use crate::model::LatLon;
 use crate::sample::{Basemap, RoadClass};
 
@@ -39,13 +40,13 @@ impl Congestion {
     ];
 
     /// Human-readable label for the legend / a tapped segment.
-    pub fn label(self) -> &'static str {
-        match self {
-            Congestion::Free => "Free flowing",
-            Congestion::Moderate => "Moderate",
-            Congestion::Heavy => "Heavy",
-            Congestion::Severe => "Standstill",
-        }
+    pub fn label(self) -> String {
+        failure::t(match self {
+            Congestion::Free => "maps-congestion-free",
+            Congestion::Moderate => "maps-congestion-moderate",
+            Congestion::Heavy => "maps-congestion-heavy",
+            Congestion::Severe => "maps-congestion-standstill",
+        })
     }
 }
 

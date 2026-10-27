@@ -53,6 +53,12 @@ pub trait Resource: Sized + 'static {
     const KIND: &'static str;
     /// Human name of one resource of this kind, e.g. `"Notebook"`.
     const LABEL: &'static str;
+    /// The app that publishes records of this kind, e.g. `"so.tilo.notes"`:
+    /// the framework app's id, or for a resource that names its app in its
+    /// `#[resource(app = "…")]` declaration, that. It is part of the
+    /// [`ActionKey`](tilo_actions::ActionKey) every typed reference of the
+    /// resource names its actions by.
+    const APP_ID: &'static str = crate::kind::DEFAULT_APP;
     /// The registry type id every action of this resource is replayed under.
     const ACTION_TYPE: &'static str = Self::KIND;
 
@@ -317,6 +323,16 @@ pub trait Resource: Sized + 'static {
     /// from a screenshot.
     const READABLE: bool = false;
 
+    /// Whether History shows this type's versions as text: the type's
+    /// [`read`](Self::read) adapter renders its record as text, so a version
+    /// can be shown and two of them diffed as lines. A type that reads its
+    /// record as a structure (a collection of records, a record of fields)
+    /// says so here, and History lists and compares its versions by content
+    /// address instead of inventing a text rendering. A type that declares no
+    /// restore schema and no text rendering — a file of bytes — reports
+    /// metadata and exact bytes only, never a diff.
+    const HISTORY_READS_TEXT: bool = false;
+
     /// Whether this exact child is part of the public document projection
     /// answered by `read_content`. Defaults to false even for readable parents.
     /// This is a structural declaration, not a permission check: it must not
@@ -502,7 +518,7 @@ pub const EDIT_PARAM: &str = "edit";
 
 /// Read a field edit given as JSON into the action it is.
 fn read_edit(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built, String> {
-    let edit = Edit::<()>::from_json(value)?;
+    let edit = vocabulary.rooted_edit(Edit::<()>::from_json(value)?)?;
     match (vocabulary.edit)(edit) {
         Some(action) => Ok(action),
         None => Err(format!("{} has no field edits", vocabulary.label)),
@@ -1691,6 +1707,21 @@ impl<R: Resource> ActionDecl<R> {
         self
     }
 
+    /// Declare who listings offer it to ([`tilo_actions::Audience`]), as
+    /// `#[action(audience = ..)]` declares it for a verb: a bound edit that
+    /// names entries by path is for agents and scripts, not a row a person
+    /// picks.
+    #[must_use]
+    pub fn for_audience(mut self, audience: tilo_actions::Audience) -> Self {
+        self.decl.tags.retain(|tag| {
+            tag != tilo_actions::AGENTS_AUDIENCE_TAG && tag != tilo_actions::PEOPLE_AUDIENCE_TAG
+        });
+        if let Some(tag) = audience.tag() {
+            self.decl.tags.push(tag.to_owned());
+        }
+        self
+    }
+
     /// Tag the action's contract (`ContextRequirement::Caret.tag()`, an
     /// incremental-text declaration) for the callers that read it.
     #[must_use]
@@ -2040,6 +2071,12 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
     }
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
+    }
+    if !decl.keywords.is_empty() {
+        spec = spec.with_keywords(decl.keywords.iter().cloned());
+    }
+    if let Some(icon) = &decl.icon {
+        spec = spec.with_icon(icon.clone());
     }
     if decl.destructive {
         spec = spec.destructive();
@@ -2617,6 +2654,9 @@ fn publish_own(
     let mut resource = tilo_actions::Resource::new(id, vocabulary.kind, label);
     // Describe the declared domain ID before any host dispatch alias projection.
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(vocabulary.kind, id);
+    // The app it publishes under: what an action's `ActionKey` names, and
+    // what a control bound by key is checked against.
+    resource.app_id = Some(vocabulary.app.to_owned());
     for decl in vocabulary.declarations().iter() {
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let mut spec = spec_of_declaration(decl);

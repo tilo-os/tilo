@@ -1,6 +1,9 @@
+use super::keys::{VNC_WHEEL_BURST, ssh_key_bytes, vnc_keysym};
+use super::seeds::sample_id;
 use super::*;
-use crate::model::Remote;
+use crate::model::{Presence, Remote};
 use crate::resource::RemoteShell;
+use iroh_base::SecretKey;
 use ui::framework::ResourceApp as _;
 use ui::headless::Framed;
 use ui::prelude::TestApp;

@@ -467,7 +467,7 @@ fn leading_side(theme: &Theme, card: &ToastCard<'_>) -> Option<f64> {
     if card.kind == ToastKind::Info && card.person.is_some() {
         return Some(crate::widget::AvatarSize::Regular.side(theme));
     }
-    (card.kind != ToastKind::Info || card.icon.is_some())
+    (card.kind != ToastKind::Info || card.icon.is_some() || card.app_image.is_some())
         .then(|| f64::from(theme.tokens.metrics.icon_md))
 }
 
@@ -522,6 +522,10 @@ pub struct ToastCard<'a> {
     /// leads the card, in their presence colour, ahead of any glyph. Plain
     /// information with neither a person nor an icon leads with its text.
     pub person: Option<(&'a str, &'a str)>,
+    /// The sending application's own artwork, where a glyph cannot name it.
+    /// A person's avatar leads ahead of it; a severity glyph wins over it,
+    /// so an alert never loses its state colour.
+    pub app_image: Option<&'a crate::icons::AppImage>,
     /// Enter/exit animation opacity in `[0, 1]`; `1.0` for a settled card.
     pub alpha: f32,
     /// Draw a dismiss (`X`) button at the top-right and hand its rect back
@@ -563,6 +567,7 @@ impl<'a> ToastCard<'a> {
             kind,
             icon: None,
             person: None,
+            app_image: None,
             alpha: 1.0,
             closable: false,
             close_hovered: false,
@@ -600,6 +605,12 @@ impl<'a> ToastCard<'a> {
     #[must_use]
     pub fn person(mut self, name: &'a str, identity: &'a str) -> Self {
         self.person = Some((name, identity));
+        self
+    }
+    /// Lead plain information with the sending application's artwork.
+    #[must_use]
+    pub fn app_image(mut self, image: Option<&'a crate::icons::AppImage>) -> Self {
+        self.app_image = image;
         self
     }
     #[must_use]
@@ -1015,6 +1026,27 @@ fn paint_leading(
         Point::new(left + side / 2.0, block.title_centre),
         (side, side),
     );
+    if card.kind == ToastKind::Info
+        && let Some(image) = card.app_image
+    {
+        let faded = alpha < 0.999;
+        if faded {
+            ctx.scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                ctx.transform,
+                &mark,
+            );
+        }
+        let painted = crate::icons::draw_app_image(ctx.scene, ctx.transform, mark, image);
+        if faded {
+            ctx.scene.pop_layer();
+        }
+        if painted {
+            return;
+        }
+    }
     let (icon, color) = match (card.kind, card.icon) {
         (ToastKind::Info, Some(icon)) => (icon, theme.tokens.colors.text_dim),
         (ToastKind::Info, None) => return,

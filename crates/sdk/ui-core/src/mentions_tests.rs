@@ -57,7 +57,7 @@ fn notebook(text: &str, mention: Option<(usize, usize, &str)>, by: &str) -> Auto
     doc
 }
 
-fn look<'a>(doc: &'a AutoCommit) -> Look<'a> {
+fn look(doc: &AutoCommit) -> Look<'_> {
     Look {
         app: "so.tilo.notes",
         record: NOTE,

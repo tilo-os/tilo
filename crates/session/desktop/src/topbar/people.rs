@@ -91,7 +91,7 @@ impl TopBarChrome {
             right_x,
             center_y + seat / 2.0,
         );
-        let hovered = self.hovered_control() == Some(Self::CONTROL_COLLABORATORS)
+        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_COLLABORATORS)
             && self.last_cursor.is_some_and(|point| pill.contains(point));
         paint_bar_selector(
             scene,
@@ -143,7 +143,7 @@ impl TopBarChrome {
         );
         let chip = vello::kurbo::Circle::new(pill.center(), seat / 2.0 - 0.5);
         // Plain at rest, lifting under the pointer like every bar control.
-        let hovered = self.hovered_control() == Some(Self::CONTROL_INVITE);
+        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_INVITE);
         paint_bar_selector(
             scene,
             transform,

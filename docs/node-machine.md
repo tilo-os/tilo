@@ -7,7 +7,7 @@ streams. The person's root stays in their page; the machine never holds it.
 
 ## Provisioning (the operator)
 
-1. Choose the account the session runs as (`quickuser` on a dev VM) and write
+1. Choose the account the session runs as (`tester` on a dev VM) and write
    a random install token to `/etc/tilo/node/install-token` (mode `0600`,
    owned by `tilo-relay`).
 2. Enable the node:

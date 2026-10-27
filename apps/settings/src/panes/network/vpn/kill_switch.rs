@@ -2,14 +2,13 @@
 //! while the profile is set to connect and is not connected, nothing leaves
 //! the computer but through a tunnel.
 //!
-//! Settings only writes the person's choice (`PROFILE_KILL_SWITCHES`) and
-//! the profile they turned off on purpose (`PROFILE_RELEASE`); the session
+//! Settings changes the person's choice and tells the profile they turned
+//! off on purpose only through their section's actions
+//! ([`DeviceVpnPrefs`]); the session
 //! holds the block through the root helper and publishes which profiles
 //! block, which the profile page shows as "Blocking traffic".
 
-use settings_store::device_vpn::{
-    self, PROFILE_KILL_SWITCHES, PROFILE_RELEASE, ProfileKillSwitch, ProfileRelease,
-};
+use settings_store::device_vpn::{self, PROFILE_KILL_SWITCHES, ProfileKillSwitch};
 use ui::LocalState;
 use ui::widget::Toggle;
 
@@ -17,6 +16,7 @@ use super::super::{Begun, NetworkModel, VpnInfo};
 use super::VpnEffect;
 use crate::effects::effect;
 use crate::i18n::t;
+use crate::prefs::DeviceVpnPrefs;
 use crate::widgets::{Item, error_caption, row, setting_row_described};
 
 impl NetworkModel {
@@ -62,7 +62,12 @@ impl NetworkModel {
         if next == previous {
             return Ok(Begun::Done);
         }
-        self.set_kill_switch_of(&vpn.uuid, next)?;
+        self.cx
+            .invoke_section(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
+                vpn.uuid.clone(),
+                on,
+                allow_local,
+            )))?;
         if next.is_none() {
             self.unblock(&vpn.uuid);
         }
@@ -76,10 +81,8 @@ impl NetworkModel {
         if self.kill_switch(uuid).is_none() {
             return Ok(());
         }
-        let document = self.cx.storage().settings_document();
-        let previous = PROFILE_RELEASE.from_section(&document.section(device_vpn::SECTION));
-        let request = ProfileRelease::after(previous.as_ref(), uuid);
-        self.write_device_vpn(PROFILE_RELEASE.name(), serde_json::to_value(Some(request)))
+        self.cx
+            .invoke_section(DeviceVpnPrefs::RELEASE_PROFILE.with(uuid.to_owned()))
     }
 
     /// Show the profile `uuid` as no longer blocking until the session
@@ -100,36 +103,20 @@ impl NetworkModel {
 
     /// Forget the kill switch of the profile `uuid`, deleted.
     pub(super) fn forget_kill_switch(&mut self, uuid: &str) {
-        if let Err(error) = self
-            .release_profile(uuid)
-            .and_then(|()| self.set_kill_switch_of(uuid, None))
-        {
+        if let Err(error) = self.release_profile(uuid).and_then(|()| {
+            if self.kill_switch(uuid).is_none() {
+                return Ok(());
+            }
+            self.cx
+                .invoke_section(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
+                    uuid.to_owned(),
+                    false,
+                    None,
+                )))
+        }) {
             tracing::warn!(target: "tilo::settings", %error, "a deleted VPN's kill switch stayed");
         }
         self.unblock(uuid);
-    }
-
-    /// Write the kill switch of the profile `uuid` as `switch`, by id alone:
-    /// for a profile no longer listed.
-    fn set_kill_switch_of(
-        &self,
-        uuid: &str,
-        switch: Option<ProfileKillSwitch>,
-    ) -> Result<(), String> {
-        let document = self.cx.storage().settings_document();
-        let mut switches =
-            PROFILE_KILL_SWITCHES.from_section(&document.section(device_vpn::SECTION));
-        let changed = match switch {
-            Some(switch) => switches.insert(uuid.to_owned(), switch) != Some(switch),
-            None => switches.remove(uuid).is_some(),
-        };
-        if !changed {
-            return Ok(());
-        }
-        self.write_device_vpn(
-            PROFILE_KILL_SWITCHES.name(),
-            serde_json::to_value(&switches),
-        )
     }
 
     /// The profile page's kill switch, and while it is on whether the local
@@ -194,7 +181,17 @@ impl NetworkModel {
         let switch = ProfileKillSwitch {
             allow_local: blocking,
         };
-        if let Err(error) = self.set_kill_switch_of(uuid, Some(switch)) {
+        // A capture's fixture: written as it would be stored.
+        let document = self.cx.storage().settings_document();
+        let mut switches =
+            PROFILE_KILL_SWITCHES.from_section(&document.section(device_vpn::SECTION));
+        switches.insert(uuid.to_owned(), switch);
+        let mut values = serde_json::Map::new();
+        values.insert(
+            PROFILE_KILL_SWITCHES.name().to_owned(),
+            serde_json::to_value(&switches).unwrap_or_default(),
+        );
+        if let Err(error) = document.update_section(device_vpn::SECTION, values) {
             tracing::warn!(target: "tilo::settings", %error, "the sample kill switch stayed off");
         }
         if !blocking {

@@ -209,6 +209,21 @@ impl Formats {
         )
     }
 
+    /// A day without its year and a time of day, for a list of recent
+    /// moments: `Jun 30, 14:05` in English, `30. Jun 14:05` in German. The
+    /// year is left out because the list says which year it covers.
+    #[must_use]
+    pub fn month_day_time(&self, at: NaiveDateTime) -> String {
+        widget_format(
+            "format-month-day-time",
+            &[
+                ("day", at.day().to_string().into()),
+                ("month", self.month_short(at.month()).into()),
+                ("time", self.time(&at).into()),
+            ],
+        )
+    }
+
     /// The abbreviated weekday: `Sun`.
     #[must_use]
     pub fn weekday_short(&self, day: Weekday) -> String {

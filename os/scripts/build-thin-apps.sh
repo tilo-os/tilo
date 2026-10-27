@@ -175,8 +175,11 @@ fi
 keep_symbols=()
 [ "$strip" = none ] && keep_symbols=(--config "profile.$PROFILE.strip=\"none\"")
 if [ "$BUILD_PHASE" != verify ]; then
+# Paths here stay relative to the tree's root -- this script cd's to it first --
+# because a Cargo front end may build the tree where it stages it (t builds under
+# /src), and an absolute path from this checkout does not exist there.
 "${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
-    --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
+    --config "build.rustc-workspace-wrapper=\"tools/ci/rustc-thin-app-wrapper.sh\"" \
     --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
     "${app_profiles[@]}" ${keep_symbols[@]+"${keep_symbols[@]}"} \
     -p runtime-dylib "${packages[@]}" "${build_targets[@]}"

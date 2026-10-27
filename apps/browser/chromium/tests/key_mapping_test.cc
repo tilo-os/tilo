@@ -41,4 +41,26 @@ int main() {
   assert(tilo::ShortcutLetter(";", "KeyZ") == 0);
   assert(tilo::ShortcutLetter(":", "KeyZ") == 0);
   assert(tilo::ShortcutLetter("'", "KeyQ") == 0);
+  {
+    // A person writes a key in capitals; it is the key the keyboard has.
+    const std::string spellings[] = {"END", "end", "End", "eNd"};
+    for (const auto& spelled : spellings) {
+      assert(tilo::MapKey(spelled).windows == 35 && tilo::MapKey(spelled).mac == 119);
+      assert(tilo::NamedKeyName(spelled) == "End");
+    }
+    assert(tilo::MapKey("PAGEDOWN").windows == 34);
+    assert(tilo::MapKey("arrowup").windows == 38);
+    assert(tilo::MapKey("ESCAPE").windows == 27);
+    assert(tilo::MapKey("BackSpace").windows == 8);
+    // Naming a key says which it is even when it maps to nothing here.
+    assert(tilo::NamedKeyName("enter") == "Enter" && tilo::NamedKeyName("Enter") == "Enter");
+    // A character is its own name whatever its case: it is a key either way.
+    assert(tilo::NamedKeyName("a").empty() && tilo::MapKey("A").windows == 'A');
+    assert(tilo::MapKey("A").character == 'A' && tilo::MapKey("a").character == 'a');
+    // A word no key spells is no key, and is not read as one of its letters.
+    for (const char* unknown : {"ENDD", "Homee", "Pagedownn", "Tabbb"}) {
+      assert(!tilo::NamedKeyMapping(unknown) && tilo::NamedKeyName(unknown).empty());
+      assert(tilo::MapKey(unknown).windows == 0 && tilo::MapKey(unknown).character == 0);
+    }
+  }
 }

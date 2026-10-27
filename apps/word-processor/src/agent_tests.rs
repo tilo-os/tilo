@@ -133,6 +133,52 @@ fn a_document_kept_as_content_imports_into_an_empty_one_only() {
     assert!(refused.contains("already has writing"), "{refused}");
 }
 
+/// An import reads the format from the content, not the name it is given:
+/// a Word file named without an extension imports, and a PDF is refused
+/// naming what opens it.
+#[test]
+fn an_import_takes_the_format_its_content_holds() {
+    let mut source = written("# Visa\nSofia Moreira");
+    let output = source
+        .call_on_output("word-processor.document", "export-content", json!({}))
+        .unwrap()
+        .unwrap();
+    let address = output.resources.first().cloned().unwrap();
+    let hash = address.strip_prefix("tilo.content:").unwrap().to_owned();
+    let docx = source.content().read(&hash).unwrap();
+
+    let mut target = app();
+    target.content().put(&docx).unwrap();
+    target
+        .call(
+            "import-docx-content",
+            json!({ "content": address, "name": "Sofia details" }),
+        )
+        .unwrap();
+    target.settle();
+    assert!(
+        blocks(&target)
+            .iter()
+            .any(|(_, text)| text == "Sofia Moreira"),
+        "{:?}",
+        blocks(&target)
+    );
+
+    let mut other = app();
+    let pdf = other.content().put(b"%PDF-1.7\n%\xe2\xe3").unwrap();
+    let refused = other
+        .call(
+            "import-docx-content",
+            json!({ "content": format!("tilo.content:{pdf}"), "name": "details.docx" }),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("this is a PDF; use pdf-viewer import-pdf-content"),
+        "{refused}"
+    );
+}
+
 #[test]
 fn set_paragraph_style_takes_bullet_and_numbered_as_list_items() {
     let mut app = written("Eggs\nMilk");

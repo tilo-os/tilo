@@ -27,9 +27,12 @@
 //! keeps, replaces or removes the originals instead of adding copies — see
 //! [`crate::adopt`].
 //!
-//! View state (current page, zoom, active tool) is deliberately NOT here —
-//! it is per-peer, so two reviewers can look at different pages of the same
-//! shared markup.
+//! The reading position is here as a resume hint — the page occurrence,
+//! how far down it the reader was, and the zoom — so reopening a document
+//! returns to where it was left. It is a hint, not live view state: each
+//! window scrolls on its own, and a peer's last position is simply the one
+//! a fresh window starts from. The active tool, selection and panels remain
+//! per-peer and are never written here.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -319,6 +322,14 @@ pub struct PdfMarkup {
     /// Where taken-over annotations came from, by record id.
     #[model(readonly)]
     pub adopted: BTreeMap<String, AdoptedEntry>,
+    /// The page occurrence the reader last left off on; empty before the
+    /// first position is recorded.
+    #[model(atom)]
+    pub reading_page: String,
+    /// How far down that page the reader was, from 0 (top) to 1 (foot).
+    pub reading_fraction: f64,
+    /// The zoom factor the reader had there.
+    pub reading_zoom: f64,
 }
 
 /// The PDF bytes a record's markup is made against.
@@ -371,6 +382,16 @@ impl PdfMarkup {
         if self.page_plan_seeded && self.pages.is_empty() {
             return Err(Refusal::new("a document keeps at least one page"));
         }
+        if !self.reading_page.is_empty()
+            && (!self.reading_fraction.is_finite()
+                || !(0.0..=1.0).contains(&self.reading_fraction)
+                || !self.reading_zoom.is_finite()
+                || self.reading_zoom <= 0.0)
+        {
+            return Err(Refusal::new(
+                "a reading position is a page, a fraction of it and a positive zoom",
+            ));
+        }
         Ok(())
     }
 
@@ -405,6 +426,18 @@ impl PdfMarkup {
                 rotation: page.rotation,
             })
             .collect()
+    }
+
+    /// Where the reader last left off, when a position was recorded.
+    #[must_use]
+    pub fn reading_position(&self) -> Option<(String, f64, f64)> {
+        (!self.reading_page.is_empty()).then(|| {
+            (
+                self.reading_page.clone(),
+                self.reading_fraction,
+                self.reading_zoom,
+            )
+        })
     }
 
     /// Page occurrence id → 1-based displayed page number.

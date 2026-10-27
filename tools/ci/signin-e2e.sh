@@ -19,13 +19,9 @@ out=${2:?usage: signin-e2e.sh MEDIUM OUT}
 [[ -f $medium ]] || { echo "no installer medium at $medium: the check needs dev-installer-medium-x86_64" >&2; exit 2; }
 [[ -c /dev/kvm ]] || { echo 'no /dev/kvm: the check needs requires = ["/dev/kvm"]' >&2; exit 2; }
 
-# QEMU, firmware and swtpm for vm.sh; tesseract and ImageMagick read the boot screens.
-missing=()
-for p in edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga qemu-img ipxe-roms-qemu \
-         swtpm swtpm-tools socat tesseract tesseract-langpack-eng ImageMagick python3 util-linux; do
-  rpm -q "$p" >/dev/null 2>&1 || missing+=("$p")
-done
-((${#missing[@]} == 0)) || dnf install -y --setopt=retries=3 --setopt=install_weak_deps=False "${missing[@]}" >/dev/null
+# QEMU, firmware and swtpm for vm.sh; tesseract and ImageMagick read the boot screens. The
+# check's setup layer has them already (t.toml); without it, they come from dnf.
+bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt
 python3 os/dev/probe-kvm.py x86_64 || { echo 'this node cannot create a KVM VM' >&2; exit 1; }
 
 rm -rf "$out"

@@ -7,9 +7,11 @@
 //! `room › <app> › window › <tab>`: grants the room's governor writes into
 //! its governance at the sharer's request, naming who gave them
 //! (`granted_by`) and until when (`lifetime`). The governor takes such a
-//! share only from the device the tab's topology namespace is registered to
-//! (`contents_owners_v1`), so the registry says which device hosts the
-//! window, and nobody shares another device's window.
+//! share only from the device that minted the tab's id: every device mints
+//! under the salt its key derives ([`crate::ids::device_salt_of_key`]), and
+//! the room knows its members' device keys ([`device_salts`]), so the tab
+//! says which device hosts the window, and nobody shares another device's
+//! window.
 //!
 //! A Tilo app's window is a view of a resource that already lives in the
 //! room, so its share also says what the window shows: the share
@@ -32,8 +34,47 @@ use tilo_action_policy::{
     ActionKind, Answer, Context, Level, RoomPolicy, Segment, Subject, TreePath,
 };
 
-use crate::ids::{TabId, peer_salt_of};
-use crate::projection::{contents_key, contents_key_id};
+use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
+
+/// Key of the room's governed device identities, by device key.
+const PEER_IDENTITIES_KEY: &str = "peer_identities_v1";
+
+/// A window id as it stands in a share id or a node: fixed-width hex, so it
+/// parses back into the id it names and every device spells it the same.
+fn tab_key(tab: TabId) -> String {
+    format!("{tab:016x}")
+}
+
+/// The window id `key` spells, as [`tab_key`] writes it.
+fn tab_of_key(key: &str) -> Option<TabId> {
+    u64::from_str_radix(key, 16).ok()
+}
+
+/// The salts the devices `doc`, a room's document, admitted mint under, and
+/// each one's device key (64 lowercase hex digits): what tells which device
+/// a window of the room runs on. A salt two of its devices share is
+/// nobody's, so neither can speak for the other's windows.
+#[must_use]
+pub fn device_salts(doc: &automerge::AutoCommit) -> BTreeMap<u16, String> {
+    use automerge::{ROOT, ReadDoc as _};
+    let Some((_, identities)) = doc.get(&ROOT, PEER_IDENTITIES_KEY).ok().flatten() else {
+        return BTreeMap::new();
+    };
+    let mut salts: BTreeMap<u16, Option<String>> = BTreeMap::new();
+    for key in doc.keys(&identities) {
+        let Some(device) = hex::decode(&key).ok().filter(|bytes| bytes.len() == 32) else {
+            continue;
+        };
+        salts
+            .entry(device_salt_of_key(&device))
+            .and_modify(|held| *held = None)
+            .or_insert(Some(key));
+    }
+    salts
+        .into_iter()
+        .filter_map(|(salt, device)| Some((salt, device?)))
+        .collect()
+}
 
 /// The resource kind a window's node names under its app.
 pub const WINDOW_KIND: &str = "window";
@@ -42,7 +83,7 @@ pub const WINDOW_KIND: &str = "window";
 /// sharing it again is the same share and stopping ends it whole.
 #[must_use]
 pub fn window_share_id(tab: TabId) -> String {
-    format!("{WINDOW_KIND}.{}", contents_key(tab))
+    format!("{WINDOW_KIND}.{}", tab_key(tab))
 }
 
 /// The share id of what the window `tab` of a Tilo app shows, beside its
@@ -66,8 +107,8 @@ pub fn window_of_share_id(share: &str) -> Option<(TabId, bool)> {
         Some(_) => return None,
         None => (rest, false),
     };
-    let tab = contents_key_id(key)?;
-    (contents_key(tab) == key).then_some((tab, shows))
+    let tab = tab_of_key(key)?;
+    (tab_key(tab) == key).then_some((tab, shows))
 }
 
 /// The node of the window `tab` of `app_id` in `room`: what a share of it
@@ -77,7 +118,7 @@ pub fn window_node(room: &str, app_id: &str, tab: TabId) -> TreePath {
     TreePath::room(room)
         .app(app_id)
         .kind(WINDOW_KIND)
-        .resource(contents_key(tab))
+        .resource(tab_key(tab))
 }
 
 /// The window `node` names, with its app: `None` for any other node.
@@ -97,7 +138,7 @@ pub fn window_of_node(node: &TreePath) -> Option<(String, TabId)> {
     if named(segments.get(2), Level::Kind)? != WINDOW_KIND {
         return None;
     }
-    let tab = contents_key_id(named(segments.get(3), Level::Resource)?)?;
+    let tab = tab_of_key(named(segments.get(3), Level::Resource)?)?;
     Some((app.to_owned(), tab))
 }
 
@@ -173,14 +214,14 @@ pub fn shows_of_node(node: &TreePath, app_id: &str, tab: TabId) -> Option<Window
 /// One window shared with a room, as its governance records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowShare {
-    /// The sharer's tab, in the topology namespace of the device hosting it.
+    /// The sharer's tab, minted under the salt of the device hosting it.
     pub tab: TabId,
     /// The app the window belongs to.
     pub app_id: String,
     /// The person who shared it.
     pub sharer: String,
-    /// The hex device key of the device hosting the window: the one its
-    /// tab's namespace is registered to.
+    /// The hex device key of the device hosting the window: the one whose
+    /// salt its tab carries.
     pub host: String,
     /// Until when the share lasts, in Unix milliseconds; `None` until the
     /// sharer stops it.
@@ -191,11 +232,11 @@ pub struct WindowShare {
 }
 
 /// The windows shared with `policy`'s room that are live at `now_ms`, by
-/// tab, each hosted on the device `owners` (the room's topology registry,
-/// [`crate::projection::contents_owners_of`]) registers its tab's namespace
-/// to. A share counts when it is a share of one window's node under that
-/// window's share id, given by a person, allowing the room to see it; a
-/// window whose namespace no device holds is nobody's to show.
+/// tab, each hosted on the device whose salt its tab carries (`owners`,
+/// [`device_salts`] of the room's document). A share counts when it is a
+/// share of one window's node under that window's share id, given by a
+/// person, allowing the room to see it; a window no device of the room
+/// minted is nobody's to show.
 #[must_use]
 pub fn window_shares(
     policy: &RoomPolicy,
@@ -302,7 +343,7 @@ mod tests {
         );
         assert!(
             window_shares(&policy, &BTreeMap::new(), 1).is_empty(),
-            "a window no device's namespace holds is nobody's to show"
+            "a window no device of the room minted is nobody's to show"
         );
 
         // A share that ended by its time is no share.
@@ -317,7 +358,7 @@ mod tests {
         let record = TreePath::room(ROOM)
             .app("so.tilo.notes")
             .kind("notes.notebook")
-            .resource(contents_key(tab));
+            .resource(tab_key(tab));
         policy.grants = share_grants(
             ROOM,
             "ana",
@@ -429,5 +470,29 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn a_window_runs_on_the_device_whose_key_its_salt_comes_from() {
+        use automerge::transaction::Transactable as _;
+        let ana = [1_u8; 32];
+        let bo = [2_u8; 32];
+        let mut doc = automerge::AutoCommit::new();
+        assert!(device_salts(&doc).is_empty(), "no devices, no hosts");
+        let identities = doc
+            .put_object(
+                automerge::ROOT,
+                PEER_IDENTITIES_KEY,
+                automerge::ObjType::Map,
+            )
+            .unwrap();
+        for device in [ana, bo] {
+            doc.put(&identities, hex::encode(device), "{}").unwrap();
+        }
+        doc.put(&identities, "not a key", "{}").unwrap();
+        let salts = device_salts(&doc);
+        assert_eq!(salts.len(), 2, "{salts:?}");
+        assert_eq!(salts[&device_salt_of_key(&ana)], hex::encode(ana));
+        assert_eq!(salts[&device_salt_of_key(&bo)], hex::encode(bo));
     }
 }

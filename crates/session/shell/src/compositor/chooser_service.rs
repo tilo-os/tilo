@@ -648,20 +648,16 @@ fn answer_pick(context: &ChooserContext, caller: &PortalCaller, room: &str, pick
             reason: t("portal-chooser-save-disabled"),
         };
     }
-    let giving = context
-        .documents
-        .as_ref()
-        .zip(tilo_documents::AppKey::new(room, caller.app_id.as_str()))
-        .filter(|_| contents::owner(context, caller));
-    let scope = if giving.is_some() {
-        person_scope(context, caller, mode)
-    } else if let Some(scope) = authorized_scope(context, caller, mode) {
-        scope
-    } else {
-        return Reply::Failed {
-            id,
-            reason: t("portal-chooser-nothing-granted"),
-        };
+    let (giving, scope) = match given_to(context, caller, room) {
+        Ok(giving) => (Some(giving), person_scope(context, caller, mode)),
+        // What the workspace already grants the app stays the app's to
+        // choose from. With nothing granted the person hears why this
+        // chooser cannot give and what to do instead, never that the app
+        // has nothing yet: an app with nothing yet is what a chooser is for.
+        Err(cannot) => match authorized_scope(context, caller, mode) {
+            Some(scope) => (None, scope),
+            None => return Reply::Failed { id, reason: cannot },
+        },
     };
     let roots = scope.roots.clone();
     let recent = giving
@@ -717,6 +713,24 @@ fn answer_pick(context: &ChooserContext, caller: &PortalCaller, room: &str, pick
             }
         }
         _ => Reply::Cancelled { id },
+    }
+}
+
+/// Where what the person chooses for `caller` is given: its documents, when
+/// the session serves them and the person may give the app their files.
+/// Otherwise why not, in the person's words with what to do instead.
+fn given_to<'c>(
+    context: &'c ChooserContext,
+    caller: &PortalCaller,
+    room: &str,
+) -> Result<(&'c tilo_documents::Documents, tilo_documents::AppKey), String> {
+    let cannot_give = || t("portal-chooser-cannot-give");
+    let documents = context.documents.as_ref().ok_or_else(cannot_give)?;
+    let key = tilo_documents::AppKey::new(room, caller.app_id.as_str()).ok_or_else(cannot_give)?;
+    match contents::standing(context, caller) {
+        contents::Standing::Owner => Ok((documents, key)),
+        contents::Standing::ElsewhereOnScreen => Err(t("portal-chooser-other-workspace")),
+        contents::Standing::NotManaged => Err(t("portal-chooser-not-managed")),
     }
 }
 
@@ -1044,6 +1058,16 @@ mod tests {
 
     /// [`session_with_save_hint`], giving what is chosen through `documents`.
     fn session_with(hint: bool, documents: Option<tilo_documents::Documents>) -> Session {
+        session_in(hint, documents, true)
+    }
+
+    /// [`session_with`], in a workspace the person manages (`managed`) or
+    /// one someone else does.
+    fn session_in(
+        hint: bool,
+        documents: Option<tilo_documents::Documents>,
+        managed: bool,
+    ) -> Session {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
         let (inbox, outbox, elsewhere) = (base.join("in"), base.join("out"), base.join("home"));
@@ -1064,9 +1088,11 @@ mod tests {
                 },
             );
         }
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(
-            &workspace.room(),
-        ));
+        if managed {
+            workspace.set_owner(crate::shell::state::local_user_id_for_room(
+                &workspace.room(),
+            ));
+        }
         let room = workspace.room().to_string();
         let (grants, _) = GrantStoreHandle::test_with_workspace(workspace);
         let pickers = FilePickerQueue::new();
@@ -1867,12 +1893,22 @@ type = "gui"
         });
     }
 
+    /// Where the session serves no documents, an app the workspace granted
+    /// nothing cannot be given what the person would choose: it hears why
+    /// and what to do instead, never that it has nothing yet, which is
+    /// what a chooser is for.
     #[test]
-    fn an_app_given_nothing_gets_no_chooser() {
+    fn a_session_that_cannot_give_says_why_and_what_to_do() {
         let session = session_with_save_hint(true);
         let mut app = App::launch(&session, "so.tilo.notes", &session.room);
         app.send(&pick(1, PickMode::Open));
-        assert!(matches!(app.reply(), Some(Reply::Failed { id: 1, .. })));
+        assert_eq!(
+            app.reply(),
+            Some(Reply::Failed {
+                id: 1,
+                reason: t("portal-chooser-cannot-give"),
+            })
+        );
         assert!(session.pickers.is_empty());
     }
 
@@ -2134,6 +2170,7 @@ type = "gui"
     const SETTINGS: &str = "so.tilo.settings";
     const BACKUPS: &str = "so.tilo.backups";
     const LOGS: &str = "so.tilo.logs";
+    const CODE: &str = "so.tilo.code-editor";
 
     /// A session that gives what is chosen, as the shell does: its
     /// documents, mounted where the launcher binds each app's view from
@@ -2462,5 +2499,46 @@ type = "gui"
             assert!(std::fs::write(path.with_file_name("other.jsonl"), b"x").is_err());
             assert!(!giving.session.elsewhere.join("other.jsonl").exists());
         }
+    }
+
+    /// Code opens a project folder it was granted nothing for: the folder
+    /// and what is under it, to change, as its Open Folder asks.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn code_opens_a_project_folder_it_was_granted_nothing_for() {
+        let giving = giving();
+        let folder = giving.session.elsewhere.join("Backups");
+        let given = giving.choose(
+            CODE,
+            tilo_dialogs::portal::PickRequest::writable_directory("Open a project folder", "Open"),
+            &folder,
+        );
+        assert_eq!(given.file_name(), folder.file_name());
+        assert_eq!(
+            giving.read(CODE, &given.join("2026/monday.tar")).as_deref(),
+            Some(&b"monday"[..])
+        );
+        let target =
+            tilo_documents::host::resolve(&giving.documents, &giving.key(CODE), &given).unwrap();
+        assert!(target.writable(), "a project folder is given to change");
+        assert_eq!(giving.read(CODE, &given.with_file_name("report.pdf")), None);
+    }
+
+    /// A workspace someone else manages cannot be given the person's files:
+    /// the app hears so, and what to do instead.
+    #[test]
+    fn a_chooser_that_cannot_give_names_the_reason_and_the_way_on() {
+        let documents = tilo_documents::Documents::new();
+        let session = session_in(false, Some(documents), false);
+        let mut app = App::launch(&session, CODE, &session.room);
+        app.send(&pick(1, PickMode::Directory));
+        assert_eq!(
+            app.reply(),
+            Some(Reply::Failed {
+                id: 1,
+                reason: t("portal-chooser-not-managed"),
+            })
+        );
+        assert!(session.pickers.is_empty());
     }
 }

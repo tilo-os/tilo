@@ -67,6 +67,22 @@ pub struct DatePicker {
     feed: Option<DateFeed>,
     /// The feed's revision the picker last read.
     feed_seen: Option<u64>,
+    /// What the picker last painted, and what the last presented frame
+    /// showed: it repaints only when the month it shows changed.
+    painted: Option<Face>,
+    presented: Option<Face>,
+}
+
+/// Everything a picker's paint is made from: two frames that show the same
+/// face paint the same pixels.
+#[derive(Clone, Debug, PartialEq)]
+struct Face {
+    rect: Rect,
+    selected: NaiveDate,
+    month_view: (i32, u32),
+    focused: bool,
+    today: NaiveDate,
+    marked: HashSet<NaiveDate>,
 }
 
 impl DatePicker {
@@ -88,6 +104,20 @@ impl DatePicker {
             today: None,
             feed: None,
             feed_seen: None,
+            painted: None,
+            presented: None,
+        }
+    }
+
+    /// What the picker paints now.
+    fn face(&self) -> Face {
+        Face {
+            rect: self.rect,
+            selected: self.selected,
+            month_view: self.month_view,
+            focused: self.is_focused,
+            today: self.today.unwrap_or_else(crate::clock::today),
+            marked: self.marked.clone(),
         }
     }
 
@@ -437,6 +467,7 @@ impl Widget for DatePicker {
         _presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
+        self.painted = Some(self.face());
 
         if self.navigator {
             // A navigator stands on its region: no face, no edge; focus is
@@ -566,6 +597,16 @@ impl Widget for DatePicker {
             }
             _ => {}
         }
+    }
+
+    /// A picker repaints when the month it shows changed: its selection,
+    /// the month in view, its focus, today, the marked days or its box.
+    fn needs_redraw(&self) -> bool {
+        self.presented.as_ref() != Some(&self.face())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.presented.clone_from(&self.painted);
     }
 
     fn name(&self) -> &'static str {

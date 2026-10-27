@@ -47,9 +47,9 @@ use tilo_actions::remote::{
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
-    CLAIM_TOPOLOGY_NAMESPACE, ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER,
-    HOST_ROOMS_RESOURCE, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
-    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RoomListing, member_resource,
+    ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD,
+    RECORD_EFFECT_RECEIPT, RoomListing, member_resource,
 };
 
 /// How long one invocation on a room's own session may take.
@@ -586,53 +586,6 @@ impl ShellNetwork {
         self.ask_relay(room_topic_id(room), Addressee::Device(host), invoke)
     }
 
-    /// A host governor answers namespace claims as the member's own action
-    /// on the room's session, not a private action subscriber that the host
-    /// does not run. None retains the native-device governor's ordinary
-    /// semantic action path.
-    pub(super) fn claim_namespace_at_host(
-        &self,
-        room: RoomId,
-        salt: u16,
-    ) -> Option<tilo_actions::remote::Pending<Result<serde_json::Value, String>>> {
-        // Without native custody this device holds no room a host governs.
-        self.native_owner().ok()?;
-        let (completer, answer) = tilo_actions::remote::pending();
-        let host = match self.host_governor(room) {
-            Ok(None) => return None,
-            Ok(Some(host)) => host,
-            Err(error) => {
-                completer.complete(Err(error));
-                return Some(answer);
-            }
-        };
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("salt".into(), salt.into());
-        let receiver = match self.ask_as_member(room, host, CLAIM_TOPOLOGY_NAMESPACE, arguments) {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                completer.complete(Err(error));
-                return Some(answer);
-            }
-        };
-        let Some(runtime) = self.runtime.as_ref() else {
-            completer.complete(Err("topology authority queue is unavailable".into()));
-            return Some(answer);
-        };
-        runtime.spawn(async move {
-            let result = tokio::task::spawn_blocking(move || receiver.recv_timeout(ADMIN_TIMEOUT))
-                .await
-                .map_err(|_| "topology reply worker stopped".to_owned())
-                .and_then(|reply| {
-                    reply.map_err(|_| "topology governor did not answer in time".to_owned())
-                })
-                .and_then(std::convert::identity)
-                .and_then(receipt_value);
-            completer.complete(result);
-        });
-        Some(answer)
-    }
-
     /// Ask the host governing `room` the member action `action` (one of
     /// `resource.share`, `resource.unshare`, `resource.permits`) with
     /// `arguments`, as this device's person: the room decides it there, as
@@ -675,9 +628,10 @@ impl ShellNetwork {
     /// ([`tilo_desktop_model::window_share`]). A Tilo app's window is shared
     /// with what it shows (`shows`, a node), asked first, so no member ever
     /// sees the window as an outside one; a window share the host then
-    /// refuses takes that back. Stopping the window's share ends both. A
-    /// namespace this device has not claimed in the room yet is claimed
-    /// first. Waits for the host's answer: runs on the peer-sync worker.
+    /// refuses takes that back. Stopping the window's share ends both. The
+    /// host knows the window is this device's by the salt its id carries,
+    /// which this device's key derives. Waits for the host's answer: runs
+    /// on the peer-sync worker.
     ///
     /// # Errors
     /// No host governs the room, or the host refused or did not answer.
@@ -714,15 +668,6 @@ impl ShellNetwork {
         stop.insert("share".into(), window_share_id(tab).into());
         if !share {
             return ask(UNSHARE_RESOURCE, stop).map(drop);
-        }
-        let salt = tilo_desktop_model::peer_salt_of(tab);
-        let claimed = self.tree.read().room_docs.get(&room).is_some_and(|doc| {
-            tilo_desktop_model::projection::contents_owners_of(doc).contains_key(&salt)
-        });
-        if !claimed {
-            let mut claim = serde_json::Map::new();
-            claim.insert("salt".into(), salt.into());
-            ask(CLAIM_TOPOLOGY_NAMESPACE, claim)?;
         }
         if let Some(shows) = shows {
             ask(
@@ -1594,7 +1539,7 @@ mod tests {
         let member = invocation(
             MEMBER_ACTIONS_PROVIDER,
             member_resource("r"),
-            CLAIM_TOPOLOGY_NAMESPACE,
+            RECORD_EFFECT_RECEIPT,
             serde_json::Map::new(),
         );
         assert_eq!(member.target.provider, "tilo.member");

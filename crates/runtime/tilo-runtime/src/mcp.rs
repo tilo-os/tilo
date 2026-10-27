@@ -37,6 +37,9 @@ pub struct McpServer<H> {
     run: std::sync::Mutex<Option<tilo_actions::ActionGroup>>,
     /// Pixel fallback, when the host runs beside a compositor.
     computer: Option<std::sync::Arc<crate::computer::Computer>>,
+    /// Tasks learned in legacy apps, kept in the profile so they survive the
+    /// connection that learned them.
+    adapters: Option<std::sync::Arc<crate::adapters::Adapters>>,
     /// The page `tilo_query` answers when a call names no `detail`; a client
     /// that parses v1 rows pins `full` for its session at `initialize`.
     detail: std::sync::Mutex<Detail>,
@@ -570,6 +573,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             caller,
             run: std::sync::Mutex::new(None),
             computer: None,
+            adapters: None,
             detail: std::sync::Mutex::new(Detail::Compact),
             invoking: InFlight::default(),
             handles: std::sync::Mutex::default(),
@@ -980,6 +984,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.computer = computer;
         self
     }
+    /// Offer the adapter tools, keeping what is learned in `adapters`.
+    #[must_use]
+    pub fn with_adapters(
+        mut self,
+        adapters: Option<std::sync::Arc<crate::adapters::Adapters>>,
+    ) -> Self {
+        self.adapters = adapters;
+        self
+    }
     fn tools(&self) -> Vec<Value> {
         let mut tools = match self.surface {
             Surface::Classic => tool_definitions().to_vec(),
@@ -990,6 +1003,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         if self.computer.is_some() {
             tools.extend(crate::computer::tool_definitions());
+        }
+        if self.adapters.is_some() {
+            tools.extend(crate::adapter_tools::tool_definitions());
         }
         tools
     }
@@ -1177,6 +1193,23 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     && matches!(call.name.as_str(), "computer" | "computer_batch") =>
             {
                 Ok(self.computer(&call.name, call.arguments).await)
+            }
+            Ok(call)
+                if self.adapters.is_some() && crate::adapter_tools::is_adapter_tool(&call.name) =>
+            {
+                let Some(adapters) = self.adapters.clone() else {
+                    return Ok(tool_result(Err("Unknown tool".into())));
+                };
+                Ok(tool_result(
+                    crate::adapter_tools::call(
+                        &call.name,
+                        call.arguments,
+                        adapters.as_ref(),
+                        self.computer.clone(),
+                        self.agent(),
+                    )
+                    .await,
+                ))
             }
             Ok(call) if put::is_put_tool(&call.name) => {
                 Ok(self.put_call(&call.name, call.arguments).await)

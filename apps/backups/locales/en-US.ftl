@@ -49,6 +49,14 @@ backups-retention-total = { $count ->
    *[other] Each source keeps at most { $snapshots } snapshots, plus the ones kept until removed.
 }
 
+## Retention: what the counts on screen would remove
+backups-retention-removes-none = Nothing would be removed: the next backup keeps every snapshot.
+backups-retention-removes-one = The next backup would remove one snapshot, taken { $when }.
+backups-retention-removes-many = { $count ->
+    [one] The next backup would remove { $snapshots } snapshot: { $when }
+   *[other] The next backup would remove { $snapshots } snapshots: { $when }
+}
+
 ## History
 
 backups-retention-policy-hourly = { $new ->

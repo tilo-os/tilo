@@ -434,6 +434,9 @@ impl TubeApp {
                     self.source_unreached(&why);
                     changed = true;
                 }
+                Update::Suggestions { query, videos } => {
+                    self.take_suggestions(query, videos);
+                }
                 Update::Note(n) => {
                     // Worker status notes (backend ready, stream host, seed
                     // failures, …) are developer diagnostics — log them, don't

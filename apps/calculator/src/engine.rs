@@ -248,7 +248,14 @@ impl Parser<'_> {
                     Ok(Expr::Var(name))
                 }
             }
-            other => Err(format!("unexpected token {other:?}")),
+            // An operator or closer with nothing before it names the key
+            // a person pressed, not the parser's token.
+            Tok::Op(op) => Err(format!(
+                "enter a value before `{}`",
+                prettify(&op.to_string())
+            )),
+            Tok::RParen => Err("enter a value before `)`".to_string()),
+            Tok::Comma => Err("enter a value before `,`".to_string()),
         }
     }
 }
@@ -1360,6 +1367,11 @@ mod tests {
             evaluate("sqrt(", &Ctx::default()),
             Err("enter a value".into()),
             "the live result line tells a person what to do next"
+        );
+        assert_eq!(
+            evaluate("/", &Ctx::default()),
+            Err("enter a value before `÷`".into()),
+            "an operator with nothing before it names the key a person pressed"
         );
         assert!(
             evaluate("1+", &Ctx::default()).is_err(),

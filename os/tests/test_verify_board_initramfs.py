@@ -44,8 +44,8 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
             # The i2c bus the Lenovo's internal keyboard and touchpad are on.
             "kernel/drivers/i2c/i2c-core.ko",
             "kernel/drivers/i2c/busses/i2c-qcom-geni.ko",
-            "kernel/drivers/i2c/i2c-hid/i2c-hid-of.ko",
-            "kernel/drivers/hid/hid-core.ko",
+            "kernel/drivers/hid/i2c-hid/i2c-hid-of.ko",
+            "kernel/drivers/hid/hid.ko",
             "kernel/drivers/input/evdev.ko",
             "kernel/drivers/input/keyboard/atkbd.ko",
         ]
@@ -79,7 +79,7 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
     def test_an_internal_i2c_keyboard_needs_its_drivers_built_in(self):
         builtin = self.kernel / "modules.builtin"
         self.assertEqual([line for line in self.builtin_paths if "i2c" in line], self.builtin_paths[1:4])
-        for driver in ("i2c-qcom-geni", "i2c-hid-of", "i2c-core", "hid-core", "evdev", "atkbd"):
+        for driver in ("i2c-qcom-geni", "i2c-hid-of", "i2c-core", "hid", "evdev", "atkbd"):
             with self.subTest(driver=driver):
                 kept = [line for line in self.builtin_paths if Path(line).stem != driver]
                 builtin.write_text("\n".join(kept) + "\n", encoding="utf-8")
@@ -89,7 +89,7 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
 
     def test_a_keyboard_on_another_bus_asks_only_for_the_input_layer(self):
         builtin = self.kernel / "modules.builtin"
-        builtin.write_text("kernel/drivers/hid/hid-core.ko\n"
+        builtin.write_text("kernel/drivers/hid/hid.ko\n"
                            "kernel/drivers/input/evdev.ko\n"
                            "kernel/drivers/input/keyboard/atkbd.ko\n", encoding="utf-8")
         definition = {**LENOVO, "internal_keyboards": [LENOVO["internal_keyboards"][0] | {"bus": "usb"}]}

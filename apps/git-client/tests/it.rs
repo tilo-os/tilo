@@ -7,3 +7,5 @@
 pub mod remote_transport;
 #[path = "repo_ops.rs"]
 pub mod repo_ops;
+#[path = "shots_in_an_expanded_language.rs"]
+pub mod shots_in_an_expanded_language;

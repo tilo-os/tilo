@@ -3,8 +3,8 @@
 //! keys, and this window says what it lists.
 //!
 //! The room is the one truth. Each settle this window declares the
-//! sidebar's places (the person's contacts, the channels outside any
-//! category, then each category as a section) through a [`NavFeed`];
+//! sidebar's places (the channels outside any category, each category as
+//! a section, then the person's direct messages) through a [`NavFeed`];
 //! what the person chooses, folds, asks a menu of and renames there comes
 //! back as the window's own hits and actions.
 
@@ -16,7 +16,7 @@ use ui::widget::{Element, NavAction, NavFeed, NavItem, NavList, NavSection, Wind
 use crate::app::{ChatApp, Hit, MenuAction, MenuTarget};
 use crate::model::{Channel, ChannelKind};
 
-const CONTACTS: &str = "contacts";
+const DIRECT_MESSAGES: &str = "direct-messages";
 const CHANNELS: &str = "channels";
 const ADD_CHANNEL: &str = "add-channel";
 
@@ -90,23 +90,6 @@ impl ChatApp {
     /// that is open chosen.
     pub(crate) fn show_sidebar(&self) {
         let mut sections = Vec::new();
-        if !self.person_contacts.is_empty() {
-            let contacts = self
-                .person_contacts
-                .iter()
-                .map(|contact| {
-                    NavItem::new(
-                        person_place(&contact.public_key),
-                        self.contact_name(contact),
-                    )
-                })
-                .collect();
-            sections.push(NavSection::new(
-                CONTACTS,
-                crate::i18n::t("chat-contacts-section"),
-                contacts,
-            ));
-        }
         let drafts = self.draft_lines();
         sections.push(NavSection::untitled(
             CHANNELS,
@@ -135,6 +118,14 @@ impl ChatApp {
             }
             sections.push(section);
         }
+        let direct = self.direct_message_items();
+        if !direct.is_empty() {
+            sections.push(NavSection::new(
+                DIRECT_MESSAGES,
+                crate::i18n::t("chat-direct-messages-section"),
+                direct,
+            ));
+        }
         // The chosen row is what the content shows: the call while its
         // stage fills the window, else the conversation open.
         let selected = if self.call.active && self.call.expanded {
@@ -145,6 +136,35 @@ impl ChatApp {
             (!self.active_channel.is_empty()).then(|| channel_place(&self.active_channel))
         };
         self.places.show(sections, selected);
+    }
+
+    /// The people this person has a direct conversation with, each once,
+    /// by the name they go by: those whose conversation holds messages and
+    /// the one open now. Everyone else in the room is reached from the
+    /// people overlay (or their card), not listed here: a room full of
+    /// visitors must not push its channels out of sight.
+    fn direct_message_items(&self) -> Vec<NavItem> {
+        let mut people: Vec<(String, &ui::person_chat::Contact)> = self
+            .person_contacts
+            .iter()
+            .filter(|contact| {
+                contact.conversation
+                    || self.direct_person.as_deref() == Some(contact.public_key.as_str())
+            })
+            .map(|contact| (self.contact_name(contact), contact))
+            .collect();
+        people.sort_by(|(a, x), (b, y)| {
+            a.to_lowercase()
+                .cmp(&b.to_lowercase())
+                .then_with(|| x.public_key.cmp(&y.public_key))
+        });
+        people.dedup_by(|(_, a), (_, b)| a.public_key == b.public_key);
+        people
+            .into_iter()
+            .map(|(name, contact)| {
+                NavItem::new(person_place(&contact.public_key), name).icon(Icon::User)
+            })
+            .collect()
     }
 
     /// The channels of one category (`""` for those outside any), each

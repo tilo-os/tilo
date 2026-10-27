@@ -38,7 +38,7 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 
 use crate::actions::DiffmergeEffect;
-use crate::chrome::{Chrome, Command, Header};
+use crate::chrome::{Chrome, Command, Header, MergeResult};
 use crate::diff_view::DiffView;
 use crate::doc::{Comparison, HunkChoice, MergeInputs, Session};
 use crate::i18n::{count, t, t_args};
@@ -162,11 +162,10 @@ pub struct DiffMergeApp {
     /// The merged text as it was when it was last written: equal to the
     /// document's text means nothing is waiting to be saved.
     saved_text: Option<String>,
-    /// The merged text and whether a merge is open, as last presented. The
-    /// save flow writes what the document holds without reading the record
+    /// The merged text while a merge is open, as last presented. The save
+    /// flow writes what the document holds without reading the record
     /// through the effect (it has no typed access to it).
-    merged_text: String,
-    merge_open: bool,
+    merged: Option<String>,
     /// A folder comparison that was opened: its two roots and what differs.
     /// A listing is a way into comparisons, like the file chooser, so it is
     /// view state; every comparison it opens is in the document.
@@ -313,8 +312,13 @@ impl DiffMergeApp {
         Header {
             mode: self.mode,
             changes,
-            merge_open: self.merge_open && self.load_error.is_none(),
-            saved: self.saved(),
+            merge: if self.merged.is_none() || self.load_error.is_some() {
+                MergeResult::None
+            } else if self.saved() {
+                MergeResult::Saved
+            } else {
+                MergeResult::Unsaved
+            },
             folders: self.folders.is_some(),
             compact: self.compact,
         }
@@ -322,7 +326,9 @@ impl DiffMergeApp {
 
     /// Whether the merged result holds nothing that is not written yet.
     fn saved(&self) -> bool {
-        self.merge_open && self.saved_text.as_deref() == Some(self.merged_text.as_str())
+        self.merged
+            .as_deref()
+            .is_some_and(|merged| self.saved_text.as_deref() == Some(merged))
     }
 
     pub(crate) fn attach_chrome(&mut self, chrome: Chrome) {
@@ -358,8 +364,7 @@ impl DiffMergeApp {
             shots_status: false,
             saved_place: None,
             saved_text: None,
-            merged_text: String::new(),
-            merge_open: false,
+            merged: None,
             folders: None,
             showing_folders: false,
             folder_selection: 0,
@@ -411,8 +416,7 @@ impl DiffMergeApp {
         if let Some(mode) = mode {
             self.show(mode);
         }
-        self.merged_text.clone_from(&state.merged);
-        self.merge_open = state.merge.is_some();
+        self.merged = state.merge.is_some().then(|| state.merged.clone());
         if merge_changed {
             // A different merge has its own result, and no place of its own
             // yet: saving asks where, rather than writing over the last one.
@@ -519,19 +523,7 @@ impl DiffMergeApp {
                         right,
                     })
                 },
-                |app: &mut Self, opened, cx| match opened {
-                    Ok(opened) => {
-                        app.load_error = None;
-                        cx.submit(Session::OPEN_COMPARISON.with(opened));
-                        app.show(Mode::Diff);
-                        Ok(Effected::done())
-                    }
-                    Err(reason) => {
-                        app.load_error = Some(reason.clone());
-                        app.invalidation.paint = true;
-                        Err(reason)
-                    }
-                },
+                |app: &mut Self, opened, cx| app.show_opened(opened, cx),
             )),
             DiffmergeEffect::OpenFiles {
                 left: None,
@@ -549,40 +541,36 @@ impl DiffMergeApp {
             }
             DiffmergeEffect::OpenOne { path, side } => Ok(cx.thread(
                 move |_progress| label_and_text(Path::new(&path)),
-                move |app: &mut Self, opened, cx| match opened {
-                    Ok((label, text)) => {
-                        let absent = t("source-absent");
-                        let opened = if side == "left" {
-                            session::OpenComparison {
-                                left_label: label,
-                                left: text,
-                                right_label: absent,
-                                right: String::new(),
-                            }
-                        } else {
-                            session::OpenComparison {
-                                left_label: absent,
-                                left: String::new(),
-                                right_label: label,
-                                right: text,
-                            }
-                        };
-                        cx.submit(Session::OPEN_COMPARISON.with(opened));
-                        app.load_error = None;
-                        app.show(Mode::Diff);
-                        Ok(Effected::done())
-                    }
-                    Err(reason) => {
-                        app.load_error = Some(reason.clone());
-                        app.invalidation.paint = true;
-                        Err(reason)
-                    }
+                move |app: &mut Self, opened, cx| {
+                    let opened = opened.map(|(label, text)| one_sided(&side, label, text));
+                    app.show_opened(opened, cx)
                 },
             )),
             DiffmergeEffect::SaveMerged { path } => self.answer_save(cx, path, false),
             DiffmergeEffect::SaveMergedAs => self.answer_save(cx, None, true),
             DiffmergeEffect::CompareFolders { left, right } => {
-                self.answer_compare_folders(cx, left, right)
+                Self::answer_compare_folders(cx, left, right)
+            }
+        }
+    }
+
+    /// Show a comparison whose files were read, or say why they could not be.
+    fn show_opened(
+        &mut self,
+        opened: Result<session::OpenComparison, String>,
+        cx: &EffectCx<Session, Self>,
+    ) -> EffectAnswer {
+        match opened {
+            Ok(opened) => {
+                self.load_error = None;
+                cx.submit(Session::OPEN_COMPARISON.with(opened));
+                self.show(Mode::Diff);
+                Ok(Effected::done())
+            }
+            Err(reason) => {
+                self.load_error = Some(reason.clone());
+                self.invalidation.paint = true;
+                Err(reason)
             }
         }
     }
@@ -994,15 +982,11 @@ impl DiffMergeApp {
                     self.accept(HunkChoice::Both);
                     true
                 }
-                "f" | "F" => {
-                    if self.folders.is_some() {
-                        self.showing_folders = !self.showing_folders;
-                        self.publish_header();
-                        self.invalidation.paint = true;
-                        true
-                    } else {
-                        false
-                    }
+                "f" | "F" if self.folders.is_some() => {
+                    self.showing_folders = !self.showing_folders;
+                    self.publish_header();
+                    self.invalidation.paint = true;
+                    true
                 }
                 _ => false,
             },
@@ -1518,6 +1502,27 @@ enum Pick {
     Failed(String),
 }
 
+/// A comparison of one file against nothing, the file on the `side` it was
+/// opened as.
+fn one_sided(side: &str, label: String, text: String) -> session::OpenComparison {
+    let absent = t("source-absent");
+    if side == "left" {
+        session::OpenComparison {
+            left_label: label,
+            left: text,
+            right_label: absent,
+            right: String::new(),
+        }
+    } else {
+        session::OpenComparison {
+            left_label: absent,
+            left: String::new(),
+            right_label: label,
+            right: text,
+        }
+    }
+}
+
 fn label_and_text(path: &Path) -> Result<(String, String), String> {
     let label = path.file_name().map_or_else(
         || path.display().to_string(),
@@ -1987,7 +1992,7 @@ mod tests {
         app.settle();
         let state = app.state();
         let hunk = first_conflict(&state);
-        let before = state.merged.clone();
+        let before = state.merged;
         app.harness().key("t");
         app.settle();
         let state = app.state();

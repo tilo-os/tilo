@@ -2654,3 +2654,159 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     assert_eq!(snapshot.entries[1].label, "n:plan");
     assert_eq!(snapshot.active.as_ref(), Some(&snapshot.entries[1].route));
 }
+
+/// Another action than opening, asked of an app's resource (a launchpad
+/// card's "show tasks", an app launching another with an action): the
+/// page's session opens the app on the record and hands the action to the
+/// host, which invokes it in that window once it is up, as the workspace
+/// broker delivers an action to an app it launched.
+#[test]
+fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
+    use ui::tilo_actions::remote::{
+        ActionHost as _, Caller, InvokeRequest, application_record_target,
+    };
+    let mut minter = IdMinter::new(7);
+    let chat = tab(&mut minter, "Chat");
+    let tree = seed_tree(&mut minter, "Desk", vec![chat]);
+    let opened = Rc::default();
+    let (surface, handle) = DesktopSurface::new(
+        tree,
+        7,
+        Box::new(RecordWindows {
+            opened: Rc::clone(&opened),
+        }),
+    );
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    let (session, openings) =
+        tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
+    let caller = Caller::local_person("tester").in_room("room");
+    let ask = |argument: serde_json::Value| -> InvokeRequest {
+        serde_json::from_value(serde_json::json!({
+            "invocation": ui::tilo_actions::InvocationId::new(),
+            "target": application_record_target("room", "so.tilo.notes", "n:plan", "plan", "pin"),
+            "argument": argument,
+        }))
+        .unwrap()
+    };
+    drop(session.invoke(&caller, ask(serde_json::json!({"Json": {"place": "top"}}))));
+    assert!(openings.open(&handle, "g", |_, _| Ok(())));
+    driver.relayout();
+    assert_eq!(opened.borrow().len(), 1, "the app opens on the record");
+    let reveals = openings.take_reveals();
+    assert_eq!(reveals.len(), 1, "{reveals:?}");
+    assert_eq!(
+        (
+            reveals[0].app.as_str(),
+            reveals[0].record.as_str(),
+            reveals[0].resource.as_str(),
+            reveals[0].action.as_str(),
+        ),
+        ("so.tilo.notes", "n:plan", "plan", "pin")
+    );
+    assert_eq!(
+        reveals[0].arguments.get("place"),
+        Some(&serde_json::json!("top"))
+    );
+}
+
+/// Windows opened with content: each content launch opens its app on what
+/// it was handed.
+struct ContentWindows {
+    opened: Rc<std::cell::RefCell<Vec<(String, String)>>>,
+}
+
+impl TileSource for ContentWindows {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        let (app, hash) = tilo_desktop_surface::session::launched_content(app)?;
+        self.opened
+            .borrow_mut()
+            .push((app.to_owned(), hash.to_owned()));
+        Some(Tab {
+            id,
+            title: app.into(),
+            tile: TileContent::LocalApp {
+                app_id: app.into(),
+                label: app.into(),
+                note: String::new(),
+            },
+            app_title: None,
+        })
+    }
+}
+
+/// A window hands content to another app (the camera's capture to Photos,
+/// a report's recording to the app that replays it): the page's session
+/// opens that app with the content, by its hash, as the workspace broker
+/// stages it for an app it launches. Anything but a content hash is no
+/// content to open.
+#[test]
+fn a_window_opens_content_in_another_app_through_the_desktop_s_session() {
+    use ui::tilo_actions::remote::{ActionHost as _, ApplicationLaunch, Caller, InvokeRequest};
+    let mut minter = IdMinter::new(7);
+    let camera = tab(&mut minter, "Camera");
+    let tree = seed_tree(&mut minter, "Desk", vec![camera]);
+    let opened = Rc::default();
+    let (surface, handle) = DesktopSurface::new(
+        tree,
+        7,
+        Box::new(ContentWindows {
+            opened: Rc::clone(&opened),
+        }),
+    );
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    let (session, openings) =
+        tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
+    let caller = Caller::local_person("tester").in_room("room");
+    let hash = "ab".repeat(32);
+    let launch = ApplicationLaunch::with_content("so.tilo.photos", hash.clone());
+    let ask = |argument: ui::tilo_actions::remote::InvokeArgument| -> InvokeRequest {
+        serde_json::from_value(serde_json::json!({
+            "invocation": ui::tilo_actions::InvocationId::new(),
+            "target": launch.target("room"),
+            "argument": argument,
+        }))
+        .unwrap()
+    };
+    let refused = session.invoke(
+        &caller,
+        ask(ui::tilo_actions::remote::InvokeArgument::Text(
+            "../photo.jpg".into(),
+        )),
+    );
+    drop(refused);
+    assert!(
+        !openings.open(&handle, "g", |_, _| Ok(())),
+        "a path is no content to open"
+    );
+    drop(session.invoke(&caller, ask(launch.argument())));
+    assert!(openings.open(&handle, "g", |app, existing| {
+        assert_eq!(app, "so.tilo.photos", "admitted as its app");
+        assert!(!existing, "opening an app with content is opening the app");
+        Ok(())
+    }));
+    driver.relayout();
+    assert_eq!(
+        *opened.borrow(),
+        vec![("so.tilo.photos".to_owned(), hash)],
+        "the app opens with the content"
+    );
+}

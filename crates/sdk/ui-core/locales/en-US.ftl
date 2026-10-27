@@ -3,7 +3,7 @@ tab-modified = Unsaved changes
 tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
 tab-controls-desktop = Controls your desktop
-tab-dev-build = Dev build · by { $installer }
+tab-dev-build = Dev build by { $installer }
 tab-shared-with = Shared with { $place }
 standalone-search-title = Search
 standalone-history-title = History
@@ -233,6 +233,7 @@ history-sync-finish-edit = Finish the current edit before receiving remote chang
 history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
 history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
 history-sync-offline = Working offline. Changes will sync when you're back.
+history-sync-reconnecting = Connecting. Changes will sync once you're connected.
 arriving-loading = Loading
 arriving-from = From { $source }
 arriving-received-of = { $received } of { $total }
@@ -521,6 +522,8 @@ format-weekday-name = { $weekday ->
     }
 # A day this year in a list: "Jun 30".
 format-month-day = { $month } { $day }
+# A day this year and a time of day: "Jun 30, 14:05".
+format-month-day-time = { $month } { $day }, { $time }
 # A day in another year in a list: "Jun 30, 2025".
 format-month-day-year = { $month } { $day }, { $year }
 # The "Long" date style: "30 Jun 2026".
@@ -994,6 +997,8 @@ conversation-delivery-delivered = Delivered
 conversation-delivery-read = Read
 conversation-delivery-failed = Not sent
 conversation-delivery-uncertain = Status uncertain
+conversation-new-messages = New messages
+conversation-earlier-unavailable = Earlier messages aren't available on this device's hosts
 conversation-attachment-open = Open
 conversation-attachment-open-full-size = Open full size
 conversation-attachment-save = Save
@@ -1056,3 +1061,21 @@ attention-deferred-one = { $count } put aside
 attention-deferred = { $count } put aside
 attention-pill-one = { $count } waiting
 attention-pill = { $count } waiting
+action-document-replaced = This action did not run because its document was reopened or replaced. Try again in the current document.
+
+# One-shot action proposals: one model call's answer, before it is written.
+proposal-model-on-device = { $model }, running on this device
+proposal-model-hosted = { $model }, running on another machine
+proposal-context-selection = The selection
+proposal-context-document = The document
+proposal-context-too-many = That is too much context to send at once. Choose less.
+# $name is the part, $limit how many kilobytes one part may carry.
+proposal-context-too-long = { $name } is longer than { $limit } KB. Choose less.
+proposal-diff-more =
+    { $count ->
+        [one] One more line not shown
+       *[other] { $count } more lines not shown
+    }
+proposal-accept = Apply
+proposal-reject = Discard
+proposal-decisions = Apply this change, or discard it

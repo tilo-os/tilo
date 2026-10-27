@@ -28,6 +28,7 @@ use tilo_model_gateway::host_backend::protocol::{
 
 use super::{Briefing, MOST_PUBLISHED, READ_VIEW, ReadView};
 use crate::planner::{MOST_WAITS, PlanContext, read_answer, wait_places};
+use crate::profile::Catalog;
 use crate::vision::{Eyes, LOOK_CONTENT, Seen};
 
 /// What the planning model is told before every task.
@@ -240,12 +241,23 @@ pub(crate) fn plan(
     let mut run = [0_u8; 16];
     getrandom::fill(&mut run).map_err(|_| "no randomness for the model call".to_string())?;
     let mut talk = Talk::open(asked);
+    // Told only some apps' operations, every turn offers the lookup, and
+    // `describe_operation` by what every granted app leaves out, so the
+    // tools are the same whatever was described.
+    let relevant = asked.briefing.catalog == Catalog::Relevant;
     let mut tools = planning_tools(
         asked.most_steps,
-        asked.briefing.describes(),
+        if relevant {
+            asked.briefing.left_out
+        } else {
+            asked.briefing.describes()
+        },
         asked.briefing.searches(),
         talk.eyes.sees(),
     );
+    if relevant {
+        super::catalog::with_lookup(&mut tools, asked.most_steps);
+    }
     if asked.briefing.role.coordinated() {
         coordinated_tools(&mut tools);
     }
@@ -370,14 +382,17 @@ impl Talk {
             text: stable + &rest + &note,
         }];
         first.extend(first_pictures.iter().map(crate::vision::Picture::content));
+        let mut messages = if asked.briefing.catalog == Catalog::Relevant {
+            super::catalog::system_messages(PLANNER_INSTRUCTIONS, asked.briefing)
+        } else {
+            vec![Message::text(Role::System, PLANNER_INSTRUCTIONS)]
+        };
+        messages.push(Message {
+            role: Role::User,
+            content: first,
+        });
         Self {
-            messages: vec![
-                Message::text(Role::System, PLANNER_INSTRUCTIONS),
-                Message {
-                    role: Role::User,
-                    content: first,
-                },
-            ],
+            messages,
             revealed,
             eyes,
             context: PlanContext {
@@ -417,10 +432,11 @@ impl Talk {
     ) -> Result<Option<Answer>, String> {
         let text = said(&response);
         if let Some(input) = plan_in_text(&text) {
-            let refusal = match read_plan_call(
+            let refusal = match read_counted(
                 &joined_then(input),
-                &self.revealed,
+                &mut self.revealed,
                 (asked.most_steps, asked.catalogue, &self.context),
+                asked.briefing,
             ) {
                 Ok(answer) => return Ok(Some(answer)),
                 Err(refusal) if self.no_call.in_text => format!("{refusal}\n\n{PLAN_AS_TEXT}"),
@@ -731,7 +747,7 @@ pub(crate) const VALUES_NOTE: &str = " Any argument may quote a value a document
     references such as Sheet1!B2 as operands and an optional format after | ($, %, 0.00, \
     long): the host fills it in when the step runs. A value that is only a date or amount \
     calculation, with ISO dates (10 business days after 2026-10-14, 2026-10-14 + 3 weeks, \
-    289 - 50, 4 x 38.50, sum of 120, 80 and 45, 15% of 200), is computed by the host in any \
+    workday(2026-10-14, 10), 289 - 50, 4 x 38.50, sum of 120, 80 and 45, 15% of 200), is computed by the host in any \
     argument, cell or field; inside text use {{= … }}. Never work numbers or dates out yourself; \
     a date a document writes is noted after it as the host reads it (03/04/1988 \
     [1988-04-03]): use that. To quote one item of a \
@@ -1051,7 +1067,7 @@ pub(crate) fn look_content_answer(
     };
     let given = given.trim();
     if !eyes.sees() {
-        return Seen::from("Not shown: this model is not shown pictures.".to_owned());
+        return Seen::from(format!("Not shown: {}.", crate::vision::NOT_SEEING));
     }
     if !eyes.was_shown(given) {
         return format!(
@@ -1082,6 +1098,23 @@ fn read_plan_call(
     }
 }
 
+/// A `plan` call's `input` read as [`read_plan_call`] reads it, counting
+/// the steps that name an operation of an app `briefing` did not tell the
+/// plan ([`super::catalog::missed`]). A plan naming one runs as any other;
+/// refused, its refusal describes those apps in full, for the next turn.
+fn read_counted(
+    input: &serde_json::Value,
+    revealed: &mut tilo_agent::tools::Revealed,
+    (most_steps, catalogue, context): (usize, &Catalogue, &PlanContext),
+    briefing: &Briefing,
+) -> Result<Answer, String> {
+    let (apps, misses) = super::catalog::missed(input, briefing, catalogue);
+    super::catalog::note_misses(misses);
+    read_plan_call(input, revealed, (most_steps, catalogue, context)).map_err(|refusal| {
+        super::catalog::described_on_refusal(refusal, &apps, briefing, catalogue, revealed)
+    })
+}
+
 /// One discovery call `(name, input)` answered over `catalogue` and
 /// `briefing`: `Break` with the plan that ends the conversation, else
 /// `Continue` with what the model is told (a refused plan, a read's or a
@@ -1095,10 +1128,11 @@ pub(crate) fn answer_call(
     if name == tilo_agent::tools::PLAN {
         // A refused plan goes back to the model with the reason (and the
         // shown ids it may have meant) for another try.
-        return match read_plan_call(
+        return match read_counted(
             &joined_then(input.clone()),
             revealed,
             (most_steps, catalogue, context),
+            briefing,
         ) {
             Ok(answer) => ControlFlow::Break(answer),
             Err(refused) => ControlFlow::Continue(refused.into()),
@@ -1110,6 +1144,11 @@ pub(crate) fn answer_call(
         look_content_answer(input, eyes, read)
     } else if name == crate::search::SEARCH_ROOM {
         crate::search::answer(input, &briefing.searchable, revealed).into()
+    } else if let Some(described) = (name == tilo_agent::tools::LIST_OPERATIONS)
+        .then(|| super::catalog::lookup(input, briefing, catalogue, revealed))
+        .flatten()
+    {
+        described.into()
     } else {
         tilo_agent::tools::answer(name, input, catalogue, revealed).into()
     })
@@ -1132,9 +1171,11 @@ pub(crate) fn first_turn_parts(
     }
     // Stable first: the apps' reference (the same for every agent and task
     // granted them), then the operations published now (the same while the
-    // agent's records are) and what changes every plan.
+    // agent's records are) and what changes every plan. Told only the
+    // relevant apps, the plan has the line per app and the reference in its
+    // instructions instead ([`super::catalog::system_messages`]).
     let mut stable = String::new();
-    if !briefing.reference.is_empty() {
+    if !briefing.reference.is_empty() && briefing.catalog == Catalog::All {
         stable.push_str(&briefing.reference);
         stable.push('\n');
     }

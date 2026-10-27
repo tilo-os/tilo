@@ -15,6 +15,7 @@ sys.path.insert(0, str(HERE))
 
 import adapters  # noqa: E402
 import compare  # noqa: E402
+import room_capacity  # noqa: E402
 
 GATE = ROOT / "crates/system/fs/tests/performance_timing.rs"
 FOOTPRINT = ROOT / "crates/system/fs/tests/document_media_footprint.rs"
@@ -621,6 +622,13 @@ class HostingLoad(unittest.TestCase):
         [guests] = re.findall(r'tilo-room-load" bench --guests (\d+)', scheduled)
         config = {**room_report()["config"], "guests": int(guests)}
         produced |= {item.kpi for item in adapters.room_load([room_report(config=config, joined=int(guests))], ENV)}
+        # ... and its degraded probe, whose runs the job records the same way.
+        self.assertIn("room_capacity.py degraded", scheduled)
+        degraded = room_capacity.degraded_plan()
+        produced |= {item.kpi for item in adapters.room_degraded(
+            [degraded_run(item, room_report(config={**room_report()["config"], "guests": int(item.args[1])},
+                                            joined=int(item.args[1])))
+             for item in degraded], ENV)}
         self.assertTrue(budgeted, "the hosting group has budgets")
         self.assertLessEqual(budgeted, produced)
 
@@ -671,6 +679,16 @@ def room_report(join_p99: float = 400.0, rss: int = 700, **changes) -> dict:
     return report
 
 
+def degraded_run(item, report: dict) -> dict:
+    """One run of `room_capacity.py degraded`, as it writes it (name, kind, report)."""
+    run = {"name": item.name, "kind": item.kind, "args": list(item.args),
+           "env": dict(item.env), "exit": 0, "stopped": None, "report": report}
+    if item.kind == "degraded":
+        run["degraded"] = {"stolen_cpu_percent": room_capacity.STOLEN_CPU_PERCENT,
+                           "throttled_kbit_s": list(room_capacity.THROTTLED_KBIT_S)}
+    return run
+
+
 class RoomLoad(unittest.TestCase):
     def test_each_run_is_one_sample_of_each_kpi(self):
         records = {item.kpi: item for item in adapters.room_load(
@@ -696,6 +714,39 @@ class RoomLoad(unittest.TestCase):
         for field in ('"p99"', '"rss_mib_peak"', '"hold_cpu_cores"', '"machine_cores"', '"chat_rx"',
                       '"joined"', '"failures"', '"cursor_hz"', '"chat_every_s"', '"host_threads"'):
             self.assertIn(field, source)
+
+
+class RoomDegraded(unittest.TestCase):
+    def runs(self) -> list[dict]:
+        return [degraded_run(item, room_report(join_p99=2000.0,
+                                               config={**room_report()["config"], "guests": int(item.args[1])},
+                                               joined=int(item.args[1])))
+                for item in room_capacity.degraded_plan()]
+
+    def test_each_kind_of_run_is_its_own_series(self):
+        records = {item.kpi: item for item in adapters.room_degraded(self.runs(), ENV)}
+        expected = {f"{kpi}.{suffix}" for kpi in adapters.ROOM_LOAD_KPIS
+                    for suffix in ("g50.plain", "g100.throttled", "g500.capped")}
+        self.assertEqual(set(records), expected)
+        throttled = records["hosting.room.join_p99_ms.g100.throttled"]
+        self.assertEqual((throttled.n, throttled.p50, throttled.unit), (1, 2000.0, "ms"))
+        self.assertEqual(throttled.meta["kind"], "throttled")
+        self.assertEqual(throttled.meta["stolen_cpu_percent"], str(room_capacity.STOLEN_CPU_PERCENT))
+        self.assertEqual(records["hosting.room.join_p99_ms.g50.plain"].meta["kind"], "plain")
+        self.assertNotIn("stolen_cpu_percent", records["hosting.room.join_p99_ms.g50.plain"].meta)
+
+    def test_a_run_with_no_report_fails_rather_than_dropping_out(self):
+        runs = self.runs()
+        runs[1]["report"] = None
+        runs[1]["stopped"] = "stopped after 600 s"
+        with self.assertRaisesRegex(ValueError, "stopped after 600 s"):
+            adapters.room_degraded(runs, ENV)
+
+    def test_a_run_whose_guests_failed_is_not_a_measurement(self):
+        runs = self.runs()
+        runs[0]["report"] = room_report(joined=48, config={**room_report()["config"], "guests": 50})
+        with self.assertRaisesRegex(ValueError, "48 of 50"):
+            adapters.room_degraded(runs, ENV)
 
 
 class BrowserQualification(unittest.TestCase):

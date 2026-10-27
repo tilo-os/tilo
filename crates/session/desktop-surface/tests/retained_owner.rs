@@ -111,9 +111,9 @@ impl TileSource for Source {
             ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &room)
                 .unwrap(),
         );
-        let permissions = Rc::new(RefCell::new(
+        let permissions = ui::permissions::SharedPermissions::new(
             ui::permissions::PermissionContext::stranger("retained-author").at_unix_time(100),
-        ));
+        );
         let context = HostContext::prepare(
             &definition,
             HostContextInputs {

@@ -13,7 +13,7 @@ const NOW: u64 = 1_800_000_000;
 
 fn room() -> Workspace {
     let mut ws = Workspace::new(WorkspaceId(1), "Demo");
-    ws.set_owner("quinten");
+    ws.set_owner("ada");
     ws
 }
 
@@ -25,7 +25,7 @@ fn agent_grant(ws: &Workspace, id: &str, node: TreePath) -> Grant {
         node,
         KindSet::READ_UNDOABLE,
         Answer::Allow,
-        Subject::person("quinten"),
+        Subject::person("ada"),
     )
 }
 
@@ -41,7 +41,7 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
     {
         let mut ws = room();
         let grant = agent_grant(&ws, "scribe-member", ws.node());
-        ws.govern_as_at("quinten", Change::Grant(grant), NOW)
+        ws.govern_as_at("ada", Change::Grant(grant), NOW)
             .expect("the owner may grant in the room");
 
         assert_eq!(
@@ -50,12 +50,8 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
             "the kinds of the room grant are what the agent may do",
         );
 
-        ws.govern_as_at(
-            "quinten",
-            Change::Revoke(GrantId::new("scribe-member")),
-            NOW,
-        )
-        .expect("the owner may revoke");
+        ws.govern_as_at("ada", Change::Revoke(GrantId::new("scribe-member")), NOW)
+            .expect("the owner may revoke");
         assert!(
             ws.agent_members_at(NOW).is_empty(),
             "revoking the grant is the whole of taking the agent out",
@@ -68,7 +64,7 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
     {
         let mut ws = room();
         let grant = agent_grant(&ws, "scribe-app", ws.node().app("so.tilo.word-processor"));
-        ws.govern_as_at("quinten", Change::Grant(grant), NOW)
+        ws.govern_as_at("ada", Change::Grant(grant), NOW)
             .expect("owner grants");
         assert!(
             ws.agent_members_at(NOW).is_empty(),
@@ -81,7 +77,7 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
         let mut ws = room();
         let grant =
             agent_grant(&ws, "scribe-expired", ws.node()).with_lifetime(Lifetime::Until(1_000));
-        ws.govern_as_at("quinten", Change::Grant(grant), NOW)
+        ws.govern_as_at("ada", Change::Grant(grant), NOW)
             .expect("owner grants");
         assert!(ws.agent_members_at(NOW).is_empty());
     }
@@ -117,14 +113,11 @@ fn the_people_roster_is_the_owner_and_the_members() {
         TreePath::room("other-room"),
         KindSet::ALL,
         Answer::Allow,
-        Subject::person("quinten"),
+        Subject::person("ada"),
     ));
     assert_eq!(
         ws.roster(),
-        vec![
-            ("quinten".into(), Role::Owner),
-            ("member".into(), Role::Viewer),
-        ]
+        vec![("ada".into(), Role::Owner), ("member".into(), Role::Viewer),]
     );
     assert_eq!(ws.role_of("member"), Some(Role::Viewer));
     assert_eq!(ws.role_of("not-a-member-here"), None);
@@ -163,20 +156,20 @@ fn membership_is_replicated_and_people_and_agents_stay_separate() {
     {
         let mut ws = room();
         ws.govern_as_at(
-            "quinten",
+            "ada",
             Change::AddMember {
-                person: "xaver".into(),
+                person: "bob".into(),
                 role: Role::Editor,
             },
             NOW,
         )
         .expect("owner admits");
         let grant = agent_grant(&ws, "scribe-member", ws.node());
-        ws.govern_as_at("quinten", Change::Grant(grant), NOW)
+        ws.govern_as_at("ada", Change::Grant(grant), NOW)
             .expect("owner grants");
 
         let people: Vec<String> = ws.roster().into_iter().map(|(u, _)| u).collect();
-        assert!(people.contains(&"xaver".to_string()));
+        assert!(people.contains(&"bob".to_string()));
         assert!(
             !people.contains(&"scribe".to_string()),
             "an agent must not be listed as a person: {people:?}",

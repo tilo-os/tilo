@@ -268,9 +268,15 @@ fn assert_scroll_copies(label: &str, frames: &[Frame], pane: Rect, step: f64) {
         frames.len(),
         100.0 * repainted / WINDOW_PX
     );
+    // A scroll frame repaints what the step exposed, the line numbers beside
+    // it (every one of them moved) and the status bar's readouts: a few
+    // percent of the pane, whether the step lands on one line or on several.
+    // A frame that repaints the pane is what this refuses.
     assert!(
-        repainted < strip * 2.5,
-        "{label}: a scroll frame repaints about the exposed strip, not {repainted:.0} px"
+        repainted < pane.area() * 0.15,
+        "{label}: a scroll frame repaints about the exposed strip, not \
+         {repainted:.0} px of a {:.0} px pane (a {step} px strip is {strip:.0} px)",
+        pane.area()
     );
 }
 

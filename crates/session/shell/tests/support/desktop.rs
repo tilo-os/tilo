@@ -190,6 +190,22 @@ impl Drop for Client {
     }
 }
 
+/// A `HOME` of the compositor's own, created inside its runtime directory.
+///
+/// `HOME` is not the test's to lend: tests run in one process, and a test
+/// that needs the environment itself points `HOME` (and `XDG_*`) somewhere
+/// of its own for as long as it runs ([`tilo_test_env::TestHome`]), then
+/// deletes that tree. A compositor spawned meanwhile inherits that path and
+/// reads it after the tree is gone, so its settings path cannot be resolved
+/// and it exits with "cannot safely open session settings" — a failure in a
+/// test that never touched settings. Every `XDG_*` directory is already
+/// private per compositor; `HOME` has to be too.
+pub fn private_home(runtime_dir: &Path) -> PathBuf {
+    let home = runtime_dir.join("home");
+    std::fs::create_dir_all(&home).expect("create the compositor's private home");
+    home
+}
+
 impl Desktop {
     /// Boot a headless compositor over `tree` and wait until it serves.
     pub fn start(size: (i32, i32), tree: &shell::shell::state::WorkspaceTree) -> Self {
@@ -211,6 +227,7 @@ impl Desktop {
             next_id(),
         ));
         std::fs::create_dir_all(&runtime_dir).expect("create the private runtime dir");
+        let home = private_home(&runtime_dir);
         let state_path = runtime_dir.join("state.json");
         shell::shell::persist::save_tree_to(tree, &state_path).expect("seed the desktop");
         seed_tab_records(&runtime_dir, tree);
@@ -219,6 +236,7 @@ impl Desktop {
 
         let mut child = Command::new(tilo_test_env::package_binary!("shell"))
             .args(["--mode", "native", "--backend", "headless"])
+            .env("HOME", &home)
             .env("XDG_RUNTIME_DIR", &runtime_dir)
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
             .env("XDG_DATA_HOME", runtime_dir.join("data"))

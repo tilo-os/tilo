@@ -20,7 +20,7 @@ tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
 
 use collab_types::DocumentMutation;
-use common::{Body as _, catalogue};
+use common::{Body as _, catalogue, pdf};
 use tilo_actions::OperationKind;
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
 use tilo_agent_participant::worker::{ProbeReport, probe_confinement};
@@ -28,6 +28,53 @@ use tilo_agent_participant::{ConfinedReplica, Replica, ReplicaActor, Seed};
 use tilo_content::ContentStore;
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+
+#[test]
+fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
+    use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
+    let catalogue = catalogue();
+    let app = "so.tilo.chat";
+    let mut page =
+        Replica::open(&catalogue, app, ROOM, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+        panic!("a new record is published whole");
+    };
+    let mut kept = automerge::AutoCommit::load(&snapshot).unwrap();
+    let current = stored_version(&kept);
+    automerge::transaction::Transactable::put(
+        &mut kept,
+        automerge::ROOT,
+        VERSION_KEY,
+        automerge::ScalarValue::Uint(u64::from(current - 1)),
+    )
+    .unwrap();
+
+    // As a host holds a bot's record: in a worker, its changes admitted to
+    // the host's mirror of the room's document.
+    let held = ConfinedReplica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "host",
+        &ReplicaActor::Owner,
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![kept.save()],
+        },
+    )
+    .expect("an older record opens in its worker");
+    held.apply(&DocumentMutation::Snapshot(kept.save()))
+        .expect("the room's older document merges");
+    let Some(DocumentMutation::Incremental(migration)) = held
+        .take_mutation()
+        .expect("the worker's migration is admitted to the host's mirror")
+    else {
+        panic!("the migration is sent");
+    };
+    let mut room = kept.clone();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut room, &migration).unwrap();
+    assert_eq!(stored_version(&room), current);
+}
 
 #[test]
 fn the_app_worker_cannot_read_the_hosts_state_directory() {
@@ -947,54 +994,6 @@ fn an_agent_reads_a_document_the_room_holds_with_the_word_processor() {
         .unwrap_or_default();
     assert!(text.contains("The cellar lamp flickers"), "{text}");
     assert!(agent.take_mutation().unwrap().is_none());
-}
-
-/// A PDF of one page per line in `pages`, set in Helvetica.
-fn pdf(pages: &[&str]) -> Vec<u8> {
-    let mut objects = vec![
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        format!(
-            "<< /Type /Pages /Kids [{}] /Count {} >>",
-            (0..pages.len())
-                .map(|i| format!("{} 0 R", 4 + 2 * i))
-                .collect::<Vec<_>>()
-                .join(" "),
-            pages.len()
-        ),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
-            .to_owned(),
-    ];
-    for (i, line) in pages.iter().enumerate() {
-        objects.push(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
-             /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
-            5 + 2 * i
-        ));
-        let stream = format!("BT /F1 12 Tf 72 720 Td ({line}) Tj ET");
-        objects.push(format!(
-            "<< /Length {} >>\nstream\n{stream}\nendstream",
-            stream.len()
-        ));
-    }
-    let mut out = b"%PDF-1.4\n".to_vec();
-    let mut offsets = Vec::new();
-    for (i, body) in objects.iter().enumerate() {
-        offsets.push(out.len());
-        out.extend(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
-    }
-    let xref = out.len();
-    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
-    for offset in offsets {
-        out.extend(format!("{offset:010} 00000 n \n").as_bytes());
-    }
-    out.extend(
-        format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-            objects.len() + 1
-        )
-        .as_bytes(),
-    );
-    out
 }
 
 /// A `side`-pixel square grey PNG, its pixels stored uncompressed.

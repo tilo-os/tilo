@@ -402,6 +402,7 @@ fn result(row: WindowRow, app: Option<&str>, score: i32) -> SearchResult {
             }
             _ => None,
         },
+        resource: None,
     }
 }
 

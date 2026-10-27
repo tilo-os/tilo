@@ -993,7 +993,7 @@ fn sample_page_abstract() -> Page {
             Block::Title("Tilo: A Collaborative Spatial Operating System".to_string()),
             Block::Spacer(6.0),
             Block::Caption(
-                "Technical overview, revision 7. Daskju Systems, June 2026.".to_string(),
+                "Technical overview, revision 7. Example Systems, June 2026.".to_string(),
             ),
             Block::Spacer(20.0),
             Block::H1("Abstract".to_string()),
@@ -1299,7 +1299,7 @@ fn sample_outline() -> Vec<OutlineItem> {
 pub fn sample_document() -> Document {
     Document {
         title: "Tilo Technical Overview".into(),
-        author: "Daskju Systems".into(),
+        author: "Example Systems".into(),
         subject: "Architecture specification".into(),
         pages: sample_pages(),
         outline: sample_outline(),

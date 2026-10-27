@@ -296,6 +296,7 @@ pub mod host_operation {
 pub(crate) mod draw_cull;
 pub mod host_palette;
 pub mod mentions;
+pub mod own_paint;
 pub mod published;
 pub mod reader_hud;
 pub mod record;
@@ -414,7 +415,7 @@ pub use local_state::{
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
-pub use platform::{DialogActionOrder, Platform, PlatformConventions, Shortcut};
+pub use platform::{DialogActionOrder, Platform, PlatformConventions, Shortcut, spell_shortcut};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use profiling::{
     FRAME_BUDGET_US, FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep,
@@ -565,7 +566,8 @@ pub use text_selection::{
     clipboard_paste_primary, clipboard_paste_rich, extend_span_drag,
     grapheme_boundary_at_or_before, line_boundaries, next_char_boundary, next_word_boundary,
     next_word_boundary_chars, prev_char_boundary, prev_word_boundary, prev_word_boundary_chars,
-    try_clipboard_copy, try_clipboard_copy_secret, word_boundaries, word_boundaries_chars,
+    reserve_clipboard_copy, try_clipboard_copy, try_clipboard_copy_secret, word_boundaries,
+    word_boundaries_chars,
 };
 pub use tokens::{ReadingFace, TextRole, UiFace};
 

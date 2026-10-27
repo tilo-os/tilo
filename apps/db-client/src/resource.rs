@@ -49,7 +49,12 @@ impl Workspace {
             "sqlite" => Engine::Sqlite,
             "postgres" => Engine::Postgres,
             "mysql" => Engine::MySql,
-            other => return Err(Refusal::new(format!("no engine is called {other}"))),
+            other => {
+                return Err(Refusal::new(crate::i18n::t_args(
+                    "db-unknown-engine",
+                    &[("engine", crate::i18n::text(other))],
+                )));
+            }
         };
         let mut profile = ConnectionProfile::new(name.trim(), engine);
         if let Some(location) = location {
@@ -128,11 +133,10 @@ impl Workspace {
             )
             .anchored(item_resource_id::<Self>("connections", id))
         });
-        let queries =
-            self.saved_queries.iter().map(|(id, saved)| {
-                SearchEntry::new(&saved.name, "Collaborative saved query")
-                    .anchored(item_resource_id::<Self>("saved_queries", id))
-            });
+        let queries = self.saved_queries.iter().map(|(id, saved)| {
+            SearchEntry::new(&saved.name, crate::i18n::t("db-search-saved-query"))
+                .anchored(item_resource_id::<Self>("saved_queries", id))
+        });
         connections.chain(queries).collect()
     }
 }

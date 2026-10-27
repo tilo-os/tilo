@@ -7,12 +7,14 @@
 
 use std::rc::Rc;
 
+use ui::framework::Actions;
 use ui::local_state::LocalState;
+use ui::tilo_actions::ActionBinding;
 use ui::widget::{Field, Form, FormSection, TextInput, TextInputKind, Toggle};
 
 use crate::app::{Command, Commands};
 use crate::model::InstallProfile;
-use crate::resource::Imager;
+use crate::resource::{Imager, ImagerEffect};
 
 /// What enrolling does, under its switch.
 const ENROLL_NOTE: &str = "Certifies the new device. The root secret stays on this computer.";
@@ -44,32 +46,47 @@ impl SetupField {
             Self::DeviceLabel => "imager.write-setup.device-label",
         }
     }
-}
 
-/// The profile edit a changed field submits; `None` for the host-local
-/// passphrase and key, which never enter the document.
-pub(crate) fn field_edit(
-    field: SetupField,
-    value: String,
-) -> Option<ui::tilo_resource::Edit<Imager>> {
-    let profile = Imager::paths().profile;
-    match field {
-        SetupField::WifiSsid => Some(profile.wifi_ssid.replace(value)),
-        SetupField::DeviceLabel => Some(profile.device_label.replace(value)),
-        SetupField::WifiPsk | SetupField::SshKey => None,
+    /// What a committed value of the field does: a profile edit for the
+    /// network name and device label, and for the passphrase, which never
+    /// enters the document, an effect on this machine. The key is the
+    /// wizard's until it is whole ([`form`]).
+    fn binding(self, actions: &Actions<Imager>) -> Option<ActionBinding<String>> {
+        let profile = Imager::paths().profile;
+        match self {
+            Self::WifiSsid => {
+                actions.edit_binding(profile.wifi_ssid, |path, value| path.replace(value))
+            }
+            Self::DeviceLabel => {
+                actions.edit_binding(profile.device_label, |path, value| path.replace(value))
+            }
+            Self::WifiPsk => actions.effect_binding(ImagerEffect::SET_WIFI_PSK),
+            Self::SshKey => None,
+        }
     }
 }
 
-fn text_field(field: SetupField, value: &str, kind: TextInputKind, commands: &Commands) -> Field {
-    let sink = Rc::clone(commands);
+fn text_field(
+    field: SetupField,
+    value: &str,
+    kind: TextInputKind,
+    actions: Option<&Actions<Imager>>,
+    commands: &Commands,
+) -> Field {
     let mut input = TextInput::local()
         .with_id(field.id())
         .with_kind(kind)
-        .with_initial_value(value)
-        .on_change(move |value| {
-            sink.borrow_mut()
-                .push(Command::WriteSetup(field, value.to_string()));
+        .with_initial_value(value);
+    if field == SetupField::SshKey {
+        // A key is checked once it is whole, when the write starts: each
+        // keystroke of one is no key yet, so it is kept as typed.
+        let sink = Rc::clone(commands);
+        input = input.on_change(move |value| {
+            sink.borrow_mut().push(Command::SshKey(value.to_owned()));
         });
+    } else if let Some(binding) = actions.and_then(|actions| field.binding(actions)) {
+        input = input.on_action(binding);
+    }
     if field == SetupField::WifiPsk {
         input = input.with_secret(true);
     }
@@ -77,41 +94,50 @@ fn text_field(field: SetupField, value: &str, kind: TextInputKind, commands: &Co
 }
 
 /// The network and identity section for `profile`, with the host-local
-/// passphrase `wifi_psk`.
+/// passphrase `wifi_psk`; its controls are unbound before the framework
+/// attaches.
 pub(crate) fn form(
     profile: &InstallProfile,
     wifi_psk: &str,
     ssh_public_key: &str,
+    actions: Option<&Actions<Imager>>,
     commands: &Commands,
 ) -> Form {
-    let sink = Rc::clone(commands);
-    let enroll = Toggle::from_state(&LocalState::new(profile.enroll_local_identity))
-        .with_id("imager.write-setup.enroll")
-        .on_change(move |on| sink.borrow_mut().push(Command::Enroll(on)));
+    let mut enroll = Toggle::from_state(&LocalState::new(profile.enroll_local_identity))
+        .with_id("imager.write-setup.enroll");
+    if let Some(binding) = actions
+        .and_then(|actions| actions.field_binding(Imager::paths().profile.enroll_local_identity))
+    {
+        enroll = enroll.on_action(binding);
+    }
     Form::new().section(
         FormSection::new("Network and identity")
             .field(text_field(
                 SetupField::WifiSsid,
                 &profile.wifi_ssid,
                 TextInputKind::Name,
+                actions,
                 commands,
             ))
             .field(text_field(
                 SetupField::WifiPsk,
                 wifi_psk,
                 TextInputKind::Password,
+                actions,
                 commands,
             ))
             .field(text_field(
                 SetupField::SshKey,
                 ssh_public_key,
                 TextInputKind::Name,
+                actions,
                 commands,
             ))
             .field(text_field(
                 SetupField::DeviceLabel,
                 &profile.device_label,
                 TextInputKind::Name,
+                actions,
                 commands,
             ))
             .field(Field::new("Enroll as a new device", enroll).with_help(ENROLL_NOTE)),
@@ -132,7 +158,7 @@ mod tests {
             for width in [400, 760] {
                 let commands = Rc::new(std::cell::RefCell::new(Vec::new()));
                 let profile = InstallProfile::default();
-                let panel = form(&profile, "", "", &commands);
+                let panel = form(&profile, "", "", None, &commands);
                 let view = ui::headless::FrameHarness::for_root(
                     ui::State::new(),
                     panel,

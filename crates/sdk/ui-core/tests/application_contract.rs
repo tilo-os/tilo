@@ -61,12 +61,12 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         let mut definition = definition(probe_factory);
         definition.required.push(denied_scope());
         let authority = permissions();
-        *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+        authority.set(tilo_ui::permissions::PermissionContext::granted(
             "probe-author",
             &tilo_ui::permissions::TreePath::root(),
             tilo_ui::permissions::policy::KindSet::ALL,
             None,
-        );
+        ));
         let context = HostContext::prepare(
             &definition,
             HostContextInputs {
@@ -82,7 +82,7 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         )
         .unwrap();
         let checkout = context.record().clone();
-        *authority.borrow_mut() = permissions().borrow().clone();
+        authority.set(permissions().borrow().clone());
         assert!(matches!(
             definition.instantiate(context, LaunchTarget::New, RestoreInput::None),
             Err(LaunchError::CapabilityDenied(_))
@@ -932,12 +932,12 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let authority = permissions();
         if case == "revoked" {
             definition.required.push(denied_scope());
-            *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+            authority.set(tilo_ui::permissions::PermissionContext::granted(
                 "probe-author",
                 &tilo_ui::permissions::TreePath::root(),
                 tilo_ui::permissions::policy::KindSet::ALL,
                 None,
-            );
+            ));
         }
         let target = existing(&checkout);
         let context = HostContext::prepare(
@@ -961,7 +961,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             "target" => {}
             "foreign" => bad.app_id = "foreign.app".into(),
             "malformed" => bad.view.viewport.height = f64::NAN,
-            "revoked" => *authority.borrow_mut() = permissions().borrow().clone(),
+            "revoked" => authority.set(permissions().borrow().clone()),
             _ => unreachable!(),
         }
         let target = if case == "target" {
@@ -1003,12 +1003,12 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert!(records.durability_error(&record.id).is_some());
         assert_eq!(calls(), 1);
         definition.app_id = APP;
-        *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+        authority.set(tilo_ui::permissions::PermissionContext::granted(
             "probe-author",
             &tilo_ui::permissions::TreePath::root(),
             tilo_ui::permissions::policy::KindSet::ALL,
             None,
-        );
+        ));
         let target = existing(&record);
         let context = HostContext::prepare(
             &definition,

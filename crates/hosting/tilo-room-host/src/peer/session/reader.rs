@@ -395,9 +395,12 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
             () = cx.session.lag.wake.notified() => { self.catching_up = true; Ok(None) }
             // A lagging room resumes once everything already queued
             // for this connection is written, so its replay starts
-            // where the wire left off.
+            // where the wire left off. A replay still being written
+            // counts too: resuming under it would replace the session
+            // it is about to answer `Ready` for.
             () = tokio::time::sleep(LAG_POLL), if self.catching_up => {
-                if self.state_outbound.capacity() < self.state_outbound.max_capacity() || self.outbound.capacity() < self.outbound.max_capacity() {
+                let replaying = cx.pending_replays.load(std::sync::atomic::Ordering::SeqCst) > 0;
+                if replaying || self.state_outbound.capacity() < self.state_outbound.max_capacity() || self.outbound.capacity() < self.outbound.max_capacity() {
                     return Ok(None);
                 }
                 let resume = lag_resume(cx.session, self.subscribed);

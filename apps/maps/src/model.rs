@@ -6,6 +6,7 @@
 //! selection, drafts and ranked caches remain per-window, and the offline
 //! areas are this device's ([`crate::offline_areas`]).
 
+use crate::failure;
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model};
 
@@ -60,20 +61,20 @@ impl Category {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Category::Landmark => "Landmark",
-            Category::Cafe => "Café",
-            Category::Restaurant => "Restaurant",
-            Category::Bar => "Bar",
-            Category::Museum => "Museum",
-            Category::Park => "Park",
-            Category::Transit => "Transit stop",
-            Category::Hotel => "Hotel",
-            Category::Shop => "Shop",
-            Category::Hospital => "Hospital",
-            Category::Other => "Place",
-        }
+    pub fn label(self) -> String {
+        failure::t(match self {
+            Category::Landmark => "maps-category-landmark",
+            Category::Cafe => "maps-category-cafe",
+            Category::Restaurant => "maps-category-restaurant",
+            Category::Bar => "maps-category-bar",
+            Category::Museum => "maps-category-museum",
+            Category::Park => "maps-category-park",
+            Category::Transit => "maps-category-transit",
+            Category::Hotel => "maps-category-hotel",
+            Category::Shop => "maps-category-shop",
+            Category::Hospital => "maps-category-hospital",
+            Category::Other => "maps-category-other",
+        })
     }
 
     /// Best-effort mapping from a Nominatim `class`/`type` pair.
@@ -162,7 +163,7 @@ impl Poi {
     /// ("Beer garden" for `beer_garden`) when tagged, else the category.
     pub fn kind_label(&self) -> String {
         let Some(kind) = self.kind.as_deref().filter(|k| !k.trim().is_empty()) else {
-            return self.category.label().to_string();
+            return self.category.label();
         };
         ui::format::capitalize_first(&kind.trim().replace(['_', ';'], " "))
     }
@@ -189,12 +190,23 @@ impl TravelMode {
         TravelMode::Foot,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
+        failure::t(match self {
+            TravelMode::Car => "maps-mode-drive",
+            TravelMode::Transit => "maps-mode-transit",
+            TravelMode::Bike => "maps-mode-bike",
+            TravelMode::Foot => "maps-mode-foot",
+        })
+    }
+
+    /// The mode's stable name, as its serialized value spells it. Never
+    /// translated: it is an identity, not a label.
+    pub const fn id(self) -> &'static str {
         match self {
-            TravelMode::Car => "Drive",
-            TravelMode::Transit => "Transit",
-            TravelMode::Bike => "Cycle",
-            TravelMode::Foot => "Walk",
+            TravelMode::Car => "car",
+            TravelMode::Transit => "transit",
+            TravelMode::Bike => "bike",
+            TravelMode::Foot => "foot",
         }
     }
 
@@ -307,6 +319,16 @@ pub struct Route {
     pub to: LatLon,
 }
 
+impl Route {
+    /// Whether `other` is the same trip: the service's alternatives differ in
+    /// length and time by far more than the half metre and half second
+    /// within which two routes are one.
+    pub fn is_same_trip(&self, other: &Route) -> bool {
+        (self.duration_s - other.duration_s).abs() < 0.5
+            && (self.distance_m - other.distance_m).abs() < 0.5
+    }
+}
+
 /// Mode of one public-transport leg.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum TransitMode {
@@ -319,15 +341,15 @@ pub enum TransitMode {
 }
 
 impl TransitMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            TransitMode::Walk => "Walk",
-            TransitMode::Bus => "Bus",
-            TransitMode::Tram => "Tram",
-            TransitMode::Subway => "Metro",
-            TransitMode::Rail => "Train",
-            TransitMode::Ferry => "Ferry",
-        }
+    pub fn label(self) -> String {
+        failure::t(match self {
+            TransitMode::Walk => "maps-transit-walk",
+            TransitMode::Bus => "maps-transit-bus",
+            TransitMode::Tram => "maps-transit-tram",
+            TransitMode::Subway => "maps-transit-subway",
+            TransitMode::Rail => "maps-transit-rail",
+            TransitMode::Ferry => "maps-transit-ferry",
+        })
     }
 
     /// The mode a MOTIS leg reports, by its mode name.
@@ -444,11 +466,11 @@ pub enum Panel {
 impl Panel {
     pub const ALL: [Panel; 2] = [Panel::Explore, Panel::Directions];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Panel::Explore => "Explore",
-            Panel::Directions => "Directions",
-        }
+    pub fn label(self) -> String {
+        failure::t(match self {
+            Panel::Explore => "maps-panel-explore",
+            Panel::Directions => "maps-panel-directions",
+        })
     }
 }
 
@@ -487,6 +509,10 @@ pub struct MapModel {
     pub selected: Option<String>,
     /// Active road route, if any.
     pub route: Option<Route>,
+    /// The routes the service offered for this trip, the active one first:
+    /// a single route when it offered no other, and what "another route"
+    /// steps through.
+    pub route_alternatives: Vec<Route>,
     /// Public-transport itinerary options.
     pub transit: Vec<TransitJourney>,
     /// Index of the highlighted transit option.
@@ -537,6 +563,7 @@ impl Default for MapModel {
             recents: Vec::new(),
             selected: None,
             route: None,
+            route_alternatives: Vec::new(),
             transit: Vec::new(),
             transit_choice: 0,
             panel: Panel::Explore,
@@ -548,7 +575,7 @@ impl Default for MapModel {
             results: Vec::new(),
             origin: None,
             // Without a real location fix, routes start from the map centre.
-            origin_name: "Map centre".to_string(),
+            origin_name: failure::t("maps-map-centre"),
             dest: None,
             dest_name: String::new(),
             center: LatLon::new(48.1371, 11.5754),

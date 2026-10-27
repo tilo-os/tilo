@@ -37,7 +37,7 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
     let relay = start(state.path(), &alice, &host).await;
     let rooms = relay.rooms().unwrap();
     let room = rooms.create("Lounge").await.unwrap();
-    super::topology_namespace::admit(&relay, &host, &laptop, &room.room).await;
+    super::members::admit(&relay, &host, &laptop, &room.room).await;
     let address = relay.node_addr();
     let link: RoomLink = RoomLink {
         relay: address.id,
@@ -185,8 +185,8 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
     let relay = start(state.path(), &alice, &host).await;
     let rooms = relay.rooms().unwrap();
     let room = rooms.create("Lounge").await.unwrap();
-    super::topology_namespace::admit(&relay, &host, &laptop, &room.room).await;
-    super::topology_namespace::admit(&relay, &host, &phone, &room.room).await;
+    super::members::admit(&relay, &host, &laptop, &room.room).await;
+    super::members::admit(&relay, &host, &phone, &room.room).await;
     let who = hex::encode(laptop.cert.user_public_key);
     rooms
         .put_room_grants(
@@ -234,7 +234,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
         .unwrap();
     publish(&bob_session, &first);
     tilo_test_env::within("Bob's v1 edit in the room", async {
-        while hosted_topic(&rooms, &room.room).await.as_deref() != Some("v1") {
+        while hosted_topic(rooms, &room.room).await.as_deref() != Some("v1") {
             tokio::task::yield_now().await;
         }
     })
@@ -335,7 +335,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
         .expect("the package is the room's version");
     assert!(release.check_file(b"something else").is_err());
     assert_eq!(
-        hosted_topic(&rooms, &room.room).await.as_deref(),
+        hosted_topic(rooms, &room.room).await.as_deref(),
         Some("v1"),
         "an edit made with another version than the room's is held"
     );
@@ -354,7 +354,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
         .unwrap();
     publish(&bob_session, &again);
     tilo_test_env::within("Bob's edit made behind is in the room", async {
-        while hosted_topic(&rooms, &room.room).await.as_deref() != Some("while behind") {
+        while hosted_topic(rooms, &room.room).await.as_deref() != Some("while behind") {
             tokio::task::yield_now().await;
         }
     })

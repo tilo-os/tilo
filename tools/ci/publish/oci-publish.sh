@@ -76,7 +76,6 @@ require_commit
 verify_key=$repo_root/keys/cosign.pub
 [[ $run_channel == release ]] || verify_key=$repo_root/keys/cosign-dev.pub
 digest=$(cat "$out/digest")
-[[ $(built_digest "$out") == "$digest" ]] || die 'the image is not the build'
 registry=${repository%%/*}
 auth=$scratch/registry-auth.json
 # Where the image goes: the registry, or with TILO_PUBLISH_DRY_RUN a local OCI layout.
@@ -98,22 +97,19 @@ else
   export REGISTRY_AUTH_FILE=$auth DOCKER_CONFIG=$scratch/docker
   mkdir -p "$DOCKER_CONFIG"
 fi
-# Log in afresh (lib.sh registry_login). An identity token lasts minutes, so a push that outlives
-# it (a multi-GB image) fails to authenticate its next blob; copy() logs in again and retries,
-# and the blobs already pushed are not sent twice.
+# Log in afresh (lib.sh registry_login); copy() logs in again before each attempt
+# (lib.sh registry_copy).
 login() {
   [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]] && return
   registry_login "$registry" "$auth"
   cp "$auth" "$DOCKER_CONFIG/config.json"
 }
 copy() {
-  local attempt
-  for attempt in 1 2 3 4 5; do
-    login
-    skopeo copy --all --preserve-digests --retry-times 3 --authfile "$auth" "$@" && return
-    printf 'publish: copy attempt %s failed; logging in again\n' "$attempt" >&2
-  done
-  die "could not copy $1 to $2"
+  if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
+    skopeo copy --all --preserve-digests --authfile "$auth" "$1" "$2" || die "could not copy $1 to $2"
+  else
+    registry_copy "$auth" "$1" "$2" --all
+  fi
 }
 login
 # A tag with its placeholders filled in.
@@ -168,7 +164,12 @@ for tag; do
 done
 set -- "${tags[@]}"
 first=$(fill "$1")
-copy "$(built_image "$out")" "$(target "$first")"
+# From a layout: skopeo reads its blobs where they are (lib.sh built_layout).
+built_layout "$out"
+trap '[[ -z $layout_unpacked ]] || rm -rf -- "$layout_unpacked"' EXIT
+[[ $(index_digest "$layout/index.json" < "$layout/index.json") == "$digest" ]] || die 'the image is not the build'
+copy "oci:$layout" "$(target "$first")"
+[[ -z $layout_unpacked ]] || rm -rf -- "$layout_unpacked"
 pushed=$(skopeo inspect --raw --authfile "$auth" "$(pushed)" | sha256sum | cut -d' ' -f1)
 [[ sha256:$pushed == "$digest" ]] || die "the registry holds sha256:$pushed, not $digest"
 if [[ -s $out/signature && -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then

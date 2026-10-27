@@ -376,6 +376,11 @@ impl EnrolledVerifier {
     }
 }
 
+pub use tilo_fs_client::external_history::{
+    NativeReplacementPurpose, NativeReservationDescription, NativeReservationFacts,
+    NativeReservationLocator,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,8 +596,3 @@ mod tests {
         assert!(EnrollmentContext::decode(&serde_json::to_vec(&unknown).unwrap()).is_err());
     }
 }
-
-pub use tilo_fs_client::external_history::{
-    NativeReplacementPurpose, NativeReservationDescription, NativeReservationFacts,
-    NativeReservationLocator,
-};

@@ -203,9 +203,6 @@ impl ResourceApp for SettingsShell {
             tilo_actions::remote::settings_records::PROVIDER,
             settings_sections::declare,
         );
-        for section in &crate::area::registry().sections {
-            (section.record)(records);
-        }
     }
 
     fn fixture(fixture: &mut Fixture<Settings>) {
@@ -249,6 +246,10 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         crate::effects::row(self, id)
+    }
+
+    fn live_row_pending(&self, id: &str) -> bool {
+        crate::effects::row_pending(self, id)
     }
 }
 

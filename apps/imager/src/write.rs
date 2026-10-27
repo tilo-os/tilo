@@ -1469,7 +1469,7 @@ mod tests {
                 hostname: "studio".into(),
                 ..InstallProfile::default()
             };
-            profile.user.username = "quinten".into();
+            profile.user.username = "ada".into();
             profile.user.password = "account-secret".into();
             profile.encryption_passphrase = "disk-secret".into();
             let block = encode_profile_block(&profile).unwrap();
@@ -1510,8 +1510,8 @@ mod tests {
                 timezone: "Europe/Berlin".into(),
                 ..InstallProfile::default()
             };
-            profile.user.username = "quinten".into();
-            profile.user.full_name = "Quinten Example".into();
+            profile.user.username = "ada".into();
+            profile.user.full_name = "Ada Example".into();
             profile.user.password = "must-not-cross".into();
 
             let work = tempfile::tempdir().unwrap();
@@ -1536,7 +1536,7 @@ mod tests {
             let value: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(out.join("profile.json")).unwrap()).unwrap();
             assert_eq!(value["hostname"], "studio");
-            assert_eq!(value["username"], "quinten");
+            assert_eq!(value["username"], "ada");
             assert_eq!(value["keyboard"], "de");
             assert!(value.get("password").is_none());
             assert!(

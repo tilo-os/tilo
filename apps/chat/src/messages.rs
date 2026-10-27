@@ -652,6 +652,23 @@ impl ChatPart {
         Ok(())
     }
 
+    /// Carry the counts of the parts before.
+    ///
+    /// What a part keeps of the parts before it: for each, how many
+    /// top-level messages each channel has there. The chain writes it into
+    /// a part as it starts, from the part before.
+    #[action(housekeeping)]
+    pub fn carry_counts(
+        &mut self,
+        #[param("Top-level messages per channel, by part number")]
+        earlier: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, i64>,
+        >,
+    ) {
+        self.earlier = earlier;
+    }
+
     /// Record ordered provider output, never executable model actions.
     ///
     /// The invoker owns the reply; another author cannot append to it.
@@ -854,6 +871,12 @@ impl Chained for ChatPart {
 
     /// The channel a post goes to, as everyone in the room sees it named
     /// (`#general`). A direct conversation is never named.
+    fn carry(previous: u64, part: &Self) -> Option<tilo_resource::Invoke<Self>> {
+        Some(Self::CARRY_COUNTS.with(chat_part::CarryCounts {
+            earlier: part.carried_after(previous),
+        }))
+    }
+
     fn place(action: &Self::Action, chat: &Chat) -> Option<String> {
         let channel = match &action.operation {
             ChatPartAction::Post(post) => &post.message.channel,
@@ -1031,23 +1054,64 @@ impl Messages {
             .unwrap_or_default()
     }
 
-    /// The top-level messages of `channel` held after `mark`.
+    /// The first top-level message of `channel` held after `mark`: where a
+    /// reader who read up to `mark` starts reading again. When `mark` lies
+    /// in a part not held, the first one held after it.
+    #[must_use]
+    pub fn first_unread(&self, channel: &Id, mark: parts::ReadMark) -> Option<&Id> {
+        self.parts.iter().find_map(|(index, part)| {
+            let index = i64::try_from(*index).unwrap_or(i64::MAX);
+            let skip = match index.cmp(&mark.part) {
+                std::cmp::Ordering::Less => return None,
+                std::cmp::Ordering::Equal => {
+                    usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX)
+                }
+                std::cmp::Ordering::Greater => 0,
+            };
+            part.messages
+                .iter()
+                .filter(|(_, message)| message.channel == *channel && message.parent.is_none())
+                .nth(skip)
+                .map(|(id, _)| id)
+        })
+    }
+
+    /// The top-level messages of `channel` after `mark`: counted in each
+    /// part held, and in the parts between that are not, as the head
+    /// carries them ([`ChatPart::earlier`]).
     #[must_use]
     pub fn unread(&self, channel: &Id, mark: parts::ReadMark) -> usize {
-        self.parts
-            .iter()
-            .map(|(index, part)| {
-                let index = i64::try_from(*index).unwrap_or(i64::MAX);
-                let count = part
-                    .messages
-                    .values()
-                    .filter(|message| message.channel == *channel && message.parent.is_none())
-                    .count();
-                match index.cmp(&mark.part) {
-                    std::cmp::Ordering::Less => 0,
-                    std::cmp::Ordering::Equal => count
-                        .saturating_sub(usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX)),
-                    std::cmp::Ordering::Greater => count,
+        let Some((head, newest)) = self.parts.last() else {
+            return 0;
+        };
+        let from = u64::try_from(mark.part.max(0)).unwrap_or_default();
+        let seen = usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX);
+        let part_held = |index: u64| {
+            self.parts
+                .binary_search_by_key(&index, |(held, _)| *held)
+                .ok()
+                .and_then(|at| self.parts.get(at))
+                .map(|(_, part)| part)
+        };
+        (from..=*head)
+            .map(|index| {
+                let count = match part_held(index) {
+                    Some(part) => part
+                        .messages
+                        .values()
+                        .filter(|message| message.channel == *channel && message.parent.is_none())
+                        .count(),
+                    None => newest
+                        .earlier
+                        .get(&index.to_string())
+                        .and_then(|counts| counts.get(channel.as_str()))
+                        .and_then(|count| usize::try_from(*count).ok())
+                        .unwrap_or_default(),
+                };
+                if index == from {
+                    count.saturating_sub(seen)
+                } else {
+                    count
                 }
             })
             .sum()

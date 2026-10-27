@@ -623,6 +623,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         .set(Arc::new(Bridge {
             live: live.relay.clone(),
             legacy: legacy.clone(),
+            calls: None,
         }))
         .ok()
         .unwrap();

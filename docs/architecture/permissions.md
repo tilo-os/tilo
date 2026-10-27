@@ -153,6 +153,28 @@ it, and a person's restriction always reaches their agents.
   reviewed once by the installer, and bounded by the installer's own authority.
   It never includes governance ([bots.md](bots.md) §3). Agents and bots hold the
   same kind of root-signed, expiring delegation for their own device keys.
+- **Composed actions.** An effect calling another app's published action
+  while it runs an invocation someone asked of it continues that
+  invocation: the host decides the call as its caller, by their grants and
+  under the custody it kept for them, and the app's own identity adds
+  nothing. A call continuing an invocation the app made of itself through
+  its own door is the app's own request, decided as one.
+- **Attenuation.** What an effect asks for while it continues an invocation
+  (another app's action, an edit of its own resource, an open) never reaches
+  further than that invocation was admitted to: its kind (Read, Undoable,
+  Outside, in that order) and whether it is privileged. Its room is bound
+  already, as the custody it continues holds only there. A child that goes
+  further is not refused outright, nor run because the caller's grants
+  would allow it: it asks first, put to the person on their own device as a
+  request of its own, and runs only once they confirm that one child. So
+  approving an agent's read approves reading, not whatever edit its effect
+  goes on to make. The cap carries down a chain: what a child was admitted
+  to reach is its own reach narrowed by its parent's, so a child that
+  needed only reading (an edit of the person's own record, say) passes no
+  more than reading on. A child the person confirmed reaches what it is. A
+  child is never the person's own gesture: it cannot confirm itself, and
+  an ask in their grants goes to their device like anyone else's
+  (`tilo_action_policy::Reach`, `BrokerActor::verdict_in`).
 - **History.** Every entry records the actor and the person it acted for
   ([resources.md](resources.md) §5.1).
 

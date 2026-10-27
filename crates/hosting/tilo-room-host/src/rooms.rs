@@ -69,10 +69,11 @@ mod steward_keys;
 mod stewardship;
 #[cfg(test)]
 pub(crate) mod tests;
-mod topology_namespace;
+mod unbuildable_windows;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
+pub(crate) use voice::carried_call_room;
 mod wait_list;
 
 use std::collections::{BTreeMap, HashMap};
@@ -110,14 +111,13 @@ pub struct WaitListMail {
 // The administration vocabulary (the actions' names and answers, and the
 // wire door's) and the device's client, under the daemon's historic paths.
 pub use tilo_relay_session::rooms::{
-    ATTACH_HOST, ActionInvitation, CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, CancelInvitationRequest,
-    CreatedRoom, DETACH_HOST, ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP,
-    GrantAppAuthorshipRequest, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom,
-    IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
-    MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT,
-    ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand,
-    RoomListing, RoomReply, RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM,
-    member_resource,
+    ATTACH_HOST, ActionInvitation, CREATE_ROOM, CancelInvitationRequest, CreatedRoom, DETACH_HOST,
+    ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest,
+    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, IssueInvitationRequest,
+    IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
+    PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT, ROOM_ADMIN_ALPN,
+    RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand, RoomListing, RoomReply,
+    RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM, member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -247,7 +247,7 @@ struct GovernedRoom {
     compaction_wait: usize,
     /// The room's shared desktop as members' writes of it are decided,
     /// followed from the first such write ([`desktop_writes`]).
-    desktop: Option<crate::desktop_guard::DesktopGuard>,
+    desktop: Option<tilo_desktop_model::shared_record::guard::DesktopGuard>,
     /// The segments of members' larger desktop writes, until each is whole.
     desktop_segments: collab_types::DocumentReassembler,
     /// Members' writes the governor took in that the room file lacks.
@@ -318,13 +318,7 @@ impl GovernedRoom {
         )?;
         select_exact_admission(&mut peer)?;
         peer.install_seed(
-            tilo_peer_state::workspace_seed(
-                &room,
-                authority,
-                &roster,
-                name,
-                rand::random::<u16>().max(1),
-            )?,
+            tilo_peer_state::workspace_seed(&room, authority, &roster, name)?,
             key,
             now,
         )?;
@@ -798,6 +792,18 @@ pub struct Rooms {
     inner: Arc<RoomsInner>,
 }
 
+/// [`Rooms`] for whoever must not keep them alive: the browser plane, which
+/// hands sessions the calls of the rooms this relay carries.
+#[derive(Clone)]
+pub(crate) struct WeakRooms(std::sync::Weak<RoomsInner>);
+
+impl WeakRooms {
+    /// The rooms, while the relay still has them.
+    pub(crate) fn upgrade(&self) -> Option<Rooms> {
+        self.0.upgrade().map(|inner| Rooms { inner })
+    }
+}
+
 struct RoomsInner {
     host: RoomServices,
     dir: PathBuf,
@@ -821,7 +827,7 @@ struct RoomsInner {
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
     /// How many members' windows each room could not take in because they
     /// build on history it no longer has
-    /// ([`topology_namespace::missing_history`]), by room.
+    /// ([`unbuildable_windows::missing_history`]), by room.
     unbuildable_windows: std::sync::Mutex<HashMap<String, u64>>,
     /// The bounds of the governor's private door, over every carrier.
     private: private::PrivateBounds,
@@ -931,6 +937,11 @@ impl std::fmt::Debug for Rooms {
 }
 
 impl Rooms {
+    /// These rooms, held without keeping them alive.
+    pub(crate) fn downgrade(&self) -> WeakRooms {
+        WeakRooms(Arc::downgrade(&self.inner))
+    }
+
     /// Open every room recorded under `dir` and bind each to the relay:
     /// its workspace pinned and admitting only governed members, its
     /// unpublished governance retained, its members' new records created.
@@ -1698,10 +1709,9 @@ impl Rooms {
     }
 
     /// Take a member's own windows into the room's governance: the changes
-    /// a member publishes to the room document within the topology namespace
-    /// the room registered to that device (`contents_owners_v1`). The room's
-    /// admission decides them exactly as every member's does (a change
-    /// outside the device's namespace is refused); the governor commits what
+    /// a member publishes to the room's layout. The room's admission decides
+    /// them exactly as every member's does (a change to what someone else
+    /// made, without the room's leave, is refused); the governor commits what
     /// it admitted as the room's next generation, which every member then
     /// takes in. Until this, a window someone opened after joining reached
     /// nobody: members take governance only from the governor, and the
@@ -1727,7 +1737,7 @@ impl Rooms {
         let mut room = room.lock().await;
         if let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message {
             let missing =
-                topology_namespace::missing_history(room.peer().admitted_room(), changes)?;
+                unbuildable_windows::missing_history(room.peer().admitted_room(), changes)?;
             if missing > 0 {
                 return Err(self.unbuildable_windows(room.room(), missing));
             }

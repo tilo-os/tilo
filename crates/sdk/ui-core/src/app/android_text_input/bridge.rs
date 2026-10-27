@@ -140,7 +140,8 @@ fn editor_info(content: InputContent) -> (i32, i32) {
     (input, options)
 }
 
-/// Points the keyboard at the focused field, or dismisses it for `None`.
+/// Points the keyboard at the focused field, or dismisses it for `None` or
+/// a field with its own on-screen keys.
 /// `restart` discards what the input method knows of the previous field.
 /// `surrounding` is what the next input connection starts from.
 pub(in crate::app) fn update(
@@ -166,13 +167,14 @@ pub(in crate::app) fn update(
         None => (false, (0, 0), [JValue::Int(0); 4]),
     };
     let [x, y, width, height] = rect;
+    let soft_keyboard = field.is_some_and(|field| !field.content.hints.own_keys);
     let (text, [anchor, focus]) = surrounding.map_or((String::new(), [0; 2]), utf16_selection);
     with_env("update", |env, class| {
         let text = env.new_string(text)?;
         env.call_static_method(
             class,
             "update",
-            "(ZIIIIIIZLjava/lang/String;II)V",
+            "(ZIIIIIIZZLjava/lang/String;II)V",
             &[
                 JValue::Bool(jboolean::from(enabled)),
                 JValue::Int(input_type),
@@ -182,6 +184,7 @@ pub(in crate::app) fn update(
                 width,
                 height,
                 JValue::Bool(jboolean::from(restart)),
+                JValue::Bool(jboolean::from(soft_keyboard)),
                 JValue::Object(&text),
                 JValue::Int(anchor),
                 JValue::Int(focus),

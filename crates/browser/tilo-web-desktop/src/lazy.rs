@@ -5,8 +5,9 @@
 //! patterns, which the first hyphenated paragraph asks for, the image
 //! decoders, which the first web page image or decoded picture asks for,
 //! the model service's clients, which the first model request or provider
-//! settings change asks for, and the pinned people overlay, which pinning
-//! who is here asks for.
+//! settings change asks for, the pinned people overlay, which pinning
+//! who is here asks for, and the emoji catalogue, which the first picker,
+//! reaction name or `:name:` completion asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -70,6 +71,10 @@ unsafe extern "C" {
     fn load_people_overlay(callback: Callback, data: *const c_void);
     #[link_name = "__wasm_split_00___people_overlay___00_import_c0c7a1e1c6874f57_roster"]
     fn people_overlay() -> tilo_browser_runtime::MakePinnedRoster;
+    #[link_name = "__wasm_split_load_emoji_4b8e2d6f1a9c7035_catalogue"]
+    fn load_emoji(callback: Callback, data: *const c_void);
+    #[link_name = "__wasm_split_00___emoji___00_import_4b8e2d6f1a9c7035_catalogue"]
+    fn emoji_catalogue() -> tilo_ui::emoji_catalogue::CatalogueFor;
 }
 
 #[unsafe(export_name = "__wasm_split_00___search___00_export_8c1f5e0d2b7a4936_engine")]
@@ -124,6 +129,15 @@ extern "C" fn export_model_clients() -> tilo_browser_runtime::MakeModelClients {
 )]
 extern "C" fn export_people_overlay() -> tilo_browser_runtime::MakePinnedRoster {
     tilo_browser_runtime::builtin_pinned_roster
+}
+
+#[unsafe(export_name = "__wasm_split_00___emoji___00_export_4b8e2d6f1a9c7035_catalogue")]
+#[allow(
+    improper_ctypes_definitions,
+    reason = "the function pointer only passes between Rust"
+)]
+extern "C" fn export_emoji_catalogue() -> tilo_ui::emoji_catalogue::CatalogueFor {
+    tilo_ui::emoji_catalogue::builtin_catalogue
 }
 
 /// Fetch the search engine's module, then install the engine.
@@ -205,6 +219,19 @@ fn fetch_people_overlay() {
     });
 }
 
+/// Fetch the emoji catalogue's module, then hand it to the toolkit.
+fn fetch_emoji() {
+    wasm_bindgen_futures::spawn_local(async {
+        if crate::split::load(load_emoji).await {
+            // SAFETY: the module that defines `emoji_catalogue` is loaded.
+            tilo_ui::emoji_catalogue::CATALOGUE.install(unsafe { emoji_catalogue() });
+            tilo_browser_runtime::refresh_mounts();
+        } else {
+            tilo_ui::emoji_catalogue::CATALOGUE.load_failed();
+        }
+    });
+}
+
 /// How often the page looks again whether its first frame is up, or the
 /// dictionaries' code is in.
 const SPELLING_POLL_MS: u32 = 250;
@@ -253,4 +280,5 @@ pub(crate) fn register() {
     tilo_ui::image_decoders::defer_image_decoders(fetch_page_images);
     tilo_browser_runtime::defer_model_clients(fetch_model_clients);
     tilo_browser_runtime::defer_people_overlay(fetch_people_overlay);
+    tilo_ui::emoji_catalogue::CATALOGUE.defer(fetch_emoji);
 }

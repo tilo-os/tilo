@@ -693,6 +693,9 @@ fn plan(
     if source_ws.id == target {
         return Err(MoveTabError::SameWorkspace);
     }
+    if !tree.may_hold_app(target, &app_id) {
+        return Err(MoveTabError::Personal);
+    }
     // A room whose records are documents its owner commits is governed: a
     // window leaves or enters it only through that owner. A room whose
     // records are sealed channels its apps open themselves keeps them in

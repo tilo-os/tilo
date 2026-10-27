@@ -92,9 +92,6 @@ pub struct HostedRoom {
 /// room's workspace: what they do for themselves, never governance.
 pub const MEMBER_ACTIONS_PROVIDER: &str = "tilo.member";
 pub const MEMBER_RESOURCE_KIND: &str = "workspace.member";
-/// Claim the caller's own topology namespace `salt` (1–65535). Answers the
-/// room's `generation` that carries it.
-pub const CLAIM_TOPOLOGY_NAMESPACE: &str = "topology-namespace.claim";
 /// Record the caller's own terminal effect receipt: `invocation` (a UUID)
 /// and `redacted`, its canonical redacted public receipt as JSON text.
 /// Answers the room's `generation` that carries it.
@@ -306,12 +303,12 @@ pub enum RoomCommand {
         /// Canonical redacted public receipt; never action arguments or results.
         redacted: Vec<u8>,
     },
-    /// Claim only the authenticated member's own topology namespace.
-    /// Membership and current workspace Write remain independently required.
-    ClaimTopologyNamespace {
+    /// Retired claim of a topology namespace: every member writes what it
+    /// made into a room's layout as its own. Kept so the commands after it
+    /// keep their encoded positions; no relay answers it.
+    RetiredClaimTopologyNamespace {
         /// The governed room.
         room: String,
-        /// Nonzero namespace; existing ownership can never be rebound.
         salt: u16,
     },
     /// Let an application author `room`'s records: what opening an app there
@@ -326,9 +323,10 @@ pub enum RoomCommand {
 
 impl RoomCommand {
     /// The provider and action a relay serves this command as, for every
-    /// command but [`Self::Remove`]: what a relay that no longer answers it
-    /// at [`ROOM_ADMIN_ALPN`] names in its refusal. `None` for the removal,
-    /// still answered there.
+    /// command but [`Self::Remove`] and the retired namespace claim: what a
+    /// relay that no longer answers it at [`ROOM_ADMIN_ALPN`] names in its
+    /// refusal. `None` for the removal, still answered there, and for the
+    /// claim, answered nowhere.
     #[must_use]
     pub const fn replaced_by(&self) -> Option<(&'static str, &'static str)> {
         /// A room's own governance provider, as `tilo-actions` names it.
@@ -344,11 +342,8 @@ impl RoomCommand {
             Self::RecordEffectReceipt { .. } => {
                 Some((MEMBER_ACTIONS_PROVIDER, RECORD_EFFECT_RECEIPT))
             }
-            Self::ClaimTopologyNamespace { .. } => {
-                Some((MEMBER_ACTIONS_PROVIDER, CLAIM_TOPOLOGY_NAMESPACE))
-            }
             Self::GrantAppAuthorship { .. } => Some((HOST_ACTIONS_PROVIDER, GRANT_APP_AUTHORSHIP)),
-            Self::Remove { .. } => None,
+            Self::Remove { .. } | Self::RetiredClaimTopologyNamespace { .. } => None,
         }
     }
 }

@@ -525,6 +525,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content-types",
  "tilo-lock",
+ "tilo-selector",
  "unicode-normalization",
  "uuid",
 ]
@@ -654,6 +655,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-selector"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "workspace-hack",
 ]
 

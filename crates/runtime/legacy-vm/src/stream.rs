@@ -154,6 +154,9 @@ pub fn ensure_headless_shell(
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(log_err);
+    if let Some(config) = real_config_home(std::env::var_os("XDG_CONFIG_HOME").as_deref()) {
+        command.env("XDG_CONFIG_HOME", config);
+    }
     // SAFETY: `setsid` is async-signal-safe; the shell outlives this launch.
     unsafe {
         command.pre_exec(|| {
@@ -172,6 +175,16 @@ pub fn ensure_headless_shell(
     wait_for(Duration::from_secs(60), || display.exists().then_some(()))
         .ok_or("the headless shell published no Wayland display")?;
     Ok(control)
+}
+
+/// `config` with its links resolved. A relay worker hands `tilo-legacy` a
+/// short link to the member's config directory (libvirt keeps its monitor
+/// sockets below it, and socket paths are short), but the shell opens its
+/// session settings through no symbolic link, so a linked config directory
+/// stops it before it answers ("Not a directory"). The shell gets the
+/// directory itself; libvirt keeps the short link.
+fn real_config_home(config: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    Path::new(config?).canonicalize().ok()
 }
 
 /// A fresh profile opens on the first-run screens; walk through them the
@@ -560,6 +573,20 @@ fn start_app(args: &StreamArgs) -> Result<Child, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shell_gets_a_linked_config_directory_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("member-config");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("c");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(
+            real_config_home(Some(link.as_os_str())),
+            Some(real.canonicalize().unwrap())
+        );
+        assert_eq!(real_config_home(None), None);
+    }
 
     #[test]
     fn member_input_becomes_agent_input_aimed_at_the_window() {

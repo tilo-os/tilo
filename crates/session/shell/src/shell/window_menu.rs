@@ -14,11 +14,13 @@ use ui::platform::Shortcut;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 
 use crate::shell::i18n::{t, t_args};
-use crate::shell::state::{StripId, WorkspaceId};
+use crate::shell::state::{StripId, WindowWidth, WorkspaceId};
 
 /// One thing the window menu does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowMenuAction {
+    /// Take the person to the window that is asking for them.
+    Reveal,
     /// Cover the display with the window, or leave full screen.
     FullScreen,
     /// Fill the strip with the window, or restore it.
@@ -28,6 +30,12 @@ pub enum WindowMenuAction {
     /// Take the window's tab into another workspace (through the consent
     /// sheet when a client window crosses the sandbox boundary).
     MoveToWorkspace(WorkspaceId),
+    /// Show the window on another display, as the Super+Shift chord does.
+    MoveToDisplay(u32),
+    /// Give the window a preset share of its strip.
+    Width(WindowWidth),
+    /// Give every window in the strip the same share.
+    EqualizeWidths,
     /// A new tab of the same app, beside this one.
     NewTab,
     /// Share the window with the people of its workspace, or stop: only a
@@ -56,6 +64,9 @@ pub enum WindowMenuAction {
 
 const MOVE_TO_STRIP_KEY: &str = "tabmenu:move-to-strip";
 const MOVE_TO_WORKSPACE_KEY: &str = "tabmenu:move-to-workspace";
+/// Moving the window to a display: the menu's list of where it can stand.
+const MOVE_TO_DISPLAY_KEY: &str = "tabmenu:move-to-display";
+const WIDTH_KEY: &str = "tabmenu:width";
 
 impl WindowMenuAction {
     /// Stable semantic address of the row (`tabmenu:<slug>`): the
@@ -63,12 +74,21 @@ impl WindowMenuAction {
     /// `perform_semantic_action` target an assistive technology activates.
     pub fn semantic_key(self) -> String {
         match self {
+            Self::Reveal => "tabmenu:reveal".into(),
             Self::FullScreen => "tabmenu:full-screen".into(),
             Self::Maximize => "tabmenu:maximize".into(),
             Self::MoveToStrip(strip) => format!("{MOVE_TO_STRIP_KEY}:{}", strip.raw()),
             Self::MoveToWorkspace(workspace) => {
                 format!("{MOVE_TO_WORKSPACE_KEY}:{}", workspace.raw())
             }
+            Self::MoveToDisplay(display) => format!("{MOVE_TO_DISPLAY_KEY}:{display}"),
+            Self::Width(WindowWidth::Narrow) => "tabmenu:width:narrow".into(),
+            Self::Width(WindowWidth::Normal) => "tabmenu:width:normal".into(),
+            Self::Width(WindowWidth::Wide) => "tabmenu:width:wide".into(),
+            Self::Width(WindowWidth::Fraction(permille)) => {
+                format!("tabmenu:width:{permille}")
+            }
+            Self::EqualizeWidths => "tabmenu:width:equal".into(),
             Self::NewTab => "tabmenu:new-tab".into(),
             Self::ShareWindow => "tabmenu:share".into(),
             Self::RenameTab => "tabmenu:rename".into(),
@@ -98,7 +118,29 @@ impl WindowMenuAction {
                 .ok()
                 .map(|raw| Self::MoveToWorkspace(WorkspaceId(raw)));
         }
+        if let Some(raw) = key
+            .strip_prefix(MOVE_TO_DISPLAY_KEY)
+            .and_then(|rest| rest.strip_prefix(':'))
+        {
+            return raw.parse().ok().map(Self::MoveToDisplay);
+        }
+        if let Some(raw) = key
+            .strip_prefix(WIDTH_KEY)
+            .and_then(|rest| rest.strip_prefix(':'))
+        {
+            return match raw {
+                "narrow" => Some(Self::Width(WindowWidth::Narrow)),
+                "normal" => Some(Self::Width(WindowWidth::Normal)),
+                "wide" => Some(Self::Width(WindowWidth::Wide)),
+                "equal" => Some(Self::EqualizeWidths),
+                permille => permille
+                    .parse()
+                    .ok()
+                    .map(|permille| Self::Width(WindowWidth::Fraction(permille))),
+            };
+        }
         [
+            Self::Reveal,
             Self::FullScreen,
             Self::Maximize,
             Self::NewTab,
@@ -116,19 +158,31 @@ impl WindowMenuAction {
     }
 }
 
+/// Whether a window is maximized in its strip and whether it is shown full
+/// screen: the two read independently, as the rows name what each toggles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowExtent {
+    pub maximized: bool,
+    pub full_screen: bool,
+}
+
 /// What is true of the window the menu is for: it decides which rows the
 /// menu has and how they read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowMenuFacts {
     pub tab_count: usize,
-    pub maximized: bool,
-    pub full_screen: bool,
+    /// How much of the output the window takes.
+    pub extent: WindowExtent,
     pub strips: Vec<(StripId, String)>,
     /// The other workspaces the window could move to, by name.
     pub workspaces: Vec<(WorkspaceId, String)>,
+    /// The other displays the window could be shown on, by name.
+    pub displays: Vec<(u32, String)>,
     /// The tab shows a host window this device may name
     /// ([`crate::shell::tab_binding::may_rename_tab`]).
     pub renamable: bool,
+    /// The window asked for the person and has not had them yet.
+    pub attention: bool,
     /// Whether the window can be shared with its workspace's people, and
     /// whether it is: `None` for a window that is not this device's to
     /// share, or in a workspace whose layout shares every window already.
@@ -249,9 +303,10 @@ fn places<'a>(
     }
 }
 
-/// Move to strip and Move to workspace, each a nested menu of places.
-fn move_rows(facts: &WindowMenuFacts) -> [WindowMenuRow; 2] {
-    [
+/// Move to strip, Move to workspace and Move to display, each a nested menu
+/// of places.
+fn move_rows(facts: &WindowMenuFacts) -> Vec<WindowMenuRow> {
+    vec![
         places(
             MOVE_TO_STRIP_KEY,
             t("shell-window-menu-move-to-strip"),
@@ -270,16 +325,66 @@ fn move_rows(facts: &WindowMenuFacts) -> [WindowMenuRow; 2] {
                 .iter()
                 .map(|(id, name)| (WindowMenuAction::MoveToWorkspace(*id), name)),
         ),
+        places(
+            MOVE_TO_DISPLAY_KEY,
+            t("shell-window-menu-move-to-display"),
+            Icon::Monitor,
+            facts
+                .displays
+                .iter()
+                .map(|(id, name)| (WindowMenuAction::MoveToDisplay(*id), name)),
+        ),
     ]
+}
+
+/// The shares of its strip a window can take, and Equalise all.
+fn width_row() -> WindowMenuRow {
+    WindowMenuRow::Submenu {
+        key: WIDTH_KEY,
+        label: t("shell-window-menu-width"),
+        icon: Icon::Columns2,
+        entries: vec![
+            WindowMenuEntry {
+                action: WindowMenuAction::Width(WindowWidth::Fraction(500)),
+                label: t("shell-window-menu-width-half"),
+                icon: None,
+                shortcut: None,
+            },
+            WindowMenuEntry {
+                action: WindowMenuAction::Width(WindowWidth::Narrow),
+                label: t("shell-window-menu-width-narrow"),
+                icon: None,
+                shortcut: None,
+            },
+            WindowMenuEntry {
+                action: WindowMenuAction::Width(WindowWidth::Normal),
+                label: t("shell-window-menu-width-normal"),
+                icon: None,
+                shortcut: None,
+            },
+            WindowMenuEntry {
+                action: WindowMenuAction::Width(WindowWidth::Wide),
+                label: t("shell-window-menu-width-wide"),
+                icon: None,
+                shortcut: None,
+            },
+            WindowMenuEntry {
+                action: WindowMenuAction::EqualizeWidths,
+                label: t("shell-window-menu-width-equal"),
+                icon: None,
+                shortcut: None,
+            },
+        ],
+    }
 }
 
 /// The window menu's rows for a window `facts` describes, with the
 /// shortcuts `config` binds:
 ///
 /// 1. Full screen and Maximize (or Exit full screen and Restore);
-/// 2. Move to strip and Move to workspace, each a nested menu of places,
-///    then Share with the workspace (or Stop sharing) for a window this
-///    device can share there;
+/// 2. Move to strip, Move to workspace and Move to display, each a nested
+///    menu of places, and Width, then Share with the workspace (or Stop
+///    sharing) for a window this device can share there;
 /// 3. New tab, Rename tab for a host window's tab, and for a tabbed window
 ///    Split right and Move to new group;
 /// 4. Close tab, for a tabbed window, then Close window;
@@ -287,43 +392,20 @@ fn move_rows(facts: &WindowMenuFacts) -> [WindowMenuRow; 2] {
 ///
 /// A window of one tab is offered Close window only: its tab is the window.
 pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec<WindowMenuRow> {
-    let entry = |action, label: String, icon, shortcut| {
-        WindowMenuRow::Entry(WindowMenuEntry {
-            action,
-            label,
-            icon: Some(icon),
-            shortcut,
-        })
-    };
     let tabbed = facts.tab_count >= 2;
-    let mut rows = vec![
-        entry(
-            WindowMenuAction::FullScreen,
-            t(if facts.full_screen {
-                "shell-window-menu-exit-full-screen"
-            } else {
-                "shell-window-menu-full-screen"
-            }),
-            Icon::Fullscreen,
-            bound(config, ShortcutAction::ToggleFullscreen),
-        ),
-        entry(
-            WindowMenuAction::Maximize,
-            t(if facts.maximized {
-                "shell-window-menu-restore"
-            } else {
-                "shell-window-menu-maximize"
-            }),
-            if facts.maximized {
-                Icon::Minimize2
-            } else {
-                Icon::Maximize2
-            },
-            bound(config, ShortcutAction::ToggleMaximize),
-        ),
-        WindowMenuRow::Separator,
-    ];
+    let mut rows = Vec::new();
+    if facts.attention {
+        rows.push(entry(
+            WindowMenuAction::Reveal,
+            t("shell-window-menu-reveal"),
+            Icon::CornerUpRight,
+            None,
+        ));
+        rows.push(WindowMenuRow::Separator);
+    }
+    rows.extend(extent_rows(facts.extent, config));
     rows.extend(move_rows(facts));
+    rows.push(width_row());
     if let Some(sharing) = &facts.sharing {
         rows.push(entry(
             WindowMenuAction::ShareWindow,
@@ -401,6 +483,53 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
     rows.push(WindowMenuRow::Separator);
     rows.push(tell_agent_row());
     rows
+}
+
+/// One command row of the menu.
+fn entry(
+    action: WindowMenuAction,
+    label: String,
+    icon: Icon,
+    shortcut: Option<Shortcut>,
+) -> WindowMenuRow {
+    WindowMenuRow::Entry(WindowMenuEntry {
+        action,
+        label,
+        icon: Some(icon),
+        shortcut,
+    })
+}
+
+/// Full screen and Maximize, each reading as what it would undo, and the
+/// separator after them.
+fn extent_rows(extent: WindowExtent, config: &ShortcutConfig) -> [WindowMenuRow; 3] {
+    [
+        entry(
+            WindowMenuAction::FullScreen,
+            t(if extent.full_screen {
+                "shell-window-menu-exit-full-screen"
+            } else {
+                "shell-window-menu-full-screen"
+            }),
+            Icon::Fullscreen,
+            bound(config, ShortcutAction::ToggleFullscreen),
+        ),
+        entry(
+            WindowMenuAction::Maximize,
+            t(if extent.maximized {
+                "shell-window-menu-restore"
+            } else {
+                "shell-window-menu-maximize"
+            }),
+            if extent.maximized {
+                Icon::Minimize2
+            } else {
+                Icon::Maximize2
+            },
+            bound(config, ShortcutAction::ToggleMaximize),
+        ),
+        WindowMenuRow::Separator,
+    ]
 }
 
 /// "Tell an agent…": the row every menu the desktop opens ends with.
@@ -484,17 +613,124 @@ mod tests {
     fn facts(tab_count: usize) -> WindowMenuFacts {
         WindowMenuFacts {
             tab_count,
-            maximized: false,
-            full_screen: false,
+            extent: WindowExtent::default(),
             strips: vec![(StripId(2), "Research".into())],
             workspaces: vec![(WorkspaceId(9), "Studio".into())],
             renamable: false,
             sharing: None,
+            attention: false,
+            displays: Vec::new(),
         }
     }
 
     fn labels(rows: &[WindowMenuRow]) -> Vec<&str> {
         rows.iter().filter_map(WindowMenuRow::label).collect()
+    }
+
+    /// The menu lists the other displays the window could stand on, by the
+    /// number the display settings use for one they cannot name, and each
+    /// row is addressable the way every menu row is.
+    #[test]
+    fn the_window_menu_lists_the_other_displays() {
+        let config = ShortcutConfig::default();
+        let two = WindowMenuFacts {
+            displays: vec![(2, "Display 2".into()), (3, "Display 3".into())],
+            ..facts(1)
+        };
+        let rows = window_menu_rows(&two, &config);
+        let display = rows
+            .iter()
+            .find(|row| row.label() == Some("Move to display"))
+            .expect("a Move to display submenu");
+        let actions = display.actions();
+        assert_eq!(
+            actions,
+            [
+                WindowMenuAction::MoveToDisplay(2),
+                WindowMenuAction::MoveToDisplay(3)
+            ]
+        );
+        let labels: Vec<&str> = match display {
+            WindowMenuRow::Submenu { entries, .. } => {
+                entries.iter().map(|entry| entry.label.as_str()).collect()
+            }
+            _ => panic!("Move to display is a submenu"),
+        };
+        assert_eq!(labels, ["Display 2", "Display 3"]);
+        assert_eq!(
+            WindowMenuAction::from_semantic_key(&actions[1].semantic_key()),
+            Some(WindowMenuAction::MoveToDisplay(3)),
+            "a row's stable address resolves back to it"
+        );
+        // One display: the row stays, disabled, so the menu reads the same
+        // for every window.
+        let alone = window_menu_rows(&facts(1), &config);
+        let display = alone
+            .iter()
+            .find(|row| row.label() == Some("Move to display"))
+            .expect("the row stays");
+        assert!(display.actions().is_empty());
+    }
+
+    #[test]
+    fn the_window_menu_offers_width_presets_and_equalise() {
+        let rows = window_menu_rows(&facts(2), &ShortcutConfig::default());
+        let width = rows
+            .iter()
+            .find(|row| row.label() == Some("Width"))
+            .expect("a Width submenu");
+        let labels = width
+            .actions()
+            .into_iter()
+            .map(super::WindowMenuAction::semantic_key)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            [
+                "tabmenu:width:500",
+                "tabmenu:width:narrow",
+                "tabmenu:width:normal",
+                "tabmenu:width:wide",
+                "tabmenu:width:equal",
+            ]
+        );
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:width:500"),
+            Some(WindowMenuAction::Width(WindowWidth::Fraction(500)))
+        );
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:width:narrow"),
+            Some(WindowMenuAction::Width(WindowWidth::Narrow))
+        );
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:width:equal"),
+            Some(WindowMenuAction::EqualizeWidths)
+        );
+    }
+
+    #[test]
+    fn a_window_that_is_asking_offers_to_take_you_to_it_first() {
+        let config = ShortcutConfig::default();
+        let asking = WindowMenuFacts {
+            attention: true,
+            ..facts(1)
+        };
+        let rows = window_menu_rows(&asking, &config);
+        let shown = labels(&rows);
+        assert_eq!(shown.first(), Some(&"Go to this window"));
+        assert_eq!(
+            rows.first().and_then(WindowMenuRow::action),
+            Some(WindowMenuAction::Reveal)
+        );
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:reveal"),
+            Some(WindowMenuAction::Reveal)
+        );
+        assert_eq!(
+            labels(&window_menu_rows(&facts(1), &config)).first(),
+            Some(&"Full screen"),
+            "a quiet window has no reveal row"
+        );
     }
 
     #[test]
@@ -509,6 +745,8 @@ mod tests {
                 "Maximize",
                 "Move to strip",
                 "Move to workspace",
+                "Move to display",
+                "Width",
                 "New tab",
                 "Split right",
                 "Move to new group",
@@ -615,8 +853,10 @@ mod tests {
         );
 
         let state = WindowMenuFacts {
-            maximized: true,
-            full_screen: true,
+            extent: WindowExtent {
+                maximized: true,
+                full_screen: true,
+            },
             ..facts(1)
         };
         let rows = window_menu_rows(&state, &config);

@@ -6,6 +6,7 @@
 //! None of this runs under `--shots` (no event loop) — the screenshot uses
 //! the bundled sample data instead.
 
+use crate::failure;
 use std::fmt::Write as _;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -47,7 +48,9 @@ pub enum NetMsg {
     /// Reverse-geocoded label for a coordinate (used to name a device-location
     /// origin with a human place instead of raw lat/lon).
     ReverseGeocode(Result<String, String>),
-    Route(Result<Route, String>),
+    /// Every route the service offered for the trip, the best first: a
+    /// person who does not like the one shown has another to look at.
+    Route(Result<Vec<Route>, String>),
     Transit(Result<Vec<TransitJourney>, String>),
     /// Point-of-interest markers for the current viewport (Overpass). Carries
     /// the query generation so a stale in-flight reply for an old viewport can
@@ -223,8 +226,7 @@ fn place_label(item: &Value, display: &str) -> String {
         .split(',')
         .map(str::trim)
         .find(|frag| !frag.is_empty() && !frag.chars().all(|c| c.is_ascii_digit()))
-        .unwrap_or("Place")
-        .to_string()
+        .map_or_else(|| failure::t("maps-category-other"), str::to_owned)
 }
 
 /// Build the Overpass QL query URL for categorised POIs inside the bbox
@@ -362,10 +364,11 @@ fn tag_string(tags: &Value, key: &str) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-/// Route between two coordinates with the OSRM public demo server.
-pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String> {
+/// Routes between two coordinates with the OSRM public demo server, the
+/// service's best first and its alternatives after it.
+pub async fn routes(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Vec<Route>, String> {
     let url = format!(
-        "https://router.project-osrm.org/route/v1/{}/{:.6},{:.6};{:.6},{:.6}?overview=full&geometries=geojson&steps=true",
+        "https://router.project-osrm.org/route/v1/{}/{:.6},{:.6};{:.6},{:.6}?overview=full&geometries=geojson&steps=true&alternatives=true",
         mode.osrm_profile(),
         from.lon,
         from.lat,
@@ -380,13 +383,24 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
             .unwrap_or("routing failed")
             .to_string());
     }
-    let r0 = v
-        .get("routes")
-        .and_then(|r| r.get(0))
-        .unwrap_or(&Value::Null);
-    let distance_m = r0["distance"].as_f64().unwrap_or(0.0);
-    let duration_s = r0["duration"].as_f64().unwrap_or(0.0);
-    let raw_geometry = r0
+    let offered = v.get("routes").and_then(Value::as_array);
+    let routes = offered
+        .into_iter()
+        .flatten()
+        .filter_map(|r| route_from_json(r, mode, from, to))
+        .collect::<Vec<_>>();
+    if routes.is_empty() {
+        return Err("the service offered no route".to_string());
+    }
+    Ok(routes)
+}
+
+/// One route of the service's answer, or `None` when it carries nothing a
+/// person could follow.
+fn route_from_json(value: &Value, mode: TravelMode, from: LatLon, to: LatLon) -> Option<Route> {
+    let distance_m = value["distance"].as_f64().unwrap_or(0.0);
+    let duration_s = value["duration"].as_f64().unwrap_or(0.0);
+    let raw_geometry = value
         .get("geometry")
         .and_then(|g| g.get("coordinates"))
         .and_then(Value::as_array)
@@ -400,11 +414,14 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    if raw_geometry.len() < 2 {
+        return None;
+    }
     // Simplify on the worker so the render thread projects fewer points.
     let geometry = crate::geo::simplify_polyline(&raw_geometry, GEOMETRY_SIMPLIFY_M);
 
     let mut steps = Vec::new();
-    if let Some(legs) = r0["legs"].as_array() {
+    if let Some(legs) = value["legs"].as_array() {
         for leg in legs {
             if let Some(s) = leg["steps"].as_array() {
                 for step in s {
@@ -432,7 +449,7 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
         }
     }
 
-    Ok(Route {
+    Some(Route {
         mode,
         distance_m,
         duration_s,
@@ -444,35 +461,28 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
 }
 
 fn step_instruction(m: Maneuver, name: &str) -> String {
-    let road = if name.is_empty() {
-        String::new()
-    } else {
-        format!(" onto {name}")
+    let road = |key: &str| failure::t_args(key, &[("road", name.into())]);
+    let named = |key: &str, plain: &str| {
+        if name.is_empty() {
+            failure::t(plain)
+        } else {
+            road(key)
+        }
     };
     match m {
-        Maneuver::Depart => {
-            if name.is_empty() {
-                "Start".to_string()
-            } else {
-                format!("Head out on {name}")
-            }
-        }
-        Maneuver::Arrive => "Arrive at your destination".to_string(),
+        Maneuver::Depart => named("maps-turn-head-out", "maps-turn-start"),
+        Maneuver::Arrive => failure::t("maps-turn-arrive"),
         Maneuver::Continue | Maneuver::Merge => {
-            if name.is_empty() {
-                "Continue".to_string()
-            } else {
-                format!("Continue on {name}")
-            }
+            named("maps-turn-continue-on", "maps-turn-continue")
         }
-        Maneuver::Left => format!("Turn left{road}"),
-        Maneuver::SharpLeft => format!("Sharp left{road}"),
-        Maneuver::SlightLeft => format!("Slight left{road}"),
-        Maneuver::Right => format!("Turn right{road}"),
-        Maneuver::SharpRight => format!("Sharp right{road}"),
-        Maneuver::SlightRight => format!("Slight right{road}"),
-        Maneuver::Uturn => "Make a U-turn".to_string(),
-        Maneuver::Roundabout => format!("At the roundabout, take the exit{road}"),
+        Maneuver::Left => named("maps-turn-left-onto", "maps-turn-left"),
+        Maneuver::SharpLeft => named("maps-turn-sharp-left-onto", "maps-turn-sharp-left"),
+        Maneuver::SlightLeft => named("maps-turn-slight-left-onto", "maps-turn-slight-left"),
+        Maneuver::Right => named("maps-turn-right-onto", "maps-turn-right"),
+        Maneuver::SharpRight => named("maps-turn-sharp-right-onto", "maps-turn-sharp-right"),
+        Maneuver::SlightRight => named("maps-turn-slight-right-onto", "maps-turn-slight-right"),
+        Maneuver::Uturn => failure::t("maps-turn-uturn"),
+        Maneuver::Roundabout => named("maps-turn-roundabout-onto", "maps-turn-roundabout"),
     }
 }
 

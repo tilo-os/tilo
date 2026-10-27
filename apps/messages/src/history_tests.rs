@@ -43,7 +43,12 @@ impl Host {
 }
 
 impl HistoryHost for Host {
-    fn read(&self, mut route: routing::Route, _: usize) -> HistoryFuture {
+    fn read(
+        &self,
+        mut route: routing::Route,
+        _: Option<tilo_messaging::HistoryCursor>,
+        _: usize,
+    ) -> HistoryFuture {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.clone();
         if host.forged {
@@ -183,8 +188,13 @@ struct DelayedSend {
 }
 
 impl HistoryHost for DelayedSend {
-    fn read(&self, route: routing::Route, limit: usize) -> HistoryFuture {
-        Host::new(true, false).read(route, limit)
+    fn read(
+        &self,
+        route: routing::Route,
+        cursor: Option<tilo_messaging::HistoryCursor>,
+        limit: usize,
+    ) -> HistoryFuture {
+        Host::new(true, false).read(route, cursor, limit)
     }
 }
 
@@ -707,5 +717,103 @@ fn every_transport_state_speaks_the_shared_delivery_vocabulary() {
     assert_eq!(
         crate::history::delivery_key(Delivery::Uncertain),
         "conversation-delivery-uncertain"
+    );
+}
+
+/// A host with two pages of one conversation: the newest page, and the page
+/// before the oldest message it carries.
+#[derive(Clone)]
+struct Paged {
+    /// Every cursor the app asked with, in order (`None` for the newest
+    /// page).
+    asked: Arc<Mutex<Vec<Option<String>>>>,
+}
+
+impl Paged {
+    fn new() -> Self {
+        Self {
+            asked: Arc::default(),
+        }
+    }
+    fn page(&self, route: routing::Route, cursor: Option<&str>) -> HistoryPage {
+        let (id, text, at, more) = match cursor {
+            None => ("new-2", "See you in ten", 2000, true),
+            Some(_) => ("old-1", "Where are you?", 1000, false),
+        };
+        HistoryPage {
+            route,
+            more,
+            messages: vec![Message {
+                id: id.into(),
+                text: text.to_owned().into(),
+                direction: Direction::Outgoing,
+                timestamp_ms: at,
+                delivery: Some(Delivery::Submitted),
+            }],
+        }
+    }
+}
+
+impl HistoryHost for Paged {
+    fn read(
+        &self,
+        route: routing::Route,
+        cursor: Option<tilo_messaging::HistoryCursor>,
+        _: usize,
+    ) -> HistoryFuture {
+        let asked = cursor.as_ref().map(|cursor| cursor.as_str().to_owned());
+        self.asked
+            .lock()
+            .expect("fixture cursors")
+            .push(asked.clone());
+        let page = self.page(route, asked.as_deref());
+        Box::pin(std::future::ready(Ok(page)))
+    }
+}
+
+/// Older SMS is reachable, and the conversation says when it has reached its
+/// start rather than falling silent at the bottom of one page.
+#[test]
+fn the_page_before_is_asked_for_by_the_oldest_message_shown() {
+    let host = Paged::new();
+    let client = HistoryClient::new("11".repeat(32), Arc::new(host.clone()));
+    let mut app = live_messages_with_history(Some(client));
+    app.effect(&MessagesEffect::SelectRoute { choice: choice() })
+        .expect("select route");
+    app.effect(&MessagesEffect::ReadHistory { choice: choice() })
+        .expect("the newest page");
+
+    assert!(has_text(&mut app, "See you in ten"));
+    assert!(
+        app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label() == Some("Load older messages")),
+        "a page before this one is offered, not silence"
+    );
+
+    app.harness()
+        .click_named("messages.load-older")
+        .expect("the way to the older page is a control");
+    app.settle();
+
+    assert!(has_text(&mut app, "Where are you?"), "the older page shows");
+    assert!(
+        has_text(&mut app, "See you in ten"),
+        "and what showed before it stays"
+    );
+    assert!(
+        has_text(&mut app, "This is the start of the conversation."),
+        "the start is said, not implied"
+    );
+    let asked = host.asked.lock().expect("fixture cursors").clone();
+    assert_eq!(
+        asked.last().and_then(|asked| asked.as_deref()),
+        Some("new-2"),
+        "the page before is asked for by the oldest message the app held"
+    );
+    assert!(
+        asked.iter().rev().skip(1).all(Option::is_none),
+        "every read before it asked for the newest page: {asked:?}"
     );
 }

@@ -2294,7 +2294,7 @@ mod tests {
 
             let mut ctx = PresenceCtx::empty();
             ctx.set_own_identity(["me"]);
-            ctx.set_display_name(UserId("peer@7".to_string()), "Xaver");
+            ctx.set_display_name(UserId("peer@7".to_string()), "Bob");
             // The frame a room sends: a pointer keyed by the room, the
             // same key the compositor overlay and broker use.
             let _ = ctx.apply_remote_presence(
@@ -2352,7 +2352,7 @@ mod tests {
 
             let mut ctx = PresenceCtx::empty();
             ctx.set_own_identity(["me"]);
-            ctx.set_display_name(UserId("peer@7".to_string()), "Xaver");
+            ctx.set_display_name(UserId("peer@7".to_string()), "Bob");
             // A widget scope is a position in this window's content, so this
             // window is the only layer that can place it.
             let _ = ctx.apply_remote_presence(
@@ -2672,10 +2672,10 @@ mod tests {
                 "a peer's name is a caption in the theme's face",
             );
 
-            let (w, h) = peer_pill_size(&mut tr, &theme, "quinten");
+            let (w, h) = peer_pill_size(&mut tr, &theme, "ada");
             assert_eq!(
                 (w, h),
-                peer_pill_size(&mut tr, &theme, "quinten"),
+                peer_pill_size(&mut tr, &theme, "ada"),
                 "peer_pill_size is not stable for one label",
             );
 
@@ -2689,7 +2689,7 @@ mod tests {
             );
 
             // Wider pill, same height — height is the type, not the content.
-            let (w2, h2) = peer_pill_size(&mut tr, &theme, "xaver-with-a-long-name");
+            let (w2, h2) = peer_pill_size(&mut tr, &theme, "bob-with-a-long-name");
             assert!(w2 > w, "a longer name should get a wider pill");
             assert_eq!(h2, h, "pill height should not depend on the label");
         }

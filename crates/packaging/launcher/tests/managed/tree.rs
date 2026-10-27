@@ -198,7 +198,7 @@ type = "cli"
     let payload = root.join("installed-payload");
     tilo_app_package::unpack(&packed.meta, &packed, &payload).unwrap();
     std::fs::write(payload.join("manifest.toml"), &packed.meta.manifest_bytes).unwrap();
-    let evidence = package_store::integrity::legacy_record_dir(root, "so.tilo.agent");
+    let evidence = package_store::integrity::detached_record_dir(root, "so.tilo.agent");
     std::fs::create_dir_all(&evidence).unwrap();
     for (name, bytes) in [
         ("signed-root", packed.meta.signed_root_bytes().to_vec()),

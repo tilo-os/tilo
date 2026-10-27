@@ -432,6 +432,23 @@ impl super::ShellOverlayHost {
                 }
                 true
             }
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                if chat.phase == Phase::Open =>
+            {
+                let Some(field) = chat.field.as_mut() else {
+                    return false;
+                };
+                let took = field.handle_chrome_pointer(
+                    event,
+                    1.0,
+                    winit::event::Modifiers::from(modifiers),
+                );
+                if took {
+                    let (anchor, cursor) = field.selection_anchor_focus_or_caret();
+                    chat.selection = ui::text_selection::Selection { anchor, cursor };
+                }
+                took
+            }
             _ => false,
         }
     }

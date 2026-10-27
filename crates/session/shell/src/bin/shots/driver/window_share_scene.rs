@@ -11,7 +11,8 @@ use shell::shell::state::RoomId;
 use tilo_desktop_model::projection;
 
 /// This device's topology namespace in the scenes.
-const SALT: u16 = 0x0A51;
+/// The salt the sharer's device key (`[0x5a; 32]`) mints under.
+const SALT: u16 = tilo_desktop_model::ids::device_salt_of_key(&[0x5a; 32]);
 const SURFACE: u64 = 0x5a7e;
 const APP: &str = "Alacritty";
 
@@ -60,12 +61,12 @@ impl ShellDriver {
                 projection::ROOM_LAYOUT_KEY,
                 projection::RoomLayout::Personal.id(),
             );
-            if let Ok(owners) = doc.put_object(
+            if let Ok(identities) = doc.put_object(
                 automerge::ROOT,
-                projection::ROOM_CONTENTS_OWNERS_KEY,
+                "peer_identities_v1",
                 automerge::ObjType::Map,
             ) {
-                let _ = doc.put(&owners, format!("{SALT:04x}"), hex::encode([0x5a; 32]));
+                let _ = doc.put(&identities, hex::encode([0x5a; 32]), "{}");
             }
             doc.commit();
             let _ = tree.project_room_document_for_test(room, &doc);

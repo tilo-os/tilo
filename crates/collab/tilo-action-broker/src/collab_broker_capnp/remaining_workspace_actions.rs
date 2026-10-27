@@ -459,21 +459,7 @@ impl CapnpBrokerState {
             )?;
             Ok(())
         })?;
-        let result = service
-            .apply(&mut keymap, &request.target.address, argument)
-            .and_then(|(output, changed)| {
-                if changed {
-                    keymap.save().map_err(|error| {
-                        Box::new(ActionFailure {
-                            code: "save_failed".into(),
-                            message: error.to_string(),
-                            details: None,
-                            retryable: true,
-                        })
-                    })?;
-                }
-                Ok(output)
-            });
+        let result = service.apply(&keymap, &request.target.address, argument);
         self.finish_framework_action(admitted, result)
     }
 

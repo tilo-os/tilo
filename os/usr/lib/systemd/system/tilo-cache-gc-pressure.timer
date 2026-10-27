@@ -1,0 +1,13 @@
+[Unit]
+Description=Clean up at once while the disk is low on space
+
+[Timer]
+# Checking costs one statvfs; the cleanups run only while /var or the physical
+# root is below the policy's floor ([space] low_free_gb in
+# /etc/tilo/cache-gc.toml).
+OnBootSec=5min
+OnUnitInactiveSec=10min
+Unit=tilo-cache-gc-pressure.service
+
+[Install]
+WantedBy=timers.target

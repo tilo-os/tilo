@@ -280,6 +280,10 @@ impl RecordsProvider {
 /// recorded first (it's what "bring it here" *means*, whether or not
 /// there's anything to open), so a launch that fails still leaves the
 /// record in this room.
+/// The records provider also judges its own rows with the verifier every
+/// other consumer uses ([`crate::shell::search::verifier`]), so a row that
+/// names a record no room holds any more is refused at Enter rather than
+/// brought here.
 fn bring_into_this_room(
     index: &Rc<RefCell<RoomRecords>>,
     id: &ui::record::RecordId,
@@ -287,6 +291,13 @@ fn bring_into_this_room(
     chrome: &Chrome,
 ) -> Result<serde_json::Value, crate::shell::search::action_api::ActionError> {
     use crate::shell::search::action_api::ActionError;
+    let verdict =
+        crate::shell::search::verifier::Verifier::new(Rc::clone(index)).verify_record(id.as_str());
+    if let Some(reason) = verdict.refusal() {
+        return Err(ActionError::Refused(format!(
+            "{reason}: no room holds this record any more"
+        )));
+    }
     let here = {
         let chrome_state = chrome.borrow();
         let tree = chrome_state.tree();

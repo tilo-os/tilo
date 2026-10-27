@@ -133,12 +133,12 @@ struct MountedFixture {
     _temp: tempfile::TempDir,
     submission: Submission,
     frame: ui::headless::FrameHarness,
-    permissions: std::rc::Rc<std::cell::RefCell<ui::permissions::PermissionContext>>,
+    permissions: ui::permissions::SharedPermissions,
     records: ui::record::RecordStore,
 }
 
 fn mounted_fixture(author: &str) -> MountedFixture {
-    use std::{cell::RefCell, rc::Rc};
+    use std::rc::Rc;
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
     };
@@ -185,10 +185,9 @@ fn mounted_fixture(author: &str) -> MountedFixture {
         checkout,
         reveal: None,
     };
-    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-        author,
-        ui::permissions::Role::Owner,
-    )));
+    let permissions = ui::permissions::SharedPermissions::new(
+        ui::permissions::PermissionContext::member(author, ui::permissions::Role::Owner),
+    );
     let context = HostContext::prepare(
         crate::definition(),
         HostContextInputs {
@@ -246,8 +245,12 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
 }
 
 fn maintainer_role(fixture: &MountedFixture, role: ui::permissions::Role) {
-    *fixture.permissions.borrow_mut() =
-        ui::permissions::PermissionContext::member("maintainer", role);
+    fixture
+        .permissions
+        .set(ui::permissions::PermissionContext::member(
+            "maintainer",
+            role,
+        ));
 }
 
 #[test]

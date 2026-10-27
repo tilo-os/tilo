@@ -5,10 +5,11 @@
 //! Bulk data then crosses the process boundary as one copy into the memory
 //! and one out, with no pipe or socket in between.
 //!
-//! On Linux the memory is a memfd sealed against resizing, so the child can
-//! never shrink it under the parent's mapping. On macOS it is a POSIX shared
-//! memory object unlinked at once, which macOS sizes once and never again.
-//! The web has no child processes: [`SharedMemory::create`] fails there.
+//! On Linux and Android the memory is a memfd sealed against resizing, so the
+//! child can never shrink it under the parent's mapping. On macOS it is a
+//! POSIX shared memory object unlinked at once, which macOS sizes once and
+//! never again. A `unix` this file names no shape for, and the web, which has
+//! no child processes at all, get a [`SharedMemory::create`] that fails.
 
 use std::io;
 use std::process::Command;
@@ -61,7 +62,18 @@ impl SharedMemory {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(
+    unix,
+    any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "visionos"
+    )
+))]
 mod imp {
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -154,7 +166,7 @@ mod imp {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn create_descriptor(name: &str) -> io::Result<OwnedFd> {
         let name = std::ffi::CString::new(name).map_err(io::Error::other)?;
         // SAFETY: a NUL-terminated name and fixed flags.
@@ -170,7 +182,7 @@ mod imp {
 
     /// The child could otherwise shrink the memory under this process's
     /// mapping, which would then fault reading it.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn seal(descriptor: &OwnedFd) -> io::Result<()> {
         // SAFETY: fixed seals on an owned memfd.
         let sealed = unsafe {
@@ -186,7 +198,13 @@ mod imp {
         Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "visionos"
+    ))]
     fn create_descriptor(_name: &str) -> io::Result<OwnedFd> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -228,7 +246,13 @@ mod imp {
     }
 
     /// macOS sizes a shared memory object once: it cannot shrink later.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "visionos"
+    ))]
     #[allow(
         clippy::unnecessary_wraps,
         clippy::missing_const_for_fn,
@@ -236,6 +260,50 @@ mod imp {
     )]
     fn seal(_descriptor: &OwnedFd) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// Neither a memfd nor a POSIX shared memory object exists on a platform this
+/// file does not name, so the memory says so, as it does where there is no
+/// `unix` at all.
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "visionos"
+    ))
+))]
+mod imp {
+    use std::io;
+    use std::process::Command;
+
+    pub struct Memory(std::convert::Infallible);
+
+    impl Memory {
+        pub fn create(_name: &str, _len: usize) -> io::Result<Self> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        pub const fn as_ptr(&self) -> *mut u8 {
+            match self.0 {}
+        }
+
+        pub const fn len(&self) -> usize {
+            match self.0 {}
+        }
+
+        pub const fn hand_to(&self, _command: &mut Command, _flag: &str) {
+            match self.0 {}
+        }
+
+        pub const fn handed_over(&self) {
+            match self.0 {}
+        }
     }
 }
 

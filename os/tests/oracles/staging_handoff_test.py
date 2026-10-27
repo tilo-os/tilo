@@ -56,7 +56,7 @@ def handoff_document():
         'target_extent': {'first_lba': TARGET[0], 'last_lba': TARGET[1]},
         'owned_boot_entry': '0104',
         'original_boot_order': ['0001', '0000'],
-        'profile': {'schema': 1, 'hostname': 'studio', 'username': 'quinten', 'locale': 'en_US.UTF-8',
+        'profile': {'schema': 1, 'hostname': 'studio', 'username': 'ada', 'locale': 'en_US.UTF-8',
                     'keyboard': 'de', 'timezone': 'Europe/Berlin'},
     }
 
@@ -354,7 +354,7 @@ class InternalModeGuardTests(unittest.TestCase):
 
     def test_device_label_strict_utf8_bound_and_legacy_omission(self):
         document = handoff_document()
-        document['profile']['device_label'] = 'Quinten’s computer'
+        document['profile']['device_label'] = 'Ada’s computer'
         self.fixture.set_handoff(document)
         result = self.fixture.check()
         self.assertEqual(result.returncode, 0, result.stderr)

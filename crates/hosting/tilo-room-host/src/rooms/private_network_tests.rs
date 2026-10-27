@@ -1,7 +1,14 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "a relay serves its whole test and is shut down at its end"
+)]
+
 use super::*;
 use std::collections::HashMap;
 use tilo_peer_state::join;
-use tilo_relay_protocol::rooms::private::{PrivateConversation, PrivateOperation, PrivateReply};
+use tilo_relay_protocol::rooms::private::{
+    PrivateContact, PrivateConversation, PrivateOperation, PrivateReply,
+};
 use tilo_relay_session::rooms::private::{PRIVATE_ALPN, PrivateClient};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -805,6 +812,113 @@ async fn a_pages_session_carries_the_same_private_door() {
     relay.shutdown().await;
 }
 
+/// What the room's people see of one another through the private door once
+/// alice has a name: contacts without the spectator, a conversation listed
+/// only after a message, and the spectator refused. Returns the door.
+async fn people_keep_conversations(
+    rooms: &Rooms,
+    room: &str,
+    [alice, bob, watcher]: [&DeviceCert; 3],
+) -> PrivateProtocol {
+    let door = PrivateProtocol::new(rooms.clone());
+    let ask = |cert: &DeviceCert, operation| {
+        let (door, cert, room) = (door.clone(), cert.clone(), room.to_owned());
+        async move {
+            door.serve(
+                &cert,
+                &cert.device_public_key,
+                &room,
+                operation,
+                std::future::ready(Ok(())),
+            )
+            .await
+        }
+    };
+    let PrivateReply::Contacts(contacts) = ask(bob, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    let watcher_key_hex = hex::encode(watcher.user_public_key);
+    assert!(contacts.iter().any(|contact| contact.public_key
+        == hex::encode(alice.user_public_key)
+        && contact.display_name.as_deref() == Some("Lucky Seal")));
+    assert!(
+        !contacts
+            .iter()
+            .any(|contact| contact.public_key == watcher_key_hex),
+        "the spectator is nobody's contact"
+    );
+    let contact_of = |contacts: &[PrivateContact], cert: &DeviceCert| {
+        contacts
+            .iter()
+            .find(|contact| contact.public_key == hex::encode(cert.user_public_key))
+            .cloned()
+            .unwrap()
+    };
+    // A device's label never names its person, and nobody has written yet.
+    let PrivateReply::Contacts(of_alice) = ask(alice, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    let unnamed = contact_of(&of_alice, bob);
+    assert_ne!(
+        unnamed.display_name.as_deref(),
+        Some(bob.device_label.as_str()),
+        "a person is not called by their device"
+    );
+    assert!(!unnamed.conversation && !contact_of(&contacts, alice).conversation);
+    let bob_hex = hex::encode(bob.user_public_key);
+    let opened = ask(
+        alice,
+        PrivateOperation::Open {
+            peer: bob_hex.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(opened, PrivateReply::Conversation(_)));
+    let PrivateReply::Contacts(of_alice) = ask(alice, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    assert!(
+        !contact_of(&of_alice, bob).conversation,
+        "an opened conversation without messages lists nobody"
+    );
+    let sent = ask(
+        alice,
+        PrivateOperation::Send {
+            peer: bob_hex,
+            invocation: uuid::Uuid::new_v4(),
+            text: "hello".into(),
+        },
+    )
+    .await;
+    assert!(matches!(sent, PrivateReply::Sent), "sent");
+    let PrivateReply::Contacts(of_alice) = ask(alice, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    let PrivateReply::Contacts(of_bob) = ask(bob, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    assert!(
+        contact_of(&of_alice, bob).conversation,
+        "the writer lists them"
+    );
+    assert!(
+        contact_of(&of_bob, alice).conversation,
+        "so does the one written to"
+    );
+    let open_watcher = PrivateOperation::Open {
+        peer: watcher_key_hex,
+    };
+    assert!(matches!(
+        ask(bob, open_watcher).await,
+        PrivateReply::Refused
+    ));
+    assert!(matches!(
+        ask(watcher, PrivateOperation::Contacts).await,
+        PrivateReply::Refused
+    ));
+    door
+}
+
 /// A person names themself in the room: governance holds the name, so
 /// every person list shows it, not their device's label, and naming them
 /// what they are called writes nothing. The room's spectator person, whom
@@ -864,44 +978,7 @@ async fn people_name_themselves_and_the_spectator_is_nobody() {
         "the name they already go by writes nothing"
     );
 
-    let door = PrivateProtocol::new(rooms.clone());
-    let ask = |cert: &DeviceCert, operation| {
-        let (door, cert, room) = (door.clone(), cert.clone(), created.room.clone());
-        async move {
-            door.serve(
-                &cert,
-                &cert.device_public_key,
-                &room,
-                operation,
-                std::future::ready(Ok(())),
-            )
-            .await
-        }
-    };
-    let PrivateReply::Contacts(contacts) = ask(&bob, PrivateOperation::Contacts).await else {
-        panic!("contacts");
-    };
-    let watcher_key_hex = hex::encode(watcher.user_public_key);
-    assert!(contacts.iter().any(|contact| contact.public_key
-        == hex::encode(alice.user_public_key)
-        && contact.display_name.as_deref() == Some("Lucky Seal")));
-    assert!(
-        !contacts
-            .iter()
-            .any(|contact| contact.public_key == watcher_key_hex),
-        "the spectator is nobody's contact"
-    );
-    let open_watcher = PrivateOperation::Open {
-        peer: watcher_key_hex,
-    };
-    assert!(matches!(
-        ask(&bob, open_watcher).await,
-        PrivateReply::Refused
-    ));
-    assert!(matches!(
-        ask(&watcher, PrivateOperation::Contacts).await,
-        PrivateReply::Refused
-    ));
+    let door = people_keep_conversations(&rooms, &created.room, [&alice, &bob, &watcher]).await;
     let (_, stranger) = identity(102, None);
     for (cert, asked) in [
         (&watcher, "Watching"),

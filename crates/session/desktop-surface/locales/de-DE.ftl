@@ -29,6 +29,9 @@ topbar-watching-description = { $count } { $count ->
        *[other] Personen schauen
     } zu, ohne teilzunehmen
 topbar-tilo-menu = Tilo-Menü
+# A running application's icon in the bar, when the item that named it is gone.
+topbar-app-tray-item = Laufende Anwendung
+topbar-app-tray-unread = { $count } ungelesen
 topbar-open-quick-settings = Schnelleinstellungen öffnen
 topbar-open-notifications = Benachrichtigungen
 topbar-bell = { $unread ->
@@ -138,7 +141,8 @@ profile-control-hints = Bedienhinweise zeigen
 control-hint-open = Alles öffnen
 control-hint-move = Zum Verschieben ziehen
 control-hint-resize = Größe per Ziehen ändern
-control-hint-pan = Freie Fläche ziehen
+control-hint-pan = Seitwärts scrollen
+control-hint-pan-touch = Links oder rechts wischen
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
@@ -702,9 +706,6 @@ workspace-settings-allows-edit = { $what } bearbeiten
 workspace-settings-allows-comment = { $what } kommentieren
 workspace-settings-allows-invite = Andere einladen: { $what }
 workspace-settings-allows-view = { $what } ansehen
-workspace-settings-grant-allows = Erlaubt: { $kinds } in { $where }
-workspace-settings-grant-asks = Fragt zuerst: { $kinds } in { $where }
-workspace-settings-grant-denies = Verweigert: { $kinds } in { $where }
 workspace-settings-kind-read = Lesen
 workspace-settings-kind-undoable = Änderungen
 workspace-settings-kind-outside = Wirkungen nach außen

@@ -268,7 +268,7 @@ pub fn open_beside(
         }
     }
     let workspace = {
-        let tree = st.tree();
+        let mut tree = st.tree_mut();
         let active_room = tree
             .desktop
             .active_workspace()
@@ -280,7 +280,7 @@ pub fn open_beside(
                 .iter()
                 .find(|workspace| workspace.room() == anchor.room)
                 .cloned(),
-            _ => tree.desktop.active_workspace().cloned(),
+            _ => tree.workspace_after_opening_app(&app.package_id),
         }
     }
     .ok_or(AppTabError::NoWorkspace)?;

@@ -374,7 +374,7 @@ if grep -Fq 'tilo-rollback "${rollback_args[@]}" enroll --device "$dev"' "$encry
    && grep -Fq -- '--require-tpm-prediction' "$encryptor" \
    && grep -Fq 'install -d -m 0755 /usr/share/tilo/pcr-predictions' "$production_containerfile" \
    && grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$production_containerfile" \
-   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"' "$repo_root/os/scripts/build-initramfs.sh" \
+   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-boot-face"' "$repo_root/os/scripts/build-initramfs.sh" \
    && grep -Fq 'tilo-rollback-initrd-unlock' "$production_containerfile" \
    && grep -Fq 'tilo-root-discover' "$production_containerfile" \
    && grep -Fq 'tilo-root-generator' "$production_containerfile" \
@@ -397,7 +397,7 @@ else
 fi
 
 if grep -Fq 'systemctl mask sshd.service' "$containerfile" \
-   && ! grep -Fq 'quickuser:tilo:wheel' "$builder" \
+   && ! grep -Fq 'tester:tilo:wheel' "$builder" \
    && grep -Fq -- '--dev-login requires a non-empty TILO_INSTALLER_DEV_PASSWORD' "$builder" \
    && grep -Fq 'append tilo.install' "$containerfile" \
    && grep -Fq 'show | grep -qw tilo.mode=normal' "$containerfile" \

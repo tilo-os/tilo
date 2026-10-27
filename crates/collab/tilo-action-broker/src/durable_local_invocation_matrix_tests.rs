@@ -639,6 +639,8 @@ mod durable_local_matrix {
                     resource_kind: "document".into(),
                     resource_label: "Document".into(),
                     action_label: action.into(),
+                    keywords: Vec::new(),
+                    icon: None,
                     description: None,
                     operation_kind: tilo_actions::OperationKind::Effect,
                     params: Vec::new(),
@@ -1262,6 +1264,7 @@ mod durable_local_matrix {
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
     include!("app_open_door_tests.rs");
+    include!("app_child_request_tests.rs");
     include!("keyboard_map_read_authority_tests.rs");
     include!("store_directory_publication_tests.rs");
 }
