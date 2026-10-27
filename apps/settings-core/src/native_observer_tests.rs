@@ -49,6 +49,15 @@ fn rebuild(h: &mut Framed<SettingsApp>) {
 fn select(h: &mut Framed<SettingsApp>, category: Category) {
     h.select(category);
     rebuild(h);
+    // The keyboard is drawn off the UI thread; the page shows it once it is.
+    if category == Category::Keyboard {
+        assert!(
+            Framed::harness_mut(h).wait_until(tilo_test_env::hang_bound(), |harness| {
+                keyboard_map_value(harness.root_widget()).is_some()
+            }),
+            "the keyboard is drawn"
+        );
+    }
 }
 
 /// Type `query` into the window bar's search, as the bar hands it to the
@@ -266,8 +275,8 @@ fn keyboard_map_observes_foreground_physical_keys_while_the_list_is_narrowed() {
     select(&mut h, Category::Keyboard);
     bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "zqx");
     assert!(h.found_settings().is_empty(), "the keyboard pane stays");
-    let compiled = crate::keyboard_preview::compilation_count();
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    let compiled = crate::keyboard_preview::compilation_count();
     let original_heads = heads(&mut h);
     assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
     dispatch_preview_key(&mut h, ElementState::Pressed);
