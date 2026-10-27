@@ -4916,6 +4916,9 @@ async fn ensure_sdk_route(
         Some((room, proof)) if *room == spec.cluster_id.to_string() => proof.as_slice(),
         _ => presentation,
     };
+    // Each round trip of the join is marked, so a launch's startup line says which one
+    // its wait for the route went to (the route's join has been most of a cold start).
+    tilo_startup_metrics::startup_mark("collab-join-start");
     let channel = match client
         .join_channel_as_kind(
             &channel_id,
@@ -4934,6 +4937,7 @@ async fn ensure_sdk_route(
             return Err(format!("{}: {error}", super::ROUTE_JOIN_FAILED));
         }
     };
+    tilo_startup_metrics::startup_mark("collab-join-channel");
 
     // Only the explicit agent constructors consume the eager workspace
     // decision catalogue. Ordinary App owners discard that event and expose
@@ -4959,6 +4963,7 @@ async fn ensure_sdk_route(
         },
     )
     .await?;
+    tilo_startup_metrics::startup_mark("collab-join-committed-read");
     if let Ok(runtime_collab::committed_document::Reply::ConnectionSnapshot(snapshot)) = channel
         .committed_document(&runtime_collab::committed_document::Request::ConnectionSnapshot)
         .await
@@ -4974,6 +4979,7 @@ async fn ensure_sdk_route(
                 .insert(channel_id.clone(), snapshot);
         }
     }
+    tilo_startup_metrics::startup_mark("collab-join-connection-snapshot");
     if committed {
         // This reply contains only the original host-retained launch instance;
         // a record label or app environment never becomes private authority.
@@ -5005,6 +5011,7 @@ async fn ensure_sdk_route(
     if encrypted {
         follow_channel_keys(channel.clone(), channel_id.clone(), key_signals.clone());
     }
+    tilo_startup_metrics::startup_mark("collab-join-window-binding");
     change_waits::follow(&spec.app_id, &channel, inbound_tx);
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
@@ -5036,6 +5043,7 @@ async fn ensure_sdk_route(
         spawn_content_stream(&channel, spec.clone(), inbound_tx),
         spawn_presence_stream(&channel, inbound_tx),
     );
+    tilo_startup_metrics::startup_mark("collab-join-streams");
     // Subscriptions are installed first so an existing holder's response
     // cannot race ahead of our document stream.
     if !committed && let Err(error) = channel.request_document_snapshot().await {

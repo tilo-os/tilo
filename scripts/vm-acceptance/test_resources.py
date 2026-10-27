@@ -337,6 +337,16 @@ class ShellMemoryMap(unittest.TestCase):
         self.assertIn("heap free 39.1 MiB", text)
         self.assertIn("heap_arenas 80.0 MiB, gpu_memfd 72.5 MiB", text)
 
+    def test_the_heap_timeline_keeps_the_start_and_the_latest(self):
+        log = "\n".join([
+            "[x] HEAP-MILESTONE what=start in_use_mib=31 free_mib=2 rss_anon_mib=40",
+            "HEAP-MILESTONE what=renderer-first-frame in_use_mib=214 free_mib=190 rss_anon_mib=420",
+        ] + [f"HEAP-MILESTONE what=trim in_use_mib={200 + i} free_mib=12 rss_anon_mib=230"
+             for i in range(9)])
+        self.assertEqual(resources.heap_milestones(log, n=4),
+                         "start 31/2, …, trim 206/12, trim 207/12, trim 208/12")
+        self.assertEqual(resources.heap_milestones(""), "")
+
     def test_records_are_valid_kpis_in_one_unit(self):
         ctx = Recorder()
         resources.record_shell_parts(ctx, shell_report(), "after_close")
