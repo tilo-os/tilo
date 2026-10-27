@@ -106,6 +106,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "agent-failed",
     "agent-reasoning",
     "agent-long-thread",
+    "long-thread",
     "agent-work",
     "bridged",
     "narrow",
@@ -335,6 +336,19 @@ pub(crate) fn part_scenario(
     let mut start = crate::demo::demo_part(me);
     let mut steps = Vec::new();
     match scenario {
+        Some("long-thread") => {
+            // Three days of the design crit before the conversation the demo
+            // shows, so a capture of the list is a capture of a thread no window
+            // holds.
+            let mut part = ChatPart::default();
+            for (id, message) in long_thread_posts(me) {
+                part.messages.push(id, message);
+            }
+            for (id, message) in start.messages.iter() {
+                part.messages.push(id.clone(), message.clone());
+            }
+            start = part;
+        }
         Some("bridged") => {
             let (id, message) = bridged_post();
             start.messages.push(id, message);
@@ -359,6 +373,46 @@ pub(crate) fn part_scenario(
         _ => {}
     }
     (Some(start), steps)
+}
+
+/// `long-thread`: three days of messages in the design crit, from the room's
+/// people, before the conversation the demo shows.
+fn long_thread_posts(me: &str) -> Vec<(Id, crate::record::Message)> {
+    let people = ["u_aria", "u_milo", "u_sora", "u_devon"];
+    let count = 240_usize;
+    // The newest of them ends where the demo conversation begins.
+    let newest = crate::demo::NOW.saturating_sub(100 * 60);
+    (0..count)
+        .map(|index| {
+            let ago = i64::try_from(count.saturating_sub(index))
+                .unwrap_or_default()
+                .saturating_mul(900);
+            let author = if index % 5 == 4 {
+                me
+            } else {
+                people[index % people.len()]
+            };
+            let text = if index % 7 == 3 {
+                format!(
+                    "Note {index}: the tile promotion needs the transport notes beside it, so \
+                     the presenter keeps the featured tile while everyone else drops to the \
+                     filmstrip beneath it."
+                )
+            } else {
+                format!("Note {index}: the overlay reads fine at this width, and a few of these words wrap.")
+            };
+            (
+                Id::from_raw(format!("m_long_{index:03}")),
+                crate::record::Message {
+                    channel: Id::from_raw("c_crit"),
+                    author: ui::tilo_resource::Atom(author.to_owned()),
+                    ts: newest.saturating_sub(ago),
+                    text: text.into(),
+                    ..crate::record::Message::default()
+                },
+            )
+        })
+        .collect()
 }
 
 /// Provider output fixtures use the same durable action as a live host stream.
