@@ -1062,12 +1062,29 @@ def _mb(kib_or_bytes: str, unit: int) -> float | None:
     return None if kib_or_bytes == "-" else round(int(kib_or_bytes) * unit / 2**20, 1)
 
 
+# An app's unit below the launcher's scope: `.../app-<id>-<n>/...`, the id escaped the way
+# systemd escapes a unit name (`-` is `\x2d`).
+_APP_UNIT = re.compile(r"/tilo-apps-\d+\.scope/app-((?:[^/-]|\\x2d)+)-\d+(?:/|$)")
+
+
+def app_of_cgroup(path: str) -> str | None:
+    """The app a cgroup belongs to, from its unit name below the launcher's scope
+    (`.../tilo-apps-N.scope/app-so.tilo.file\x2dexplorer-5/main` is so.tilo.file-explorer),
+    or None for a cgroup that is no app's."""
+    found = _APP_UNIT.search(path or "")
+    if not found:
+        return None
+    return re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m[1], 16)), found[1])
+
+
 def parse_processes(text: str) -> dict:
     """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb",
     "meminfo_kib", "zones", "page_size", "greeter_uid", "tmpfs"}.
 
     Each process carries `app`: the `--app-id` of the nearest `tilo-launcher` at or above it,
-    so an app is its launcher's whole process tree, whatever its processes are called. Each
+    so an app is its launcher's whole process tree, whatever its processes are called; or,
+    for an app the session's shared spawner started (no launcher of its own above it), the
+    app its cgroup's unit names (`app_of_cgroup`). Each
     cgroup carries `charged_at`: itself, or the nearest ancestor with a memory controller,
     where its memory is charged (None: nowhere the dump could read)."""
     procs, cgroups, kib, zones, tmpfs, greeter, page = {}, {}, {}, {}, [], None, None
@@ -1099,7 +1116,7 @@ def parse_processes(text: str) -> dict:
         while cur and cur["launches"] is None and cur["pid"] not in seen:
             seen.add(cur["pid"])
             cur = procs.get(cur["ppid"])
-        p["app"] = cur["launches"] if cur else None
+        p["app"] = (cur["launches"] if cur else None) or app_of_cgroup(p["cgroup"])
     return {"procs": procs, "cgroups": cgroups, "meminfo_kib": kib,
             "meminfo_mb": {k: v // 1024 for k, v in kib.items()}, "zones": zones, "page_size": page,
             "greeter_uid": greeter, "tmpfs": sorted(tmpfs, key=lambda t: -t["used_mib"])}
