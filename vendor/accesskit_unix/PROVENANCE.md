@@ -33,6 +33,13 @@ process on the AT-SPI bus cannot press, type into or select in an app the
 person never touched. Without it the crate behaves as the release, and the
 public API is unchanged, so the published SDK still builds on the crates.io
 release.
+3. In `src/context.rs`, an `IsEnabled` change that reads `true` while an
+AT-SPI bus is already connected keeps that bus. zbus's
+`PropertyChanged::get` reads the latest cached value, so a quick off-and-on
+toggle can arrive as two `true`s; the release then opened a second bus and
+dropped the first, which held every active adapter's interfaces, and an
+already active adapter never registered them on the new bus, leaving
+assistive technology an empty tree until the app restarted.
 
 Every other source file is the release's. The archive's `Cargo.lock` is omitted. Its siblings `accesskit` 0.25.0,
 `accesskit_consumer` 0.39.0 and `accesskit_atspi_common` 0.20.0 are unchanged

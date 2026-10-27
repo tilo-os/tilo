@@ -48,9 +48,19 @@ impl Drop for InaccessibleAncestor {
     }
 }
 
-fn signed_runtime(root: &Path) -> (PathBuf, String) {
+/// A copy of the built launcher under `root` that the fixture may rewrite (strip).
+/// `fs::copy` keeps the source's mode, and the runner may hand the test a
+/// read-only (0555) link into its content store rather than a writable build
+/// output, so the copy is made owner-writable explicitly.
+fn writable_launcher_copy(root: &Path) -> PathBuf {
     let launcher = root.join("tilo-launcher");
     std::fs::copy(tilo_test_env::package_binary!("tilo-launcher"), &launcher).unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    launcher
+}
+
+fn signed_runtime(root: &Path) -> (PathBuf, String) {
+    let launcher = writable_launcher_copy(root);
     // Strip only the fixture copy's debug sections; executable code is the actual built launcher.
     assert!(
         std::process::Command::new("strip")

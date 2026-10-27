@@ -226,7 +226,9 @@ one, as it always has, and its process is restarted.
 ## Accessibility and YouTube manifests
 
 Four crates differ from their crates.io release in `Cargo.toml`, and
-`accesskit_unix` also in its source (the read-only tree below). Each
+`accesskit_unix` also in its source (the read-only tree below, and keeping
+the connected AT-SPI bus when assistive technology is switched off and on
+quickly). Each
 directory's `PROVENANCE.md` has the exact edit. They used to be git forks on
 code.tilo.so, which made every Cargo command in the workspace fail whenever
 that host was down. Now they are path crates here:
