@@ -68,6 +68,18 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         assert_eq!(manifest.package.icon.as_deref(), Some("icon.svg"));
         assert!(app.payload.join("icon.svg").is_file());
         assert!(app.payload.join("app.wasm").is_file());
+        // The shell tells the window where it is shown and whether its room has synced, as it
+        // tells a native app's: until the room has, its empty states say it is connecting.
+        let shell_ui = manifest
+            .sandbox
+            .services
+            .get("shell-ui")
+            .unwrap_or_else(|| panic!("{} asks for no shell-ui connection", app.app));
+        assert_eq!(
+            shell_ui.version,
+            u32::from(ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION),
+            "at the version the shell speaks"
+        );
     }
     let board = apps.last().unwrap();
     let notes = apps

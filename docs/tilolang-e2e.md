@@ -37,6 +37,12 @@ Board. The session installs them (`--install-tapp`) beside native Notes
   a Vulkan driver except lavapipe.
 - **actions**: each app publishes its actions. Invoking "New note", "New
   chat" and "New item" each adds an entry to that app's history.
+- **unsynced**: one PNG of the session per app as first opened, with that app in
+  front. The room has not synced with the workspace's host, so each app says
+  "Connecting to Shared browser workspace…" where it would say it is empty,
+  as native Notes does: the shell tells every app window whether its room has
+  synced over the window's shell-ui connection, which a tilolang app's manifest
+  asks for like a native app's.
 - **snapshots**: one PNG of the session per app, with that app in front.
 - **native**: native Notes (`so.tilo.notes`) opens beside them, presents a
   frame and publishes its actions. Both apps are called Notes; they are told
@@ -64,7 +70,8 @@ Everything goes to `target/tilolang-e2e` (`--out DIR` changes it):
   exit status is non-zero when a check fails.
 - `notes.png`, `chat.png`, `todo.png` and `board.png` are the snapshots, and
   `native-notes.png` native Notes. Look at them: each should show only native
-  window chrome around the app.
+  window chrome around the app. `unsynced-notes.png` and the others are the
+  apps as first opened, each saying it is connecting.
 - `session-apps.log` and `session-routes.log` are the session script's own
   output.
 - `shell-apps.log` is the shell's log from the first start, with each app's
