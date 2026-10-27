@@ -18,7 +18,11 @@ pub struct Item {
     pub done: bool,
 }
 
-#[resource(kind = "test.checklist", label = "Checklist")]
+#[resource(
+    kind = "test.checklist",
+    label = "Checklist",
+    app = "so.tilo.test-checklist"
+)]
 impl Checklist {
     /// Rename the checklist.
     #[action]
