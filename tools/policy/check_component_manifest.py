@@ -43,12 +43,17 @@ INSTALL_STAGE = "component-files"
 # at their final paths, each named in the stage's RUN as /image<path>.
 ASSEMBLED_STAGE = "runtime-image-payload"
 ASSEMBLED_COPY = ("/image/usr/", "/usr/")
+# What a build's own keys sign leaves both trees for /signatures, which the
+# rootfs copies after each tree in a small layer of its own
+# (os/scripts/signed-records.py).
+ASSEMBLED_SIGNATURES = ("/signatures/usr/", "/usr/")
 # The app store as the rootfs takes it: the payload stage's store, copied whole
 # and with the env-runtime's host-identical files left out. Its one
 # COPY installs the `direct` store tree the payload stage carries.
 SEEDED_STAGE = "app-store"
 SEEDED_TREE = "/usr/share/tilo-apps/"
 SEEDED_COPY = ("/out" + SEEDED_TREE, SEEDED_TREE)
+SEEDED_SIGNATURES = ("/signatures" + SEEDED_TREE, SEEDED_TREE)
 
 
 def load_installer(repo: Path):
@@ -341,6 +346,8 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
         if source_stage == ASSEMBLED_STAGE and instruction.stage != ASSEMBLED_STAGE:
             assembled = " ".join(i.text for i in parsed if i.stage == ASSEMBLED_STAGE
                                  and i.words and i.words[0].upper() == "RUN")
+            if pairs == [ASSEMBLED_SIGNATURES]:
+                continue
             if pairs != [ASSEMBLED_COPY]:
                 report.error(where, f"COPY --from={ASSEMBLED_STAGE} copies {pairs}",
                              f"copy the assembled tree whole: COPY --from={ASSEMBLED_STAGE} "
@@ -362,6 +369,8 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
             seeded = " ".join(i.text for i in parsed if i.stage == SEEDED_STAGE
                               and i.words and i.words[0].upper() == "RUN")
             mount = f"from={PAYLOAD_STAGE},source={SEEDED_TREE.rstrip('/')},"
+            if pairs == [SEEDED_SIGNATURES]:
+                continue
             if pairs != [SEEDED_COPY] or mount not in seeded:
                 report.error(where, f"COPY --from={SEEDED_STAGE} copies {pairs}",
                              f"copy the seeded store whole, from a {SEEDED_STAGE} stage that mounts "
