@@ -108,6 +108,10 @@ fn thread(count: usize) -> Vec<ConversationLine> {
         .collect()
 }
 
+/// The rows a viewport shows, at most: a window of 800 points holds fewer than
+/// this many rows of any text scale the tokens allow.
+const MOST_ROWS_IN_VIEW: usize = 60;
+
 #[test]
 fn a_steady_frame_measures_nothing_and_paints_only_what_is_in_view() {
     for count in [40_usize, 400] {
@@ -123,6 +127,8 @@ fn a_steady_frame_measures_nothing_and_paints_only_what_is_in_view() {
                 "total_height": frames.height,
                 "measured": work.measured,
                 "reused": work.reused,
+                "painted": work.painted,
+                "culled": work.culled,
             })
         );
         assert_eq!(
@@ -130,13 +136,22 @@ fn a_steady_frame_measures_nothing_and_paints_only_what_is_in_view() {
             "a frame that changed nothing measures nothing: {work:?}"
         );
         assert_eq!(work.reused, count, "every line keeps its measurement");
+        assert!(
+            work.painted <= MOST_ROWS_IN_VIEW,
+            "a frame paints what is on screen, not the thread: {work:?}"
+        );
+        assert_eq!(
+            work.painted + work.culled,
+            count + count.div_ceil(50),
+            "every row — a line or a day divider — is either painted or culled: {work:?}"
+        );
     }
 }
 
 /// The cost of a frame is the cost of the screen: a thread ten times longer
-/// measures nothing more.
+/// measures nothing more and paints nothing more.
 #[test]
-fn a_ten_times_longer_thread_measures_nothing_more() {
+fn a_ten_times_longer_thread_costs_the_same_frame() {
     let mut short = Frames::of(thread(40));
     let mut long = Frames::of(thread(400));
     short.frames(10);
@@ -146,4 +161,5 @@ fn a_ten_times_longer_thread_measures_nothing_more() {
     assert_eq!(short_work.measured, long_work.measured);
     assert_eq!(short_work.reused, 40);
     assert_eq!(long_work.reused, 400);
+    assert_eq!(short_work.painted, long_work.painted);
 }
