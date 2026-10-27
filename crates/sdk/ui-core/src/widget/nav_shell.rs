@@ -2390,7 +2390,17 @@ impl NavShell {
         }
     }
 
+    /// A slot, header or column changed: the shell plans its parts again and the host builds
+    /// the tree anew.
     fn slots_changed(&mut self) {
+        self.refresh_slot_inputs();
+        self.structure_dirty = true;
+        self.invalidate();
+    }
+
+    /// Plan the parts from the slots, headers and columns as they are now (which columns and
+    /// titles there are, how many actions each holds), marking nothing.
+    fn refresh_slot_inputs(&mut self) {
         let shell_bar = self.shell_bar_wanted();
         {
             let mut inputs = self.inputs.borrow_mut();
@@ -2425,8 +2435,6 @@ impl NavShell {
                 );
             }
         }
-        self.structure_dirty = true;
-        self.invalidate();
     }
 
     fn invalidate(&mut self) {
@@ -4072,10 +4080,11 @@ impl Widget for NavShell {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The host is building a new tree: what waited for it goes in now.
+        // The host is building a new tree: what waited for it goes in now, and the parts are
+        // planned from it. Building is what a change asked for, so it asks for no other.
         self.finish_slot_edit();
         self.apply_pending();
-        self.slots_changed();
+        self.refresh_slot_inputs();
         self.layout_theme = theme.clone();
         let size = if self.rect.width() > 0.0 {
             (self.rect.width(), self.rect.height())
