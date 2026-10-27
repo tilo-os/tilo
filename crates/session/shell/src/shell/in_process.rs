@@ -797,6 +797,12 @@ async fn session_services_settled(services: &tokio::sync::watch::Sender<SessionS
         .await;
 }
 
+/// Block until this process's session services are settled
+/// ([`session_services_settled`]), for a worker thread that needs them.
+pub fn wait_for_session_services() {
+    pollster::block_on(session_services_settled(session_services()));
+}
+
 /// A connection for `app` in `room` to the broker at `collab` and the
 /// identity service at `identity`, made as the launcher makes an app's: the
 /// session records the launch, the connection names the app and room, and
