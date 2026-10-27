@@ -374,32 +374,15 @@ impl CalcScreen {
         self.layout(area);
     }
 
-    /// Recompute all geometry for the window `area`. Called at the top of both draw and event handling so
-    /// hit-tests match the last paint.
-    ///
-    /// The keys keep at least `key_min_h` for as long as the chrome can give
-    /// way: a short window first drops the display's status line, then, when
-    /// wide enough, moves the display and memory bar beside the pad so the
-    /// keys get the full height. Only a window both short and narrow shrinks
-    /// the keys further.
-    pub fn layout(&mut self, area: Rect) {
-        self.content = area;
+    /// Split `left` into the display chrome, the key grid and the display
+    /// height, dropping or moving the chrome as the window gets shorter.
+    fn split_display_and_pad(&mut self, left: Rect) -> (Rect, Rect, f64) {
         let m = self.m;
-        // The window has no header row: its controls are the window bar's.
-        let body = area;
-        let left = Rect::new(
-            body.x0 + m.pad,
-            body.y0 + m.pad,
-            (body.x1 - m.pad).max(body.x0 + m.pad),
-            (body.y1 - m.pad).max(body.y0 + m.pad),
-        );
-        self.ensure_layout(left.width());
-
         let memory_min_w = 4.0 * self.mem_w + 3.0 * m.cell_gap;
         let side_w = (left.width() * 0.38).clamp(memory_min_w, m.side_max_w.max(memory_min_w));
         let side_pad_min_w = 4.0 * m.key_min_w + 3.0 * m.cell_gap;
         let tall_grid = left.height() - m.display_tall - m.mem_h - 2.0 * m.gap;
-        let (chrome, grid, display_h) = if tall_grid >= self.grid_min_h() {
+        if tall_grid >= self.grid_min_h() {
             let grid_top = left.y0 + m.display_tall + m.gap + m.mem_h + m.gap;
             (
                 left,
@@ -430,7 +413,31 @@ impl CalcScreen {
                 Rect::new(left.x0, grid_top, left.x1, left.y1),
                 m.display_short,
             )
-        };
+        }
+    }
+
+    /// Recompute all geometry for the window `area`. Called at the top of both draw and event handling so
+    /// hit-tests match the last paint.
+    ///
+    /// The keys keep at least `key_min_h` for as long as the chrome can give
+    /// way: a short window first drops the display's status line, then, when
+    /// wide enough, moves the display and memory bar beside the pad so the
+    /// keys get the full height. Only a window both short and narrow shrinks
+    /// the keys further.
+    pub fn layout(&mut self, area: Rect) {
+        self.content = area;
+        let m = self.m;
+        // The window has no header row: its controls are the window bar's.
+        let body = area;
+        let left = Rect::new(
+            body.x0 + m.pad,
+            body.y0 + m.pad,
+            (body.x1 - m.pad).max(body.x0 + m.pad),
+            (body.y1 - m.pad).max(body.y0 + m.pad),
+        );
+        self.ensure_layout(left.width());
+
+        let (chrome, grid, display_h) = self.split_display_and_pad(left);
         // A wide window does not turn keys into tiles: the pad stops at
         // `key_max_w` per column, and a stacked display and memory row
         // narrow with it, centred in the space.
@@ -636,8 +643,8 @@ impl CalcScreen {
         let m = &self.m;
         let short = self.display_is_short();
         let pad = m.display_pad;
-        let (_expr_top, expr_bottom) = self.expression_band();
-        let expr_line = Rect::new(display.x0 + pad, _expr_top, display.x1 - pad, expr_bottom);
+        let (expr_top, expr_bottom) = self.expression_band();
+        let expr_line = Rect::new(display.x0 + pad, expr_top, display.x1 - pad, expr_bottom);
         let expr_icon = self.copy_icon_of(DisplaySlot::Expression);
         let expr_rect = Self::line_text(expr_line, expr_icon);
 
