@@ -763,6 +763,51 @@ async fn what_a_shared_window_shows_is_shared_by_its_device_and_ends_with_it() {
         "the room's record says which note Ada's Notes window is at"
     );
 
+    // Ada's window moves to another note: sharing what it shows again, under
+    // the same share id, is the room's record of where it is now, in place
+    // of where it was.
+    let moved = WindowShows {
+        record: String::new(),
+        item: Some("notes.page/pages/8".into()),
+    };
+    let grants_of_shows = || async move {
+        let state = rooms.room(held_room).await.unwrap();
+        let held = state.lock().await;
+        let doc = held.peer().admitted_room().unwrap();
+        tilo_desktop_model::projection::room_policy_of(doc, held_room)
+            .grants
+            .iter()
+            .filter(|grant| {
+                tilo_action_policy::share::is_of_share(grant, &window_shows_share_id(notes))
+            })
+            .count()
+    };
+    let before = grants_of_shows().await;
+    invoke(
+        &host,
+        workspace,
+        &ada,
+        request(
+            window_shows_share_id(notes),
+            shows_node(&room, "so.tilo.notes", notes, "notes.notebook", &moved),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        shared_now()
+            .await
+            .get(&notes)
+            .and_then(|share| share.shows.clone()),
+        Some(moved),
+        "the room's record follows Ada's window to the other note"
+    );
+    assert_eq!(
+        grants_of_shows().await,
+        before,
+        "the same share, written over: never two notes at once"
+    );
+
     invoke(
         &host,
         workspace,

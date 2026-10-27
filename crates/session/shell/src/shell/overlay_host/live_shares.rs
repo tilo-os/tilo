@@ -224,10 +224,31 @@ impl ShellOverlayHost {
         tab: TabId,
         app_id: &str,
     ) -> Option<String> {
-        use tilo_desktop_model::window_share::{WindowShows, shows_node};
         if tree.package_launches.get(&tab).map(String::as_str) != Some(app_id) {
             return None;
         }
+        let (shows, kind) = self.window_shows_now(tab);
+        Some(
+            tilo_desktop_model::window_share::shows_node(
+                &room.to_string(),
+                app_id,
+                tab,
+                &kind,
+                &shows,
+            )
+            .to_string(),
+        )
+    }
+
+    /// What the window `tab` of a Tilo app shows now, with the kind of the
+    /// record: the record its app says the window shows, at the item its
+    /// bar anchors; the app's own record as a whole while its app has said
+    /// nothing (no kind, so no node names a record or an item of it).
+    pub(super) fn window_shows_now(
+        &self,
+        tab: TabId,
+    ) -> (tilo_desktop_model::window_share::WindowShows, String) {
+        use tilo_desktop_model::window_share::WindowShows;
         let (record, kind) = self
             .live_shares
             .records
@@ -247,7 +268,7 @@ impl ShellOverlayHost {
         } else {
             WindowShows { record, item }
         };
-        Some(shows_node(&room.to_string(), app_id, tab, &kind, &shows).to_string())
+        (shows, kind)
     }
 
     /// Fill in what a Tilo app's window shows on a request to share it

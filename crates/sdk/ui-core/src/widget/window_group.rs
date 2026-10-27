@@ -2527,6 +2527,19 @@ impl WindowGroup {
         self.bar.shared_with(id)
     }
 
+    /// Mark tab `id` as a window someone else shared with its workspace,
+    /// whose `shared` names, or clear the mark: while it is in front the bar
+    /// says "Ana's window" with their face. `true` when that changed what
+    /// the window shows.
+    pub fn set_tab_shared_by(&mut self, id: u64, shared: Option<super::SharedBy>) -> bool {
+        self.bar.set_shared_by(id, shared)
+    }
+
+    /// Whose the window of tab `id` is, while someone else shares it here.
+    pub fn tab_shared_by(&self, id: u64) -> Option<&super::SharedBy> {
+        self.bar.shared_by(id)
+    }
+
     /// Press the bar's "Controls your desktop" chip without a pointer, as an
     /// assistive technology does. Whether the bar shows it.
     pub fn activate_desktop_control(&mut self) -> bool {

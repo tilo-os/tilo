@@ -18,6 +18,7 @@ const SURFACE: u64 = 0x5a7f;
 const NOTES: &str = "so.tilo.notes";
 
 /// What the sharer's note says.
+#[cfg(feature = "test-support")]
 const AGENDA: &str = "Agenda for Thursday\n\n\
     Lunch at noon in the Lounge, then the quarterly review.\n\n\
     Open questions: who owns the capture budget, and when do we review it?\n\n\
