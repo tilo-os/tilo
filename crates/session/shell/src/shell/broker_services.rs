@@ -709,7 +709,9 @@ fn stage_launch_content(
         {
             "avi"
         }
-        _ => "bin",
+        // A document travels under whatever name its sender gave it: its
+        // bytes say what it is, and so what the opened app takes it as.
+        _ => tilo_content::document_format(&bytes).map_or("bin", |format| format.extension),
     };
     let path = dir.join(format!("{content_hash}.{extension}"));
     match std::fs::OpenOptions::new()

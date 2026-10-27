@@ -57,6 +57,34 @@ fn refused(reason: impl Into<String>) -> ActionError {
     ActionError::Refused(reason.into())
 }
 
+/// Opening the app a report's `recording` recorded with the recording, read
+/// from this chat's content: the app replays it in a window of its own.
+#[must_use]
+pub fn replay_launch(
+    recording: &ui::feedback::RecordingRef,
+) -> tilo_actions::remote::ApplicationLaunch {
+    tilo_actions::remote::ApplicationLaunch::with_content(
+        recording.app.clone(),
+        recording.hash.to_ascii_lowercase(),
+    )
+}
+
+/// The published action that replays a report's `recording`.
+#[must_use]
+pub fn replay_spec(recording: &ui::feedback::RecordingRef) -> tilo_actions::ActionSpec {
+    replay_launch(recording).spec(
+        REPLAY_ACTION,
+        &crate::i18n::t("chat-feedback-replay"),
+        &crate::i18n::t_args(
+            "chat-feedback-replay-description",
+            &[("app", recording.app_name.clone().into())],
+        ),
+    )
+}
+
+/// The report item's action that replays its recording.
+pub const REPLAY_ACTION: &str = "replay-recording";
+
 /// The id of the message a report is posted as.
 #[must_use]
 pub fn message_id(report: &str) -> String {
@@ -670,6 +698,39 @@ mod tests {
         assert!(
             recording::open(&forged, recorded.bytes()).is_err(),
             "bytes that are not the report's recording are refused"
+        );
+    }
+
+    #[test]
+    fn a_reports_recording_replays_through_the_launch_that_opens_content_in_its_app() {
+        let reference = ui::feedback::RecordingRef {
+            hash: "AB".repeat(32),
+            app: "so.tilo.notes".into(),
+            app_name: "Notes".into(),
+            kind: "notes.note".into(),
+            from_ms: 1_000,
+            to_ms: 2_000,
+            steps: 2,
+            bytes: 64,
+        };
+        let launch = replay_launch(&reference);
+        assert_eq!(
+            launch,
+            tilo_actions::remote::ApplicationLaunch::with_content("so.tilo.notes", "ab".repeat(32))
+        );
+        assert!(launch.valid());
+        let spec = replay_spec(&reference);
+        assert_eq!(spec.id, REPLAY_ACTION);
+        assert_eq!(
+            spec.operation_type.as_deref(),
+            Some(tilo_actions::remote::ApplicationLaunch::TYPE)
+        );
+        assert!(
+            spec.contract
+                .tags
+                .iter()
+                .any(|tag| tag == tilo_actions::OWN_DEVICE_SCOPE),
+            "replaying opens a window of the person's own, reaching no one else"
         );
     }
 

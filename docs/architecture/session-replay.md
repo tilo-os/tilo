@@ -51,12 +51,13 @@ than the byte bound is not offered.
 The composer offers "Include a recording" only when the window the report is
 about shows a record of an app that may be recorded. It starts off, like the
 screenshot. The person sees, before they send, exactly what it includes: the
-app and the record by name, the time range, and the number of steps, and that
-whoever can read the report can see the record's whole state at the start of
-the range and every change during it, with who made it.
+app, the time range and the number of changes, and that whoever can read the
+report can see the record's whole state at the start of the range and every
+change during it, with who made it.
 
-Turning it on builds the recording on the device; nothing leaves it until the
-report is sent. Review covers the report's text and picks as before; the
+The record is read as its workspace committed it, the state History and
+Activity read. Turning it on builds the recording on the device when the
+report is reviewed; nothing leaves it until the report is sent. Review covers the report's text and picks as before; the
 recording is shown as the scope above, since its content is the record
 itself.
 
@@ -75,25 +76,33 @@ of the workspace.
 
 ## How replay steps
 
-The report's message in Chat shows the recording's scope and a Replay button,
-bound to Chat's `replay-recording` action on the report, so a script, an agent
-and assistive technology replay through the same door.
+The report's message in Chat shows the recording's scope and a Replay
+button. The report item publishes the same step as its `replay-recording`
+action, so a script, an agent and assistive technology replay through the
+same door.
 
-Replay imports the recording, verified against its hash, as a private,
-read-only replay record of the recorded app in the person's own workspace.
-That is an explicit import across the workspace boundary (`record.rs`): the
-record is a copy, it names the report it came from, and it is never shared on.
-The recorded app opens it read-only with History open at the first step;
-stepping is History's own timeline and its `history.view_at` action, drawn by
-the app's own view of each past state. Nothing in replay is specific to
-feedback or to an app.
+Replay opens the recorded app with the recording, the way any app opens
+content another app holds (`tilo_actions::remote::ApplicationLaunch`): the
+workspace reads the bytes through Chat's own content scope, verifies them
+against their hash and hands them to the app as a read-only file. A
+recording's bytes start with a header that says what they are
+(`tilo_content::RECORDING`), so every app built on the framework opens one:
+
+- in a private window, whose profile is thrown away with it and whose
+  record reaches no other window, device or collaborator;
+- on a record of its own holding exactly the recording's changes;
+- read-only: nothing in the window can change it;
+- with History open at the recording's first step.
+
+Stepping is History's own timeline, drawn by the app's own view of each
+past state. Nothing in replay is specific to feedback or to an app.
 
 ## Tests, agents, following
 
 - A test cuts a recording of a resource it drove and asserts the states its
   steps replay to (`tilo_resource::recording`).
-- An agent replays a recording with History's actions (`history.list`,
-  `history.view_at`) like a person does with the timeline.
+- An agent reads a recording's steps and the state at each through the same
+  module, or lists them through the replay window's History.
 - Following a past session is stepping the same History forward at the pace
   of the steps' times.
 
@@ -102,14 +111,16 @@ feedback or to an app.
 - **Resources are action logs.** The recording is a stretch of the record's own
   log on a start snapshot; nothing records in parallel.
 - **One mechanism.** Recording reads History's data; sharing is the record
-  content path report pictures already take; replay is History of a record.
-  No new transport, stream or viewer.
+  content path report pictures already take; opening it is the launch every
+  app uses to open content another app holds; replay is History of a
+  record. No new transport, stream or viewer.
 - **Every button is an action.** Including a recording is a field of the
   report the composer's actions set; Replay is a Chat action; stepping is
   History's actions.
 - **Privacy.** Off by default, included only when the person chooses it, with
   its scope shown before sending; the window excludes earlier history and every
-  other record; protected apps are never recorded.
+  other record; protected apps are never recorded; a replay opens only in a
+  private window, so it never becomes a record anyone else holds.
 - **End-to-end encryption.** The bytes reach only members of the destination
   workspace, its host as a member included.
 - **Causes, not symptoms.** Content that has not arrived yet is waited for by

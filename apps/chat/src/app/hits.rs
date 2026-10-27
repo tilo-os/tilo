@@ -94,6 +94,8 @@ pub(crate) enum Hit {
     StartCall,
     StopSharingLiveContext,
     CopyResourceLink(Id),
+    /// Replay the recording the report a message shows carries.
+    ReplayRecording(Id),
     OpenResource(Id),
     /// Open the window a message shares, as a window of this person's own.
     OpenShare(Id),
@@ -176,6 +178,7 @@ impl Hit {
             Self::StartCall => "chat.start-call".into(),
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
             Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
+            Self::ReplayRecording(id) => format!("chat.replay-recording:{id}"),
             Self::OpenResource(id) => format!("chat.open-resource:{id}"),
             Self::OpenShare(id) => format!("chat.open-share:{id}"),
             Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
@@ -432,6 +435,14 @@ impl ChatApp {
                     ),
                     Hit::StartCall => (copy("chat-call-start-or-open"), Role::Button, false),
                     Hit::StopSharingLiveContext => (copy("chat-context-stop"), Role::Button, false),
+                    Hit::ReplayRecording(message) => (
+                        ControlName {
+                            text: self.resource_navigation.replay_label(message, true),
+                            interface: self.resource_navigation.replay_label_is_copy(message),
+                        },
+                        Role::Button,
+                        false,
+                    ),
                     Hit::CopyResourceLink(message) => (
                         ControlName {
                             text: self.resource_navigation.label(message, true),
