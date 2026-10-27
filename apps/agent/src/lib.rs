@@ -54,3 +54,20 @@ pub mod transform;
 pub mod wire;
 
 pub use session::{Config, Session};
+
+/// The machine this agent runs on, as a run's receipt records it: the host
+/// name, so a person reading the issue sees which device paid for a step.
+/// It is a hint, never an identity; a machine with no host name reports
+/// `unknown` rather than nothing.
+#[must_use]
+pub fn device_name() -> String {
+    let host = std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok());
+    host.as_deref()
+        .map(str::trim)
+        .and_then(|host| host.lines().next())
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map_or_else(|| "unknown".to_owned(), str::to_owned)
+}
