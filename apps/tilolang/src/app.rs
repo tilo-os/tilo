@@ -104,11 +104,14 @@ impl ResourceApp for TlApp {
                 "tilolang-open-failed",
             )));
         };
-        let window = Window::new(
+        let mut window = Window::new(
             meta.app.clone(),
             cx.me().unwrap_or_default().to_owned(),
             cx.mode(),
         );
+        if let Some(cache) = ui::host::environment().paths.cache_dir() {
+            window = window.keep_indexes_in(cache.join("tilolang"));
+        }
         // A search hit, or an agent's `open`, shows the resource it names.
         let opens = window.open_requests();
         cx.on_open(move |anchor: &str| {
