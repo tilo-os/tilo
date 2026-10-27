@@ -247,8 +247,18 @@ fn a_window_longer_than_the_limit_starts_later_and_keeps_the_end() {
         steps: 3,
         ..Limits::default()
     };
-    let recording = record(&doc, 0, &doc.committed_document().get_heads(), &limits).unwrap();
+    let heads = doc.committed_document().get_heads();
+    let recording = record(&doc, 0, &heads, &limits).unwrap();
     assert_eq!(recording.step_count(), 3);
+    assert_eq!(
+        plan(&doc, 0, &heads, &limits).unwrap(),
+        Planned {
+            from_ms: recording.from_ms,
+            to_ms: recording.to_ms,
+            steps: 3,
+        },
+        "planning reads what recording makes"
+    );
     assert_eq!((recording.from_ms, recording.to_ms), (7_000, 9_000));
     let start = recording.heads_at(0).unwrap();
     assert_eq!(
