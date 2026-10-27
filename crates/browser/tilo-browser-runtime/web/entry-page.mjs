@@ -783,21 +783,6 @@ export async function startEntryPage({mode}) {
         return watch();
       }
     },
-    memberOf: workspace => Boolean(remembering(() => keptMembership(workspace))),
-    // The person's own room, on the host that let them in through `home`'s
-    // door: the room their root names (`ownRoom`), which that host carries
-    // for them alone. A device paired to a person kept elsewhere connects
-    // as them, with the device key it was paired with.
-    enterOwnRoom: async home => {
-      const kept = remembering(() => keptMembership(home));
-      const origin = kept?.origin ?? home.host.origin;
-      const identity = kept?.paired ? undefined : await browserPerson();
-      const userPublicKey = identity?.userPublicKey ?? kept.userPublicKey;
-      runtime ??= await loadRuntime();
-      displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
-      return connectPeer({origin, room: runtime.ownRoom(userPublicKey), identity, userPublicKey, runtime, displayName,
-        ...(identity ? {} : {profile: identityProfile(kept, kept.origin)})});
-    },
     inspectInvitation: (origin, invitation) => inspectInvitation(origin, invitation, {runtime}),
     confirmInvitation: offer => {
       workspaceName = offer.workspaceName || workspaceName;
