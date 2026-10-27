@@ -794,6 +794,48 @@ fn push_mode_makes_the_sidebar_the_first_screen() {
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);
 }
 
+/// Set whether the shell's content probe asks for frames.
+fn set_content_animating(h: &mut FrameHarness, animating: bool) {
+    if let Some(probe) = h
+        .root_mut::<NavShell>()
+        .content
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<Probe>())
+    {
+        probe.animating = animating;
+    }
+}
+
+#[test]
+fn a_screen_held_beside_the_window_asks_for_no_frames() {
+    let shell = NavShell::new()
+        .mode(NavMode::Push)
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 360, 800, Theme::dark());
+    settle(&mut h, 360, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+    let content = h.root::<NavShell>().content.get_rect();
+    assert!(
+        content.x0 >= 360.0,
+        "the content screen waits beside the window: {content:?}"
+    );
+    // The content would show something new, but no frame paints it while
+    // the sidebar is in front: it asks for nothing until it is shown.
+    set_content_animating(&mut h, true);
+    let shell = h.root::<NavShell>();
+    assert!(
+        !shell.needs_animation_frame(),
+        "a culled screen asks for frames"
+    );
+    assert!(!shell.needs_redraw(), "a culled screen asks for a redraw");
+
+    // Wide, the content stands in the window and asks as it did.
+    settle(&mut h, 1280, 800);
+    set_content_animating(&mut h, true);
+    assert!(h.root::<NavShell>().needs_animation_frame());
+}
+
 #[test]
 fn choosing_a_destination_in_a_narrow_window_moves_on() {
     let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
