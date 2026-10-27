@@ -45,6 +45,7 @@ mod prims;
 pub mod print;
 pub mod resolve;
 pub mod source;
+pub mod toolkit;
 pub mod types;
 
 pub use diag::{Diagnostic, Span, diagnostics_json};

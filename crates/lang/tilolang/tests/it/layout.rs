@@ -100,13 +100,15 @@ fn options_are_dot_literals_of_the_primitives_enums() {
     );
 }
 
+/// A text's role reaches the host as the toolkit's `Text` role it names: `.numeric` is a title
+/// in tabular figures.
 #[test]
 fn a_chosen_option_reaches_the_host_as_its_name() {
     let c = compile_body(
         "view v(b: Bool) {\n    text(\"x\", role: if b { .numeric } else { .caption })\n}",
     );
     validate(&c.wasm);
-    for want in ["numeric", "caption", "title", "body"] {
+    for want in ["numeric", "caption", "title", "ui.Text"] {
         assert!(
             contains(&c.wasm, want),
             "{want} is not in the module's strings"

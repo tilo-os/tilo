@@ -23,6 +23,12 @@
 //! 4. hands what the runtime planned to the door, as an invocation of the host's `commit`
 //!    action, so the change is attributed, undoable and replayed by every peer.
 
+/// The kinds of the toolkit's components the window reads in a view's tree.
+const BUTTON: &str = "ui.Button";
+const CARD: &str = "ui.Card";
+const LIST_ROW: &str = "ui.ListRow";
+const TEXT_INPUT: &str = "ui.TextInput";
+
 mod describe;
 mod list;
 pub(crate) mod pane;
@@ -56,7 +62,7 @@ use ui::widget::{
     NavItem, NavList, NavPane, NavSection, NavShell, Scrollable, Spacer, Text, Widget,
 };
 
-pub use list::{RowAction, RowData};
+pub use list::{RowAction, RowData, in_avatar_column, shows_avatar};
 
 use crate::i18n::{t, t_args};
 use crate::names::Names;
@@ -340,9 +346,8 @@ fn composer_page(frame: &UiNode) -> Option<UiNode> {
 
 /// A composer's buttons that have an icon show only it, as a native composer's Send does.
 fn iconic_buttons(node: &mut UiNode) {
-    if node.kind == "button" && node.props.contains_key("icon") {
-        node.props
-            .insert("presentation".to_owned(), Value::Text("icon".to_owned()));
+    if node.kind == BUTTON && node.props.contains_key("icon") {
+        node.props.insert("icon_only".to_owned(), Value::Bool(true));
     }
     for child in &mut node.children {
         iconic_buttons(child);
@@ -641,7 +646,7 @@ fn used_packages(host: &Host, app: &str) -> Vec<tilolang_tilo::host::Package> {
 /// place, as a native document does. Whether the page edits its title.
 fn mark_field_roles(host: &Host, node: &mut UiNode) -> bool {
     let mut titled = false;
-    if node.kind == "input"
+    if node.kind == TEXT_INPUT
         && let Some((target, field)) = node.binding.as_ref().and_then(|binding| binding.field())
         && let Some(role) = describe::type_of(host, &target.ty).and_then(|(_, ty)| {
             ty.fields
@@ -651,6 +656,11 @@ fn mark_field_roles(host: &Host, node: &mut UiNode) -> bool {
         })
     {
         titled = role == "title";
+        // A document's title is its large title, edited in place (the `TextInput`'s `title`);
+        // its body is the block editor.
+        if titled {
+            node.props.insert("title".to_owned(), Value::Bool(true));
+        }
         node.props
             .insert("field_role".to_owned(), Value::Text(role));
     }
@@ -663,7 +673,7 @@ fn mark_field_roles(host: &Host, node: &mut UiNode) -> bool {
 /// Name each card of `node` after the resource it shows, and count what it lists when the view
 /// gave no count: the head a dashboard card has natively (a title with a count pill).
 fn mark_cards(host: &Host, node: &mut UiNode) {
-    if node.kind == "card" {
+    if node.kind == CARD {
         if !node.props.contains_key("title")
             && let Some(Value::Ref(reference)) = node.props.get("item")
         {
@@ -680,9 +690,9 @@ fn mark_cards(host: &Host, node: &mut UiNode) {
             }
         }
     }
-    if node.kind == "list_row"
+    if node.kind == LIST_ROW
         && !node.props.contains_key("title")
-        && let Some(Value::Ref(reference)) = node.props.get("resource")
+        && let Some(Value::Ref(reference)) = node.props.get("item")
     {
         let target = reference.target.clone();
         node.props.insert(
@@ -718,7 +728,7 @@ fn rows_in(node: &UiNode) -> usize {
         .map(|child| {
             if child.kind == "list" {
                 child.items_total()
-            } else if child.kind == "list_row" {
+            } else if child.kind == LIST_ROW {
                 1
             } else {
                 rows_in(child)
@@ -729,7 +739,7 @@ fn rows_in(node: &UiNode) -> usize {
 
 /// The labels of the action buttons `node` draws in its content.
 fn content_buttons<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
-    if node.kind == "button"
+    if node.kind == BUTTON
         && node.events.contains_key("press")
         && let Some(Value::Text(label)) = node.props.get("label")
     {
@@ -746,7 +756,7 @@ fn frame_buttons(frame: &UiNode) -> Vec<UiNode> {
     fn walk(node: &UiNode, out: &mut Vec<UiNode>) {
         for child in &node.children {
             match child.kind.as_str() {
-                "button" => out.push(child.clone()),
+                BUTTON => out.push(child.clone()),
                 "fragment" => walk(child, out),
                 _ => {}
             }
@@ -765,7 +775,7 @@ fn without_frame_buttons(node: &UiNode) -> UiNode {
     node.children = node
         .children
         .into_iter()
-        .filter(|child| child.kind != "button")
+        .filter(|child| child.kind != BUTTON)
         .map(|child| {
             if child.kind == "fragment" {
                 without_frame_buttons(&child)
@@ -1019,8 +1029,8 @@ impl Window {
                 view: Rc::clone(&lane.view),
                 list,
             }),
-            reconciler: Reconciler::new(Rc::clone(&lane.events), self.field_names())
-                .with_lookups(self.case_lookup(), self.people()),
+            // The rows report to the lane's adapter, which the window reads.
+            reconciler: Reconciler::sharing(&lane.reconciler),
         })
     }
 
@@ -1492,6 +1502,7 @@ impl Window {
                 owner: root_target.clone(),
                 peers: Rc::clone(&self.peers),
                 names: self.names.clone(),
+                adapter: root.reconciler.adapter().clone(),
             })
         });
         let detail_frame = self
@@ -1773,11 +1784,10 @@ impl Window {
         let list = || {
             Box::new(ListPane::new(
                 &self.requests,
-                &self
-                    .root
-                    .as_ref()
-                    .map(|lane| Rc::clone(&lane.events))
-                    .unwrap_or_default(),
+                self.root.as_ref().map_or_else(
+                    || Reconciler::new(Rc::default(), self.field_names()),
+                    |lane| Reconciler::sharing(&lane.reconciler),
+                ),
                 String::new(),
             )) as Element
         };
@@ -2212,6 +2222,7 @@ impl Window {
                 events.extend(
                     std::mem::take(&mut *lane.events.borrow_mut())
                         .into_iter()
+                        .chain(lane.reconciler.adapter().take_events())
                         .map(|event| (index, event)),
                 );
             }
@@ -2232,24 +2243,27 @@ impl Window {
         .map(|lane| Rc::clone(&lane.view)) else {
             return;
         };
+        // A press and a component's event apply the action reference the view attached: done,
+        // denied, or suggested for a person to decide.
+        let fired = match event {
+            UiEvent::Press(key) => Some(view.borrow().press(key)),
+            UiEvent::Fire(key, event) => Some(view.borrow().fire(key, event)),
+            _ => None,
+        };
         let outcome = match event {
-            UiEvent::Press(key) => match view.borrow().press(key) {
-                Ok(InvokeOutcome::Done(_)) => Ok(()),
-                Ok(InvokeOutcome::Suggested(suggestion)) => {
+            UiEvent::Press(_) | UiEvent::Fire(..) => match fired {
+                Some(Ok(InvokeOutcome::Done(_))) | None => Ok(()),
+                Some(Ok(InvokeOutcome::Suggested(suggestion))) => {
                     self.ask = Some(suggestion);
                     self.rebuild_ask();
                     Ok(())
                 }
-                Ok(InvokeOutcome::Denied) => Err(t("tilolang-ask-denied")),
-                Err(error) => Err(error.to_string()),
+                Some(Ok(InvokeOutcome::Denied)) => Err(t("tilolang-ask-denied")),
+                Some(Err(error)) => Err(error.to_string()),
             },
             UiEvent::Edit(key, text) => edit(&view.borrow(), key, Value::Text(text.clone())),
             UiEvent::Toggle(key, checked) => edit(&view.borrow(), key, Value::Bool(*checked)),
             UiEvent::Resolve(key, approve) => self.resolve(&view.borrow(), key, *approve),
-            UiEvent::Fire(key, event) => match view.borrow().fire(key, event) {
-                Ok(_) => Ok(()),
-                Err(error) => Err(error.to_string()),
-            },
             UiEvent::Open(target) => {
                 let target = target.clone();
                 self.open_detail(&target, None, Some(by_input()));

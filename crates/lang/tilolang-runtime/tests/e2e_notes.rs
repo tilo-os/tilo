@@ -94,7 +94,7 @@ mod cases {
     }
 
     fn titles(view: &ViewInstance) -> Vec<String> {
-        of_kind(view.tree(), "list_row")
+        of_kind(view.tree(), "ui.ListRow")
             .iter()
             .map(|r| text_prop(r, "title"))
             .collect()
@@ -105,7 +105,7 @@ mod cases {
         of_kind(list(view), "item")
             .into_iter()
             .find(|item| {
-                of_kind(item, "list_row")
+                of_kind(item, "ui.ListRow")
                     .iter()
                     .any(|r| text_prop(r, "title") == title)
             })
@@ -132,7 +132,7 @@ mod cases {
         );
         assert_eq!(text_prop(list.tree(), "empty"), "No notes yet");
         assert!(
-            of_kind(list.tree(), "button").is_empty(),
+            of_kind(list.tree(), "ui.Button").is_empty(),
             "the header holds the actions"
         );
 
@@ -140,7 +140,7 @@ mod cases {
         let note = n.new_note();
         list.poll_patches().unwrap();
         assert!(
-            of_kind(list.tree(), "input").is_empty(),
+            of_kind(list.tree(), "ui.TextInput").is_empty(),
             "the list does not edit notes: {}",
             dump(list.tree())
         );
@@ -153,7 +153,7 @@ mod cases {
 
         let mut editor = n.rt.open_resource(&me(), &note, None).unwrap();
         assert_eq!(editor.tree().kind, "document");
-        let title = of_kind(editor.tree(), "input")[0].key.clone();
+        let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
         assert_eq!(
             editor.edit(&title, &Value::text("Plans")).unwrap(),
             EditOutcome::Applied
@@ -167,7 +167,7 @@ mod cases {
 
         n.call("pin", vec![Value::resource(&note)]);
         list.poll_patches().unwrap();
-        let row = of_kind(list.tree(), "list_row")[0];
+        let row = of_kind(list.tree(), "ui.ListRow")[0];
         assert_eq!(text_prop(row, "mark"), "pin", "{}", dump(row));
         editor.poll_patches().unwrap();
 
@@ -185,7 +185,7 @@ mod cases {
         let n = Notes::new();
         let note = n.new_note();
         let editor = n.rt.open_resource(&me(), &note, None).unwrap();
-        let body = of_kind(editor.tree(), "input")[1].key.clone();
+        let body = of_kind(editor.tree(), "ui.TextInput")[1].key.clone();
         editor.edit(&body, &Value::text("Oat milk, eggs")).unwrap();
         let mut view =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
@@ -195,7 +195,7 @@ mod cases {
         for width in [90.0, 20.0] {
             view.set_space("", Space::from_rem(width, 40.0));
             view.poll_patches().unwrap();
-            let row = of_kind(view.tree(), "list_row")[0];
+            let row = of_kind(view.tree(), "ui.ListRow")[0];
             assert_eq!(text_prop(row, "secondary"), "Oat milk, eggs");
             assert!(
                 !row.props.contains_key("mark"),
@@ -259,7 +259,8 @@ mod cases {
             .unwrap()
         };
         let (view_a, view_b) = (editor(&rt_a), editor(&rt_b));
-        let body = |v: &tilolang_runtime::ViewInstance| of_kind(v.tree(), "input")[1].key.clone();
+        let body =
+            |v: &tilolang_runtime::ViewInstance| of_kind(v.tree(), "ui.TextInput")[1].key.clone();
         view_a.edit(&body(&view_a), &Value::text("Hello")).unwrap();
         store_a.sync_with(&mut store_b).unwrap();
 

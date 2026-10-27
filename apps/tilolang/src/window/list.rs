@@ -28,8 +28,11 @@ use ui::widget::{
 };
 
 use super::{Request, Requests};
+use crate::adapter::{NodeSource, description_of, kind, slot_nodes};
 use crate::names::Names;
-use crate::reconcile::{EventSink, UiEvent};
+use crate::reconcile::Reconciler;
+use ui::component::{Component as _, Described as _};
+use ui::widget::ListRowProps;
 
 /// An action a row offers on its item.
 #[derive(Clone, Debug, PartialEq)]
@@ -62,7 +65,7 @@ pub struct RowData {
     pub item: ResourceRef,
     /// The title when the view made no row for the item.
     pub label: String,
-    /// The `list_row` node, when the view made one.
+    /// The `ui.ListRow` node, when the view made one.
     pub row: Option<UiNode>,
     /// What the row's checkbox shows, when it is bound to a field.
     pub checked: Option<bool>,
@@ -89,6 +92,8 @@ pub struct RowSource {
     pub owner: ResourceRef,
     pub peers: Peers,
     pub names: Names,
+    /// Where the components of the view report: the rows' report there too.
+    pub adapter: crate::adapter::Adapter,
 }
 
 /// How the rows of a list are read from the view that renders them: which view and list, and
@@ -145,7 +150,7 @@ impl RowRead for RowSource {
             return None;
         };
         let target = ResourceRef::clone(&reference.target);
-        let list_row = find_kind(item, "list_row").cloned();
+        let list_row = find_kind(item, &kind("ListRow")).cloned();
         let checked = list_row
             .as_ref()
             .filter(|node| node.binding.is_some())
@@ -154,23 +159,26 @@ impl RowRead for RowSource {
                 Some(Value::Int(number)) => Some(number != 0),
                 _ => None,
             });
-        let avatar = list_row
-            .as_ref()
-            .and_then(|node| match node.props.get("avatar") {
+        let avatar = list_row.as_ref().and_then(|node| {
+            let shown = avatar_node(node);
+            match shown.and_then(|avatar| avatar.props.get("who")) {
                 Some(Value::Principal(who)) => {
-                    Some(RowAvatar::Of(self.names.label(&who.0), who.0.clone()))
+                    return Some(RowAvatar::Of(self.names.label(&who.0), who.0.clone()));
                 }
-                // No participant this time: the row's own icon stands in for them as the item's
-                // avatar (a conversation's group), else the row keeps the room an avatar takes.
-                Some(Value::Opt(None)) => {
-                    Some(icon(node, "icon").map_or(RowAvatar::Space, |glyph| {
-                        let name = text(node, "title")
-                            .unwrap_or_else(|| super::describe::title_of(&self.host, &target));
-                        RowAvatar::Glyph(name, glyph)
-                    }))
-                }
-                _ => None,
-            });
+                Some(_) => return None,
+                None => {}
+            }
+            // No participant this time: the row's own glyph stands in for them as the item's
+            // avatar (a conversation's group), else the row keeps the room an avatar takes.
+            if let Some(glyph) = shown.and_then(|avatar| icon(avatar, "glyph")) {
+                let name = text(node, "title")
+                    .unwrap_or_else(|| super::describe::title_of(&self.host, &target));
+                return Some(RowAvatar::Glyph(name, glyph));
+            }
+            node.props
+                .contains_key("avatar_space")
+                .then_some(RowAvatar::Space)
+        });
         Some(RowData {
             key: row.key.clone(),
             label: super::describe::title_of(&self.host, &target),
@@ -213,6 +221,29 @@ fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
     node.children
         .iter()
         .find_map(|child| find_kind(child, kind))
+}
+
+/// The avatar a row node shows, in its `avatar` slot.
+fn avatar_node(row: &UiNode) -> Option<&UiNode> {
+    let description = description_of(row)?;
+    slot_nodes(row, description, "avatar").into_iter().next()
+}
+
+/// Whether a list's row node shows an avatar: a participant's, or the item's own glyph.
+#[must_use]
+pub fn shows_avatar(row: &UiNode) -> bool {
+    avatar_node(row).is_some()
+}
+
+/// The row node as its list shows it: the room an avatar takes is kept while the list shows
+/// avatars, and given up while no row of it does.
+#[must_use]
+pub fn in_avatar_column(row: &UiNode, avatars: bool) -> UiNode {
+    let mut row = row.clone();
+    if !avatars {
+        row.props.remove("avatar_space");
+    }
+    row
 }
 
 /// The rows of a list: every row's key, in order, as the view's list holds them, and the rows
@@ -603,52 +634,34 @@ fn by_hand() -> bool {
     )
 }
 
-/// The row of one item. `avatars`: rows of its list show avatars, so one without keeps the room.
-fn row(data: &RowData, avatars: bool, requests: &Requests, sink: &EventSink) -> Element {
-    let title = data
-        .row
-        .as_ref()
-        .and_then(|node| text(node, "title"))
-        .unwrap_or_else(|| data.label.clone());
-    let mut row = ListRow::new(data.key.clone(), title);
-    if let Some(node) = &data.row {
-        if let Some(secondary) = text(node, "secondary") {
-            row = row.secondary(secondary);
-        }
-        if let Some(meta) = text(node, "meta") {
-            row = row.meta(meta);
-        }
-        if let Some(value) = text(node, "value") {
-            row = row.value(value);
-        }
-        if let Some(badge) = text(node, "badge") {
-            row = row.badge(badge);
-        }
-        if let Some(mark) = icon(node, "mark") {
-            row = row.mark(mark);
-        }
-        if let Some(leading) = icon(node, "icon") {
-            row = row.icon(leading);
-        }
-        if let Some(checked) = data.checked {
-            let sink = Rc::clone(sink);
-            let key = node.key.clone();
-            row = row.checkbox(checked, move |checked| {
-                sink.borrow_mut()
-                    .push(UiEvent::Toggle(key.clone(), checked));
-            });
-        }
+/// The row of one item, built by the one adapter from the `ui.ListRow` its view made.
+/// `avatars`: rows of its list show avatars, so one without keeps the room.
+fn row(
+    data: &RowData,
+    avatars: bool,
+    requests: &Requests,
+    reconciler: &RefCell<Reconciler>,
+) -> Element {
+    let mut reconciler = reconciler.borrow_mut();
+    let node = data.row.as_ref().map_or_else(
+        || UiNode::empty(&kind("ListRow"), &data.key),
+        |node| in_avatar_column(node, avatars),
+    );
+    if let Some(checked) = data.checked {
+        reconciler.flag_state(&node.key).set(checked);
     }
-    match &data.avatar {
-        Some(RowAvatar::Of(name, identity)) => row = row.avatar(name.clone(), identity.clone()),
-        Some(RowAvatar::Glyph(name, glyph)) => {
-            row = row
-                .avatar(name.clone(), data.item.id_string())
-                .avatar_glyph(*glyph);
-        }
-        Some(RowAvatar::Space) if avatars => row = row.avatar_space(),
-        Some(RowAvatar::Space) | None => {}
+    let props = description_of(&node)
+        .map(|description| {
+            ListRowProps::from_source(&mut NodeSource::new(&node, description, &mut reconciler))
+        })
+        .and_then(Result::ok);
+    let mut props = props.unwrap_or_default();
+    if props.title.is_empty() {
+        props.title.clone_from(&data.label);
     }
+    // The list activates its rows itself, by key: a row of it is not a target of its own.
+    props.activate = ui::component::Event::None;
+    let mut row = ListRow::from_props(&data.key, props);
     if let Some(identity) = &data.presence {
         row = row.presence(identity.clone());
     }
@@ -746,7 +759,8 @@ enum Body {
 /// The list column, kept in step with the view.
 pub struct ListPane {
     requests: Requests,
-    sink: EventSink,
+    /// Builds the rows, reporting what they do as the view's other components do.
+    reconciler: Rc<RefCell<Reconciler>>,
     body: Body,
     /// The rows while the list is empty: the empty state shows instead of the list, and the
     /// list is built with them when the first row comes.
@@ -762,10 +776,10 @@ pub struct ListPane {
 
 impl ListPane {
     #[must_use]
-    pub fn new(requests: &Requests, sink: &EventSink, name: String) -> Self {
+    pub fn new(requests: &Requests, reconciler: Reconciler, name: String) -> Self {
         Self {
             requests: Rc::clone(requests),
-            sink: Rc::clone(sink),
+            reconciler: Rc::new(RefCell::new(reconciler)),
             body: Body::Empty(Box::new(EmptyState::new(""))),
             waiting: Some(Rows::default()),
             empty: Empty::default(),
@@ -778,13 +792,13 @@ impl ListPane {
 
     fn list(&self, rows: Rows) -> ContextMenuArea {
         let requests = Rc::clone(&self.requests);
-        let sink = Rc::clone(&self.sink);
+        let reconciler = Rc::clone(&self.reconciler);
         let selecting = Rc::clone(&self.requests);
         let activating = Rc::clone(&self.requests);
         let list = VirtualList::with_selection_delegate(rows, 56.0, move |rows, _, key, _| {
             rows.find(key).map_or_else(
                 || Box::new(ListRow::new(key.clone(), "")) as Element,
-                |data| row(&data, rows.shows_avatars(), &requests, &sink),
+                |data| row(&data, rows.shows_avatars(), &requests, &reconciler),
             )
         })
         .filling()
@@ -857,6 +871,9 @@ impl ListPane {
             return;
         }
         self.stale = false;
+        self.reconciler
+            .borrow_mut()
+            .report_to(source.adapter.clone());
         self.show(Rows::of(Rc::clone(source)));
     }
 
@@ -1203,7 +1220,7 @@ mod tests {
     #[test]
     fn every_action_of_a_row_is_on_the_one_menu_over_the_list() {
         let requests: Requests = Rc::default();
-        let sink: EventSink = Rc::default();
+        let reconciler = || Reconciler::new(Rc::default(), Rc::new(|_| String::new()));
         let actions: Rc<[RowAction]> = Rc::from(vec![action("Pin", false), action("Delete", true)]);
         let rows: Vec<RowData> = ["a", "b"]
             .into_iter()
@@ -1212,7 +1229,7 @@ mod tests {
                 ..data(key, &key.to_uppercase())
             })
             .collect();
-        let element = row(&rows[0], false, &requests, &sink);
+        let element = row(&rows[0], false, &requests, &RefCell::new(reconciler()));
         assert!(
             element
                 .as_any()
@@ -1220,7 +1237,7 @@ mod tests {
             "a row is a bare ListRow"
         );
 
-        let mut pane = ListPane::new(&requests, &sink, "Notes".to_owned());
+        let mut pane = ListPane::new(&requests, reconciler(), "Notes".to_owned());
         pane.show(Rows::new(rows));
         assert!(pane.virtual_list().expect("rows").reveal(&"b".to_owned()));
         let Body::List(area) = &mut pane.body else {
@@ -1250,8 +1267,8 @@ mod tests {
     #[test]
     fn a_list_whose_last_row_goes_shows_its_empty_state() {
         let requests: Requests = Rc::default();
-        let sink: EventSink = Rc::default();
-        let mut pane = ListPane::new(&requests, &sink, "Notes".to_owned());
+        let reconciler = Reconciler::new(Rc::default(), Rc::new(|_| String::new()));
+        let mut pane = ListPane::new(&requests, reconciler, "Notes".to_owned());
         pane.show(Rows::new(vec![data("a", "A")]));
         assert!(matches!(pane.body, Body::List(_)));
         Decorator::take_structure_change(&mut pane);

@@ -60,7 +60,7 @@ view nums(b: Bag) {\n    column {\n        for x in b.nums {\n            text(x
                     vec![Value::resource(&self.bag)],
                 )
                 .unwrap();
-            of_kind(v.tree(), "text")
+            of_kind(v.tree(), "ui.Text")
                 .iter()
                 .map(|t| t.props["value"].clone())
                 .collect()

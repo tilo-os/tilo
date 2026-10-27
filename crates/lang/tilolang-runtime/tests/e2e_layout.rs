@@ -61,9 +61,9 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
         }
         let image = first(tree, "image");
         assert!(matches!(image.props["aspect"], Value::Float(f) if (f - 16.0 / 9.0).abs() < 1e-9));
-        let layered_text = first(first(tree, "layers"), "text");
+        let layered_text = first(first(tree, "layers"), "ui.Text");
         assert_eq!(text_prop(layered_text, "at"), "bottom_trailing");
-        let titles: Vec<&UiNode> = of_kind(tree, "text")
+        let titles: Vec<&UiNode> = of_kind(tree, "ui.Text")
             .into_iter()
             .filter(|t| t.props.contains_key("truncate"))
             .collect();
@@ -98,7 +98,7 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
             first(tree, "secondary").props["min.rem"],
             Value::Float(22.0)
         );
-        let clamped = first(first(tree, "scroll"), "text");
+        let clamped = first(first(tree, "scroll"), "ui.Text");
         assert_eq!(clamped.props["min.dp"], Value::Float(4.0));
         assert_eq!(clamped.props["max.rem"], Value::Float(1.5));
     }
@@ -124,7 +124,7 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
             text_prop(first(view.tree(), "row"), "gap") == "section",
             "{roomy}"
         );
-        assert_eq!(of_kind(view.tree(), "text").len(), 2);
+        assert_eq!(of_kind(view.tree(), "ui.Text").len(), 2);
 
         assert!(view.set_space("", Space::from_rem(20.0, 40.0)));
         let patches = view.poll_patches().unwrap();
@@ -136,7 +136,7 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
             "{}",
             dump(view.tree())
         );
-        assert_eq!(of_kind(view.tree(), "text").len(), 1);
+        assert_eq!(of_kind(view.tree(), "ui.Text").len(), 1);
 
         assert!(
             !view.set_space("", Space::from_rem(25.0, 40.0)),
@@ -166,9 +166,12 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
                 vec![Value::resource(&album.target)],
             )
             .unwrap();
-        let wide = of_kind(view.tree(), "text").len();
+        let wide = of_kind(view.tree(), "ui.Text").len();
         view.set_space("", Space::from_rem(10.0, 20.0));
         view.poll_patches().unwrap();
-        assert_eq!(of_kind(view.tree(), "text").len(), wide.saturating_sub(1));
+        assert_eq!(
+            of_kind(view.tree(), "ui.Text").len(),
+            wide.saturating_sub(1)
+        );
     }
 }

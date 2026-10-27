@@ -1681,6 +1681,27 @@ impl<'a> Parser<'a> {
                 let value = self.expr()?;
                 UiKind::Let { name, value }
             }
+            Tok::Ident(word)
+                if word == "on"
+                    && matches!(self.peek_at(1), Tok::Ident(_))
+                    && matches!(self.peek_at(2), Tok::Colon) =>
+            {
+                self.bump();
+                let event = self.ident("an event name")?;
+                self.expect(&Tok::Colon)?;
+                let action = self.expr()?;
+                UiKind::On { event, action }
+            }
+            Tok::Ident(_)
+                if matches!(self.peek_at(1), Tok::Colon)
+                    && matches!(self.peek_at(2), Tok::LBrace) =>
+            {
+                let node = self.node();
+                let name = self.ident("a slot name")?;
+                self.expect(&Tok::Colon)?;
+                let body = self.ui_block()?;
+                UiKind::Slot { node, name, body }
+            }
             Tok::Str(_) if matches!(self.peek_at(1), Tok::Colon) => {
                 let node = self.node();
                 let label = self.primary()?;

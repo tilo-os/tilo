@@ -66,13 +66,13 @@ mod cases {
         let tree = view.tree();
         assert_eq!(tree.kind, "fragment", "{}", dump(tree));
         assert_eq!(of_kind(tree, "row").len(), 2, "{}", dump(tree));
-        let title = of_kind(tree, "text")
+        let title = of_kind(tree, "ui.Text")
             .into_iter()
             .find(|t| t.props.get("role") == Some(&Value::text("title")))
             .expect("the list's title");
         assert_eq!(text_prop(title, "value"), " (2 open)");
 
-        let remove = of_kind(of_kind(tree, "row")[0], "button")[0].key.clone();
+        let remove = of_kind(of_kind(tree, "row")[0], "ui.Button")[0].key.clone();
         let out = view.press(&remove).unwrap();
         assert!(
             matches!(out, InvokeOutcome::Done(_)),
@@ -92,7 +92,7 @@ mod cases {
         let BlockOutput::View(view) = w.rt.run_block(&me(), &w.block(&src)).unwrap() else {
             panic!("a view block renders");
         };
-        let button = of_kind(view.tree(), "button")[0].key.clone();
+        let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
         let InvokeOutcome::Suggested(s) = view.press(&button).unwrap() else {
             panic!("code from a stranger has no grants");
         };
