@@ -374,6 +374,10 @@ machine is an ordinary job. `job::vm` builds it:
 - **Network**: passt outside the sandbox, as the caller, reached on a unix
   socket (`-netdev stream`): outbound connections and DNS, nothing forwarded
   in, no address leading to the node's loopback.
+- **Helpers** (`job::helper`): virtiofsd, passt and pasta run in a mount
+  namespace of their own built from the host's `/usr` and `/etc` and their
+  binds alone, so they hold no copy of the caller's other mounts, born in the
+  job's cgroup and detached like the job.
 
 Measured on a laptop and a CI node: a step boots in about 0.25 s to its
 command once the RAID6 benchmark is off; it holds 0.2 to 0.4 GB besides what
