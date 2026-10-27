@@ -77,6 +77,7 @@ mod editor;
 mod month_view;
 mod opens;
 mod repeat_scope;
+mod sheets;
 mod shell;
 pub(crate) use shell::sidebar;
 mod status;
@@ -129,6 +130,11 @@ enum Action {
     Export,
     Import,
     NewEvent,
+    /// Open the one-line quick add: a day, a time and a length read out of
+    /// what the person types, written as an event when they press Add.
+    QuickAdd,
+    /// Show this window's keys.
+    Shortcuts,
     ToggleSelectedTask,
     OpenTaskPopover(TaskPopover),
     DismissTaskPopover,
@@ -274,6 +280,10 @@ pub struct CalendarApp {
     /// The modal sheet the editor is presented in, laid out against the
     /// window; `None` while no editor is open.
     modal: Option<ModalLayout>,
+    /// The one-line quick add, and this window's keys, as cards over the
+    /// calendar.
+    quick_add: sheets::QuickAdd,
+    shortcuts: sheets::ShortcutSheet,
     /// Height of the notes editor's content at its last layout, so the sheet
     /// grows with the notes.
     notes_content_h: f64,
@@ -505,6 +515,8 @@ impl CalendarApp {
             choices: Choices::new(),
             form: FormRects::default(),
             modal: None,
+            quick_add: sheets::QuickAdd::new(),
+            shortcuts: sheets::ShortcutSheet::new(),
             notes_content_h: 0.0,
             repeat_scope_menu: Popover::new()
                 .with_items(repeat_scope::choices())
@@ -671,6 +683,13 @@ impl CalendarApp {
                     _ => FormPopover::StartTime,
                 });
             }
+            "quick_add" => {
+                self.quick_add.open();
+                self.quick_add
+                    .input_mut()
+                    .set_text("Lunch with Sam friday 1pm");
+            }
+            "shortcuts" => self.shortcuts.set_open(true),
             "task_detail" => self.shots_show_task_detail(),
             "task_due_picker" => self.shots_open_task_picker("due"),
             "task_priority_picker" => self.shots_open_task_picker("priority"),
@@ -1663,10 +1682,12 @@ impl CalendarApp {
     }
 
     fn new_event(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        // A new event starts at the next quarter hour rather than at noon:
+        // an event added now is nearly always an event that starts soon, and
+        // the form shows the hour it began with.
         let start = self
             .anchor
-            // 12:00:00 is always a valid `NaiveTime`; the fallback never runs.
-            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
+            .and_time(crate::quick_add::next_quarter_hour(self.now()));
         let ev = Event {
             // Empty title: the form's title field shows its "New event"
             // placeholder rather than literal text the user has to clear. The
@@ -2833,6 +2854,7 @@ impl CalendarApp {
 
         self.seed_choices();
         self.layout_sheet();
+        self.layout_sheets();
     }
 
     /// Point the timeline viewport at its new geometry, seeding the initial
@@ -2995,6 +3017,8 @@ impl CalendarApp {
             Action::Export => self.invoke_effect(&crate::resource::CalendarEffect::ExportIcs),
             Action::Import => self.invoke_effect(&crate::resource::CalendarEffect::ImportIcs),
             Action::NewEvent => self.new_event(doc),
+            Action::QuickAdd => self.quick_add.open(),
+            Action::Shortcuts => self.shortcuts.toggle(),
             Action::ToggleSelectedTask => {
                 if let Some(Sel::Task(id)) = self.selection {
                     self.toggle_task(id, doc);
@@ -3074,6 +3098,18 @@ impl CalendarApp {
             Action::NewEvent => (
                 "calendar.new-event".into(),
                 "New event".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::QuickAdd => (
+                "calendar.quick-add".into(),
+                crate::resource::t("calendar-quick-title"),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::Shortcuts => (
+                "calendar.shortcuts".into(),
+                crate::resource::t("calendar-help-title"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3792,18 +3828,23 @@ impl CalendarApp {
         if let Key::Character(ch) = logical_key
             && plain
         {
-            let key = ch.to_lowercase();
-            let act = match key.as_str() {
-                "m" => Some(Action::View(View::Month)),
-                "w" => Some(Action::View(View::Week)),
-                "d" => Some(Action::View(View::Day)),
-                "a" => Some(Action::View(View::Agenda)),
-                "t" => Some(Action::Today),
-                "n" if self.view == View::Tasks => Some(Action::NewTask),
-                "n" => Some(Action::NewEvent),
-                "[" => Some(Action::Prev),
-                "]" => Some(Action::Next),
-                _ => None,
+            // A capital letters means Shift: `N` is the one-line add where
+            // `n` opens the full form.
+            let act = match ch.as_str() {
+                "N" => Some(Action::QuickAdd),
+                "?" => Some(Action::Shortcuts),
+                other => match other.to_lowercase().as_str() {
+                    "m" => Some(Action::View(View::Month)),
+                    "w" => Some(Action::View(View::Week)),
+                    "d" => Some(Action::View(View::Day)),
+                    "a" => Some(Action::View(View::Agenda)),
+                    "t" => Some(Action::Today),
+                    "n" if self.view == View::Tasks => Some(Action::NewTask),
+                    "n" => Some(Action::NewEvent),
+                    "[" => Some(Action::Prev),
+                    "]" => Some(Action::Next),
+                    _ => None,
+                },
             };
             if let Some(a) = act {
                 self.apply_action(a, state);
@@ -4164,6 +4205,10 @@ impl Widget for CalendarApp {
                 presence,
             );
         }
+        // The two cards sit over the calendar and its editor alike.
+        self.shortcuts.draw(scene, transform, text_renderer, theme);
+        self.quick_add
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     // This is the widget system's event-dispatch contract, implemented by
@@ -4179,6 +4224,13 @@ impl Widget for CalendarApp {
         if let WindowEvent::Touch(touch) = event
             && self.swipe(touch, ctx)
         {
+            return;
+        }
+
+        // A card over the calendar holds input while it is up: nothing behind
+        // it reacts to a press or a key meant for the card.
+        if self.sheet_open() {
+            self.dispatch_to_sheet(event, ctx);
             return;
         }
 
@@ -4620,6 +4672,8 @@ impl CalendarApp {
                 BarAction::Today => Action::Today,
                 BarAction::New if self.view == View::Tasks => Action::NewTask,
                 BarAction::New => Action::NewEvent,
+                BarAction::QuickAdd => Action::QuickAdd,
+                BarAction::Shortcuts => Action::Shortcuts,
                 BarAction::Export => Action::Export,
                 BarAction::Import => Action::Import,
                 BarAction::View(view) => Action::View(view),

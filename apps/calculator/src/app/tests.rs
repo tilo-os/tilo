@@ -630,7 +630,11 @@ fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
     app.declare_window_toolbar();
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
     let views = toolbar.views.as_ref().expect("the modes switch in the bar");
-    assert_eq!(views.choices.len(), 3);
+    assert_eq!(
+        views.choices.len(),
+        Mode::all().len(),
+        "every page the app has"
+    );
     assert_eq!(views.chosen, "calculator.mode:1");
     assert_eq!(toolbar.sidebar, Some(true), "the formulas are the sidebar");
     let menu: Vec<&str> = toolbar
@@ -1291,5 +1295,47 @@ fn orbiting_round_and_round_keeps_the_yaw_within_one_turn() {
     assert!(
         yaw.abs() <= std::f64::consts::PI,
         "yaw {yaw} ran past half a turn"
+    );
+}
+
+/// The conversion page is a page of this window: the bar switches to it, it
+/// answers the question the audit asked (`40 °C` in `°F`), and every control
+/// it paints is reachable by address.
+#[test]
+fn the_conversion_page_answers_in_units_and_says_why_money_cannot() {
+    let mut app = hosted();
+    press_bar(&mut app, "calculator.mode:3");
+    assert_eq!(
+        app.with_widget(|app: &mut CalculatorApp| app.mode_for_test()),
+        Some(Mode::Convert)
+    );
+    assert_eq!(
+        app.with_widget(|page: &mut CalculatorApp| { page.convert_page().dimension().label() }),
+        Some("Length"),
+        "the page opens on lengths"
+    );
+
+    // Money is a chip that says what it cannot do, in the person's words.
+    click(&mut app, "calculator.convert:currency");
+    assert!(
+        app.with_widget(|page: &mut CalculatorApp| page.convert_page().currency_note_shown())
+            == Some(true),
+        "the currency chip shows why it cannot convert money"
+    );
+
+    // 40 °C in °F, by pressing the chips and typing the amount, as a person
+    // would.
+    click(&mut app, "calculator.convert:quantity:temperature");
+    app.harness().type_text("40");
+    app.settle();
+    assert_eq!(
+        app.with_widget(|page: &mut CalculatorApp| page.convert_page().result_text()),
+        Some(Some("104 °F".to_owned())),
+        "the answer the audit asked for"
+    );
+    press_bar(&mut app, "calculator.mode:0");
+    assert_eq!(
+        app.with_widget(|app: &mut CalculatorApp| app.mode_for_test()),
+        Some(Mode::Calc)
     );
 }

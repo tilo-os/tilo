@@ -329,9 +329,7 @@ fn a_sent_request_saves_as_a_request_or_is_forgotten() {
     let (sent, _) = state.history.iter().next().unwrap();
     let (sent, collection) = (sent.clone(), collection_id(&workspace));
     assert!(
-        state
-            .saved(&sent)
-            .is_none(),
+        state.saved(&sent).is_none(),
         "the history is not a collection"
     );
     // What the builder holds, which saving from the history must not move.
@@ -386,7 +384,10 @@ fn a_sent_request_saves_as_a_request_or_is_forgotten() {
             action.contract.can_be_undone(),
             "{verb}: Undo brings the entry back"
         );
-        assert!(!action.contract.requires_confirmation(), "{verb} asks nobody");
+        assert!(
+            !action.contract.requires_confirmation(),
+            "{verb} asks nobody"
+        );
     }
 
     workspace

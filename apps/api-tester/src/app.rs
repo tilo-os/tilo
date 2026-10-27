@@ -20,8 +20,8 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::tokens::Spacing;
-use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{
     AppModel, Column, Dropdown, Element, ModelPath, NavShell, ResizableSplit, Spacer, Stack, Widget,
 };
@@ -43,8 +43,8 @@ use ui::framework::{Actions, Dispatcher, EffectAnswer, EffectCx, Effected, Submi
 use ui::secrets::SecretStore;
 const CREDENTIAL: &str = "request-credential";
 const SECRET_VARIABLE: &str = "variable-value";
-use crate::response;
 use crate::palette::short_path;
+use crate::response;
 use crate::sidebar::{self, SidebarView, parse_history, parse_request};
 use crate::vars;
 use ui::widget::{Slot, SlotHandle};
@@ -1559,10 +1559,7 @@ impl ui::widget::Decorator for ApiTesterApp {
             // Staged after layout: the menu opens under the newest sent
             // request, where its row is.
             let window = Widget::get_rect(&self.nav);
-            let at = vello::kurbo::Point::new(
-                window.x0 + 60.0,
-                (window.y1 - 120.0).max(window.y0),
-            );
+            let at = vello::kurbo::Point::new(window.x0 + 60.0, (window.y1 - 120.0).max(window.y0));
             self.open_row_menu("history:0", vello::kurbo::Rect::ZERO, at);
         }
         match self.pose.take() {
@@ -1580,7 +1577,14 @@ impl ui::widget::Decorator for ApiTesterApp {
             .draw(scene, transform, text_renderer, theme, presence);
         if let Some(open) = self.menu.as_mut() {
             open.menu.layout_within(text_renderer, theme);
-            Widget::draw_overlay(&mut open.menu, scene, transform, text_renderer, theme, presence);
+            Widget::draw_overlay(
+                &mut open.menu,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
         }
     }
 
@@ -1627,7 +1631,6 @@ impl ui::widget::Decorator for ApiTesterApp {
         }
         Some(node)
     }
-
 
     fn mark_drawn(&mut self) {
         self.dirty = false;

@@ -3970,3 +3970,118 @@ fn a_sideways_swipe_on_the_calendar_steps_its_period() {
         "a leftward swipe shows the next month"
     );
 }
+
+// --- the one-line add and this window's keys ---------------------------
+
+/// A harness whose present is a known Wednesday afternoon, so what a line
+/// becomes does not depend on when the test runs.
+fn pinned_afternoon() -> Harness {
+    let mut app = CalendarApp::new_demo();
+    app.pin_now(
+        NaiveDate::from_ymd_opt(2026, 10, 28)
+            .unwrap_or_default()
+            .and_hms_opt(14, 7, 0)
+            .unwrap_or_default(),
+    );
+    Harness::mount(app, 900, 700)
+}
+
+/// Type `text` as a person would, one character at a time.
+fn type_words(h: &mut Harness, text: &str) {
+    for ch in text.chars() {
+        h.type_char(&ch.to_string());
+    }
+}
+
+#[test]
+fn one_line_becomes_the_event_it_names() {
+    let mut h = pinned_afternoon();
+    h.type_char("N");
+    h.relayout();
+    assert!(h.app.quick_add.is_open(), "Shift+N opens the one-line add");
+    let card = h.app.quick_add.card();
+    assert!(
+        card.width() > 0.0 && card.height() > 0.0 && h.app.rect.contains(card.center()),
+        "the card is drawn inside the window: {card:?}"
+    );
+    type_words(&mut h, "Review the deck friday 1pm");
+    h.relayout();
+    let before = h.app.model.events.len();
+
+    h.press_named(winit::keyboard::NamedKey::Enter);
+    h.relayout();
+    assert!(!h.app.quick_add.is_open(), "the card goes once it is added");
+    assert_eq!(h.app.model.events.len(), before + 1, "one event is added");
+    let added = h
+        .app
+        .model
+        .events
+        .iter()
+        .find(|event| event.title == "Review the deck")
+        .expect("the words left after the day and time are the title");
+    assert_eq!(
+        added.start,
+        NaiveDate::from_ymd_opt(2026, 10, 30)
+            .unwrap_or_default()
+            .and_hms_opt(13, 0, 0)
+            .unwrap_or_default(),
+        "Friday at one in the afternoon"
+    );
+    assert_eq!(added.end - added.start, Duration::hours(1));
+}
+
+#[test]
+fn the_card_puts_away_without_writing_when_it_is_told_to() {
+    let mut h = pinned_afternoon();
+    h.type_char("N");
+    type_words(&mut h, "Review the deck");
+    let before = h.app.model.events.len();
+    h.press_named(winit::keyboard::NamedKey::Escape);
+    h.relayout();
+    assert!(!h.app.quick_add.is_open());
+    assert_eq!(h.app.model.events.len(), before, "nothing is written");
+    // The keys behind the card were not also taken: Escape after it closes
+    // reaches the calendar, and the next one puts away what it opened.
+    h.type_char("m");
+    h.relayout();
+    assert_eq!(
+        h.app.view,
+        View::Month,
+        "the card swallowed nothing it did not own"
+    );
+}
+
+#[test]
+fn the_keys_this_window_answers_to_are_listed_and_put_away() {
+    let mut h = pinned_afternoon();
+    h.type_char("?");
+    h.relayout();
+    assert!(h.app.shortcuts.is_open(), "? shows the keys");
+    let card = h.app.shortcuts.card();
+    assert!(
+        card.width() > 0.0 && card.height() > 0.0 && h.app.rect.contains(card.center()),
+        "the card is drawn inside the window: {card:?}"
+    );
+    assert!(
+        ui::spell_shortcut("N") == "N" && ui::spell_shortcut("{shift:N}").contains('N'),
+        "the sheet lists real chords"
+    );
+    h.press_named(winit::keyboard::NamedKey::Escape);
+    h.relayout();
+    assert!(!h.app.shortcuts.is_open(), "Escape puts the sheet away");
+    assert_eq!(h.app.view, View::Month, "and it did not act on the view");
+}
+
+#[test]
+fn a_new_event_starts_at_the_next_quarter_hour_not_at_noon() {
+    let mut h = pinned_afternoon();
+    h.type_char("n");
+    h.relayout();
+    let draft = h.app.fresh_draft.clone().expect("a new event is opened");
+    assert_eq!(
+        draft.start.time(),
+        chrono::NaiveTime::from_hms_opt(14, 15, 0).unwrap_or_default(),
+        "the next quarter hour after 14:07"
+    );
+    assert_eq!(draft.end - draft.start, Duration::hours(1));
+}

@@ -36,11 +36,6 @@ impl BarItem {
         self.action = self.action.in_menu();
         self
     }
-
-    fn destructive(mut self) -> Self {
-        self.action = self.action.destructive();
-        self
-    }
 }
 
 /// What can be done to the selected messages: Done, triage, then read
@@ -201,15 +196,12 @@ pub(crate) fn bar_items(state: &MailState, first_run: bool, composing: bool) -> 
             Command::Compose,
         )];
         if let Some(queued) = state.open_queued() {
-            items.push(
-                BarItem::new(
-                    "cancel-send",
-                    "rotate-ccw",
-                    "Cancel sending",
-                    Command::CancelSend(queued.id.clone()),
-                )
-                .destructive(),
-            );
+            items.push(BarItem::new(
+                "cancel-send",
+                "rotate-ccw",
+                "Cancel sending",
+                Command::CancelSend(queued.id.clone()),
+            ));
         }
         items.push(add_account.in_menu());
         return items;

@@ -721,6 +721,10 @@ pub(super) struct WindowRuntime {
     /// system was last told.
     pub(super) minimum_width: Option<f64>,
     pub(super) minimum_width_stated: Option<f64>,
+    /// The size the root widget asked for, and the size last stated to the
+    /// window system.
+    pub(super) preferred_size: Option<(f64, f64)>,
+    pub(super) preferred_size_stated: Option<(f64, f64)>,
     pub(super) title: Option<String>,
     pub(super) app_id: Option<String>,
 }
@@ -732,6 +736,8 @@ impl WindowRuntime {
             fullscreen_active: false,
             minimum_width: None,
             minimum_width_stated: None,
+            preferred_size: None,
+            preferred_size_stated: None,
             title: None,
             app_id: None,
         }

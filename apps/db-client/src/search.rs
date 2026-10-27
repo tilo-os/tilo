@@ -110,8 +110,10 @@ fn index_database_and_schema(
             schema_resource,
             focus.id(),
             schema.name.clone(),
-            hit(&schema.name, &schema_id)
-                .subtitled(t_args("db-search-schema-in", &[("database", text(&database_name))])),
+            hit(&schema.name, &schema_id).subtitled(t_args(
+                "db-search-schema-in",
+                &[("database", text(&database_name))],
+            )),
         );
         for relation in &schema.tables {
             index_relation(connection.id, schema, relation, rows, resources);
@@ -235,17 +237,16 @@ fn index_transactions(
         "database.transaction",
         t("db-search-transaction"),
     )
-        .with_action(begin.bound())
-        .with_action(DbEffect::Commit { connection }.bound())
-        .with_action(DbEffect::Rollback { connection }.bound());
+    .with_action(begin.bound())
+    .with_action(DbEffect::Commit { connection }.bound())
+    .with_action(DbEffect::Rollback { connection }.bound());
     index_resource(
         rows,
         resources,
         transaction,
         begin.id(),
         "transaction begin commit rollback",
-        hit(t("db-search-transaction"), &transaction_id)
-            .subtitled(t("db-search-active-database")),
+        hit(t("db-search-transaction"), &transaction_id).subtitled(t("db-search-active-database")),
     );
 }
 

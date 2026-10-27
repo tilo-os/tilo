@@ -2277,6 +2277,15 @@ pub trait Widget {
         None
     }
 
+    /// The whole size this window wants, in logical pixels, when the app is
+    /// the window's only content and knows how big it must be: the on-screen
+    /// keyboard parked to a strip. The host states it as the window's minimum
+    /// and maximum, so the desktop shapes the surface to it. `None`: the
+    /// window is the user's and the app lays itself out in whatever it gets.
+    fn preferred_window_size(&self) -> Option<(f64, f64)> {
+        None
+    }
+
     /// Apply the effective reduced-motion preference before the host asks this
     /// subtree whether it needs another animation frame. The default forwards
     /// recursively, making the preference a framework policy instead of an
