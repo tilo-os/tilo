@@ -19,6 +19,7 @@ pub enum NotesEffect {
     ///
     /// Find the notes whose title holds some text, exact matches first.
     #[effect(view, returns, kind = "read", audience = "agents")]
+    #[effect(keywords = "search notes, look up note, go to note")]
     FindPage {
         #[param("Text of the title, ignoring case")]
         title: String,
@@ -28,6 +29,7 @@ pub enum NotesEffect {
     /// Find the blocks whose text holds some text, in one note or in every
     /// note, and answer the block ids to edit them by.
     #[effect(view, returns, kind = "read", audience = "agents")]
+    #[effect(keywords = "search in note, find in page")]
     FindText {
         #[param("The text to find, ignoring case")]
         text: String,
@@ -48,6 +50,7 @@ pub enum NotesEffect {
     ///
     /// Choose a Markdown file and add it to the notebook as a note.
     #[effect(attended, job, cancellable)]
+    #[effect(keywords = "open markdown, import md")]
     ImportMarkdownFile,
     /// Import Markdown content
     ///
@@ -63,6 +66,7 @@ pub enum NotesEffect {
     ///
     /// Save a note as a Markdown file, its images inside it.
     #[effect(attended, job, cancellable, row, item = pages)]
+    #[effect(keywords = "save as markdown, download, export md")]
     ExportMarkdown {
         #[param("The note")]
         page: Uuid,
@@ -84,6 +88,7 @@ pub enum NotesEffect {
     ///
     /// Choose an image and add it to a note.
     #[effect(attended, job, cancellable, row, item = pages)]
+    #[effect(keywords = "add picture, add photo, insert picture")]
     InsertImage {
         #[param("The note")]
         page: Uuid,
@@ -92,6 +97,7 @@ pub enum NotesEffect {
     ///
     /// Copy a link to a note that pastes into another note.
     #[effect(row, item = pages)]
+    #[effect(keywords = "share link, link to note")]
     CopyLink {
         #[param("The note")]
         page: Uuid,

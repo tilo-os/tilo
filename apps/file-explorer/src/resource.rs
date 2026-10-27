@@ -262,7 +262,10 @@ fn record_native(
 #[resource(kind = "files.folder", label = "Folder", initialize = FileExplorer::with_default_places)]
 impl FileExplorer {
     /// Pin a folder to the Favorites in the sidebar.
-    #[action(label = "Add to Favorites")]
+    #[action(
+        keywords = "bookmark, pin folder, favourite, favorite",
+        label = "Add to Favorites"
+    )]
     pub fn add_bookmark(
         &mut self,
         #[param("Folder path on this device, or a stored place such as xdg:documents")]
@@ -301,7 +304,7 @@ impl FileExplorer {
     }
 
     /// Create a folder.
-    #[action(undo = Self::revert_queued)]
+    #[action(keywords = "mkdir, make directory, create folder, new directory, add folder", undo = Self::revert_queued)]
     pub fn new_folder(
         &mut self,
         cx: &mut ActionCx,
@@ -318,7 +321,7 @@ impl FileExplorer {
     }
 
     /// Rename an entry.
-    #[action(undo = Self::revert_queued)]
+    #[action(keywords = "change name, rename file", undo = Self::revert_queued)]
     pub fn rename(
         &mut self,
         cx: &mut ActionCx,
@@ -336,7 +339,7 @@ impl FileExplorer {
     }
 
     /// Move entries to Trash; undo puts them back.
-    #[action(label = "Move to Trash", undo = Self::revert_queued)]
+    #[action(keywords = "delete, remove, bin, recycle bin, throw away", label = "Move to Trash", undo = Self::revert_queued)]
     pub fn trash(
         &mut self,
         cx: &mut ActionCx,

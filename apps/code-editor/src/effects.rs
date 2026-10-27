@@ -45,6 +45,7 @@ pub enum CodeEditorEffect {
     },
     /// Open project folder.
     #[effect(job, cancellable)]
+    #[effect(keywords = "open project, open workspace folder")]
     OpenFolder {
         #[param("Absolute path of the folder; omit to choose one")]
         path: Option<String>,
@@ -53,6 +54,7 @@ pub enum CodeEditorEffect {
     NewBuffer,
     /// Save file.
     #[effect(job, cancellable, destructive)]
+    #[effect(keywords = "write file, save changes")]
     Save {
         #[param("The file record's id; omit for the active file")]
         file: Option<String>,
@@ -73,14 +75,17 @@ pub enum CodeEditorEffect {
     RevertFile,
     /// Find in file.
     #[effect(kind = "read")]
+    #[effect(keywords = "search in file, find text")]
     Find,
     /// Replace in file.
     Replace,
     /// Search project.
     #[effect(kind = "read")]
+    #[effect(keywords = "find in files, grep, search all files")]
     SearchProject,
     /// Go to line.
     #[effect(kind = "read")]
+    #[effect(keywords = "jump to line, line number, goto")]
     GoToLine {
         #[param("One-based line number; omit to ask for one")]
         value: Option<String>,
@@ -103,12 +108,14 @@ pub enum CodeEditorEffect {
     NextTheme,
     /// Show problems.
     #[effect(kind = "read")]
+    #[effect(keywords = "errors, warnings, diagnostics")]
     GoToProblems,
     /// Show search results.
     #[effect(kind = "read")]
     GoToSearch,
     /// Show terminal.
     #[effect(kind = "read")]
+    #[effect(keywords = "console, shell, command line")]
     GoToTerminal,
     /// Toggle sidebar.
     #[effect(kind = "read")]
@@ -118,6 +125,7 @@ pub enum CodeEditorEffect {
     ToggleLanguageServers,
     /// Turn format on save on or off.
     #[effect(kind = "read")]
+    #[effect(keywords = "auto format, format code, formatter")]
     ToggleFormatOnSave,
     /// Read file text.
     #[effect(row, kind = "read", returns, idempotent)]
