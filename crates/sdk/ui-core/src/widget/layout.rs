@@ -596,10 +596,8 @@ pub(crate) fn settle_widget_composition(
     mut pass: impl FnMut(bool) -> Result<(Option<CompositionGeometry>, bool), WidgetLayoutError>,
 ) -> Result<(), WidgetLayoutError> {
     // Every pass of this frame reads its motions at one instant: a widget
-    // sized by a motion then measures the same in each pass. And one state
-    // of the app: work landing from elsewhere waits for the next frame.
+    // sized by a motion then measures the same in each pass.
     let _frame = crate::motion::pin_frame();
-    let _laying_out = crate::motion::laying_out_frame();
     let mut previous = None;
     let mut rebuild = false;
     for _ in 0..8 {
