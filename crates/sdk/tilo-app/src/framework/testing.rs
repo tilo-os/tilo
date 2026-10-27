@@ -124,9 +124,22 @@ pub fn inspect_live_window<A: ResourceApp, T>(
 pub fn drive_live_window<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
+    drive_live_window_writing_after::<A, T>(ui_core::persist::DEBOUNCE, drive)
+}
+
+/// [`drive_live_window`], with the window's record written `debounce` after
+/// the last edit instead of the window's own [`ui_core::persist::DEBOUNCE`].
+/// The store writes on a thread of its own and wakes the window when the
+/// write lands, so whether a frame observed while typing takes that wake
+/// depends on how long the frames before it took. A debounce longer than
+/// the test holds every write past what it observes.
+pub fn drive_live_window_writing_after<A: ResourceApp, T>(
+    debounce: ui_core::time::Duration,
+    drive: impl FnOnce(&mut ui_core::App) -> T,
+) -> Result<T, LaunchError> {
     let profile = profile_directory().map_err(operation)?;
-    let mut host = ApplicationHost::new(
-        profile.path().join("state"),
+    let mut host = ApplicationHost::with_store(
+        ui_core::persist::native_store(&profile.path().join("state"), debounce),
         "test-device".into(),
         "test-workspace",
         UserId(AUTHOR.into()),

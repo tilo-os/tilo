@@ -9,7 +9,7 @@
 
 use std::cell::Cell;
 
-use tilo_app::framework::testing::drive_live_window;
+use tilo_app::framework::testing::{drive_live_window, drive_live_window_writing_after};
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
@@ -212,6 +212,14 @@ fn host_frame(app: &mut tilo_app::App) {
     let _ = app.refresh_semantic_tree();
 }
 
+/// How long the windows that count a keystroke's work wait before writing
+/// their record: past the end of the test. The store writes on its own
+/// thread and wakes the window when the write lands, so with the window's
+/// own debounce whether a keystroke's frame also took that wake depended on
+/// how long the frames before it took. Typing faster than the store writes,
+/// the window says "Saving…" throughout, as here.
+const WRITES_HELD: tilo_app::time::Duration = tilo_app::time::Duration::from_secs(3600);
+
 /// The draft field's value as assistive technology reads it.
 fn draft_value(app: &tilo_app::App) -> Option<String> {
     app.semantic_tree()
@@ -234,7 +242,7 @@ fn hosted_keystrokes(tasks: u32) -> Result<Vec<usize>, String> {
     // cause. The separate save-status test below covers the frame after the
     // draft's write lands.
     let typed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
-        drive_live_window::<Keystrokes, _>(|app| {
+        drive_live_window_writing_after::<Keystrokes, _>(WRITES_HELD, |app| {
             app.init_layout();
             host_frame(app);
             if !app.focus_order_edge(false) {
@@ -350,7 +358,7 @@ fn hosted_frame_ms(tasks: u32, half: Half) -> Result<f64, String> {
     const KEYS: usize = 12;
     GENESIS_TASKS.set(tasks);
     let timed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
-        drive_live_window::<Keystrokes, _>(|app| {
+        drive_live_window_writing_after::<Keystrokes, _>(WRITES_HELD, |app| {
             app.init_layout();
             host_frame(app);
             if !app.focus_order_edge(false) {
@@ -409,7 +417,7 @@ fn hosted_frame_phases(tasks: u32, half: Half) -> Result<Vec<Phases>, String> {
     use tilo_app::winit::event::ElementState;
     GENESIS_TASKS.set(tasks);
     let observed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
-        drive_live_window::<Keystrokes, _>(|app| {
+        drive_live_window_writing_after::<Keystrokes, _>(WRITES_HELD, |app| {
             app.init_layout();
             host_frame(app);
             if !app.focus_order_edge(false) {
