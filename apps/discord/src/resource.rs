@@ -37,24 +37,46 @@ struct Linked {
     mine: bool,
 }
 
-/// What the view is built from: whether a server is bridged, how far the
-/// bridge got, and what it holds.
+/// Where a bridged server stands, as the page tells it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Stage {
+    /// No server is bridged to this room yet.
+    #[default]
+    NotConnected,
+    /// The bridge is bringing the server's channels in.
+    Importing,
+    /// Messages go both ways.
+    Bridged,
+}
+
+/// How the person reading can link their own account here: one door, chosen
+/// by what the room's host and the bridge actually offer, so the page never
+/// draws a control that cannot work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Linking {
+    /// The room's host offers signing in with Discord.
+    SignIn,
+    /// Only from the server's side: `/link`.
+    InServer,
+    /// Neither, so the page says so instead of offering nothing.
+    #[default]
+    Unavailable,
+}
+
+/// What the view is built from: where the bridge stands and what it holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Shown {
-    connected: bool,
-    importing: bool,
+    stage: Stage,
     /// The server's channels, categories and their children in the order
     /// Discord shows them.
     channels: Vec<Channel>,
-    /// Everyone who linked a Discord account here, the reader among them.
-    links: Vec<Linked>,
-    /// Whether the reader linked an account of their own.
-    mine: bool,
-    /// Whether the room's host offers signing in with Discord, so the page
-    /// can offer the button that starts it.
-    sign_in: bool,
-    /// Whether the bridge mirrors the whole server, where `/link` works.
-    whole_server: bool,
+    /// The reader's own linked account, when they linked one.
+    mine: Option<Linked>,
+    /// Everyone else who linked a Discord account here.
+    others: Vec<Linked>,
+    /// Every account linked here, the reader's own included, as a count.
+    linked: usize,
+    linking: Linking,
     /// Why calls do not reach Discord, as the bridge last heard it.
     voice_problem: Option<String>,
     /// Why the workspace's emoji do not reach the server, likewise.
@@ -63,18 +85,32 @@ struct Shown {
 
 impl Shown {
     fn of(guild: &Guild, me: Option<&str>) -> Self {
+        let stage = if guild.guild_id.is_empty() {
+            Stage::NotConnected
+        } else if guild.ownership == Ownership::Importing {
+            Stage::Importing
+        } else {
+            Stage::Bridged
+        };
+        let linking = if guild.sign_in_page.is_some() {
+            Linking::SignIn
+        } else if guild.only_channel.is_none() {
+            Linking::InServer
+        } else {
+            Linking::Unavailable
+        };
+        let links: Vec<Linked> = guild
+            .links
+            .iter()
+            .map(|link| Linked::of(link, me))
+            .collect();
         Self {
-            connected: !guild.guild_id.is_empty(),
-            importing: guild.ownership == Ownership::Importing,
+            stage,
             channels: ordered(guild),
-            links: guild
-                .links
-                .iter()
-                .map(|link| Linked::of(link, me))
-                .collect(),
-            mine: me.is_some_and(|me| guild.links.iter().any(|link| link.person == me)),
-            sign_in: guild.sign_in_page.is_some(),
-            whole_server: guild.only_channel.is_none(),
+            mine: links.iter().find(|link| link.mine).cloned(),
+            others: links.into_iter().filter(|link| !link.mine).collect(),
+            linked: guild.links.len(),
+            linking,
             voice_problem: guild.voice_problem.clone(),
             emoji_problem: guild.emoji_problem.clone(),
         }
@@ -105,7 +141,7 @@ impl Linked {
 /// its position. A channel whose category the bridge has not read yet is
 /// still shown, after the ones it has.
 fn ordered(guild: &Guild) -> Vec<Channel> {
-    let mut channels: Vec<Channel> = guild
+    let channels: Vec<Channel> = guild
         .channels
         .iter()
         .map(|channel| Channel {
@@ -141,7 +177,7 @@ fn ordered(guild: &Guild) -> Vec<Channel> {
     let mut placed: Vec<&str> = rows.iter().map(|channel| channel.id.as_str()).collect();
     placed.sort_unstable();
     let mut orphans: Vec<Channel> = channels
-        .drain(..)
+        .into_iter()
         .filter(|channel| placed.binary_search(&channel.id.as_str()).is_err())
         .collect();
     orphans.sort_by_key(by_position);
@@ -155,10 +191,9 @@ fn count(n: usize) -> ArgValue {
 
 /// Where the bridge stands, in a sentence.
 fn status(shown: &Shown) -> String {
-    CATALOG.t(if shown.importing {
-        "discord-status-importing"
-    } else {
-        "discord-status-bridged"
+    CATALOG.t(match shown.stage {
+        Stage::Importing => "discord-status-importing",
+        Stage::NotConnected | Stage::Bridged => "discord-status-bridged",
     })
 }
 
@@ -177,10 +212,7 @@ fn facts(shown: &Shown) -> Vec<Fact> {
         .priority(1),
         Fact::with_icon(
             Icon::Users,
-            CATALOG.t_args(
-                "discord-linked-accounts",
-                &[("count", count(shown.links.len()))],
-            ),
+            CATALOG.t_args("discord-linked-accounts", &[("count", count(shown.linked))]),
         )
         .priority(1),
     ]
@@ -268,7 +300,7 @@ fn channels(shown: &Shown) -> Element {
 /// offering a control it cannot honour.
 fn accounts(cx: &ViewCx<Guild>, shown: &Shown) -> Element {
     let mut rows: Vec<Element> = Vec::new();
-    if let Some(mine) = shown.links.iter().find(|link| link.mine) {
+    if let Some(mine) = &shown.mine {
         let unlink = cx.actions().bind_effect_invocation(
             Button::new(
                 "discord-unlink-account",
@@ -279,7 +311,7 @@ fn accounts(cx: &ViewCx<Guild>, shown: &Shown) -> Element {
         rows.push(Box::new(
             ListRow::new(
                 format!("discord-account-{}", mine.discord_user),
-                &mine.name(),
+                mine.name(),
             )
             .icon(Icon::Discord)
             .subtitle(format!("@{}", mine.user_name))
@@ -287,10 +319,10 @@ fn accounts(cx: &ViewCx<Guild>, shown: &Shown) -> Element {
             .trailing(Box::new(unlink)),
         ));
     } else {
-        let mut row = ListRow::new("discord-my-account", &CATALOG.t("discord-you"))
+        let mut row = ListRow::new("discord-my-account", CATALOG.t("discord-you"))
             .icon(Icon::Discord)
             .subtitle(CATALOG.t("discord-not-linked"));
-        if shown.sign_in {
+        if shown.linking == Linking::SignIn {
             let connect = cx.actions().bind_effect_invocation(
                 Button::new(
                     "discord-connect-account",
@@ -302,22 +334,28 @@ fn accounts(cx: &ViewCx<Guild>, shown: &Shown) -> Element {
         }
         rows.push(Box::new(row));
     }
-    for link in shown.links.iter().filter(|link| !link.mine) {
+    for link in &shown.others {
         rows.push(Box::new(
             ListRow::new(
                 format!("discord-account-{}", link.discord_user),
-                &link.name(),
+                link.name(),
             )
             .icon(Icon::Discord)
             .subtitle(format!("@{}", link.user_name)),
         ));
     }
-    if !shown.mine && !shown.sign_in {
-        rows.push(Box::new(Text::new(&CATALOG.t(if shown.whole_server {
-            "discord-link-elsewhere"
-        } else {
-            "discord-link-unavailable"
-        }))));
+    // A room with no button to offer says where the door is instead: the
+    // server's own `/link`, or that this room has none yet.
+    if shown.mine.is_none() {
+        match shown.linking {
+            Linking::InServer => {
+                rows.push(Box::new(Text::new(&CATALOG.t("discord-link-elsewhere"))));
+            }
+            Linking::Unavailable => {
+                rows.push(Box::new(Text::new(&CATALOG.t("discord-link-unavailable"))));
+            }
+            Linking::SignIn => {}
+        }
     }
     Box::new(Section::titled(CATALOG.t("discord-accounts-title"), rows))
 }
@@ -388,7 +426,7 @@ impl ResourceApp for Discord {
         let shown = cx.value(move |guild: &Guild| Shown::of(guild, me.as_deref()));
         let offered = bridging.clone();
         let page = cx.switch(&shown, move |cx, shown| {
-            if !shown.connected {
+            if shown.stage == Stage::NotConnected {
                 return not_connected(&offered);
             }
             let name = cx
