@@ -56,7 +56,7 @@ pub fn init_if_started_as_one() {
 /// `clone3` answers `ENOSYS`; and whether `clone3` already did here. For the
 /// tests that compare a job started each way: nothing else calls it.
 #[doc(hidden)]
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "test-support"))]
 pub fn start_with_clone_from_now() -> bool {
     let already = linux::sys::clone3_known_missing();
     linux::sys::clone3_missing();

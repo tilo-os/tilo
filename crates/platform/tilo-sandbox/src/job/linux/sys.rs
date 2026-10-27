@@ -97,7 +97,9 @@ pub unsafe fn clone3_run(args: &CloneArgs, child: ChildFn, arg: *mut libc::c_voi
 /// parent gets the child's pid or a negative errno. For where `clone3`
 /// answers `ENOSYS`: a kernel older than 5.3, or a seccomp filter that can't
 /// read `clone3`'s flags and so refuses the call (a container runtime's, or
-/// the job sandbox's own when jobs start jobs). `flags` carries the exit
+/// the job sandbox's own when jobs start jobs). Not for Linux 5.3 to 5.6,
+/// whose `clone3` refuses `CLONE_INTO_CGROUP` with `EINVAL`: a job given a
+/// cgroup fails to start there. `flags` carries the exit
 /// signal in its low byte; with `CLONE_PIDFD` the kernel stores the pidfd at
 /// `pidfd`. `CLONE_INTO_CGROUP` and `set_tid` have no equivalent here.
 ///

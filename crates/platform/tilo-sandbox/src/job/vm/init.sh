@@ -138,21 +138,22 @@ COMMAND_STARTS="t-vm: the command starts"
 
 # `t_killed CODE PID`: say so when the guest's OOM killer, or a memory cgroup's limit within the
 # guest, ended a process of the command since it started (as PID, ending with CODE): its status
-# alone doesn't say why. The command itself where its own process went and it ended with 137
-# (SIGKILL); otherwise one of its processes, the command going on to end as it did.
+# alone doesn't say why. The command itself where its own process was killed and it ended with
+# 137 (SIGKILL); otherwise one of its processes, the command going on to end as it did. Where the
+# mark is gone, an OOM report as long as the kernel's log having written over it, every kill in
+# the log is taken for the command's: nothing else ran in the guest.
 t_killed() {
 	[ "$1" -ne 0 ] || return 0
 	log=$(dmesg 2>/dev/null)
 	at=$(printf '%s\n' "$log" | grep -n -F "$COMMAND_STARTS" | tail -n 1 | cut -d: -f1)
-	[ -n "$at" ] || return 0
-	killed=$(printf '%s\n' "$log" | tail -n +"$at" | grep -i 'out of memory: Killed process' | tail -n 1)
-	[ -n "$killed" ] || return 0
-	killed=${killed#*] }
-	pid=$(printf '%s\n' "$killed" | sed -n 's/.*Killed process \([0-9]*\).*/\1/p')
-	if [ "$1" -eq 137 ] && [ "$pid" = "$2" ]; then
-		say "the command was killed for memory in the guest, which has $T_MEMORY_MIB MiB: $killed"
+	kills=$(printf '%s\n' "$log" | tail -n +"${at:-1}" | grep -i 'out of memory: Killed process')
+	[ -n "$kills" ] || return 0
+	own=$(printf '%s\n' "$kills" | grep -F "Killed process $2 " | tail -n 1)
+	if [ "$1" -eq 137 ] && [ -n "$own" ]; then
+		say "the command was killed for memory in the guest, which has $T_MEMORY_MIB MiB: ${own#*] }"
 	else
-		say "a process of the command was killed for memory in the guest, which has $T_MEMORY_MIB MiB, and it ended with status $1: $killed"
+		killed=$(printf '%s\n' "$kills" | tail -n 1)
+		say "a process of the command was killed for memory in the guest, which has $T_MEMORY_MIB MiB, and it ended with status $1: ${killed#*] }"
 	fi
 }
 

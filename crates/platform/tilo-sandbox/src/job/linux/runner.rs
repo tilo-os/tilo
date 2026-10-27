@@ -1530,6 +1530,9 @@ fn clone_error(call: &str, e: &io::Error, has_cgroup: bool) -> SpawnError {
         Some(libc::EACCES) if has_cgroup => {
             " (no write permission on the cgroup's common ancestor's cgroup.procs)"
         }
+        Some(libc::EINVAL) if call == "clone3" && has_cgroup => {
+            " (the kernel's clone3 may lack CLONE_INTO_CGROUP, which needs Linux 5.7)"
+        }
         Some(libc::EINVAL) if call.starts_with("clone ") => {
             " (the kernel's clone may lack CLONE_PIDFD, which needs Linux 5.2)"
         }

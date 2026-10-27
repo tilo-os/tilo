@@ -12,6 +12,11 @@ homepage.workspace = true
 name = "tilo_sandbox"
 path = "src/lib.rs"
 
+[features]
+# `job::start_with_clone_from_now`, for the tests that compare a job started
+# with clone3 and one started with clone: no program should flip that.
+test-support = []
+
 [dependencies]
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 thiserror.workspace = true
@@ -27,6 +32,8 @@ tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
+# The package's own tests use its test-support hooks.
+tilo-sandbox = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
 
 [lints]

@@ -314,7 +314,10 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
     argv.push("-initrd".into());
     argv.push(format!("{WORK}/initramfs").into());
     argv.push("-append".into());
-    let mut cmdline = String::from("console=hvc0 quiet loglevel=1 panic=-1 rdinit=/init");
+    // A log of 1 MiB, past the default 128-256 KiB: the OOM report of a build of thousands of
+    // processes lists each one, and must leave the init's mark before it (see `t_killed`).
+    let mut cmdline =
+        String::from("console=hvc0 quiet loglevel=1 log_buf_len=1M panic=-1 rdinit=/init");
     if cfg!(target_arch = "x86_64") {
         // microvm has neither ACPI (which would describe each device a second time, next to
         // the command line) nor a keyboard controller: a triple fault resets it at once.

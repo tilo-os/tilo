@@ -18677,6 +18677,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-platform-caps",
+ "tilo-sandbox",
  "tilo-sandbox-core",
  "workspace-hack",
 ]

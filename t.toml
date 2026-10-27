@@ -1151,19 +1151,39 @@ needs = ["sandbox-jobs-real-kernel-build"]
 # process into the cgroup they delegate to themselves, which leaves the next one in the same
 # process no controllers, and the clone comparison makes its process start every later job with
 # clone. The guest's init gives no controller to its root's children, as systemd would: the tests
-# of limits need memory, pids and cpu there. The startup test that holds a 4 GiB heap needs more
-# memory than the guest's 4 GiB, so it is left out here.
+# of limits need memory, pids and cpu there. The quota test gets an XFS with project quotas where
+# the image can make one. A test that skips itself here tests nothing, so a skip fails the check,
+# as does an empty list; but for the tests of vm, which need KVM inside the guest, and the quota
+# test where there is no XFS to give it. The startup test holds a 4 GiB heap, hence the memory.
 run = """
 echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control
+if command -v mkfs.xfs >/dev/null && truncate -s 512M /tmp/xfs.img && mkfs.xfs -q /tmp/xfs.img \
+  && mkdir -p /mnt/xfs && mount -o loop,prjquota /tmp/xfs.img /mnt/xfs; then
+  export JOB_SANDBOX_TEST_XFS=/mnt/xfs
+else
+  echo "no XFS with project quotas here: the quota test skips"
+fi
 cd crates/platform/tilo-sandbox
+tests=$(/target/vm/tilo-sandbox-job --list --format terse | sed -n 's/: test$//p')
+if [ -z "$tests" ]; then echo "no tests listed"; exit 1; fi
 failed=
-for test in $(/target/vm/tilo-sandbox-job --list --format terse | sed -n 's/: test$//p'); do
-  case $test in startup::startup_does_not_grow_with_the_callers_heap) continue ;; esac
-  /target/vm/tilo-sandbox-job --exact "$test" --nocapture || failed="$failed $test"
+skipped=
+for test in $tests; do
+  out=$(/target/vm/tilo-sandbox-job --exact "$test" --nocapture 2>&1) || failed="$failed $test"
+  printf '%s\n' "$out"
+  case $test in
+    vm::*) continue ;;
+    limits::a_disk_quota_stops_writes_where_the_filesystem_enforces_it)
+      [ -n "${JOB_SANDBOX_TEST_XFS:-}" ] || continue ;;
+  esac
+  if printf '%s\n' "$out" | grep -q '^skipped'; then skipped="$skipped $test"; fi
 done
-if [ -n "$failed" ]; then echo "failed:$failed"; exit 1; fi
+if [ -n "$failed" ]; then echo "failed:$failed"; fi
+if [ -n "$skipped" ]; then echo "skipped, so untested:$skipped"; fi
+[ -z "$failed$skipped" ]
 """
 inputs = []
+memory = "6G"
 cost = "minutes"
 
 # ---------------------------------------------------------------------------
