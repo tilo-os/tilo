@@ -736,7 +736,7 @@ a11y-magnifier = Lupe
 a11y-magnifier-view = Lupenansicht
 a11y-pointer-title = Zeiger
 a11y-mouse-keys = Maustasten
-a11y-mouse-keys-desc = Zeiger mit dem Ziffernblock bewegen
+a11y-mouse-keys-desc = Mit dem Ziffernblock den Zeiger bewegen und klicken
 a11y-large-cursor = Großer Zeiger
 a11y-large-cursor-desc = Mauszeiger vergrößern, damit er leichter zu finden ist
 a11y-cursor-size = Zeigergröße
@@ -2025,7 +2025,6 @@ net-wake-pending = Die Aufweckeinstellung ist gespeichert, muss aber noch auf di
 net-wake-saved = Aufweckkonfiguration gespeichert. Das tatsächliche Aufwecken wurde noch nicht überprüft.
 
 # Copy used by Settings panes and their status/error branches.
-a11y-mouse-keys-caption = Mit dem Ziffernblock kannst du den Zeiger bewegen und klicken.
 a11y-shared-caption = Tilo-Apps verwenden diese gemeinsamen Einstellungen zur Barrierefreiheit.
 a11y-shared-title = Überall in Tilo
 a11y-text-size = Textgröße
