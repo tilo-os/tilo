@@ -2994,8 +2994,11 @@ async fn bind_certified_test_endpoint_with_root() -> (
     };
 
     let sequence = NEXT_TEST_IDENTITY.fetch_add(1, Ordering::Relaxed);
-    let device_seed = *blake3::hash(&sequence.to_le_bytes()).as_bytes();
-    let root_seed = *blake3::hash(&sequence.wrapping_add(u64::MAX / 2).to_le_bytes()).as_bytes();
+    // Fresh keys, not ones derived from the counter: every test process
+    // starts the counter over, and two endpoints with one id reach each
+    // other's sockets through the shared relay.
+    let device_seed = iroh::SecretKey::generate().to_bytes();
+    let root_seed = iroh::SecretKey::generate().to_bytes();
     let device = SigningKey::from_bytes(&device_seed);
     let root = SigningKey::from_bytes(&root_seed);
     let now = unix_now_ns();
