@@ -1,2 +1,7 @@
+[ratchets.closure_action_button]
+"apps/api-tester/src/app.rs" = 5
+"apps/api-tester/src/dialog.rs" = 2
+"apps/api-tester/src/sidebar.rs" = 1
+
 [ratchets.closure_control]
 "apps/api-tester/src/sidebar.rs" = 1
