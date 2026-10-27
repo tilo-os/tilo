@@ -259,7 +259,7 @@ impl ResourceSurface<Windows, WindowsEffect> for WindowsApp {
                     ),
                 )
                 .subtitled(app.publisher.clone())
-                .grouped(&crate::strings::t("windows-search-group"))
+                .grouped(crate::strings::t("windows-search-group"))
                 .anchored(crate::search::app_resource_id(&app.id))
             })
             .collect()
