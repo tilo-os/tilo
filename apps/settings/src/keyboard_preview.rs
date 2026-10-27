@@ -344,17 +344,38 @@ fn compile(
     crate::device_read::off_ui_thread();
     #[cfg(test)]
     COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let native = tilo_keyboard_map::compile(
+    let names = geometry
+        .iter()
+        .map(|key| key.name.clone())
+        .collect::<Vec<_>>();
+    let native = match tilo_keyboard_map::compile(
         &source.layout,
         source.variant.as_deref().unwrap_or(""),
         model,
         options.unwrap_or(""),
-        &geometry
-            .iter()
-            .map(|key| key.name.clone())
-            .collect::<Vec<_>>(),
-    )
-    .map_err(|error| error.to_string())?;
+        &names,
+    ) {
+        Ok(keys) => keys,
+        Err(error) if error.is_unsupported() => {
+            // No installed keyboard data on this host. The drawing's shape is
+            // in the geometry and its keys' positions in the model, so a key
+            // can still be read and inspected; what it prints is the
+            // layout's to say, and nothing is drawn to print.
+            let levels = tilo_keyboard_map::unlabelled_levels(&names);
+            return Ok(finish(geometry, &levels, source));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    Ok(finish(geometry, &native, source))
+}
+
+/// The drawing's keys: `native`'s legends for each position, laid out in
+/// `geometry`'s outlines.
+fn finish(
+    geometry: &[GeometryKey],
+    native: &[tilo_keyboard_map::Key],
+    source: &settings_store::hardware::KeyboardInputSource,
+) -> Vec<KeyboardMapKey> {
     // The legends printed on a keyboard of the previewed layout, whatever
     // language the desktop speaks.
     let caps = ui::Keycaps::from_xkb(
@@ -363,15 +384,15 @@ fn compile(
     );
     let english = ui::Keycaps::from_xkb("us", "");
     native
-        .into_iter()
+        .iter()
         .zip(geometry)
         .map(|(key, outline)| {
             let levels = key
                 .levels
-                .into_iter()
+                .iter()
                 .map(|symbols| {
                     symbols
-                        .into_iter()
+                        .iter()
                         .map(|symbol| {
                             let printed = caps.native_symbol(&symbol.name, &symbol.text);
                             // A layout whose keyboards print their own word
@@ -388,8 +409,8 @@ fn compile(
                         .join(" ")
                 })
                 .collect();
-            Ok(KeyboardMapKey {
-                name: key.name,
+            KeyboardMapKey {
+                name: key.name.clone(),
                 physical: key.physical,
                 outline: outline
                     .outline
@@ -397,7 +418,7 @@ fn compile(
                     .map(|&[x, y]| Point::new(x, y))
                     .collect(),
                 levels,
-            })
+            }
         })
         .collect()
 }
