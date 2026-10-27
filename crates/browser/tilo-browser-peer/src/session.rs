@@ -1704,7 +1704,7 @@ impl Task {
 
     /// The session is up: connected and authenticated, its transport
     /// failures cleared, every room waiting to be admitted again.
-    fn connected(&mut self) {
+    fn connected(&self) {
         self.update(|status| {
             status.phase = TransportPhase::Connected;
             status.authenticated = true;
