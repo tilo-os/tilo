@@ -25,6 +25,51 @@ impl App {
         )
             -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
     ) -> Result<Self, crate::launch::LaunchError> {
+        Self::mount_on_collaboration(collaboration, prepare_host, instantiate, false)
+    }
+
+    /// [`Self::from_prepared_component_with_collaboration`] for a window as
+    /// the live native launch prepares it (`ApplicationHost::prepare_default`):
+    /// a room record the room does not hold yet is new, and the component
+    /// makes it, its seed included. For tests that launch an app the way the
+    /// session does, without a process of its own.
+    ///
+    /// # Errors
+    /// As [`Self::from_prepared_component_with_collaboration`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_launched_component_with_collaboration(
+        collaboration: CollaborationManager,
+        prepare_host: impl FnOnce() -> Result<
+            crate::application::PreparedComponentInputs,
+            crate::launch::LaunchError,
+        >,
+        instantiate: impl FnOnce(
+            crate::application::HostContext,
+            crate::application::LaunchTarget,
+            crate::application::RestoreInput,
+        )
+            -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::mount_on_collaboration(collaboration, prepare_host, instantiate, true)
+    }
+
+    /// Mount a component on its admitted collaboration manager; a target
+    /// other than an existing record only when `launched` (see
+    /// [`Self::from_launched_component_with_collaboration`]).
+    fn mount_on_collaboration(
+        collaboration: CollaborationManager,
+        prepare_host: impl FnOnce() -> Result<
+            crate::application::PreparedComponentInputs,
+            crate::launch::LaunchError,
+        >,
+        instantiate: impl FnOnce(
+            crate::application::HostContext,
+            crate::application::LaunchTarget,
+            crate::application::RestoreInput,
+        )
+            -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
+        launched: bool,
+    ) -> Result<Self, crate::launch::LaunchError> {
         use crate::collaboration::native_initial::{self, NativeConstruction};
         use crate::launch::{LaunchError, LaunchRecovery};
         let scope = crate::wake::WakeScope::new();
@@ -33,10 +78,12 @@ impl App {
             .map_err(LaunchError::Operation)?;
         let prepared = prepare_host()?;
         let binding = prepared.context.callback_binding();
-        if !matches!(
-            prepared.target,
-            crate::application::LaunchTarget::Record { .. }
-        ) {
+        if !launched
+            && !matches!(
+                prepared.target,
+                crate::application::LaunchTarget::Record { .. }
+            )
+        {
             return Err(LaunchError::ComponentSetup {
                 source: Box::new(LaunchError::Operation(
                     "cold component construction requires an existing record".into(),
