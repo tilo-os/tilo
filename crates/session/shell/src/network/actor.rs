@@ -1918,10 +1918,19 @@ impl ActorState {
                     .find(|((topic, _), runtime)| *topic == ws && runtime.native_scope.is_some())
                     .map(|(_, runtime)| runtime);
                 if let Some(runtime) = runtime {
-                    runtime
-                        .replaying
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    if let Err(error) = runtime.session.resubscribe() {
+                    // One replay at a time on a session: a replay asked
+                    // while one runs (each app opened at once asks for one)
+                    // waits for that one's `Ready`, which carries everything
+                    // the host retained when it began; what is written after
+                    // arrives live. Asking again mid-replay makes the host
+                    // start over, and it ends the session whose replay it
+                    // replaced.
+                    if !begins_replay(&runtime.replaying) {
+                        tracing::debug!(
+                            ws,
+                            "joined room replay already running; its Ready answers this too"
+                        );
+                    } else if let Err(error) = runtime.session.resubscribe() {
                         tracing::debug!(ws, %error, "joined room replay not asked: not connected");
                     }
                 }
@@ -5888,3 +5897,32 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests;
+
+/// Mark a replay of a room host's session as running: whether this begins
+/// one (`false` while one already runs, until its `Ready` clears the mark).
+/// The host serves one replay per session; a second asked mid-replay makes
+/// it start over and end the session whose replay it replaced.
+fn begins_replay(replaying: &std::sync::atomic::AtomicBool) -> bool {
+    !replaying.swap(true, std::sync::atomic::Ordering::AcqRel)
+}
+
+#[cfg(test)]
+mod replay_requests {
+    use super::begins_replay;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Apps opened at once each ask the room's host for a replay: the
+    /// first asks, the rest wait on it, and the next is asked once its
+    /// `Ready` came.
+    #[test]
+    fn only_one_replay_runs_on_a_session_at_a_time() {
+        let replaying = AtomicBool::new(false);
+        assert!(begins_replay(&replaying));
+        assert!(!begins_replay(&replaying));
+        assert!(!begins_replay(&replaying));
+        replaying.store(false, Ordering::Release);
+        assert!(begins_replay(&replaying));
+        // A session's own first replay counts as running.
+        assert!(!begins_replay(&AtomicBool::new(true)));
+    }
+}
