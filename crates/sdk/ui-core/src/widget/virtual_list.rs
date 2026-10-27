@@ -2561,3 +2561,7 @@ mod arriving_tests;
 #[cfg(test)]
 #[path = "virtual_list_mount_tests.rs"]
 mod mount_tests;
+
+#[path = "virtual_list_component.rs"]
+mod component;
+pub use component::{DescribedList, VirtualListProps};

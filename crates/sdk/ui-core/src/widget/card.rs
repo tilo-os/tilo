@@ -523,6 +523,14 @@ impl Card {
 }
 
 impl Widget for Card {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1063,3 +1071,6 @@ impl Widget for CardGrid {
 
 #[cfg(test)]
 mod tests;
+
+mod component;
+pub use component::CardProps;

@@ -130,7 +130,7 @@ pub mod control_hints;
 /// can see and which outlives the window that started it.
 pub mod jobs;
 pub mod motion;
-#[cfg(test)]
+// The derives of this crate (`#[derive(Component)]`) name it by its own name.
 extern crate self as tilo_ui;
 #[cfg(test)]
 #[allow(
@@ -155,6 +155,7 @@ pub mod collaboration;
 pub use runtime_collab::native_media;
 pub mod collection_transition;
 pub use tilo_ui_paint::{color, color_compat};
+pub mod component;
 pub mod component_lifecycle;
 pub mod content;
 pub mod content_layout;

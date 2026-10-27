@@ -20480,6 +20480,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-tts",
  "tilo-ui-graph",
+ "tilo-ui-macros",
  "tilo-ui-paint",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -20522,6 +20523,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
  "workspace-hack",
 ]
 
@@ -20970,6 +20981,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tilo-ui-graph",
  "wasm-encoder",
  "wasmparser 0.252.0",
  "workspace-hack",

@@ -2287,3 +2287,6 @@ impl crate::widget::controls::ActionControls for NavList {
         crate::widget::controls::refresh_control_action_availability(&mut self.tree, allowed);
     }
 }
+
+mod component;
+pub use component::{NavItemProps, NavListProps};

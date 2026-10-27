@@ -167,6 +167,7 @@ tilo-content = { version = "0.1.0", path = "../../system/content", default-featu
 # (`launch.rs`).
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
+tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog", features = ["faces"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # `storage`: app files through tilo-files in tilo-paths' per-app locations.
@@ -395,6 +396,10 @@ name = "it"
 path = "tests/it.rs"
 # The shared harness stands up in-process Cap'n Proto brokers.
 required-features = ["broker-transport"]
+
+[[example]]
+name = "component-catalogue"
+path = "examples/component_catalogue.rs"
 
 [[example]]
 name = "action-presence"
