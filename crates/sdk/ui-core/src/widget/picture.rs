@@ -59,6 +59,22 @@ impl ColourFilter {
     }
 }
 
+/// What a touchpad picture shows the fingers doing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchpadGesture {
+    /// One finger pressing the middle: a click as the device does it.
+    Press,
+    /// One finger pressing the bottom-right corner, the area that clicks
+    /// the secondary button.
+    CornerPress,
+    /// Two fingers pressing together.
+    TwoFingerPress,
+    /// Two fingers moving up and down together.
+    TwoFingerScroll,
+    /// One finger moving along the right edge.
+    EdgeScroll,
+}
+
 /// What a choice's tile shows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Picture {
@@ -71,6 +87,12 @@ pub enum Picture {
     /// A sample of the screen (text, a chart, an accent button, a switch
     /// that is on) under a colour filter.
     ColourFilter(ColourFilter),
+    /// A touchpad and the fingers of a gesture on it.
+    Touchpad(TouchpadGesture),
+    /// Fingers pushing up on a touchpad (or a mouse's wheel rolled up)
+    /// beside a page, and which way the page moves: with the fingers
+    /// (natural) or against them.
+    ScrollDirection { natural: bool, wheel: bool },
 }
 
 impl Picture {
@@ -89,6 +111,10 @@ impl Picture {
             Self::ColourFilter(filter) => {
                 paint_screen_sample(scene, transform, area, theme);
                 filter.paint(scene, transform, area);
+            }
+            Self::Touchpad(gesture) => paint_touchpad(scene, transform, area, *gesture, theme),
+            Self::ScrollDirection { natural, wheel } => {
+                paint_scroll_direction(scene, transform, area, (*natural, *wheel), theme);
             }
         }
     }
@@ -254,6 +280,280 @@ fn paint_screen_sample(scene: &mut Scene, transform: Affine, area: Rect, theme: 
     );
 }
 
+/// A touchpad: a rounded pad on the window's ground, edged, `height` tall
+/// and a little wider, centred on `centre`. Where it is.
+fn paint_pad(
+    scene: &mut Scene,
+    transform: Affine,
+    centre: Point,
+    height: f64,
+    theme: &Theme,
+) -> Rect {
+    let pad = Rect::from_center_size(centre, (height * 1.45, height));
+    let radius = (height * 0.12).max(1.0);
+    let ground = theme.tokens.colors.surfaces.content;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        ground,
+        None,
+        &RoundedRect::from_rect(pad, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        crate::surface::edge_on(ground),
+        None,
+        &crate::surface::edge_outline(pad, radius),
+    );
+    pad
+}
+
+/// A fingertip resting at `at`.
+fn paint_finger(scene: &mut Scene, transform: Affine, at: Point, radius: f64, theme: &Theme) {
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.intent.accent,
+        None,
+        &Circle::new(at, radius),
+    );
+}
+
+/// A vertical arrow centred on `at`, `length` long, pointing up or down.
+fn paint_arrow(
+    scene: &mut Scene,
+    transform: Affine,
+    at: Point,
+    length: f64,
+    up: bool,
+    theme: &Theme,
+) {
+    let half = length / 2.0;
+    let (tip, tail) = if up {
+        (at.y - half, at.y + half)
+    } else {
+        (at.y + half, at.y - half)
+    };
+    let head = length * 0.3 * if up { 1.0 } else { -1.0 };
+    let mut path = BezPath::new();
+    path.move_to((at.x, tail));
+    path.line_to((at.x, tip));
+    path.move_to((at.x - length * 0.25, tip + head));
+    path.line_to((at.x, tip));
+    path.line_to((at.x + length * 0.25, tip + head));
+    scene.stroke(
+        &Stroke::new((length * 0.08).max(1.0)),
+        transform,
+        theme.text_dim,
+        None,
+        &path,
+    );
+}
+
+/// A touchpad with the fingers of `gesture`, and the area it uses tinted.
+fn paint_touchpad(
+    scene: &mut Scene,
+    transform: Affine,
+    area: Rect,
+    gesture: TouchpadGesture,
+    theme: &Theme,
+) {
+    let height = (area.height() * 0.66).min(area.width() * 0.55);
+    let pad = paint_pad(scene, transform, area.center(), height, theme);
+    let finger = pad.height() * 0.1;
+    let tint = |scene: &mut Scene, zone: Rect| {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.intent.selection_tint,
+            None,
+            &zone,
+        );
+    };
+    let centre = pad.center();
+    match gesture {
+        TouchpadGesture::Press => paint_finger(scene, transform, centre, finger, theme),
+        TouchpadGesture::CornerPress => {
+            let zone = Rect::new(
+                pad.x0 + pad.width() * 0.62,
+                pad.y0 + pad.height() * 0.68,
+                pad.x1 - 1.0,
+                pad.y1 - 1.0,
+            );
+            tint(scene, zone);
+            paint_finger(scene, transform, zone.center(), finger, theme);
+        }
+        TouchpadGesture::TwoFingerPress => {
+            for dx in [-1.4, 1.4] {
+                paint_finger(
+                    scene,
+                    transform,
+                    Point::new(centre.x + dx * finger, centre.y),
+                    finger,
+                    theme,
+                );
+            }
+        }
+        TouchpadGesture::TwoFingerScroll => {
+            let x = centre.x - pad.width() * 0.12;
+            for dx in [-1.4, 1.4] {
+                paint_finger(
+                    scene,
+                    transform,
+                    Point::new(x + dx * finger, centre.y),
+                    finger,
+                    theme,
+                );
+            }
+            paint_arrow(
+                scene,
+                transform,
+                Point::new(centre.x + pad.width() * 0.22, centre.y),
+                pad.height() * 0.6,
+                true,
+                theme,
+            );
+        }
+        TouchpadGesture::EdgeScroll => {
+            let zone = Rect::new(
+                pad.x1 - pad.width() * 0.16,
+                pad.y0 + 1.0,
+                pad.x1 - 1.0,
+                pad.y1 - 1.0,
+            );
+            tint(scene, zone);
+            paint_finger(scene, transform, zone.center(), finger, theme);
+            paint_arrow(
+                scene,
+                transform,
+                Point::new(zone.x0 - pad.width() * 0.14, centre.y),
+                pad.height() * 0.6,
+                true,
+                theme,
+            );
+        }
+    }
+}
+
+/// A page beside a touchpad: the fingers push up, and the page's lines move
+/// up with them (natural) or down against them (traditional).
+fn paint_scroll_direction(
+    scene: &mut Scene,
+    transform: Affine,
+    area: Rect,
+    (natural, wheel): (bool, bool),
+    theme: &Theme,
+) {
+    // The page and the pad side by side: as tall as the tile allows, and
+    // never wider than it.
+    let height = (area.height() * 0.66).min(area.width() * 0.38);
+    let page_rect = Rect::from_center_size(
+        Point::new(area.x0 + area.width() * 0.3, area.center().y),
+        (height * 0.75, height),
+    );
+    let ground = theme.tokens.colors.surfaces.content;
+    let radius = (height * 0.08).max(1.0);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        ground,
+        None,
+        &RoundedRect::from_rect(page_rect, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        crate::surface::edge_on(ground),
+        None,
+        &crate::surface::edge_outline(page_rect, radius),
+    );
+    let unit = height / 8.0;
+    for line in 0..4_u8 {
+        let y = page_rect.y0 + unit * (1.0 + f64::from(line) * 1.4);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.text_dim,
+            None,
+            &RoundedRect::new(
+                page_rect.x0 + unit * 0.7,
+                y,
+                page_rect.x1 - unit * if line % 2 == 0 { 0.7 } else { 1.8 },
+                y + unit * 0.5,
+                unit * 0.25,
+            ),
+        );
+    }
+    paint_arrow(
+        scene,
+        transform,
+        Point::new(page_rect.x1 + unit * 1.6, page_rect.center().y),
+        height * 0.5,
+        natural,
+        theme,
+    );
+    let centre = Point::new(area.x0 + area.width() * 0.72, area.center().y);
+    if wheel {
+        // A mouse seen from above, its wheel rolled up.
+        let body = Rect::from_center_size(centre, (height * 0.5, height * 0.8));
+        let radius = body.width() / 2.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ground,
+            None,
+            &RoundedRect::from_rect(body, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(ground),
+            None,
+            &crate::surface::edge_outline(body, radius),
+        );
+        let wheel = Rect::from_center_size(
+            Point::new(body.center().x, body.y0 + body.height() * 0.28),
+            (body.width() * 0.16, body.height() * 0.22),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.intent.accent,
+            None,
+            &RoundedRect::from_rect(wheel, wheel.width() / 2.0),
+        );
+        paint_arrow(
+            scene,
+            transform,
+            Point::new(body.x1 + unit * 0.9, wheel.center().y),
+            unit * 1.6,
+            true,
+            theme,
+        );
+        return;
+    }
+    let pad = paint_pad(scene, transform, centre, height * 0.62, theme);
+    let finger = pad.height() * 0.12;
+    for dx in [-1.4, 1.4] {
+        paint_finger(
+            scene,
+            transform,
+            Point::new(pad.center().x + dx * finger, pad.center().y + finger),
+            finger,
+            theme,
+        );
+    }
+    paint_arrow(
+        scene,
+        transform,
+        Point::new(pad.center().x, pad.y0 - unit * 0.2),
+        unit * 1.6,
+        true,
+        theme,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +576,23 @@ mod tests {
     #[test]
     fn every_picture_draws_and_a_filter_blends_over_the_same_sample() {
         assert!(painted(&Picture::Pointer(24.0)) > 0);
+        for gesture in [
+            TouchpadGesture::Press,
+            TouchpadGesture::CornerPress,
+            TouchpadGesture::TwoFingerPress,
+            TouchpadGesture::TwoFingerScroll,
+            TouchpadGesture::EdgeScroll,
+        ] {
+            assert!(painted(&Picture::Touchpad(gesture)) > 0, "{gesture:?}");
+        }
+        for wheel in [false, true] {
+            assert!(
+                painted(&Picture::ScrollDirection {
+                    natural: true,
+                    wheel
+                }) > 0
+            );
+        }
         let plain = painted(&Picture::ColourFilter(ColourFilter::None));
         let grey = painted(&Picture::ColourFilter(ColourFilter::Grayscale));
         let inverted = painted(&Picture::ColourFilter(ColourFilter::Inverted));

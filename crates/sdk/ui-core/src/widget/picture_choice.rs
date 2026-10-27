@@ -41,7 +41,7 @@ use crate::widget::{
     card_column_width, card_columns,
 };
 
-pub use super::picture::{ColourFilter, Picture};
+pub use super::picture::{ColourFilter, Picture, TouchpadGesture};
 
 /// One option of a [`PictureChoice`]: its picture and its name.
 #[derive(Clone, Debug, PartialEq)]
