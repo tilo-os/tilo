@@ -312,7 +312,7 @@ def _launch_evidence(ctx, check_id: str, log_lines: int, card) -> str:
     still = core.target_map(ctx.vm.targets()).get("launchpad:notes")
     said = ctx.vm.exec(
         f'tail -n +{log_lines + 1} "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
-        '| grep -aiE "launchpad|notes|launch|refused|app tab request|placeholder|spawn|touch contact routed" '
+        '| grep -aiE "launchpad|notes|launch|refused|app tab request|placeholder|spawn|tilo::input_route" '
         '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about it"
     ctx.write(f"{check_id}-launch-evidence.log", json.dumps(
         {"tiles": tiles, "overlays": chrome.get("overlays"), "notices": notices,
@@ -345,7 +345,14 @@ def touch_first(ctx, res):
         st = ctx.wait_state(lambda s: _app_groups(s, "so.tilo.notes"), 25,
                             f"Notes opened by a tap on its launchpad card at {x},{y}")
     except CheckFailed as failure:
-        raise CheckFailed(f"{failure}; {_launch_evidence(ctx, 'W18', log_lines, card)}") from failure
+        evidence = _launch_evidence(ctx, 'W18', log_lines, card)
+        # The same card clicked with the mouse tells a card that does not open in
+        # this VM at all from a tap that never became its click. It does not pass W18.
+        ctx.vm.input("click", "left", "--at", str(x), str(y))
+        mouse_opened = wait_until(lambda: _app_groups(ctx.state(), "so.tilo.notes") or None, 15, 1.0)
+        res.metrics["mouse_click_opens_notes"] = bool(mouse_opened)
+        raise CheckFailed(f"{failure}; the same card clicked with the mouse "
+                          f"{'opened' if mouse_opened else 'did not open'} Notes; {evidence}") from failure
     expect(st["chrome"]["input"]["modality"] == "touch",
            f"touch is the input in use after a tap ({st['chrome']['input']})")
     ctx.shot("W18-tapped-card")

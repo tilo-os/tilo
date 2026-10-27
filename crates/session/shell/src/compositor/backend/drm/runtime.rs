@@ -3656,6 +3656,12 @@ impl DrmDispatchState {
     fn handle_libinput_device_event(&mut self, event: InputEvent<LibinputInputBackend>) {
         match event {
             InputEvent::DeviceAdded { mut device } => {
+                tracing::info!(
+                    target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                    device = device.name(),
+                    sysname = device.sysname(),
+                    "input device added"
+                );
                 self.configure_device(&mut device);
                 if device.keyboard_has_key(30).unwrap_or(false) {
                     self.keyboard_identities
@@ -3676,7 +3682,12 @@ impl DrmDispatchState {
                 self.publish_input_snapshot();
             }
             InputEvent::DeviceRemoved { device } => {
-                tracing::info!(device = device.name(), "DRM input: device removed");
+                tracing::info!(
+                    target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                    device = device.name(),
+                    sysname = device.sysname(),
+                    "input device removed"
+                );
                 // libinput cannot deliver a release after the keyboard that
                 // owned the key disappears. Never let a held editing key keep
                 // firing into whichever field receives focus next.
