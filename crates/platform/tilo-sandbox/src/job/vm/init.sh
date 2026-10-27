@@ -50,6 +50,10 @@ if [ "$1" != stage2 ]; then
 	$BB mkdir -p /proc /sys /dev /bin
 	$BB mount -t devtmpfs dev /dev
 	$BB mount -t proc proc /proc
+	# Never the OOM killer's choice: the guest panics when its init dies, and QEMU (-no-reboot)
+	# ends at once, with no status and no word of why. Kept through both stages (exec keeps it);
+	# the command sets its own back to 0 (t_command), so the guest can still kill it for memory.
+	echo -1000 >/proc/self/oom_score_adj
 	$BB mount -t sysfs sys /sys
 	$BB --install -s /bin
 	export PATH=/bin
@@ -164,8 +168,11 @@ done
 (cd "$T_CWD" && t_command) </dev/null >"$port" 2>&1 &
 wait $!
 code=$?
-if [ "$code" -gt 128 ] && dmesg | grep -q 'Out of memory'; then
-	echo "t-vm: the command ran out of the VM's memory ($T_MEMORY_MIB MiB)" >"$port"
+# The guest's OOM killer, never init's own choice (see stage 1), may have ended the command or
+# one of its processes: said, as its status alone (137 for the command itself) doesn't say why.
+killed=$(dmesg 2>/dev/null | grep 'Out of memory: Killed process' | tail -n 1)
+if [ "$code" -ne 0 ] && [ -n "$killed" ]; then
+	say "the command (status $code) was killed for memory in the guest, which has $T_MEMORY_MIB MiB: ${killed#*] }"
 fi
 
 : >$T/outputs

@@ -457,7 +457,13 @@ fn job_file(spec: &VmSpec) -> String {
         .find(|(k, _)| k == "PATH")
         .map_or(super::spec::DEFAULT_PATH.as_bytes(), |(_, v)| v.as_bytes());
     let _ = writeln!(f, "}}\nT_PATH={}", quote(path));
-    f.push_str("t_command() {\n\tprogram=$(t_which ");
+    // The guest's init can't be killed for memory (init.sh), and its children inherit that:
+    // the command, in the process it runs as (init starts `t_command` in a subshell of its
+    // own), takes the default back, so the guest's OOM killer ends it rather than finding
+    // nothing it may kill and panicking.
+    f.push_str("t_command() {\n\t");
+    f.push_str(COMMAND_KILLABLE);
+    f.push_str("\n\tprogram=$(t_which ");
     f.push_str(&spec.argv.first().map_or_else(String::new, |a| q(a)));
     f.push_str(") || exit 127\n\texec env -i --");
     for (k, v) in &spec.env {
