@@ -2056,6 +2056,27 @@ p99_tolerance = 2.0
 min_delta = 20.0
 source = "room-load: the host's process tree's CPU during the hold, as a share of one core"
 
+# The same room host at its declared capacity, under a host it does not own
+# (docs/architecture/hosting-capacity.md): room_capacity.py degraded through
+# tools/ci/perf-room-degraded.sh, one sample a run (adapters.py room-degraded),
+# beside the pair above on the same node. The ceilings are the service level
+# at 100 guests the page states, which the probe itself refuses to pass
+# without; they are reported and enforced here so a run that breaks the
+# service level is visible as a regression and not only as a failed check.
+# The reference run with nothing else on the machine and the run past the
+# room's cap have their own series under the same group.
+[kpi."hosting.room.join_p99_ms.g100.throttled"]
+unit = "ms"
+max = 10000.0
+enforce = true
+source = "room_capacity.py degraded: guests' p99 time from /join to the room's Ready, host throttled"
+
+[kpi."hosting.room.chat_p99_ms.g100.throttled"]
+unit = "ms"
+max = 6000.0
+enforce = true
+source = "room_capacity.py degraded: p99 delivery of chat changes, host throttled"
+
 # Browser runtime (scripts/perf/browser_qualification.mjs): the release
 # desktop bundle (build.sh --bundle desktop, the bytes t's image-web-entry
 # publishes) in headless Chrome for Testing on the shared `runner` class, one
