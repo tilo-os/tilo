@@ -5,11 +5,10 @@
 //! Kept apart from [`crate::app`] so the rules that decide what a sync
 //! deletes or rewrites are readable without the widget around them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::model::{AccountConfig, Folder, Message, MessageId};
 use crate::state::MailState;
-use crate::sync::Synced;
 
 pub(super) fn server_changes(
     mailbox: &crate::model::Mailbox,
