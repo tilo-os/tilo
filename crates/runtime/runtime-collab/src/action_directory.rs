@@ -270,16 +270,15 @@ pub fn wire_json_len<T: serde::Serialize + ?Sized>(value: &T) -> usize {
     }
 }
 
-/// An upper bound on `row`'s Cap'n Proto size, which the broker checks a
-/// page against: every text field costs its bytes, a NUL, padding to a word
-/// and an 8-byte pointer; every struct a fixed allowance for its data words,
-/// pointer and list tag.
-#[must_use]
-pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
-    const STRUCT: usize = 64;
-    fn sum<const N: usize>(parts: [usize; N]) -> usize {
+/// The parts of [`action_directory_row_wire_bytes`]'s bound.
+mod wire_size {
+    /// A struct's data words, pointer and list tag.
+    pub(super) const STRUCT: usize = 64;
+
+    pub(super) fn sum<const N: usize>(parts: [usize; N]) -> usize {
         parts.into_iter().fold(0, usize::saturating_add)
     }
+
     fn text_len(len: usize) -> usize {
         // The bytes and a NUL, padded to a word, and the pointer to them.
         (len / 8)
@@ -287,15 +286,27 @@ pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
             .saturating_mul(8)
             .saturating_add(8)
     }
-    fn text(value: &str) -> usize {
+
+    pub(super) fn text(value: &str) -> usize {
         text_len(value.len())
     }
-    fn optional(value: Option<&str>) -> usize {
+
+    pub(super) fn optional(value: Option<&str>) -> usize {
         text(value.unwrap_or(""))
     }
-    fn json<T: serde::Serialize + ?Sized>(value: &T) -> usize {
-        text_len(wire_json_len(value))
+
+    pub(super) fn json<T: serde::Serialize + ?Sized>(value: &T) -> usize {
+        text_len(super::wire_json_len(value))
     }
+}
+
+/// An upper bound on `row`'s Cap'n Proto size, which the broker checks a
+/// page against: every text field costs its bytes, a NUL, padding to a word
+/// and an 8-byte pointer; every struct a fixed allowance for its data words,
+/// pointer and list tag.
+#[must_use]
+pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
+    use wire_size::{STRUCT, json, optional, sum, text};
     let descriptor = row.descriptor.as_ref().map_or(0, |descriptor| {
         let input = match &descriptor.input {
             ExportedInput::None => 0,

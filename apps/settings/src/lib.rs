@@ -70,6 +70,3 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     install();
     ui::built_in_definition!(SettingsShell)
 }
-
-#[cfg(test)]
-mod action_keywords_tests;

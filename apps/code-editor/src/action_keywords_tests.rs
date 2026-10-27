@@ -14,7 +14,11 @@ fn people_find_code_editor_actions_by_the_words_they_use() {
             .iter()
             .map(declaration_spec),
     );
-    actions.extend(<crate::effects::CodeEditorEffect>::specs());
+    actions.extend(
+        <crate::effects::CodeEditorEffect>::declarations()
+            .iter()
+            .map(|effect| effect.spec(<crate::effects::CodeEditorEffect>::OPERATION)),
+    );
     let mut missed = Vec::new();
     for (query, id) in [
         ("mkdir", "new-folder"),

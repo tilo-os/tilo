@@ -549,7 +549,7 @@ pub(super) fn stepped(
 
 // Each Quick Settings action: its id, title, subtitle and the
 // message listing the other words people use for it.
-const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str, &str)] = &[
+pub(super) const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         QS_BRIGHTNESS_ID,
         "search-action-quick-settings-brightness-set",
