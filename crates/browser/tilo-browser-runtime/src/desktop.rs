@@ -26,7 +26,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::automerge::AutoCommit;
-use ui::permissions::{PermissionContext, SharedPermissions, UserId};
+use ui::permissions::{SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
@@ -1096,7 +1096,7 @@ impl Tiles {
             views: Rc::clone(&self.inputs.views),
             device_id: self.inputs.device.clone(),
             instance_id: instance,
-            permissions: Rc::clone(&self.inputs.permissions),
+            permissions: self.inputs.permissions.clone(),
             author: UserId(self.inputs.author.clone()),
             action_context: tilo_actions::ActionContext::default(),
         };
