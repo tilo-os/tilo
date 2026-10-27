@@ -128,7 +128,7 @@ export function createVoiceCall({
   const inbox = createPictureInbox();
 
   function idle() {
-    return {phase: 'idle', call: null, admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false};
+    return {phase: 'idle', call: null, admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false, audioFailed: false};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
   const update = change => {
@@ -213,7 +213,7 @@ export function createVoiceCall({
       report({type: 'voice-audio-error', error});
       const call = state.call;
       signalling.leave();
-      ended(call, String(error?.message ?? error));
+      ended(call, String(error?.message ?? error), {audioFailed: true});
     }}).then(session => {
       if (audioController !== controller || controller.signal.aborted) { void session.stop(); return undefined; }
       audioSession = session;
@@ -226,7 +226,7 @@ export function createVoiceCall({
       report({type: 'voice-audio-error', error});
       const call = state.call;
       signalling.leave();
-      ended(call, String(error?.message ?? error));
+      ended(call, String(error?.message ?? error), {audioFailed: true});
       return undefined;
     });
     return audioStarting;
@@ -459,11 +459,13 @@ export function createVoiceCall({
     applyShown();
   }
 
-  function ended(call, reason) {
+  /** The call ended for `reason`; `audioFailed` when this device's audio
+   * would not start, which no host can mend. */
+  function ended(call, reason, {audioFailed = false} = {}) {
     if (call !== state.call) return;
     const admitted = state.admitted;
     stopAll();
-    update({...idle(), phase: 'ended', call, admitted, reason});
+    update({...idle(), phase: 'ended', call, admitted, reason, audioFailed});
   }
 
   function clearGrantDeadline() {

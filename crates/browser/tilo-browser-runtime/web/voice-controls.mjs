@@ -25,13 +25,17 @@ const WATCH_LOOK_MS = 100;
 const PICTURES_HOLD_MS = 5000;
 
 /** The issue a call that ended reports: a call the host never granted was
- * refused, for not being a member or by its denials (`denied`), or because
- * the room cannot hold calls (`unavailable`); one it granted just ended;
- * one this browser cannot carry never started (`unsupported`). */
-export function endedIssue({admitted, reason, unsupported}) {
+ * refused, for not being a member or by its denials (`denied`), or could
+ * not be reached (`transport_failed`); one it granted just ended; one this
+ * browser cannot carry never started (`unsupported`); one whose audio this
+ * device could not start (no output to play it on) is `unavailable`, the
+ * only issue a device's own failure reports. Every workspace has calls, so
+ * no host answer reads as the room lacking voice. */
+export function endedIssue({admitted, reason, unsupported, audioFailed}) {
   if (unsupported) return 'unsupported';
+  if (audioFailed) return 'unavailable';
   if (admitted) return 'session_ended';
-  return /not a member|denied|not permitted|not allowed/i.test(String(reason ?? '')) ? 'denied' : 'unavailable';
+  return /not a member|denied|not permitted|not allowed/i.test(String(reason ?? '')) ? 'denied' : 'transport_failed';
 }
 
 const PERSON = /^[0-9a-f]{64}$/;
