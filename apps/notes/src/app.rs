@@ -56,7 +56,7 @@ thread_local! {
 /// What the window's bar was last declared with: the note shown (its title
 /// and anchor), whether the page tree is open, and whether New note is
 /// offered.
-type DeclaredBar = (Option<(String, String)>, bool, bool);
+type DeclaredBar = (Option<(String, String)>, bool, bool, bool);
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
@@ -2228,6 +2228,17 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn status_bar_for_test(&self) -> &crate::status_bar::StatusModel {
         &self.status
+    }
+
+    /// Test hook: set the record's save state as the store would report it,
+    /// so a test can read what the bar says about work at risk.
+    #[doc(hidden)]
+    pub fn set_record_save_status_for_test(&mut self, status: ui::record::RecordSaveStatus) {
+        self.record_save_status = status;
+        // The store's report is what a live window would show, not a
+        // capture's staged one.
+        self.shots_save_status = None;
+        self.refresh_status();
     }
 
     /// Test hook: re-run the real `refresh_status` merge WITHOUT

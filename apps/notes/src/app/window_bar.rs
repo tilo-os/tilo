@@ -35,6 +35,7 @@ impl NotesApp {
         note: Option<(&str, String)>,
         sidebar_open: bool,
         adds_notes: bool,
+        edited: bool,
     ) -> WindowToolbar {
         let title = note.as_ref().map(|(title, _)| *title);
         // New note is offered only to someone who may make one.
@@ -52,6 +53,10 @@ impl NotesApp {
                 label: title.to_owned(),
                 placeholder: ui::i18n!("notes-title-placeholder"),
                 anchor: Some(anchor),
+                // The note being written is not yet on disk: the bar says so
+                // wherever the window is shown, as every other document app's
+                // does (`APP-notes-03`).
+                edited,
                 ..ToolbarLocation::default()
             }),
             actions: new_note
@@ -109,13 +114,20 @@ impl NotesApp {
         let title = self.main.title().map(str::to_owned);
         let anchor = self.main.page_id().map(crate::actions::page_resource_id);
         let open = self.shell.is_sidebar_open();
-        let key = (title.zip(anchor), open, adds);
+        // Work the store has not made durable yet: the save in flight, or one
+        // that failed. A note held only for this session is not "edited" —
+        // its band says that, and stays until it can be saved.
+        let edited = matches!(
+            self.status.state().save_status,
+            crate::status_bar::SaveStatus::Saving | crate::status_bar::SaveStatus::Failed
+        );
+        let key = (title.zip(anchor), open, adds, edited);
         if self.declared_bar.as_ref() != Some(&key) {
             let note = key
                 .0
                 .as_ref()
                 .map(|(title, anchor)| (title.as_str(), anchor.clone()));
-            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open, adds)));
+            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open, adds, edited)));
             self.declared_bar = Some(key);
         }
         let header = Rc::clone(&self.header);
@@ -233,6 +245,35 @@ mod tests {
                 .count(),
             1,
             "the bar holds New note once"
+        );
+    }
+
+    /// The note being written is marked in the bar, wherever the window is
+    /// shown, not only in this app's status band (`APP-notes-03`).
+    #[test]
+    fn the_window_bar_marks_a_note_that_is_not_on_disk_yet() {
+        let mut notes = notes_at("status", (1280, 800));
+        ui::window_toolbar::set_hosted(true);
+        notes.surface_mut::<NotesApp>().sync_window_toolbar();
+        notes.settle();
+        let declared = ui::window_toolbar::declared().expect("the note's slots are declared");
+        let location = declared.location.expect("the bar names the note");
+        assert!(
+            !location.edited,
+            "a note the store has written is not marked"
+        );
+        // A save that fails is work at risk: the bar says so.
+        notes
+            .surface_mut::<NotesApp>()
+            .set_record_save_status_for_test(ui::record::RecordSaveStatus::Failed(
+                "the store refused the write".into(),
+            ));
+        notes.surface_mut::<NotesApp>().sync_window_toolbar();
+        notes.settle();
+        let declared = ui::window_toolbar::declared().expect("the note's slots are declared");
+        assert!(
+            declared.location.expect("the bar names the note").edited,
+            "a note whose save failed is marked"
         );
     }
 }
