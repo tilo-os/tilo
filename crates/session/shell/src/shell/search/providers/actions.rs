@@ -5578,6 +5578,9 @@ mod keyword_tests;
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
+    use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
+    use automerge::AutoCommit;
+    use std::sync::Arc;
 
     #[test]
     fn adding_a_bot_asks_the_active_workspace_once_the_person_confirms() {

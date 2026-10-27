@@ -59,6 +59,3 @@ fn every_shell_action_declares_the_other_words_people_use_for_it() {
         "these actions declare no other words: {missing:#?}"
     );
 }
-use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
-use automerge::AutoCommit;
-use std::sync::Arc;
