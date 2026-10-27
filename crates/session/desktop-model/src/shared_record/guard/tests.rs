@@ -223,3 +223,26 @@ fn a_window_of_someone_who_left_the_room_is_anyones_to_close() {
         .unwrap();
     assert_eq!(windows(&guard), vec![1]);
 }
+
+/// A write that builds on a change the holder has not received waits, and
+/// is decided as its own author's once that change is here.
+#[test]
+fn a_write_ahead_of_what_it_builds_on_waits_and_is_decided_as_its_authors() {
+    let mut held = room().doc().clone();
+    let mut ben = Page::of(&DesktopGuard::new(held.clone()), 2);
+    let opens = ben.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
+    let closes_adas = ben.write(&desktop(&[(2, 200, BEN), (3, 300, BEN)]));
+    assert_eq!(
+        admit_complete(&mut held, &closes_adas, &writer(BEN, None, &moderates(BEN))),
+        Ok(Admitted::Waiting),
+        "it builds on Ben's opening, which has not arrived"
+    );
+    assert_eq!(
+        admit_complete(&mut held, &opens, &writer(BEN, None, &moderates(BEN))),
+        Ok(Admitted::Merged(true))
+    );
+    assert!(matches!(
+        admit_complete(&mut held, &closes_adas, &writer(BEN, None, &moderates(BEN))),
+        Err(DesktopRefusal::NotTheirs { act, .. }) if act.id == 1 && act.act == Act::Close
+    ));
+}

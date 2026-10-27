@@ -624,18 +624,20 @@ fn report_tab_push_work(samples: usize, work: Vec<(usize, usize)>) {
 }
 
 /// Two devices share one room over real Iroh. Device A opens, moves and
-/// closes tabs; each change is pushed the way the shell pushes it (the room
-/// document's changes since what A last announced, as one `SyncResp`). Each
-/// mutation must converge with one incremental change in one received batch.
+/// closes tabs; each change is pushed the way the room's layout record
+/// travels (what A wrote to the record since it last sent, as one
+/// `AppDocument` on the room topic). Each mutation must converge with one
+/// incremental change in one received message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch() {
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
     const SALT_A: u16 = 0xA0A0;
     const SALT_B: u16 = 0xB0B0;
     const SAMPLES: usize = 100;
+    const A_DEVICE: [u8; 32] = [0xA0; 32];
 
     let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
-    let a_id = addr_a.id;
     connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
     wait_peer_joined(&mut events_a).await;
     wait_peer_joined(&mut events_b).await;
@@ -647,15 +649,28 @@ async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch()
     let mut b = WorkspaceTree::default();
     b.set_salt_override(SALT_B);
     b.join_room("Placeholder", room).expect("joins the room");
-    // The invite names A's endpoint as the room's governor.
-    assert!(b.pin_room_authority(room, PeerOrigin::peer(&a_id)));
 
-    let publish = |changes: Vec<Vec<u8>>| NetCmd::Publish {
+    let publish = |sequence: u64, mutation: &collab_types::DocumentMutation| NetCmd::Publish {
         at: tokio::time::Instant::now(),
         ws: WS,
-        msg: NeighbourMsg::SyncResp {
-            changes,
-            room: room.to_string(),
+        msg: NeighbourMsg::AppDocument {
+            peer: 7,
+            app_id: DESKTOP_APP.into(),
+            cluster_id: room.to_string(),
+            record_id: DESKTOP_RECORD.into(),
+            envelope: Box::new(collab_types::SignedOp::new_unsigned(
+                mutation.encode().expect("a mutation encodes"),
+                collab_types::document_artifact_id(DESKTOP_APP, &room.to_string(), DESKTOP_RECORD),
+                collab_types::Ed25519PublicKey::from_bytes(A_DEVICE),
+                collab_types::document_attestation_id(
+                    DESKTOP_APP,
+                    &room.to_string(),
+                    DESKTOP_RECORD,
+                ),
+                collab_types::OpKind::Change,
+                std::time::SystemTime::now(),
+                sequence,
+            )),
         },
     };
     let mut receive = async |b: &mut WorkspaceTree, want: &[u64]| {
@@ -664,38 +679,40 @@ async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch()
         while group_tabs(b, room) != want {
             let event = events_b.recv().await.expect("B's events");
             if let NetEvent::Msg {
-                peer,
-                msg:
-                    NeighbourMsg::SyncResp {
-                        changes,
-                        room: received_room,
-                    },
+                msg: NeighbourMsg::AppDocument { envelope, .. },
                 ..
             } = event
             {
-                assert_eq!(received_room, room.to_string());
+                let mutation = collab_types::DocumentMutation::decode(&envelope.payload)
+                    .expect("a mutation decodes");
                 batches += 1;
-                applied_changes += changes.len();
-                b.apply_room_changes(room, &changes, &PeerOrigin::peer(&peer))
-                    .expect("B applies A's push");
+                if let collab_types::DocumentMutation::Incremental(bytes) = &mutation {
+                    applied_changes += automerge::Automerge::parse_changes(bytes)
+                        .expect("changes parse")
+                        .len();
+                }
+                b.receive_layout(room, A_DEVICE, &mutation)
+                    .expect("B takes A's layout");
             }
         }
         (batches, applied_changes)
     };
 
-    // Warm-up: B joins with A's whole room, as its first pull would bring.
-    let baseline = a.export_room_changes_since(room, &[]).expect("A's room");
-    let mut announced = a.room_heads(room);
+    // Warm-up: B joins with A's whole record, as the room's hosts replay it.
+    a.capture_workspace_layout(room);
+    let record = a.layout_docs.get_mut(&room).expect("A's layout record");
+    let mut announced = record.get_heads();
     cmd_a
-        .send(publish(baseline))
+        .send(publish(
+            0,
+            &collab_types::DocumentMutation::Snapshot(record.save()),
+        ))
         .await
         .expect("baseline queued");
     let want = group_tabs(&a, room);
     tilo_test_env::within("B joined A's room", receive(&mut b, &want)).await;
 
     let mut next = 101;
-    // The companion ShellNetwork next-tick test checks the scheduling boundary;
-    // this real transport test checks the work required to converge each edit.
     let mut work = Vec::with_capacity(SAMPLES);
     for sample in 0..SAMPLES {
         {
@@ -719,23 +736,23 @@ async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch()
                 _ => tabs.push(notes_tab(id(next))),
             }
         }
-        a.seed_doc_from_cache();
-        let changes = a
-            .export_room_changes_since(room, &announced)
-            .expect("A's room");
-        announced = a.room_heads(room);
-        assert_eq!(
-            changes.len(),
-            1,
-            "sample {sample} exports one incremental change"
-        );
-        cmd_a.send(publish(changes)).await.expect("push queued");
+        a.capture_workspace_layout(room);
+        let record = a.layout_docs.get_mut(&room).expect("A's layout record");
+        let change = collab_types::DocumentMutation::Incremental(record.save_after(&announced));
+        announced = record.get_heads();
+        let sequence = u64::try_from(sample)
+            .expect("a sample number")
+            .saturating_add(1);
+        cmd_a
+            .send(publish(sequence, &change))
+            .await
+            .expect("push queued");
         let want = group_tabs(&a, room);
         let counts = tilo_test_env::within("B shows A's change", receive(&mut b, &want)).await;
         assert_eq!(
             counts,
             (1, 1),
-            "sample {sample} converges in one batch and one change"
+            "sample {sample} converges in one message and one change"
         );
         work.push(counts);
     }

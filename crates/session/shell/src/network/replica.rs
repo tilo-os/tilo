@@ -1488,16 +1488,19 @@ mod tests {
         }
     }
 
-    /// A title no other fixture string contains, so finding it anywhere in
-    /// the bytes a peer received means the window reached that peer.
+    /// A peer's name no other fixture string contains, so finding it
+    /// anywhere in the bytes a peer received means the name reached that
+    /// peer.
     const WITHDRAWN_TITLE: &str = "ssh prod-db secret";
+    /// The peer the room names [`WITHDRAWN_TITLE`].
+    const NAMED_PEER: &str = "named-peer";
     const HOST_SALT: u16 = 0xCAFE;
     const HOST_PERSON: [u8; 32] = [0x5E; 32];
 
     #[derive(Clone, Copy, Debug)]
     enum Withdrawal {
-        Closed,
-        LayoutTurnedPersonal,
+        /// The room stopped naming the peer.
+        Unnamed,
     }
 
     /// Change columns may be compressed, so each change is decoded as well
@@ -1545,7 +1548,8 @@ mod tests {
     }
 
     /// Room A, governed by the host (replica 1), where member B (replica 2)
-    /// was given a window titled [`WITHDRAWN_TITLE`] that was then withdrawn.
+    /// was given a peer's name, [`WITHDRAWN_TITLE`], that the room then
+    /// stopped naming.
     struct Withdrawn {
         room: RoomId,
         host: WorkspaceTreeHandle,
@@ -1572,49 +1576,21 @@ mod tests {
         let to_member = deliver(host_rep, &mut member_rep, 1);
         assert!(
             received_carries(&to_member, WITHDRAWN_TITLE),
-            "B is given the window while it is shared"
+            "B is given the name while the room holds it"
         );
         (member, member_rep)
     }
 
     fn shared_then_withdrawn(withdrawal: Withdrawal) -> Withdrawn {
-        use crate::shell::state::{
-            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-        };
         let (mut host_tree, a, _) = host_with_two_rooms();
         let room = host_tree.room_of(a).expect("room A");
         host_tree.set_salt_override(HOST_SALT);
         host_tree.local_person = Some(HOST_PERSON);
-        let own = |counter: u64| {
-            (u64::from(HOST_SALT) << crate::shell::state::PEER_ID_SALT_SHIFT) | counter
-        };
-        let tab = own(3);
         host_tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == a)
-            .expect("room A's workspace")
-            .strips = vec![Strip {
-            id: StripId::from(own(1)),
-            name: "Main".into(),
-            window_groups: vec![WindowGroup {
-                id: own(2),
-                tabs: vec![Tab {
-                    id: tab,
-                    title: WITHDRAWN_TITLE.into(),
-                    tile: TileContent::Stub {
-                        kind: AppKind::Terminal,
-                        label: WITHDRAWN_TITLE.into(),
-                    },
-                    app_title: None,
-                }],
-                active_tab: tab,
-                width: WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
-            }],
-        }];
+            .room_peer_names
+            .entry(room)
+            .or_default()
+            .insert(NAMED_PEER.into(), WITHDRAWN_TITLE.into());
         host_tree.sync_room_doc(room);
         let host = host_tree.shared();
         let mut host_rep = WorkspaceTreeReplica::new(1, host.clone());
@@ -1624,25 +1600,10 @@ mod tests {
         {
             let mut tree = host.write();
             match withdrawal {
-                Withdrawal::Closed => {
-                    tree.desktop
-                        .workspaces
-                        .iter_mut()
-                        .find(|w| w.id == a)
-                        .expect("room A's workspace")
-                        .strips
-                        .clear();
-                }
-                Withdrawal::LayoutTurnedPersonal => {
-                    let doc = tree.room_docs.get_mut(&room).expect("room A's document");
-                    automerge::transaction::Transactable::put(
-                        doc,
-                        ROOT,
-                        tilo_desktop_model::projection::ROOM_LAYOUT_KEY,
-                        tilo_desktop_model::projection::RoomLayout::Personal.id(),
-                    )
-                    .expect("the governor writes the room's layout scope");
-                    doc.commit();
+                Withdrawal::Unnamed => {
+                    if let Some(names) = tree.room_peer_names.get_mut(&room) {
+                        names.remove(NAMED_PEER);
+                    }
                 }
             }
             tree.sync_room_doc(room);
@@ -1651,17 +1612,11 @@ mod tests {
         deliver(&member_rep, &mut host_rep, 2);
         deliver(&host_rep, &mut member_rep, 1);
         assert!(
-            tilo_desktop_model::shared_record::read(
-                host.read().room_docs.get(&room).expect("room A's document"),
-                None
-            )
-            .into_iter()
-            .flat_map(|layout| layout.tree.workspaces)
-            .flat_map(|workspace| workspace.strips)
-            .flat_map(|strip| strip.window_groups)
-            .flat_map(|group| group.tabs)
-            .all(|shown| shown.title != WITHDRAWN_TITLE),
-            "{withdrawal:?}: the room no longer holds the window"
+            !host
+                .read()
+                .room_peer_names_in_doc(room)
+                .contains_key(NAMED_PEER),
+            "{withdrawal:?}: the room no longer names the peer"
         );
         Withdrawn {
             room,
@@ -1723,8 +1678,8 @@ mod tests {
     }
 
     #[test]
-    fn a_later_member_never_receives_a_window_withdrawn_before_it_joined() {
-        for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
+    fn a_later_member_never_receives_a_name_withdrawn_before_it_joined() {
+        for withdrawal in [Withdrawal::Unnamed] {
             let mut room = shared_then_withdrawn(withdrawal);
             let (joiner, mut joiner_rep) = joining(&room, 3, false);
             let received = ask_everyone(&mut room, &mut joiner_rep, 3);
@@ -1773,8 +1728,8 @@ mod tests {
     }
 
     #[test]
-    fn a_member_who_was_given_a_window_keeps_it_archived_once_a_later_member_joins() {
-        for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
+    fn a_member_who_was_given_a_name_keeps_it_archived_once_a_later_member_joins() {
+        for withdrawal in [Withdrawal::Unnamed] {
             let mut room = shared_then_withdrawn(withdrawal);
             let (_, mut joiner_rep) = joining(&room, 3, false);
             ask_everyone(&mut room, &mut joiner_rep, 3);
@@ -1806,7 +1761,7 @@ mod tests {
 
     #[test]
     fn the_persons_own_new_device_is_given_the_rooms_whole_history() {
-        for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
+        for withdrawal in [Withdrawal::Unnamed] {
             let mut room = shared_then_withdrawn(withdrawal);
             let (_, mut joiner_rep) = joining(&room, 3, false);
             ask_everyone(&mut room, &mut joiner_rep, 3);

@@ -60,10 +60,12 @@ impl Device {
     fn write(&mut self) -> bool {
         let actor = self.actor;
         let mine = move |id: u64| id / 1000 == actor;
+        let former = former_ids(&self.doc);
         let writer = Writer {
             person: Some(PERSON),
             mine: &mine,
             retained: &|_| false,
+            carried: &|id| former.contains(&id),
         };
         let published = self.published();
         let changed = write(&mut self.doc, self.workspace.room(), &published, &writer).unwrap();
