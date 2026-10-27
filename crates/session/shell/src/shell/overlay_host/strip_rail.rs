@@ -189,16 +189,23 @@ impl ShellOverlayHost {
         Rect::new(x0, y0, x0 + width, y0)
     }
 
-    /// The window a search scoped to an app stands over: the focused
-    /// window, below its bar, as much of it as is on the display. `None`
+    /// The window a search scoped to an app stands over: the window in
+    /// front on the strip in front, below its bar, as much of it as is on the display. `None`
     /// while search is not scoped to an app or no window holds focus.
     pub(super) fn searched_window(&self) -> Option<Rect> {
-        let scoped = self.chrome.as_ref().is_some_and(|chrome| {
-            chrome.borrow().search_scope == crate::shell::chrome_state::SearchScope::ActiveApp
-        });
-        if !scoped {
-            return None;
-        }
+        let focused = {
+            let state = self.chrome.as_ref()?.borrow();
+            if state.search_scope != crate::shell::chrome_state::SearchScope::ActiveApp {
+                return None;
+            }
+            let tree = state.tree();
+            let strip = tree
+                .desktop
+                .active_strip
+                .get(&tree.desktop.active)
+                .copied()?;
+            tree.desktop.active_group.get(&strip).copied()?
+        };
         let area = self.overlay_area();
         self.group_row_ptrs.values().find_map(|&ptr| {
             // SAFETY: same stable boxed-row contract as the other
@@ -206,7 +213,7 @@ impl ShellOverlayHost {
             let row: &GroupRow = unsafe { &*ptr };
             row.groups
                 .iter()
-                .find(|group| group.focused && group.active_host().is_some())
+                .find(|group| group.id == focused)
                 .map(|group| {
                     let window = group.get_rect();
                     let bar = group.bar_rect();
