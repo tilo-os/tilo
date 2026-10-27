@@ -255,6 +255,7 @@ mod admitted_history_tests {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 5,
                     retained: &|_| false,
+                    carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
                 },
             )
             .unwrap();

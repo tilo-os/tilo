@@ -60,7 +60,7 @@ fn lanes(
             .issues
             .iter()
             .filter(|(_, issue)| issue.status == status && filter.matches(issue, me))
-            .map(|(id, issue)| (id.to_string(), card(tracker, id, issue, &people, nav)))
+            .map(|(id, issue)| (id.to_string(), card(cx, tracker, id, issue, &people, nav)))
             .collect();
         let header = Text::new(&ui::i18n::I18nManager::format(
             "tasks-lane-heading",
@@ -98,6 +98,7 @@ fn agent_name(people: &ui::framework::People, agent: &str) -> String {
 
 /// One issue's card: its reference and title, and what it is waiting on.
 fn card(
+    cx: &ViewCx<Tracker>,
     tracker: &Tracker,
     id: &Id,
     issue: &Issue,
@@ -117,10 +118,8 @@ fn card(
     } else if let Some(person) = issue.assigned_person() {
         facts = facts.push(Box::new(Badge::text(people.name(person))));
     }
-    if let Some(run) = issue.active_run() {
-        facts = facts.push(Box::new(
-            Badge::text(tr(run.phase.label_key())).style(ChipStyle::Live),
-        ));
+    if let Some(run) = &issue.run {
+        facts = facts.push(Box::new(crate::task_chip::chip(cx, id, run)));
     }
     let (closed, total) = tracker.progress(id);
     if total > 0 {

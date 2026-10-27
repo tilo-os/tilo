@@ -23,7 +23,7 @@ impl MapsApp {
             MapsEffect::Search { query } => self.search_for(query),
             MapsEffect::Locate => {
                 if let Some(reason) = self.locate_unavailable() {
-                    return Err(reason.1.into());
+                    return Err(reason.1);
                 }
                 self.location_reply = Some(cx.reply());
                 self.use_my_location();

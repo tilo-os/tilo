@@ -200,6 +200,13 @@ impl PendingRemote {
         self.queue.is_empty()
     }
 }
+/// A route an owner holds that the transport is not yet joined to, and the
+/// kind its record holds.
+pub(crate) struct RouteJoin {
+    pub(crate) route: RouteSpec,
+    pub(crate) record_kind: crate::record::RecordKind,
+}
+
 pub(crate) struct OwnerRoute {
     pub(crate) route: RouteSpec,
     pub(crate) owners: Vec<HistoryOwner>,
@@ -322,7 +329,7 @@ impl OwnerDocumentRoutes {
         witness: Option<PrimaryRouteWitness>,
         generation: u64,
         outer: &AutoCommit,
-    ) -> Vec<RouteSpec> {
+    ) -> Vec<RouteJoin> {
         fn collect(root: &dyn Widget, owners: &mut Vec<(HistoryOwner, bool)>) {
             let held = root.history_owner().map(|owner| (owner, false));
             let beside = root.record_owners().into_iter().map(|owner| (owner, true));
@@ -379,7 +386,7 @@ impl OwnerDocumentRoutes {
         owners: &[HistoryOwner],
         witness: Option<PrimaryRouteWitness>,
         outer: &AutoCommit,
-    ) -> Vec<RouteSpec> {
+    ) -> Vec<RouteJoin> {
         let generation = self.primary_generation;
         if !self.observe_witness(witness, generation) {
             return vec![];
@@ -400,7 +407,7 @@ impl OwnerDocumentRoutes {
         &mut self,
         current: Vec<(HistoryOwner, bool)>,
         outer: &AutoCommit,
-    ) -> Vec<RouteSpec> {
+    ) -> Vec<RouteJoin> {
         self.owners.retain_mut(|entry| {
             entry.owners.retain(|owner| {
                 current.iter().any(|(actual, _)| actual.same_owner(owner))
@@ -422,6 +429,7 @@ impl OwnerDocumentRoutes {
             if self.retired.contains(&route) {
                 continue;
             }
+            let record_kind = owner.record_kind();
             if let Some(entry) = self.owners.iter_mut().find(|entry| entry.route == route) {
                 if !entry
                     .owners
@@ -434,7 +442,10 @@ impl OwnerDocumentRoutes {
                 let Ok(doc) = owner.document(outer) else {
                     continue;
                 };
-                joins.push(route.clone());
+                joins.push(RouteJoin {
+                    route: route.clone(),
+                    record_kind: record_kind.clone(),
+                });
                 self.owners.push(OwnerRoute {
                     route,
                     owners: vec![owner],

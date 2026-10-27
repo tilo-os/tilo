@@ -1448,6 +1448,15 @@ impl ChatApp {
             MenuAction::NewVoiceChannelHere => self.open_channel_sheet(
                 crate::channel_sheet::ChannelSheet::new_channel(id, ChannelKind::Voice),
             ),
+            MenuAction::MoveUp | MenuAction::MoveDown => {
+                self.apply_now(
+                    doc,
+                    Chat::MOVE_CATEGORY.with(chat::MoveCategory {
+                        category: item(id),
+                        up: action == MenuAction::MoveUp,
+                    }),
+                );
+            }
             _ => {}
         }
         self.reload(doc);

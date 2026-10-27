@@ -248,7 +248,11 @@ mod owner_commit_tests {
         ) -> Option<Result<ui::collaboration::RouteSpec, String>> {
             std::mem::take(&mut self.ack).then(|| Ok(self.route.clone()))
         }
-        fn join_route(&mut self, route: ui::collaboration::RouteSpec) -> Result<(), String> {
+        fn join_route(
+            &mut self,
+            route: ui::collaboration::RouteSpec,
+            _: ui::record::RecordKind,
+        ) -> Result<(), String> {
             assert_eq!(route, self.route);
             Ok(())
         }

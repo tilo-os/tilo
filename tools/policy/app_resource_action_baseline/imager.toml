@@ -1,3 +1,7 @@
+[ratchets.closure_action_button]
+"apps/imager/src/app.rs" = 1
+"apps/imager/src/setup/view.rs" = 2
+
 [ratchets.closure_control]
 "apps/imager/src/app.rs" = 3
 "apps/imager/src/setup/import_view.rs" = 1

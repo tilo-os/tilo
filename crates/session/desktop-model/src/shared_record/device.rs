@@ -124,6 +124,15 @@ pub struct Writer<'a> {
     /// every other device is noise, not news. One a person made to put
     /// windows in is a destination, and the others see it at once.
     pub retained: &'a dyn Fn(u64) -> bool,
+    /// Whether the room laid `id` out before its layout was this record
+    /// ([`former_ids`]): what the first device to write the record still
+    /// shows of it comes over, whoever made it.
+    pub carried: &'a dyn Fn(u64) -> bool,
+}
+
+impl Writer<'_> {
+    /// Nothing laid out before the record.
+    pub const NOTHING_CARRIED: &'static dyn Fn(u64) -> bool = &|_| false;
 }
 
 /// Write `workspace`, the layout of `room` as other devices are to see it,
@@ -156,14 +165,10 @@ pub fn write(
         .as_ref()
         .map(|(record, _)| ids_of(record))
         .unwrap_or_default();
-    // A room laid out before the record kept its windows under `contents`:
-    // what that names comes over the first time a device writes the record.
-    let carried = if held.is_some() {
-        HashSet::new()
-    } else {
-        legacy_ids(&*doc)
-    };
-    let known = |id: u64| held_ids.contains(&id) || carried.contains(&id) || (writer.mine)(id);
+    // What the room laid out before the record comes over the first time a
+    // device writes the record.
+    let carried = |id: u64| held.is_none() && (writer.carried)(id);
+    let known = |id: u64| held_ids.contains(&id) || carried(id) || (writer.mine)(id);
     // The workspace's own entry is the record's as it stands: written once,
     // by whichever device writes first, and never again from a device's
     // copy, so devices do not take turns rewriting it.
@@ -199,7 +204,7 @@ pub fn write(
                 .collect();
             let id = strip.id.0;
             let kept = held_ids.contains(&id)
-                || carried.contains(&id)
+                || carried(id)
                 || ((writer.mine)(id) && (writer.retained)(id));
             (kept || !window_groups.is_empty()).then(|| Strip {
                 id: strip.id,
@@ -273,6 +278,18 @@ fn ids_of(workspace: &Workspace) -> HashSet<u64> {
             }))
         })
         .collect()
+}
+
+/// The strip, group and window ids a room document laid out before the
+/// layout was a record of its own: in its `contents` map, and in a copy of
+/// the record kept at the room document's root.
+#[must_use]
+pub fn former_ids(doc: &impl ReadDoc) -> HashSet<u64> {
+    let mut ids = legacy_ids(doc);
+    if let Some(desktop) = super::read(doc, None) {
+        ids.extend(desktop.tree.workspaces.iter().flat_map(ids_of));
+    }
+    ids
 }
 
 /// The strip, group and window ids a room document laid out before the

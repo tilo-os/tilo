@@ -962,7 +962,7 @@ async fn wait_inbox(broker: &crate::external_broker::ExternalBroker) {
         let page = broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap();
         if !page.messages.is_empty() {
@@ -986,7 +986,7 @@ async fn subscribed_sms_initial_enumeration_is_private_durable_and_read_only() {
     let page = broker
         .client()
         .history()
-        .read(contact_route())
+        .read(contact_route(), None)
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 1);
@@ -1044,7 +1044,7 @@ async fn subscribed_sms_added_partial_then_state_complete_persists_once() {
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1058,7 +1058,7 @@ async fn subscribed_sms_added_partial_then_state_complete_persists_once() {
     let page = broker
         .client()
         .history()
-        .read(contact_route())
+        .read(contact_route(), None)
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 1);
@@ -1081,7 +1081,7 @@ async fn subscribed_sms_unknown_recipient_has_no_route_or_private_history() {
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1095,7 +1095,7 @@ async fn subscribed_sms_unknown_recipient_has_no_route_or_private_history() {
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1137,7 +1137,7 @@ async fn subscribed_sms_sim_change_reports_failed_and_keeps_native_bus_owned_by_
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1196,7 +1196,11 @@ async fn subscribed_sms_daemon_replacement_never_rebinds_and_fails_owned_receive
     }
     assert!(!supervisor.client().supports(&contact_route()));
     assert_eq!(
-        supervisor.client().history().read(contact_route()).await,
+        supervisor
+            .client()
+            .history()
+            .read(contact_route(), None)
+            .await,
         Err(tilo_messaging::HistoryError::Unavailable)
     );
     let state = fixture.state.lock().unwrap();
@@ -1230,7 +1234,11 @@ async fn subscribed_sms_persistence_failure_never_publishes_ready_history() {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(
-        supervisor.client().history().read(contact_route()).await,
+        supervisor
+            .client()
+            .history()
+            .read(contact_route(), None)
+            .await,
         Err(tilo_messaging::HistoryError::Unavailable)
     );
     assert!(!supervisor.client().supports(&contact_route()));
@@ -1256,7 +1264,7 @@ async fn subscribed_sms_excessive_native_inbox_refuses_instead_of_truncating() {
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1306,7 +1314,7 @@ async fn actual_sms_broker_receives_private_durable_exact_route_history_without_
     let page = broker
         .client()
         .history()
-        .read(contact_route())
+        .read(contact_route(), None)
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 1);

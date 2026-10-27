@@ -6,13 +6,13 @@ use tilo_automerge::WriteTyped as _;
 use tilo_clock::unix_now_i64;
 
 mod continuation_labels;
-pub mod governed_layout;
 mod local_app_records;
 mod personal_apps;
 mod room_bases;
 mod room_binding;
 mod tree_handle;
 mod window_hosting;
+pub mod workspace_layout;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
@@ -33,7 +33,6 @@ pub use collab_types::role::Role as CapRole;
 pub use tilo_action_policy::Preset;
 pub use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::projection;
-use tilo_desktop_model::shared_record;
 pub use tilo_desktop_model::{
     APP_ID_PREFIX, AppId, AppKind, Capability, Collaborator, FileId, FsMode, GRANT_ALWAYS,
     GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, MintIds, PEER_ID_COUNTER_MASK,
@@ -898,17 +897,15 @@ pub struct WorkspaceTree {
     /// before a restart still goes out.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub strips_to_retain: BTreeSet<StripId>,
-    /// Changes this device wrote to the layout of rooms another device
-    /// governs that the governor has not admitted yet, oldest first, by
-    /// room: shown here at once, and sent until the room holds them.
-    /// Persisted, so what was arranged while the governor was away still
-    /// reaches it after a restart.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub layout_pending: HashMap<RoomId, Vec<Vec<u8>>>,
-    /// What the last look at each such room's layout found nothing to
-    /// write for ([`Self::capture_governed_layout`]).
+    /// Each room's layout record as this device holds it
+    /// ([`workspace_layout`]): saved with the tree, and kept in step with
+    /// the room's other devices over its record route.
+    #[serde(skip, default)]
+    pub layout_docs: HashMap<RoomId, AutoCommit>,
+    /// What the last look at each room's layout found nothing to write for
+    /// ([`Self::capture_workspace_layout`]).
     #[serde(skip)]
-    pub layout_captured: HashMap<RoomId, governed_layout::Captured>,
+    pub layout_captured: HashMap<RoomId, workspace_layout::Captured>,
     /// Tabs created from same-identity continuation rather than from this
     /// machine's ordinary layout.  Persisting this marker lets a later
     /// checkpoint remove a remote close without ever deleting a local tab
@@ -1033,7 +1030,7 @@ impl Default for WorkspaceTree {
             room_peer_identities: HashMap::new(),
             room_share_floor: HashMap::new(),
             strips_to_retain: BTreeSet::new(),
-            layout_pending: HashMap::new(),
+            layout_docs: HashMap::new(),
             layout_captured: HashMap::new(),
             continuation_tabs: BTreeSet::new(),
             local_person: None,
@@ -1317,12 +1314,9 @@ impl WorkspaceTree {
         {
             tilo_peer_state::room::adopt_room(archived, document, &[]);
         }
-        // What this device changed in the room's layout is written on top of
-        // what the room held before, so folding what it admitted now keeps it.
-        self.capture_governed_layout(room);
         self.room_docs.insert(room, document.clone());
         self.queue_inbound_records(room, document);
-        self.merge_room_contents(room);
+        self.follow_room_document(room);
         if let Some(ws) = self
             .desktop
             .workspaces
@@ -1371,11 +1365,6 @@ impl WorkspaceTree {
             }
         }
         changed
-    }
-
-    /// The record the room document names for `tab` of `room`, if any.
-    pub(crate) fn room_tab_record(&self, room: RoomId, tab: TabId) -> Option<String> {
-        tilo_desktop_model::apps::record_routes(self.room_docs.get(&room)?).remove(&tab)
     }
 
     /// Set the process-wide peer salt `next_id` stamps into the high
@@ -2177,7 +2166,6 @@ impl WorkspaceTree {
         let Some(ws) = self.workspace_in_room(room) else {
             return false;
         };
-        let ws_id = ws.id;
         let name = ws.name.clone();
         let policy = ws.policy.clone();
         let sandbox = ws.sandbox.clone();
@@ -2198,15 +2186,7 @@ impl WorkspaceTree {
             .get(&room)
             .cloned()
             .unwrap_or_default();
-        // A window of a host or unconfined program crosses as hosted here: the
-        // room's other devices view it as a live stream of just that window.
-        let strips: Vec<Strip> = self.window_hosting.as_ref().map_or_else(
-            || ws.strips.clone(),
-            |hosting| hosting.published(&ws.strips, &self.package_launches),
-        );
         let room_str = room.to_string();
-        let local_salt = self.local_salt();
-        let share_floor = self.room_share_floor.get(&room).copied();
         // Governance is projected only by the machine that holds it —
         // a guest claiming ownership would put a competing claim on
         // the wire that `apply_room_changes` would only refuse anyway.
@@ -2215,9 +2195,6 @@ impl WorkspaceTree {
         // The cache contains no media definitions. Preserve the admitted field
         // on a candidate; only the committed native owner may supply it anew.
         let before = self.room_docs.get(&room).cloned().unwrap_or_default();
-        // A room whose layout is personal takes no member's windows: each
-        // stays on its device, and nothing of this desktop's is written in.
-        let personal = projection::room_layout(&before).is_personal();
         let mut candidate = before.clone();
         let doc = &mut candidate;
 
@@ -2239,43 +2216,6 @@ impl WorkspaceTree {
         if let Err(err) = projection::project_room_records(doc, &held) {
             tracing::error!(?err, "room doc: records map");
         }
-        let mut retained: Vec<StripId> = strips
-            .iter()
-            .filter(|strip| self.strips_to_retain.contains(&strip.id))
-            .map(|strip| strip.id)
-            .collect();
-        let mine = |id: u64| {
-            local_salt != 0
-                && peer_salt_of(id) == local_salt
-                && share_floor.is_none_or(|floor| counter_of(id) >= floor)
-        };
-        if personal {
-            // What this device wrote into the room while it shared its
-            // layout comes out (a member may take its own windows out of a
-            // personal room, and nothing else); nothing is retained in a room
-            // that holds no strip of this desktop's: the strips stay here.
-            if let Err(err) = shared_record::device::withdraw(doc, &mine) {
-                tracing::error!(?err, "room doc: withdraw own windows");
-            }
-        } else {
-            let mut published = Workspace::in_room(ws_id, room, name.clone());
-            published.strips = strips;
-            let person = self.local_person.map(hex::encode);
-            let retain = |id: u64| self.strips_to_retain.contains(&StripId(id));
-            if let Err(err) = shared_record::device::write(
-                doc,
-                room,
-                &published,
-                &shared_record::device::Writer {
-                    person: person.as_deref(),
-                    mine: &mine,
-                    retained: &retain,
-                },
-            ) {
-                tracing::error!(?err, "room doc: layout");
-                retained.clear();
-            }
-        }
         if let Err(error) = projection::project_effect_receipts(doc, &effect_receipts) {
             tracing::error!(?error, "room doc: effect receipts map");
         }
@@ -2293,9 +2233,6 @@ impl WorkspaceTree {
                 .is_err()
             {
                 return false;
-            }
-            for strip in &retained {
-                self.strips_to_retain.remove(strip);
             }
             self.room_docs.insert(room, candidate);
             return true;
@@ -2329,9 +2266,6 @@ impl WorkspaceTree {
             return false;
         }
         doc.reset_diff_cursor();
-        for strip in &retained {
-            self.strips_to_retain.remove(strip);
-        }
         self.room_docs.insert(room, candidate);
         true
     }
@@ -2525,80 +2459,29 @@ impl WorkspaceTree {
             .map_or_else(projection::RoomLayout::default, projection::room_layout)
     }
 
-    /// Fold `room`'s layout into the cached workspace that addresses it:
-    /// its strips, groups and windows as the room document (with what this
-    /// device wrote that the room's governor has not admitted yet) says,
-    /// and what this device decides alone kept
-    /// ([`shared_record::device::fold`]). Reports whether anything changed.
-    fn merge_room_contents(&mut self, room: RoomId) -> bool {
+    /// Follow what `room`'s governance document says about its workspace
+    /// here. In a room whose layout is personal no member's windows are
+    /// shared: what this device mirrored of other people's windows while it
+    /// shared them goes, and every window of its own stays where it is. In
+    /// a room the native owner holds, the workspace takes the room's
+    /// presets, and windows its governor placed for in-process apps open as
+    /// those apps. The layout itself is the room's layout record's
+    /// ([`Self::fold_workspace_layout`]). Reports whether anything changed.
+    fn follow_room_document(&mut self, room: RoomId) -> bool {
         let local_salt = self.local_salt();
-        if local_salt == 0 {
-            return false;
-        }
         let Some(doc) = self.room_docs.get(&room) else {
             return false;
         };
-        let changed = if projection::room_layout(doc).is_personal() {
-            // A room whose layout is personal shares no member's windows:
-            // nothing of its layout is taken in, and what this device
-            // mirrored of other people's windows while it shared them goes.
-            // Every window of this device's own stays where it is.
+        let personal = projection::room_layout(doc).is_personal();
+        let mut changed = false;
+        if personal && local_salt != 0 {
             let theirs = |tab: &Tab| {
                 let salt = peer_salt_of(tab.id);
                 salt != 0 && salt != local_salt && salt != tilo_desktop_model::ids::RESERVED_SALT
             };
-            projection::drop_windows_of_others(&mut self.desktop, room, local_salt, &theirs)
-        } else {
-            let pending = self.layout_pending.get(&room).filter(|p| !p.is_empty());
-            let replica = pending.and_then(|pending| {
-                let mut replica = doc.clone();
-                let changes = pending
-                    .iter()
-                    .filter_map(|bytes| automerge::Change::from_bytes(bytes.clone()).ok());
-                replica.apply_incoming(changes).ok()?;
-                Some(replica)
-            });
-            let doc = replica.as_ref().unwrap_or(doc);
-            let device = self
-                .window_hosting
-                .as_ref()
-                .map(|hosting| hosting.device.clone())
-                .unwrap_or_default();
-            let share_floor = self.room_share_floor.get(&room).copied();
-            let mine = |id: u64| peer_salt_of(id) == local_salt;
-            // Windows this device had open before it joined stay its own.
-            let private =
-                |id: u64| mine(id) && share_floor.is_some_and(|floor| counter_of(id) < floor);
-            let desktop = &mut self.desktop;
-            let Some(ws) = desktop.workspaces.iter_mut().find(|ws| ws.room() == room) else {
-                return false;
-            };
-            let held: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
-            let changed = shared_record::device::fold(
-                doc,
-                ws,
-                &device,
-                &shared_record::device::Kept {
-                    mine: &mine,
-                    private: &private,
-                },
-            );
-            // Removed rather than repointed: resolvers already fall back to
-            // the first strip or group with no explicit selection.
-            let ws_id = ws.id;
-            let live: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
-            if desktop
-                .active_strip
-                .get(&ws_id)
-                .is_some_and(|active| !live.contains(active))
-            {
-                desktop.active_strip.remove(&ws_id);
-            }
-            for strip in held.iter().filter(|strip| !live.contains(strip)) {
-                desktop.active_group.remove(strip);
-            }
-            changed
-        };
+            changed =
+                projection::drop_windows_of_others(&mut self.desktop, room, local_salt, &theirs);
+        }
         let Some(doc) = self.room_docs.get(&room) else {
             return changed;
         };
@@ -3078,14 +2961,6 @@ impl WorkspaceTree {
                 return Ok(false);
             }
         };
-        // What this device changed in the room's layout is written before
-        // what the batch brings is folded in: the fold shows the room's
-        // layout, so an edit only the tree held would be undone by it. A room
-        // with no document here yet has nothing of this device's in it, and
-        // a refused batch leaves it with none.
-        if self.room_docs.contains_key(&room) {
-            self.try_sync_room_doc(room);
-        }
         let moved = self
             .room_docs
             .get_mut(&room)
@@ -3164,9 +3039,9 @@ impl WorkspaceTree {
             self.try_sync_room_doc(room);
         }
 
-        // Folds the room's layout into this machine's tree, keeping what it
-        // decides alone; see `merge_room_contents`.
-        let contents_changed = self.merge_room_contents(room);
+        // What the room's governance says about its workspace here; see
+        // `follow_room_document`.
+        let contents_changed = self.follow_room_document(room);
 
         let Some(ws) = self
             .desktop
@@ -6768,12 +6643,7 @@ mod automerge_foundation_tests {
             let (guest_ws, guest_strip, guest_group, _guest_tab_a, guest_tab_b) =
                 seed_two_tab_strip_and_focus_second(&mut guest, room, GUEST);
 
-            let changes = host
-                .export_room_changes_since(room, &[])
-                .expect("the host is in the room");
-            guest
-                .apply_room_changes(room, &changes, &PeerOrigin::hub(1))
-                .expect("the guest merges");
+            ship(&mut host, &mut guest, room, 1);
 
             // The window opened for the guest.
             let gws = guest
@@ -6865,11 +6735,11 @@ mod automerge_foundation_tests {
                     focus_history: Vec::new(),
                 }],
             }];
-            host.sync_room_doc(room);
+            host.capture_workspace_layout(room);
 
-            let doc = host.room_docs.get(&room).expect("a room document");
-            let layout =
-                shared_record::read(doc, None).expect("the room's windows must be in its document");
+            let doc = host.layout_docs.get(&room).expect("a layout record");
+            let layout = tilo_desktop_model::shared_record::read(doc, None)
+                .expect("the room's windows must be in its layout record");
             assert_eq!(layout.tree.workspaces[0].strips[0].id, strip_id);
             let shared = layout.tree.workspaces[0].strips[0].window_groups[0].clone();
             assert_eq!(shared.id, group_id, "the strip's group replicates");
@@ -6961,12 +6831,19 @@ mod automerge_foundation_tests {
         }
     }
 
+    /// What `from` holds of `room` reaches `to`: its room document, and its
+    /// layout record over the record route, signed by a device `to` knows
+    /// by `hub` alone. A layout write the room refuses is not taken in.
     fn ship(from: &mut WorkspaceTree, to: &mut WorkspaceTree, room: RoomId, hub: u64) {
         let changes = from
             .export_room_changes_since(room, &[])
             .expect("in the room");
         to.apply_room_changes(room, &changes, &PeerOrigin::hub(hub))
             .expect("merges");
+        let device = [u8::try_from(hub & 0xff).unwrap_or(u8::MAX); 32];
+        if let Err(refused) = to.hear_layout(from, room, device) {
+            tracing::debug!(%refused, "layout refused");
+        }
     }
 
     fn held(one: (&str, &str)) -> std::collections::BTreeMap<String, String> {
@@ -7119,11 +6996,6 @@ mod automerge_foundation_tests {
                 keys.contains(&"records".to_string()),
                 "the room's records must be in its document; got {keys:?}",
             );
-            // The layout record holds this room's workspace alone.
-            assert_eq!(
-                shared_record::read(doc, None).map(|layout| layout.tree.workspaces.len()),
-                Some(1)
-            );
             for forbidden in ["active", "active_strip", "active_group"] {
                 assert!(
                     !keys.contains(&forbidden.to_string()),
@@ -7221,9 +7093,10 @@ mod automerge_foundation_tests {
             );
         }
 
-        // Phase `a_peer_may_not_rewrite_this_machines_own_window`.
-        // A peer may add to the room; it may not rewrite what this machine
-        // owns. The batch is refused whole rather than partly merged.
+        // Phase `a_peer_may_not_close_this_machines_own_window`.
+        // A peer may add to the room's layout; it may not close what this
+        // machine's person made. The write is refused whole rather than
+        // partly merged.
         {
             const HOST: u16 = 0xA1A1;
             const GUEST: u16 = 0xB2B2;
@@ -7263,47 +7136,42 @@ mod automerge_foundation_tests {
                 }],
             }];
 
-            // The guest takes the host's document, renames the host's own
-            // window in it, and offers it back.
-            let seed = host
-                .export_room_changes_since(room, &[])
-                .expect("host is in the room");
+            // The guest takes the host's layout, closes the host's window in
+            // it, and offers that back.
+            let guest_device = [0x0b; 32];
             guest
-                .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
-                .expect("guest merges the host's room");
+                .hear_layout(&mut host, room, [0x0c; 32])
+                .expect("the guest takes the host's layout");
+            let doc = guest.layout_docs.get_mut(&room).expect("a layout record");
+            let mut layout = tilo_desktop_model::shared_record::read(&*doc, None).expect("layout");
+            for strip in layout
+                .tree
+                .workspaces
+                .iter_mut()
+                .flat_map(|ws| &mut ws.strips)
             {
-                let doc = guest.room_docs.get_mut(&room).expect("room doc");
-                let mut layout = shared_record::read(&*doc, None).expect("layout");
-                for held in layout
-                    .tree
-                    .workspaces
-                    .iter_mut()
-                    .flat_map(|ws| &mut ws.strips)
-                    .flat_map(|strip| &mut strip.window_groups)
-                    .flat_map(|group| &mut group.tabs)
-                    .filter(|held| held.id == tab)
-                {
-                    held.title = "Hijacked".into();
+                for held in &mut strip.window_groups {
+                    held.tabs.retain(|held| held.id != tab);
                 }
-                shared_record::write(doc, &layout).expect("written");
-                doc.commit();
-                let _ = (strip, group);
+                strip.window_groups.retain(|held| !held.tabs.is_empty());
             }
-            let tampered = guest
-                .export_room_changes_since(room, &[])
-                .expect("guest is in the room");
-
-            let accepted = host
-                .apply_room_changes(room, &tampered, &PeerOrigin::hub(2))
-                .expect("the check is a refusal, not an error");
-            assert!(
-                !accepted,
-                "a batch rewriting our own window must be refused"
+            tilo_desktop_model::shared_record::write(doc, &layout).expect("written");
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_desktop_model::shared_record::change_message(None)),
             );
+            // Everything the guest wrote, as its route would send the host.
+            let tampered = collab_types::DocumentMutation::Snapshot(doc.save());
+
+            let refused = host
+                .receive_layout(room, guest_device, &tampered)
+                .expect_err("closing someone else's window must be refused");
+            assert!(refused.contains("may not close"), "{refused}");
             assert_eq!(
                 host.desktop.workspaces[hi].strips[0].window_groups[0].tabs[0].title, "Plan",
                 "and nothing about it may be stored",
             );
+            let _ = (strip, group);
         }
 
         // Phase `maximization_stays_on_the_local_desktop_when_topology_syncs`.
@@ -7489,7 +7357,7 @@ mod automerge_foundation_tests {
                 .collect()
         };
         let tabs_in = |doc: &AutoCommit| -> Vec<Tab> {
-            shared_record::read(doc, None)
+            tilo_desktop_model::shared_record::read(doc, None)
                 .into_iter()
                 .flat_map(|layout| layout.tree.workspaces)
                 .flat_map(|w| w.strips)
@@ -7534,7 +7402,7 @@ mod automerge_foundation_tests {
         );
         assert!(shown.contains(&guest_tab), "the guest's own window stays");
         assert_eq!(
-            hosts_in(guest.room_docs.get(&room).unwrap()),
+            hosts_in(guest.layout_docs.get(&room).unwrap()),
             0,
             "B holds no window or title of A's"
         );
@@ -7562,17 +7430,17 @@ mod automerge_foundation_tests {
         ship(&mut host, &mut guest, room, 1);
         assert!(!tabs_of(&guest).contains(&later));
         assert!(
-            titles_in(host.room_docs.get(&room).unwrap()).is_empty(),
-            "the host's room document holds no window"
+            titles_in(host.layout_docs.get(&room).unwrap()).is_empty(),
+            "the host's layout record holds no window"
         );
         assert_eq!(
-            hosts_in(guest.room_docs.get(&room).unwrap()),
+            hosts_in(guest.layout_docs.get(&room).unwrap()),
             0,
             "nor does the guest's"
         );
-        guest.sync_room_doc(room);
+        guest.capture_workspace_layout(room);
         assert!(
-            titles_in(guest.room_docs.get(&room).unwrap()).is_empty(),
+            titles_in(guest.layout_docs.get(&room).unwrap()).is_empty(),
             "and the guest takes its own out of the room"
         );
         assert!(tabs_of(&guest).contains(&guest_tab), "keeping it here");
@@ -9597,9 +9465,6 @@ mod shell_media_policy;
 #[cfg(test)]
 #[path = "state/apply_room_changes_tests.rs"]
 mod apply_room_changes_tests;
-#[cfg(test)]
-#[path = "state/own_devices_layout_tests.rs"]
-mod own_devices_layout_tests;
 
 #[cfg(test)]
 mod active_workspace_peer_count_tests {

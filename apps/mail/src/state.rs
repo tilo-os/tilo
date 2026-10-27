@@ -1363,7 +1363,6 @@ mod tests {
             0,
             "a part of the folder is not the folder"
         );
-        drop(edits);
         assert_eq!(
             st.status.as_deref(),
             Some(format!("Still reading this folder; {held} selected so far").as_str())
@@ -1386,7 +1385,7 @@ mod tests {
         arriving.account = String::new();
         arriving.in_reply_to = None;
         arriving.rfc_message_id = None;
-        st.mailbox.insert(arriving.clone());
+        st.mailbox.insert(arriving);
         let rows: Vec<MessageId> = st.list_rows().into_iter().map(|(id, _)| id).collect();
         assert!(rows.len() > held, "the folder holds one more row");
         assert!(st.extend_selection(), "the new rows joined the selection");

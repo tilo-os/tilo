@@ -12,8 +12,7 @@ generator owns:
 - src/apps.rs (the registration list),
 - apps.json (id, name, category, version and the split `module` the app's
   code is in, for discovery before the wasm module loads, and for a page that
-  fetches an app's module beside the start module; `unavailable` lists the other apps with their platforms, so
-  a page can show what only runs on Tilo OS or a native desktop).
+  fetches an app's module beside the start module).
 
 An app whose default features still reach native-only crates (a feature not
 yet routed through a platform crate) lists the features the page build uses
@@ -285,12 +284,7 @@ def apps_json(apps: list[dict]) -> str:
         for a in apps
         if "web" in a["platforms"]
     ]
-    unavailable = [
-        dict(id=a["id"], name=a["name"], category=a["category"], platforms=a["platforms"])
-        for a in apps
-        if "web" not in a["platforms"]
-    ]
-    return json.dumps(dict(schema=1, applications=entries, unavailable=unavailable), indent=2) + "\n"
+    return json.dumps(dict(schema=1, applications=entries), indent=2) + "\n"
 
 
 def outputs(repo: pathlib.Path) -> tuple[dict[pathlib.Path, str], list[str]]:

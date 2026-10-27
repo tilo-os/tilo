@@ -79,7 +79,8 @@ python3 tools/dev/install-git-hooks.py
   checks are not (there are too many).
 - **`stable`** is the release branch. The stabilizer (usually an agent) picks a recent `main`
   commit and runs the heavy checks there too (images, VM and FUSE suites, size budgets, the goldens:
-  `on = ["stable"]` in `t.toml`). For each failure it commits a fix (brought back to `main`) or an
+  `heavy = true` in `t.toml`) with `t stable verify <commit>`, which runs only those without a
+  result for the candidate's inputs. For each failure it commits a fix (brought back to `main`) or an
   exclusion of unfinished work. It never weakens a check to make it pass. Only the stabilizer
   pushes to `stable`.
 

@@ -943,15 +943,18 @@ pub fn action_user_turn(rest: &str, catalogue: &Catalogue, revealed: &mut Reveal
 /// operations, with look-alike resources in one line and every resource
 /// `rest` names listed whatever the cap
 /// ([`tools::catalogue_summary_with`]). `rest` is the request with what the
-/// task's steps answered, so an id an earlier step returned may be planned.
+/// task's steps answered, so an id an earlier step returned may be planned;
+/// an offer `described` says the planner was described in full is named
+/// without its parameters again.
 pub fn action_user_turn_listing(
     rest: &str,
     catalogue: &Catalogue,
     revealed: &mut Revealed,
     most: usize,
+    described: &dyn Fn(&crate::surface::Offer) -> bool,
 ) -> FirstTurn {
     let named = tools::Naming::in_text(rest);
-    let summary = tools::catalogue_summary_with(catalogue, revealed, most, Some(&named));
+    let summary = tools::catalogue_summary_with(catalogue, revealed, most, Some(&named), described);
     FirstTurn {
         operations: format!("Operations published right now:\n\n{summary}\n"),
         task: format!("The instruction asks for:\n\n{}\n", rest.trim()),

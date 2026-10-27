@@ -1,8 +1,8 @@
 //! The page's `HostServices`: each platform crate's web backend — the
 //! clipboard of trusted clipboard events, `<input type=file>` choosers,
-//! downloads, `window.open` and the Notifications API. Speech is silent
-//! (`tts::NullSpeaker`); media controls, location and screen capture are
-//! unavailable.
+//! downloads, `window.open`, the Notifications API and the Geolocation API.
+//! Speech is silent (`tts::NullSpeaker`); media controls and screen capture
+//! are unavailable.
 //!
 //! Applications' notifications go to the desktop that shows their window,
 //! as banners and in its notification centre
@@ -303,9 +303,10 @@ impl ProviderAdmin for LazyAdministration {
     }
 }
 
-/// Only the exact registered control-panel identities may borrow administration.
+/// Only the exact registered control panel may borrow administration: the
+/// page runs Model Providers, never Settings (a Tilo OS app).
 pub(crate) fn provider_admin_app(app_id: &str) -> bool {
-    matches!(app_id, "so.tilo.settings" | "so.tilo.model-providers")
+    app_id == "so.tilo.model-providers"
 }
 
 /// Match trusted application metadata, not an arbitrary tab's label or requested alias.

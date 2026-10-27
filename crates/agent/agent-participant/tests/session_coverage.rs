@@ -874,6 +874,35 @@ fn message_text(message: &serde_json::Value) -> String {
     }
 }
 
+/// The text of a chat-completions request's first user turn: after the
+/// instructions and the apps' reference, which are system messages.
+fn first_turn(request: &serde_json::Value) -> String {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "user")
+        .map(message_text)
+        .unwrap_or_default()
+}
+
+/// Whether `turn` offers the operation `id` (`<resource>#<action>`): on a
+/// line of its own, or named in its resource's line of the operations the
+/// reference describes in full already (`<resource># a, b`).
+fn offers(turn: &str, id: &str) -> bool {
+    let Some((resource, action)) = id.split_once('#') else {
+        return false;
+    };
+    let line = format!("{resource}# ");
+    turn.contains(&format!("{id} — "))
+        || turn.lines().any(|named| {
+            named
+                .trim_start()
+                .strip_prefix(&line)
+                .is_some_and(|names| names.split(", ").any(|name| name == action))
+        })
+}
+
 /// Run `text` as a task of `agent` to its end.
 fn run_task(
     agent: &mut AgentParticipant,
@@ -941,10 +970,10 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
     let requests: Vec<String> = sent.try_iter().collect();
     assert_eq!(requests.len(), 1, "one model request for the task");
     let first: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
-    let turn = message_text(&first["messages"][1]);
+    let turn = first_turn(&first);
     // The task names Sheets, which the room has no record of: one is made
     // before the plan, so its operations are listed and nothing is opened.
-    assert!(turn.contains(set_cells), "{turn}");
+    assert!(offers(&turn, set_cells), "{turn}");
     assert!(!turn.contains("app.so.tilo.sheets#open"), "{turn}");
 
     agent.close();
@@ -1011,12 +1040,17 @@ async fn a_view_is_read_in_the_planning_conversation() {
         .map(|body| serde_json::from_str(&body).unwrap())
         .collect();
     assert_eq!(requests.len(), 2, "a read and a plan, no re-plan");
-    let turn = message_text(&requests[0]["messages"][1]);
+    let turn = first_turn(&requests[0]);
     assert!(
-        turn.contains("canvas.artwork#draw")
+        offers(&turn, "canvas.artwork#draw")
             && turn.contains(&format!("(document {})", canvas.record))
             && turn.contains("canvas.artwork#inspect answered"),
-        "the first turn shows draw in full and what the artwork holds: {turn}"
+        "the first turn offers draw and shows what the artwork holds: {turn}"
+    );
+    let reference = message_text(&requests[0]["messages"][1]);
+    assert!(
+        reference.contains("canvas.artwork#draw — "),
+        "draw in full before it: {reference}"
     );
     let read = requests[1]["messages"]
         .as_array()
@@ -1642,7 +1676,7 @@ async fn a_missing_value_goes_to_repair_naming_its_reference() {
         .map(|body| serde_json::from_str(&body).unwrap())
         .collect();
     assert_eq!(requests.len(), 2, "a plan and its repair");
-    let repair = message_text(&requests[1]["messages"][1]);
+    let repair = first_turn(&requests[1]);
     assert!(
         repair.contains("{{Sheet1!Z99}}") && repair.contains("failed"),
         "the repair is told which reference: {repair}"
@@ -1742,7 +1776,7 @@ async fn two_different_failures_in_one_task_are_both_repaired() {
     .await;
     assert_eq!(info.state, TaskState::Completed, "{info:?}");
     assert_eq!(requests.len(), 3, "a plan and two repairs");
-    let second = message_text(&requests[2]["messages"][1]);
+    let second = first_turn(&requests[2]);
     assert!(
         second.contains("no sheet `Budget`") && second.contains("Already done, and kept"),
         "the second repair is told why and what ran: {second}"

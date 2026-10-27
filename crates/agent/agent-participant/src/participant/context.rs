@@ -170,8 +170,9 @@ impl AgentParticipant {
 
     /// What `apps` can do, the same whatever the room holds
     /// ([`PlanContext::reference`]): every granted app's, or for an agent
-    /// granted many, those `in_play` (open, previewed or named). Told only
-    /// the relevant ones, the planner chooses among them all.
+    /// granted many, those `in_play` (open, previewed or named) and those
+    /// an earlier plan was told, by app id, so the reference only grows.
+    /// Told only the relevant ones, the planner chooses among them all.
     fn referenced(
         &mut self,
         apps: &[String],
@@ -180,9 +181,10 @@ impl AgentParticipant {
         let every = self.catalog == Catalog::Relevant || apps.len() <= MOST_REFERENCED_APPS;
         let referenced: Vec<String> = apps
             .iter()
-            .filter(|app| every || in_play(app))
+            .filter(|app| every || in_play(app) || self.described.contains(*app))
             .cloned()
             .collect();
+        self.described.extend(referenced.iter().cloned());
         self.reference(referenced)
     }
 

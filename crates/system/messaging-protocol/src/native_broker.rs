@@ -231,7 +231,12 @@ impl HistoryHost for NativeBroker {
     ) -> Option<Box<dyn std::any::Any + Send + Sync>> {
         self.observers.observe(changed)
     }
-    fn read(&self, route: Route, limit: usize) -> HistoryFuture {
+    fn read(
+        &self,
+        route: Route,
+        cursor: Option<tilo_messaging::HistoryCursor>,
+        limit: usize,
+    ) -> HistoryFuture {
         let broker = self.clone();
         Box::pin(async move {
             if limit != tilo_messaging::MAX_HISTORY_MESSAGES {
@@ -245,10 +250,7 @@ impl HistoryHost for NativeBroker {
                 broker
                     .authorized(&route)
                     .map_err(|_| HistoryError::Revoked)?;
-                storage
-                    .history
-                    .page(route, limit)
-                    .map_err(|_| HistoryError::Unavailable)
+                storage.history.page_before(route, cursor.as_ref(), limit)
             })
             .await
             .map_err(|_| HistoryError::Unavailable)?

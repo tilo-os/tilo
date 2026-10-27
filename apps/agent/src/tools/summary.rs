@@ -25,7 +25,7 @@ pub const MOST_SUMMARISED: usize = 60;
 /// application is started — follow, Tilo's applications first; a cut
 /// summary says how to reach what it left out.
 pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: usize) -> String {
-    catalogue_summary_with(catalogue, revealed, most, None)
+    catalogue_summary_with(catalogue, revealed, most, None, &|_| false)
 }
 
 /// The fewest characters of a resource's own id (what follows its kind) a
@@ -97,11 +97,17 @@ fn resource_key(offer: &Offer) -> ResourceKey<'_> {
 /// task keeps adding to cannot crowd the rest out; and every resource
 /// `named` names is listed on top of the applications' shares, whatever the
 /// cap, so an id an earlier step returned is one the model may plan with.
+/// An offer `described` says the model was described in full already (its
+/// parameters, every choice the same) is named, with the others of its
+/// resource, in one line (`<resource># a, b`) rather than listed with its
+/// signature again; an open, an unavailable operation and one the person
+/// is asked to confirm keep their own line.
 pub fn catalogue_summary_with(
     catalogue: &Catalogue,
     revealed: &mut Revealed,
     most: usize,
     named: Option<&Naming>,
+    described: &dyn Fn(&Offer) -> bool,
 ) -> String {
     let rank = |offer: &&Offer| match offer.descriptor.kind {
         _ if opened_app(offer).is_some() => 0,
@@ -152,6 +158,16 @@ pub fn catalogue_summary_with(
         }
     }
     let mut s = String::new();
+    let compact = |offer: &Offer| {
+        opened_app(offer).is_none()
+            && matches!(
+                offer.descriptor.contract.availability,
+                tilo_actions::Availability::Available
+            )
+            && confirmation_note(offer).is_none()
+            && described(offer)
+    };
+    let mut compacted = false;
     for (app, resource) in resources {
         let offers: Vec<&Offer> = shown
             .iter()
@@ -161,8 +177,11 @@ pub fn catalogue_summary_with(
         let Some(head) = offers.first() else {
             continue;
         };
+        let (named, listed): (Vec<&Offer>, Vec<&Offer>) =
+            offers.iter().copied().partition(|offer| compact(offer));
+        compacted |= !named.is_empty();
         if let Some(members) = groups.get(&(app, resource)) {
-            write_alike(&mut s, catalogue, head, members, &offers);
+            write_alike(&mut s, catalogue, (head, members), &listed, &named);
             for offer in shown
                 .iter()
                 .filter(|o| head_of.get(&resource_key(o)) == Some(&(app, resource)))
@@ -175,13 +194,17 @@ pub fn catalogue_summary_with(
                 "In {app}: {} ({}) — resource {resource}",
                 head.descriptor.resource_label, head.descriptor.resource_kind
             );
-            for offer in &offers {
+            for offer in &listed {
                 s.push_str(&summary_line(catalogue, offer));
             }
+            write_named(&mut s, resource, &named);
         }
         for offer in &offers {
             revealed.reveal(offer.id());
         }
+    }
+    if compacted {
+        s.push_str(COMPACT_NOTE);
     }
     let rest = catalogue.offers.len().saturating_sub(shown.len());
     if rest > 0 {
@@ -217,15 +240,32 @@ fn summary_line(catalogue: &Catalogue, offer: &Offer) -> String {
     line
 }
 
+/// What a summary that named operations in a line ends with.
+const COMPACT_NOTE: &str = "(`<resource># a, b` names operations whose parameters are \
+    described in full above: name each as <resource>#a, with the arguments described there.)\n";
+
+/// The operations of `resource` the model was described in full (`named`),
+/// in one line.
+fn write_named(s: &mut String, resource: &str, named: &[&Offer]) {
+    if named.is_empty() {
+        return;
+    }
+    let actions: Vec<&str> = named
+        .iter()
+        .map(|offer| offer.address().action.as_str())
+        .collect();
+    let _ = writeln!(s, "  {resource}# {}", actions.join(", "));
+}
+
 /// An alike group in one line for all its resources, then the operations
-/// its `head` was listed with (`offers`), each once, named as
-/// `<resource>#operation`.
+/// its `head` was listed with (`listed`, each once, named as
+/// `<resource>#operation`) and those named in a line (`in_line`).
 fn write_alike(
     s: &mut String,
     catalogue: &Catalogue,
-    head: &Offer,
-    members: &[ResourceKey<'_>],
-    offers: &[&Offer],
+    (head, members): (&Offer, &[ResourceKey<'_>]),
+    listed: &[&Offer],
+    in_line: &[&Offer],
 ) {
     let (app, resource) = resource_key(head);
     let label = |resource: &str| {
@@ -246,9 +286,10 @@ fn write_alike(
         head.descriptor.resource_kind,
         named.join(", ")
     );
-    for offer in offers {
+    for offer in listed {
         s.push_str(&summary_line(catalogue, offer).replacen(resource, "<resource>", 1));
     }
+    write_named(s, "<resource>", in_line);
 }
 
 /// Resources of one application and kind with the same operations in the
@@ -463,7 +504,8 @@ mod tests {
         let catalogue = timeline(12);
         let named = Naming::in_text("cut the promo");
         let mut revealed = Revealed::new();
-        let summary = catalogue_summary_with(&catalogue, &mut revealed, 30, Some(&named));
+        let summary =
+            catalogue_summary_with(&catalogue, &mut revealed, 30, Some(&named), &|_| false);
         assert!(
             summary.contains(
                 "In video-editor: 12 video-editor.clip resources — \
@@ -506,9 +548,55 @@ mod tests {
             )
         );
         // Fewer than five alike are each listed as themselves.
-        let summary = catalogue_summary_with(&timeline(4), &mut Revealed::new(), 200, Some(&named));
+        let summary = catalogue_summary_with(
+            &timeline(4),
+            &mut Revealed::new(),
+            200,
+            Some(&named),
+            &|_| false,
+        );
         assert!(!summary.contains("resources —"), "{summary}");
         assert_eq!(summary.matches("#set-op-3 ").count(), 4, "{summary}");
+    }
+
+    /// Operations described in full already are named in a line per
+    /// resource, without their labels and signatures again, and may still
+    /// be planned; the others keep their own line. Alike clips share the
+    /// line too.
+    #[test]
+    fn described_operations_are_named_in_a_line() {
+        let catalogue = timeline(12);
+        let named = Naming::in_text("cut the promo");
+        let described = |offer: &Offer| offer.address().action != "render";
+        let mut revealed = Revealed::new();
+        let summary =
+            catalogue_summary_with(&catalogue, &mut revealed, 30, Some(&named), &described);
+        assert!(
+            summary.contains("  video-editor.project# place-clip, add-title, read-timeline\n"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("  video-editor.project#render — render"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("  <resource># set-op-0, set-op-1, "),
+            "{summary}"
+        );
+        assert!(!summary.contains("#set-op-3 — "), "{summary}");
+        assert!(summary.ends_with(COMPACT_NOTE), "{summary}");
+        for id in [
+            "video-editor.project#add-title",
+            "video-editor.project/clips/0000c11b-0000-4000-8000-000000000000#set-op-19",
+        ] {
+            assert!(revealed.contains(id), "{id}");
+        }
+        // Nothing described: no line of names and no note.
+        let full =
+            catalogue_summary_with(&catalogue, &mut Revealed::new(), 30, Some(&named), &|_| {
+                false
+            });
+        assert!(!full.contains(COMPACT_NOTE) && full.len() > summary.len());
     }
 
     /// A clip an earlier step returned the id of is listed whatever the
@@ -530,7 +618,8 @@ mod tests {
              {\"clip\":\"0000C112-0000-4000-8000-000000000000\"}",
         );
         let mut revealed = Revealed::new();
-        let summary = catalogue_summary_with(&catalogue, &mut revealed, 10, Some(&named));
+        let summary =
+            catalogue_summary_with(&catalogue, &mut revealed, 10, Some(&named), &|_| false);
         assert!(
             revealed.contains(
                 "video-editor.project/clips/0000c112-0000-4000-8000-000000000000#set-op-19-2"
@@ -601,7 +690,8 @@ mod tests {
             ids[1..].join(", ")
         ));
         let mut revealed = Revealed::new();
-        let summary = catalogue_summary_with(&catalogue, &mut revealed, 8, Some(&named));
+        let summary =
+            catalogue_summary_with(&catalogue, &mut revealed, 8, Some(&named), &|_| false);
         assert!(
             revealed.contains("chat.workspace/channels/ops#post"),
             "chat keeps its share of the cap: {summary}"

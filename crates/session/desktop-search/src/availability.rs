@@ -72,6 +72,29 @@ pub fn runs_on(package_id: &str, host: &[&str]) -> bool {
     entry_for(package_id).is_none_or(|app| app.platforms.iter().any(|p| host.contains(p)))
 }
 
+/// Why the app `package_id` does not open on a desktop that runs none of
+/// its platforms (`here`: "the browser"), in words for the window that
+/// stands in its place: where it runs instead. A window can name such an
+/// app when it comes from someone else's desktop, or one of the person's
+/// own on another device.
+#[must_use]
+pub fn runs_elsewhere(package_id: &str, here: &str) -> String {
+    let Some(app) = entry_for(package_id) else {
+        return format!("This app isn't part of Tilo in {here}");
+    };
+    if app
+        .platforms
+        .iter()
+        .any(|platform| matches!(*platform, "linux" | "macos"))
+    {
+        format!("{} runs in Tilo on a computer, not in {here}", app.name)
+    } else if app.platforms.contains(&"tilo-os") {
+        format!("{} runs on Tilo OS, not in {here}", app.name)
+    } else {
+        format!("{} doesn't run in {here}", app.name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +133,26 @@ mod tests {
             .collect();
         assert!(!web.is_empty());
         assert!(web.iter().all(|app| app.platforms.contains(&"web")));
+    }
+
+    #[test]
+    fn an_app_that_does_not_run_here_says_where_it_does() {
+        assert_eq!(
+            runs_elsewhere("so.tilo.terminal", "the browser"),
+            "Terminal runs in Tilo on a computer, not in the browser"
+        );
+        let os_only = catalog()
+            .iter()
+            .find(|app| app.platforms == ["tilo-os"])
+            .expect("the registry has a Tilo-OS-only app");
+        assert_eq!(
+            runs_elsewhere(os_only.id, "the browser"),
+            format!("{} runs on Tilo OS, not in the browser", os_only.name)
+        );
+        assert_eq!(
+            runs_elsewhere("node-app:7", "the browser"),
+            "This app isn't part of Tilo in the browser"
+        );
     }
 
     #[test]

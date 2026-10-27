@@ -10668,7 +10668,7 @@ mod native_field_tests;
     clippy::significant_drop_tightening,
     reason = "each scenario's frame builder is its subject from its first paint to its last assertion"
 )]
-#[path = "frame_native_tab_scenarios.rs"]
+#[path = "frame_native_tab_scenario_tests.rs"]
 mod native_tab_scenarios;
 
 #[cfg(test)]

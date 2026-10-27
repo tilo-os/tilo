@@ -2,6 +2,7 @@
 //! the picture, where the model sees and the agent may show it, or a plain
 //! refusal saying why not.
 
+use super::look_tests::first_user;
 use super::tests::{Looks, called, look_context, pictures, results, scripted, text_of};
 use crate::planner::{PlanContext, Planner as _};
 use crate::vision::tests::png;
@@ -133,7 +134,7 @@ fn a_replan_shows_the_pictures_its_steps_read() {
         planner
             .plan_reading("say which passport is valid", &context, &mut reads)
             .unwrap();
-        let first = sent.lock().unwrap()[0].messages[1].clone();
+        let first = first_user(&sent.lock().unwrap()[0]);
         if allowed {
             assert_eq!(pictures(&first), 1);
             let text = text_of(&first);

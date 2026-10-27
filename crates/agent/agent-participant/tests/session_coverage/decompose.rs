@@ -51,11 +51,17 @@ fn offers(body: &str, action: &str) -> bool {
     })
 }
 
-/// How many messages the planning request `body` carries: a fresh
-/// conversation's first turn carries the instructions and the request.
+/// How many messages the planning request `body` carries after its system
+/// messages (the instructions and the apps' reference): a fresh
+/// conversation carries one, the request.
 fn messages(body: &str) -> usize {
     let request: serde_json::Value = serde_json::from_str(body).unwrap();
-    request["messages"].as_array().unwrap().len()
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] != "system")
+        .count()
 }
 
 /// The coordinator lists three items; each is planned by a fresh agent
@@ -91,7 +97,7 @@ async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
 
     for (number, word) in [(1, "Alpha"), (2, "Bravo"), (3, "Charlie")] {
         let body = room.next_request(&sent, "an item's agent").await;
-        assert_eq!(messages(&body), 2, "a fresh conversation");
+        assert_eq!(messages(&body), 1, "a fresh conversation");
         let told = last_turn(&body);
         assert!(
             told.contains(&format!(
@@ -260,7 +266,7 @@ async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
     post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code 4321");
 
     let after = room.next_request(&sent, "item 3's agent").await;
-    assert_eq!(messages(&after), 2, "a fresh conversation");
+    assert_eq!(messages(&after), 1, "a fresh conversation");
     let told = last_turn(&after);
     assert!(
         told.contains("2. wait for Rae's code (done)")
@@ -384,7 +390,7 @@ async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
     let redo = room
         .next_request(&sent, "item 1 again, by a fresh agent")
         .await;
-    assert_eq!(messages(&redo), 2, "a fresh conversation");
+    assert_eq!(messages(&redo), 1, "a fresh conversation");
     let told = last_turn(&redo);
     assert!(
         told.contains("you are the agent of item 1 only: post Alpha ready")
@@ -444,7 +450,7 @@ async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
     let again = room
         .next_request(&sent, "item 1's agent, asked again")
         .await;
-    assert_eq!(messages(&again), 2, "a fresh conversation");
+    assert_eq!(messages(&again), 1, "a fresh conversation");
     let told = last_turn(&again);
     assert!(
         told.contains("You answered \"cannot: the chat is not shown here\".")

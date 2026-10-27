@@ -300,6 +300,11 @@ pub struct LayoutChanged {
     /// is mirrored as.
     #[serde(default)]
     pub emojis: Vec<EmojiInfo>,
+    /// The layout as the gateway hands it when the bot (re)connects: what
+    /// changed in the server while the bridge was away is taken as the
+    /// server's, the order of its channels included.
+    #[serde(default)]
+    pub connected: bool,
 }
 
 /// One of a guild's custom emoji.

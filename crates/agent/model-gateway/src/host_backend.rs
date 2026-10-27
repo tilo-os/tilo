@@ -908,6 +908,65 @@ mod tests {
         carries_reasoning_into(asked, response.message);
     }
 
+    /// A planner's stable instructions and the system message after them
+    /// (its apps) stay apart: through Responses the instructions alone are
+    /// `instructions` and the apps a system item before the request; to
+    /// Anthropic each is a system block under a cache breakpoint of its
+    /// own. Either provider keeps the instructions and tools cached when the
+    /// apps change.
+    #[test]
+    fn stable_instructions_stay_apart_from_the_system_message_after_them() {
+        let mut asked =
+            neutral::Conversation::new("instructions", "hello").request(vec![plan_tool()], 512);
+        asked
+            .messages
+            .insert(1, neutral::Message::text(neutral::Role::System, "the apps"));
+        let message = serde_json::json!({"type": "message", "id": "msg_1", "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "done", "annotations": []}]});
+        let (origin, peer) = answer_once(responses_reply(
+            &serde_json::json!([message]),
+            "completed",
+            None,
+        ));
+        turn(responses_client(), &format!("{origin}/v1"), &asked).unwrap();
+        let (_, body) = peer.join().unwrap();
+        assert_eq!(body["instructions"], "instructions");
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[0]["role"], "system");
+        assert!(input[0].to_string().contains("the apps"), "{body}");
+        assert_eq!(input[1]["role"], "user");
+
+        let (origin, peer) = answer_once(serde_json::json!({
+            "id": "msg", "type": "message", "role": "assistant", "model": "model",
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn", "stop_sequence": null,
+            "usage": {"input_tokens": 40, "output_tokens": 9}
+        }));
+        let vault = tempfile::tempdir().unwrap();
+        CompletionClient::new()
+            .unwrap()
+            .with_protocol(ProviderProtocol::Anthropic)
+            .with_credentials_in(vault.path())
+            .complete(
+                &origin,
+                &ApiKey::Value("fabricated-key".into()),
+                Target::Standard,
+                "model",
+                &asked,
+                "unused-key",
+                tilo_test_env::hang_deadline(),
+            )
+            .unwrap();
+        let (_, body) = peer.join().unwrap();
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2, "{body}");
+        for (block, text) in system.iter().zip(["instructions", "the apps"]) {
+            assert_eq!(block["text"], text);
+            assert_eq!(block["cache_control"]["type"], "ephemeral", "{body}");
+        }
+    }
+
     /// The turn after `asked`, whose answer was `answered`: one call of
     /// `plan` (`call_1`, item `fc_1`) after reasoning `rs_1`.
     fn carries_reasoning_into(asked: neutral::ModelRequest, answered: neutral::Message) {

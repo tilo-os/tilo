@@ -470,9 +470,8 @@ fn the_loop_reads_governed_rooms_without_opening_the_owner() {
     let (release, holder) = open_in_progress(&tree);
 
     let ((hosts, awaiting), syncs) = counting_syncs(|| {
-        // What the loop asks with no owner open yet: hosted legacy windows
-        // every half second, and the window-transfer consent scan.
-        network.publish_governed_layout(room, &tree);
+        // What the loop asks with no owner open yet: the window-transfer
+        // consent scan.
         (hosted.hosts(room), hosted.awaiting_me(room))
     });
     let still_opening = !holder.is_finished();

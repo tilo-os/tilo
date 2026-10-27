@@ -2830,3 +2830,114 @@ fn a_messages_texts_are_read_where_they_are_drawn() {
     }
     assert!(headed, "a message that starts a group shows its author");
 }
+
+/// A browser page's Save dialog: every place chosen is one the host keeps,
+/// with no path, and each write to it is recorded.
+#[derive(Default)]
+struct PathlessHost {
+    written: std::sync::Arc<std::sync::Mutex<Vec<Written>>>,
+}
+
+/// A file the host wrote: its name and bytes.
+type Written = (String, Vec<u8>);
+
+impl ui::host::FilePicker for PathlessHost {
+    fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+        answered(ui::portal::PortalOutcome::Failed("no paths".into()))
+    }
+    fn pick_multiple(&self, _: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+        answered(ui::portal::MultiOutcome::Failed("no paths".into()))
+    }
+    fn open_file(&self, _: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+        answered(ui::portal::OpenFileOutcome::Failed("no paths".into()))
+    }
+    fn launch(&self, _: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        answered(ui::portal::LaunchOutcome::Failed("no paths".into()))
+    }
+    fn save_destination(&self, request: ui::portal::PickRequest) -> ui::portal::DestinationChannel {
+        let written = std::sync::Arc::clone(&self.written);
+        let name = request.suggested_name().unwrap_or_default().to_owned();
+        let kept = name.clone();
+        ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Chosen(
+            ui::portal::SaveDestination::kept(name, move |bytes| {
+                written.lock().unwrap().push((kept.clone(), bytes));
+                answered(ui::portal::SaveOutcome::Saved)
+            }),
+        ))
+    }
+}
+
+fn answered<T>(outcome: T) -> std::sync::mpsc::Receiver<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = tx.send(outcome);
+    rx
+}
+
+/// On a page whose files have no paths, Save writes the attachment's bytes
+/// to the place the person chose through the host, rather than to a path
+/// the page cannot reach, and offers no folder to show it in.
+#[test]
+fn an_attachment_is_saved_where_a_pathless_host_keeps_it() {
+    let (mut app, mut doc) = app_with_doc();
+    let bytes = b"%PDF-1.7 the plan".to_vec();
+    let blob = app.content.put(&bytes).unwrap();
+    let msg = app.messages[0].id.clone();
+    app.messages[0].attachment = Some(model::Attachment::File {
+        name: "plan.pdf".into(),
+        blob,
+        size: u64::try_from(bytes.len()).unwrap(),
+    });
+    app.attachment_view = Some(crate::attachment_view::AttachmentView::new(msg.clone()));
+    let host = std::sync::Arc::new(PathlessHost::default());
+    let services = ui::host::HostServices::null().with_files(host.clone());
+    ui::host::scoped(&services, || {
+        app.on_hit(
+            Hit::Attachment {
+                msg,
+                action: ui::widget::conversation::AttachmentAction::Save,
+            },
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.settle_attachment_save();
+    });
+    assert_eq!(
+        *host.written.lock().unwrap(),
+        vec![("plan.pdf".to_owned(), bytes)],
+        "the bytes went where the host keeps them"
+    );
+    assert!(app.attachment_save.is_none(), "the save is done");
+    assert!(
+        app.attachment_status
+            .as_deref()
+            .is_some_and(|status| status.ends_with("plan.pdf")),
+        "{:?}",
+        app.attachment_status
+    );
+    assert!(
+        app.attachment_view
+            .as_ref()
+            .is_some_and(|view| view.saved.is_none()),
+        "no folder to show a copy the browser keeps in"
+    );
+}
+
+/// The attach action on a page with no file paths: without a path it
+/// opens the conversation and asks the platform's chooser, whose bytes go
+/// to the page's content store; a path is refused with how to attach.
+#[test]
+fn the_attach_action_chooses_files_where_the_device_has_no_paths() {
+    let (mut app, _doc) = app_with_doc();
+    app.external_services = false;
+    app.active_channel = "c_chat".into();
+    let refused = app
+        .attach_file_effect("c_crit", Some("/home/ada/plan.pdf"))
+        .unwrap_err();
+    assert!(refused.contains("leave out the path"), "{refused}");
+    assert!(app.device_pick.is_none(), "a refused path asks nothing");
+    app.attach_file_effect("c_crit", None).unwrap();
+    assert_eq!(
+        app.active_channel, "c_crit",
+        "the files' conversation opens"
+    );
+    assert!(app.device_pick.is_some(), "the platform's chooser is asked");
+}

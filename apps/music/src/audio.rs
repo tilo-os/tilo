@@ -590,6 +590,32 @@ impl AudioEngine {
             .is_some_and(AudioBackend::is_playing_real)
     }
 
+    /// Describe what plays to the system's now-playing controls the
+    /// platform's own player reaches (a page's Media Session). Where the
+    /// app's MPRIS service is what the system hears, nothing more is said.
+    pub fn set_now_playing(&mut self, now: &media::NowPlaying) {
+        #[cfg(not(feature = "audio"))]
+        if let Some(backend) = &mut self.backend {
+            backend.set_now_playing(now);
+        }
+        #[cfg(feature = "audio")]
+        let _ = now;
+    }
+
+    /// What the platform player's system controls asked since this was
+    /// last taken: next and previous track, and the play, pause and seek
+    /// it carried out already.
+    pub fn take_now_playing_actions(&mut self) -> Vec<media::NowPlayingAction> {
+        #[cfg(not(feature = "audio"))]
+        return self
+            .backend
+            .as_mut()
+            .map(AudioBackend::take_now_playing_actions)
+            .unwrap_or_default();
+        #[cfg(feature = "audio")]
+        Vec::new()
+    }
+
     /// A settled PLAYING state, excluding a pipeline merely transitioning there.
     #[cfg(feature = "audio")]
     pub(crate) fn is_playing_confirmed(&self) -> bool {
@@ -1407,6 +1433,22 @@ impl AudioBackend {
                     .as_ref()
                     .is_some_and(media::MediaEngine::is_playing)
         }
+    }
+
+    #[cfg(not(feature = "audio"))]
+    fn set_now_playing(&mut self, now: &media::NowPlaying) {
+        if let Some(engine) = &mut self.inner.engine {
+            engine.set_now_playing(now);
+        }
+    }
+
+    #[cfg(not(feature = "audio"))]
+    fn take_now_playing_actions(&mut self) -> Vec<media::NowPlayingAction> {
+        self.inner
+            .engine
+            .as_mut()
+            .map(media::MediaEngine::take_now_playing_actions)
+            .unwrap_or_default()
     }
 
     #[cfg(feature = "audio")]
