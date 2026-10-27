@@ -133,6 +133,7 @@ pub mod ordered;
 pub mod path;
 pub mod reactions;
 pub mod reader;
+pub mod recording;
 pub mod replica;
 pub mod resource;
 pub mod schema;

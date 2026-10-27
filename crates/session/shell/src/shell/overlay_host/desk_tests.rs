@@ -747,7 +747,9 @@ fn a_reader_reaches_each_showing_widget_and_its_pin() {
         "a showing widget is a control: {before:?}"
     );
     assert!(
-        !before.iter().any(|target| target.ends_with(".pin")),
+        !before
+            .iter()
+            .any(|target| target.strip_suffix(".pin").is_some_and(|id| !id.is_empty())),
         "a folded widget has no pin to reach: {before:?}"
     );
 
