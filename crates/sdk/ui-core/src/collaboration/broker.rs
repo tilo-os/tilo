@@ -98,7 +98,7 @@ const SDK_PRIMARY_ROUTE_TIMEOUT: Duration = Duration::from_millis(4_500);
 const PRIMARY_ROUTE_REPLY_SLACK: Duration = Duration::from_millis(500);
 /// The one error a primary route that missed its deadline reports, whichever
 /// side noticed.
-const PRIMARY_ROUTE_TIMED_OUT: &str = "collaboration primary route timed out";
+pub(super) const PRIMARY_ROUTE_TIMED_OUT: &str = "collaboration primary route timed out";
 /// Whether the identity service answered and declined to sign, as opposed
 /// to being unreachable: it reports a refusal as permission denied.
 fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
@@ -3076,6 +3076,21 @@ mod native_launch_refusal_tests {
     }
 }
 
+/// The refusal of a primary route that missed its deadline.
+fn primary_route_timed_out() -> runtime_portal::NotAvailable {
+    runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        PRIMARY_ROUTE_TIMED_OUT,
+    ))
+}
+
+/// Whether `error` is a primary route that missed its deadline, as opposed to
+/// a refusal or a closed connection.
+fn is_primary_route_timeout(error: &runtime_portal::NotAvailable) -> bool {
+    matches!(error, runtime_portal::NotAvailable::ConnectionFailed(io)
+        if io.kind() == std::io::ErrorKind::TimedOut && io.to_string() == PRIMARY_ROUTE_TIMED_OUT)
+}
+
 /// Primary-route barrier shared by the blocking constructors and
 /// [`CollaborationManager::await_primary_route`].
 fn await_primary_route_on(
@@ -3121,6 +3136,11 @@ fn await_primary_route_on(
 struct ConnectedBroker {
     transport: BrokerTransport,
     primary_route: PrimaryRouteState,
+    /// The `Hello` that named the primary route, announced again if the
+    /// route missed its deadline (see `CollaborationManager::connect_route_kind_late`).
+    hello: CollabRequest,
+    /// The route did not answer within its deadline; the connection is open.
+    late: bool,
 }
 
 #[cfg(test)]
@@ -3336,7 +3356,7 @@ impl CollaborationManager {
             // launch's own connection does.
             let identity =
                 sdk_join_identity(room).map_err(|error| native_launch_refusal(&error))?;
-            return Self::connect_route_kind(
+            return Self::connect_route_kind_late(
                 SdkConnectSource::Fd(runtime_portal::windows::into_raw(connection)),
                 RouteSpec {
                     app_id: app,
@@ -3348,7 +3368,7 @@ impl CollaborationManager {
                 Some(identity),
                 "person",
             )
-            .map(Self::from_connected)
+            .map(Self::from_launch)
             .map_err(|error| native_launch_refusal(&error));
         }
         if runtime_portal::service_fd("collab").is_none() {
@@ -3374,7 +3394,7 @@ impl CollaborationManager {
         room: Uuid,
         kind: &crate::record::RecordKind,
     ) -> Result<Self, crate::launch::LaunchError> {
-        Self::connect_route_kind(
+        Self::connect_route_kind_late(
             source,
             RouteSpec {
                 app_id: app,
@@ -3386,7 +3406,7 @@ impl CollaborationManager {
             None,
             "person",
         )
-        .map(Self::from_connected)
+        .map(Self::from_launch)
         .map_err(|error| native_launch_refusal(&error))
     }
 
@@ -3528,6 +3548,23 @@ impl CollaborationManager {
         .map(Self::from_connected)
     }
 
+    /// [`Self::from_connected`] for an app launch: a primary route that
+    /// missed its deadline does not keep the app from opening. It opens on
+    /// its local replica, says it is connecting, and joins the route in the
+    /// background on the same connection; a slow route is no reason to exit.
+    fn from_launch(connected: ConnectedBroker) -> Self {
+        if !connected.late {
+            return Self::from_connected(connected);
+        }
+        tracing::warn!(
+            "collab: the primary route missed its deadline; opening on the local replica and joining it in the background"
+        );
+        let hello = connected.hello.clone();
+        let mut manager = Self::with_transport(Box::new(connected.transport));
+        manager.primary_route = connected.primary_route;
+        manager.joining_late(hello)
+    }
+
     fn from_connected(connected: ConnectedBroker) -> Self {
         let mut manager = Self::with_transport(Box::new(connected.transport));
         manager.primary_route = connected.primary_route;
@@ -3574,6 +3611,31 @@ impl CollaborationManager {
         endpoint_identity: Option<SdkJoinIdentity>,
         participant_kind: &'static str,
     ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
+        let connected = Self::connect_route_kind_late(
+            source,
+            route,
+            record_kind,
+            handle,
+            endpoint_identity,
+            participant_kind,
+        )?;
+        if connected.late {
+            return Err(primary_route_timed_out());
+        }
+        Ok(connected)
+    }
+
+    /// [`Self::connect_route_kind`], keeping the open connection when the
+    /// primary route misses its deadline (`late`) instead of failing: an app
+    /// launch opens on its local replica and joins the route afterwards.
+    fn connect_route_kind_late(
+        source: SdkConnectSource,
+        route: RouteSpec,
+        record_kind: Option<String>,
+        handle: Option<String>,
+        endpoint_identity: Option<SdkJoinIdentity>,
+        participant_kind: &'static str,
+    ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
         let RouteSpec {
             app_id,
             cluster_id,
@@ -3606,18 +3668,27 @@ impl CollaborationManager {
             cluster_id,
             record: record.clone(),
         });
-        let _ = transport.submit(TransportCommand::Primary(CollabRequest::Hello {
+        let hello = CollabRequest::Hello {
             app_id,
             cluster_id,
             record,
             record_kind,
             handle,
-        }));
-        await_primary_route_on(&mut transport, &mut primary_route)?;
-        tilo_startup_metrics::startup_mark("collab-primary-ready");
+        };
+        let _ = transport.submit(TransportCommand::Primary(hello.clone()));
+        let late = match await_primary_route_on(&mut transport, &mut primary_route) {
+            Ok(()) => false,
+            Err(error) if is_primary_route_timeout(&error) => true,
+            Err(error) => return Err(error),
+        };
+        if !late {
+            tilo_startup_metrics::startup_mark("collab-primary-ready");
+        }
         Ok(ConnectedBroker {
             transport,
             primary_route,
+            hello,
+            late,
         })
     }
 
