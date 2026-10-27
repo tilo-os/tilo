@@ -489,6 +489,19 @@ files-menu-paste = Paste
 files-menu-new-folder = New folder
 files-menu-new-file = New file…
 files-menu-move-trash = Move to Trash
+files-rename-selected = Rename “{ $name }”
+files-trash-selected = Move { $count ->
+    [one] “{ $name }”
+   *[other] { $count } items
+} to Trash
+files-copy-selected = Copy { $count ->
+    [one] “{ $name }”
+   *[other] { $count } items
+}
+files-cut-selected = Cut { $count ->
+    [one] “{ $name }”
+   *[other] { $count } items
+}
 files-menu-add-favourite = Add to Favorites
 files-menu-remove-favourite = Remove from Favorites
 files-menu-hide-hidden = Hide hidden files

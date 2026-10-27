@@ -335,7 +335,10 @@ fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
         "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
-    );
+    )
+    // Typed data for a program to reason about; a person reads what the
+    // app shows.
+    .for_audience(tilo_actions::Audience::Agents);
     spec.contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
