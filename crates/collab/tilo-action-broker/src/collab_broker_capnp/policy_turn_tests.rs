@@ -248,16 +248,19 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
     });
 
     // Idle with nothing due: the thread sleeps through what a one-second
-    // clock would have woken it for twice.
+    // clock would have woken it for twice. The expiry is registered in the
+    // middle of the broker's turn, which then still runs to its end and
+    // parks; on a loaded machine that rest of the turn can be preempted any
+    // number of times. So the window opens once the thread has parked and
+    // closes once it is parked again, and counts only what woke it between.
     let epoch = tilo_identity_host::policy_change::epoch();
-    let settled = tilo_test_env::idle::context_switches(&tid);
+    let settled = tilo_test_env::idle::asleep_switches(&tid);
     std::thread::sleep(RECHECK_INTERVAL.saturating_mul(2));
-    let woke = tilo_test_env::idle::context_switches(&tid).saturating_sub(settled);
-    // Another test of this process may announce; each costs a turn of about
-    // two switches. Parking after the start's check costs at most two more.
+    let woke = tilo_test_env::idle::asleep_switches(&tid).saturating_sub(settled);
+    // Each announcement costs a turn of about two switches.
     let announced = tilo_identity_host::policy_change::epoch().wrapping_sub(epoch);
     assert!(
-        woke <= announced.saturating_mul(2).saturating_add(2),
+        woke <= announced.saturating_mul(2),
         "the idle broker thread woke {woke} times with {announced} announcements"
     );
 
