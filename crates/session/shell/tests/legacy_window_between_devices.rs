@@ -133,6 +133,48 @@ fn millis(duration: Duration) -> f64 {
     duration.as_micros() as f64 / 1000.0
 }
 
+/// What this run's timing was measured on, printed beside it: a first-picture
+/// wall clock is read against the machine it was taken on, and the historical
+/// failures of this line cut neither way without it.
+fn runner_conditions() -> String {
+    let cores = std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get);
+    let jobs = std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "-".to_string());
+    format!("cores={cores} jobs={jobs}")
+}
+
+/// How long the first picture waited on this run: from the host start until
+/// the viewer had it decoded. This records the wait; the promise the test
+/// keeps is the identity below (the first picture is the first frame the host
+/// sent), because on a shared runner this wait also measures the host's load.
+/// Reported also when a frame went missing, since a run without a first
+/// picture is what a timing line must not silently change into.
+fn report_first_picture(who: Viewer, encoder: &str, codec: &str, timing: &FirstPicture) {
+    let label = match who {
+        Viewer::OwnDevice => "legacy-window",
+        Viewer::RoomMember => "room-member-window",
+    };
+    let waited = timing.waited.map_or_else(
+        || "absent".to_string(),
+        |waited| format!("{:.2}", millis(waited)),
+    );
+    eprintln!(
+        "{label}-first-picture encoder={encoder} codec={codec} first_picture_ms={waited} \
+         decoded_ns={:?} sent_ns={:?} {}",
+        timing.decoded_ts,
+        timing.sent_ts,
+        runner_conditions(),
+    );
+}
+
+/// The first picture this viewer got: how long it took from the host start,
+/// its capture timestamp, and the host's first sent capture timestamp.
+#[derive(Default)]
+struct FirstPicture {
+    waited: Option<Duration>,
+    decoded_ts: Option<u64>,
+    sent_ts: Option<u64>,
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_legacy_window_streams_between_two_devices() {
     stream_a_window(Viewer::OwnDevice).await;
@@ -311,6 +353,19 @@ async fn stream_a_window(who: Viewer) {
         };
         let Ok(Some(event)) = tokio::time::timeout(wait, viewer_events.recv()).await else {
             if host_report.is_some() {
+                // The rest of the frames never arrived. Record the first
+                // picture as far as it got before the delivery asserts below
+                // judge the run, so the timing line is never missing.
+                report_first_picture(
+                    who,
+                    &encoder,
+                    &codec,
+                    &FirstPicture {
+                        waited: first_picture,
+                        decoded_ts: first_decoded_ts,
+                        sent_ts: first_sent_ts,
+                    },
+                );
                 break;
             }
             continue;
@@ -572,6 +627,16 @@ async fn stream_a_window(who: Viewer) {
     );
     // Rate and latency are printed above for a quiet machine to judge; on a
     // shared runner they measure the host's load, not the stream.
+    report_first_picture(
+        who,
+        &encoder,
+        &codec,
+        &FirstPicture {
+            waited: first_picture,
+            decoded_ts: first_decoded_ts,
+            sent_ts: first_sent_ts,
+        },
+    );
     assert_eq!(
         input_latencies.len(),
         usize::from(input_samples),
