@@ -114,12 +114,13 @@ pub const DEFAULT_IDLE_POLL_MAX: Duration = Duration::from_secs(600);
 /// Largest jitter applied to an idle poll wait, in thousandths (±10 %).
 const IDLE_JITTER_PERMILLE: i32 = 100;
 
-/// The health a provider failure leaves an account in.
+/// The health a provider failure leaves an account in: whatever the provider
+/// calls worth retrying (a refused or broken connection, a cut body, a 5xx,
+/// a rate limit) is an outage, not a broken account.
 fn health_of(error: &Error) -> MountHealth {
     match error {
-        Error::Offline | Error::RateLimited { .. } | Error::Io(_) => MountHealth::Offline,
         Error::Unauthorized => MountHealth::NeedsAuthentication,
-        Error::Status(status) if *status >= 500 => MountHealth::Offline,
+        error if error.is_transient() => MountHealth::Offline,
         _ => MountHealth::Error,
     }
 }

@@ -141,11 +141,11 @@ pub(super) struct Runtime {
     companions: Mutex<[u64; 1]>,
     /// The tree document beside the state file.
     document: crate::shell::persist::DocLog,
-    /// The document of each room this device's own engine holds, beside the
-    /// state file: a room's layout is written by every device of it, so its
-    /// history has to outlive a restart, or a document rebuilt from the tree
-    /// would merge with the others' as a stranger's.
-    room_documents: Mutex<
+    /// Each room's layout record, beside the state file: every device of
+    /// the room writes it, so its history has to outlive a restart, or a
+    /// copy rebuilt from the tree would merge with the others' as a
+    /// stranger's.
+    layout_documents: Mutex<
         std::collections::HashMap<crate::shell::state::RoomId, Arc<crate::shell::persist::DocLog>>,
     >,
     /// The action policy this writer's tree has published.
@@ -179,7 +179,7 @@ impl Default for Runtime {
             sequence: AtomicU64::new(0),
             companions: Mutex::new([0; 1]),
             document: crate::shell::persist::DocLog::default(),
-            room_documents: Mutex::default(),
+            layout_documents: Mutex::default(),
             action_authority: Arc::default(),
             in_flight: Mutex::new(None),
             #[cfg(test)]
@@ -380,13 +380,13 @@ impl NativeStateRuntime {
         &self.0.document
     }
 
-    /// The log of `room`'s document beside the state file.
-    pub(crate) fn room_document_log(
+    /// The log of `room`'s layout record beside the state file.
+    pub(crate) fn layout_document_log(
         &self,
         room: crate::shell::state::RoomId,
     ) -> Arc<crate::shell::persist::DocLog> {
         self.0
-            .room_documents
+            .layout_documents
             .lock()
             .entry(room)
             .or_default()

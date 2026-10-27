@@ -795,11 +795,12 @@ pub struct Rooms {
 /// [`Rooms`] for whoever must not keep them alive: the browser plane, which
 /// hands sessions the calls of the rooms this relay carries.
 #[derive(Clone)]
-pub(crate) struct WeakRooms(std::sync::Weak<RoomsInner>);
+pub struct WeakRooms(std::sync::Weak<RoomsInner>);
 
 impl WeakRooms {
     /// The rooms, while the relay still has them.
-    pub(crate) fn upgrade(&self) -> Option<Rooms> {
+    #[must_use]
+    pub fn upgrade(&self) -> Option<Rooms> {
         self.0.upgrade().map(|inner| Rooms { inner })
     }
 }
@@ -938,7 +939,8 @@ impl std::fmt::Debug for Rooms {
 
 impl Rooms {
     /// These rooms, held without keeping them alive.
-    pub(crate) fn downgrade(&self) -> WeakRooms {
+    #[must_use]
+    pub fn downgrade(&self) -> WeakRooms {
         WeakRooms(Arc::downgrade(&self.inner))
     }
 

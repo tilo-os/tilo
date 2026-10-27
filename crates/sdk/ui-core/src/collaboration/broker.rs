@@ -656,7 +656,12 @@ impl CollabTransport for BrokerTransport {
             }
             TransportCommand::Primary(request) => SdkCommand::Primary(request),
             TransportCommand::ToRoute(route, request) => SdkCommand::ToRoute(route, request),
-            TransportCommand::Join(route) => SdkCommand::Join(route, None),
+            TransportCommand::Join(route, record_kind) => {
+                if let Ok(mut kinds) = self.state.route_record_kinds.lock() {
+                    kinds.insert(route.channel_id(), record_kind.as_str().to_owned());
+                }
+                SdkCommand::Join(route, Some(record_kind.as_str().to_owned()))
+            }
             TransportCommand::ConfirmPrimaryRoute => {
                 let (reply, pending) = mpsc::sync_channel(1);
                 self.enqueue(SdkCommand::PrimaryReady(reply))?;
@@ -833,6 +838,14 @@ impl CollabTransport for BrokerTransport {
         }))
     }
 
+    fn joined_record_kind(&self, channel: &str) -> Option<crate::record::RecordKind> {
+        self.state
+            .route_record_kinds
+            .lock_recover()
+            .get(channel)
+            .map(crate::record::RecordKind::new)
+    }
+
     fn route_join_failure(&self, channel: &str) -> Option<String> {
         self.state
             .route_join_failures
@@ -874,11 +887,12 @@ impl CollabTransport for BrokerTransport {
         self.state.publication_result().is_err()
     }
 
-    fn document_change_refused(&self) -> bool {
-        matches!(
-            self.state.publication_result(),
-            Err(DocumentPublicationError::Refused(_))
-        )
+    fn publication_outcome(&self) -> Option<DocumentPublicationError> {
+        self.state.publication_result().err()
+    }
+
+    fn refused_change(&self) -> Option<String> {
+        self.state.refused_change()
     }
 
     fn fail_closed(&self, reason: &'static str) {
@@ -2067,8 +2081,18 @@ struct BridgeState {
     /// Why each route whose last join failed failed, by channel: a route
     /// that never joined says so instead of staying unready without a word.
     route_join_failures: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// The kind each joined route's record holds, by channel: a change that
+    /// arrives on a route awaiting its first join re-joins it naming the kind
+    /// the owner opened the record with.
+    route_record_kinds: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
+    /// The last change the peer answered but would not accept, when nothing
+    /// later has gone through. It is not a publication failure: the bridge
+    /// stays up and later changes and publications go on, so the owner is
+    /// told which change to reconcile and never mistakes it for a lost
+    /// connection (see [`Self::note_refused_change`]).
+    last_refused_change: Arc<std::sync::Mutex<Option<String>>>,
     /// The broker refused or failed an action-surface publication; the owner
     /// takes this and republishes.
     action_surface_failed: Arc<AtomicBool>,
@@ -2244,8 +2268,10 @@ impl BridgeState {
             connection_snapshots: Arc::default(),
             document_reads: committed_document::Reads::default(),
             route_join_failures: Arc::default(),
+            route_record_kinds: Arc::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
+            last_refused_change: Arc::new(std::sync::Mutex::new(None)),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
             directory_rpc_successes: Arc::new(AtomicU64::new(0)),
             directory_rpc_failures: Arc::new(AtomicU64::new(0)),
@@ -2292,9 +2318,20 @@ impl BridgeState {
         self.wake_pending.store(false, Ordering::Release);
     }
 
+    /// The outcome of everything published so far: a terminal failure, else
+    /// the change the peer answered but would not accept, if nothing later
+    /// has gone through. A refusal answers for the run of changes it covers
+    /// and survives being read; it is withdrawn by the next change that goes
+    /// through ([`Self::change_sent`]), never by the reading.
     fn publication_result(&self) -> Result<(), DocumentPublicationError> {
         match self.publication_failure.lock() {
-            Ok(failure) => failure.clone().map_or(Ok(()), Err),
+            Ok(failure) => failure.clone().map_or_else(
+                || match self.refused_change() {
+                    Some(said) => Err(DocumentPublicationError::Refused(said)),
+                    None => Ok(()),
+                },
+                Err,
+            ),
             Err(_) => Err(DocumentPublicationError::Failed(
                 "publication failure state poisoned".into(),
             )),
@@ -2332,6 +2369,41 @@ impl BridgeState {
         refusal
     }
 
+    /// The peer answered one change with a definite refusal: it will not take
+    /// this change. The transport carried the answer, so the bridge stays
+    /// open and later changes and publications go through. Only that change
+    /// is not accepted, and the owner is told so it can reconcile its local
+    /// copy instead of waiting for a reconnect that would change nothing.
+    fn note_refused_change(&self, context: &'static str, error: impl std::fmt::Display) {
+        let refusal = DocumentPublicationError::Refused(format!("{context}: {error}"));
+        let said = refusal.to_string();
+        tracing::warn!(
+            direction = context,
+            %error,
+            "collab: the broker refused one document change; this bridge stays open"
+        );
+        if let Ok(mut last) = self.last_refused_change.lock() {
+            *last = Some(said);
+        }
+        self.notify_events();
+    }
+
+    /// A change the peer refused while nothing later has been sent, if any.
+    fn refused_change(&self) -> Option<String> {
+        self.last_refused_change.lock().ok()?.clone()
+    }
+
+    /// A change went through: nothing is waiting to be reconciled any more.
+    fn change_sent(&self) {
+        let cleared = self
+            .last_refused_change
+            .lock()
+            .is_ok_and(|mut last| last.take().is_some());
+        if cleared {
+            self.notify_events();
+        }
+    }
+
     fn fail_closed(&self, direction: &'static str) {
         self.fail_closed_with_rpc_error(direction, None);
     }
@@ -2364,25 +2436,58 @@ impl BridgeState {
         direction: &'static str,
         rejected: Option<(u64, &runtime_portal::NotAvailable)>,
     ) {
-        if self.close(direction) {
-            if let Some((invocation_id, error)) = rejected {
-                let (rpc_kind, rpc_error, rpc_error_truncated) = bounded_rpc_diagnostic(error);
-                tracing::error!(
-                    direction,
-                    invocation_id,
-                    rpc_kind,
-                    rpc_error,
-                    rpc_error_truncated,
-                    "collab: bounded bridge overloaded or disconnected; disabling collaboration"
-                );
-            } else {
-                tracing::error!(
-                    direction,
-                    "collab: bounded bridge overloaded or disconnected; disabling collaboration"
-                );
-            }
+        let first = self.close(direction);
+        if let Some((invocation_id, error)) = rejected {
+            let (rpc_kind, rpc_error, rpc_error_truncated) = bounded_rpc_diagnostic(error);
+            tracing::error!(
+                direction,
+                invocation_id,
+                rpc_kind,
+                rpc_error,
+                rpc_error_truncated,
+                "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+            );
+        } else {
+            tracing::error!(
+                direction,
+                "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+            );
+        }
+        // A derailed worker has no reader left for the answer: publish it.
+        if !first {
             self.notify_events();
         }
+    }
+}
+
+/// Note that the shovel found nothing left waiting on it while the bridge
+/// still claimed to be up. That only happens after walking away from a
+/// command it left undelivered, which the owner must not keep believing;
+/// every other path into this state already closed the bridge.
+fn stranded_break(state: &BridgeState) {
+    if state.is_healthy() {
+        tracing::error!(
+            "collab: the bridge stopped serving while still connected; disabling collaboration"
+        );
+        state.fail_closed("collaboration worker stopped serving");
+    }
+}
+
+/// Whether `error` is the peer's definite answer about the request itself:
+/// it read the request and would not take it. A lost, cancelled or overloaded
+/// call is not an answer — its outcome is unknown, and only that may end
+/// collaboration — and neither is a transport failure.
+fn refused_by_peer(error: &runtime_portal::NotAvailable) -> bool {
+    match error {
+        runtime_portal::NotAvailable::Capnp(error) => {
+            matches!(
+                error.kind,
+                capnp::ErrorKind::Failed | capnp::ErrorKind::Unimplemented
+            )
+        }
+        runtime_portal::NotAvailable::ServiceFdMissing
+        | runtime_portal::NotAvailable::ConnectionFailed(_)
+        | runtime_portal::NotAvailable::ProtocolMismatch { .. } => false,
     }
 }
 
@@ -4520,7 +4625,11 @@ async fn drive_shovel(
         else {
             break;
         };
+        // The owner only stops sending once nothing waits on this worker, and
+        // a refused change left the bridge open: end it rather than drop what
+        // the owner queued and leave the app believing it is still connected.
         if !inbound_tx.state.is_healthy() {
+            stranded_break(&inbound_tx.state);
             break;
         }
         let routes_before = routes.len();
@@ -5663,10 +5772,17 @@ async fn recheck_native_invocation(
         message: None,
     };
     let wire = serde_json::to_string(&update).map_err(|error| error.to_string())?;
-    channel
-        .update_invocation(invocation.id, &wire)
-        .await
-        .map_err(|error| error.to_string())?;
+    match channel.update_invocation(invocation.id, &wire).await {
+        Ok(()) => {}
+        // The peer will not take this invocation's cancellation, which is
+        // about this invocation; a lost call leaves its outcome unknown.
+        Err(error) if refused_by_peer(&error) => tracing::warn!(
+            %error,
+            id = invocation.id,
+            "collab: the broker refused this invocation cancellation; the bridge stays open"
+        ),
+        Err(error) => return Err(error.to_string()),
+    }
     Ok(false)
 }
 
@@ -6345,19 +6461,39 @@ async fn send_document_frame(
     state: &BridgeState,
 ) -> Result<(), DocumentPublicationError> {
     match try_send_frame(route, signer, cleartext.clone(), claims, state).await {
-        FrameSend::Sent | FrameSend::Held => Ok(()),
+        FrameSend::Sent | FrameSend::Held => {
+            state.change_sent();
+            Ok(())
+        }
         FrameSend::Failed(error) => Err(error),
         FrameSend::Refused(refusal) => {
-            if !refresh_route_keys(route, signer).await {
-                return Err(state.publication_failed("document commit RPC", refusal, true));
+            if !refresh_route_keys(route, signer).await || !refusal.is_definite() {
+                return Err(frame_refused(state, &refusal));
             }
             match try_send_frame(route, signer, cleartext, claims, state).await {
-                FrameSend::Sent | FrameSend::Held => Ok(()),
-                FrameSend::Failed(error) => Err(error),
-                FrameSend::Refused(refusal) => {
-                    Err(state.publication_failed("document commit RPC", refusal, true))
+                FrameSend::Sent | FrameSend::Held => {
+                    state.change_sent();
+                    Ok(())
                 }
+                FrameSend::Failed(error) => Err(error),
+                FrameSend::Refused(refusal) => Err(frame_refused(state, &refusal)),
             }
+        }
+    }
+}
+
+/// What a commit the broker would not take means. A definite refusal — the
+/// peer answered about this very change — fails that change alone; anything
+/// else (a lost call, an overload) leaves the outcome unknown and ends the
+/// bridge as it always has.
+fn frame_refused(state: &BridgeState, refusal: &FrameRefusal) -> DocumentPublicationError {
+    match refusal {
+        FrameRefusal::Definite(reason) => {
+            state.note_refused_change("document commit RPC", reason);
+            DocumentPublicationError::Refused(format!("document commit RPC: {reason}"))
+        }
+        FrameRefusal::Unknown(reason) => {
+            state.publication_failed("document commit RPC", reason, true)
         }
     }
 }
@@ -6498,9 +6634,16 @@ async fn try_send_frame(
     match postcard::to_stdvec(&op) {
         Ok(bytes) => match route.channel.send(&bytes).await {
             Ok(()) => FrameSend::Sent,
+            Err(error) if refused_by_peer(&error) => {
+                tracing::warn!(
+                    %error,
+                    "collab: the broker refused this document change; it alone is not accepted"
+                );
+                FrameSend::Refused(FrameRefusal::Definite(error.to_string()))
+            }
             Err(error) => {
                 tracing::warn!(%error, "collab: document commit failed; outcome unknown");
-                FrameSend::Refused(error.to_string())
+                FrameSend::Refused(FrameRefusal::Unknown(error.to_string()))
             }
         },
         Err(error) => {
@@ -6552,9 +6695,33 @@ enum FrameSend {
     Held,
     /// Not sealed or not signed; retrying cannot help. Already recorded.
     Failed(DocumentPublicationError),
-    /// The broker refused it, possibly because its keys were stale. Not yet
-    /// recorded: a retry under refreshed keys may still succeed.
-    Refused(String),
+    /// The broker would not take it, possibly because its keys were stale.
+    /// Not yet recorded: a retry under refreshed keys may still succeed.
+    Refused(FrameRefusal),
+}
+
+/// Why a commit call did not go through, as far as this side can tell.
+enum FrameRefusal {
+    /// The peer read the change and would not accept it.
+    Definite(String),
+    /// No answer: the call was lost, cancelled or overloaded.
+    Unknown(String),
+}
+
+impl FrameRefusal {
+    /// Whether the peer answered about this change rather than the call
+    /// failing on its way.
+    fn is_definite(&self) -> bool {
+        matches!(self, Self::Definite(_))
+    }
+}
+
+impl std::fmt::Display for FrameRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Definite(reason) | Self::Unknown(reason) => f.write_str(reason),
+        }
+    }
 }
 
 /// Ask the identity service for `route`'s current keys. Returns whether
@@ -6981,13 +7148,19 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::Hello { .. } => {}
         CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
-            Ok(bytes) => {
-                if let Err(error) = route.channel.send(&bytes).await {
+            Ok(bytes) => match route.channel.send(&bytes).await {
+                Ok(()) => inbound_tx.state.change_sent(),
+                // A definite refusal is the peer's answer about this signed
+                // change: it alone is not accepted and the bridge stays open.
+                Err(error) if refused_by_peer(&error) => inbound_tx
+                    .state
+                    .note_refused_change("signed document commit RPC", &error),
+                Err(error) => {
                     inbound_tx
                         .state
                         .publication_failed("signed document commit RPC", error, true);
                 }
-            }
+            },
             Err(error) => {
                 inbound_tx
                     .state
@@ -7000,9 +7173,9 @@ async fn dispatch_sdk_request(
         } => {
             // The helper records every failure, including a policy denial that
             // leaves the identity connection usable, before returning its result.
-            return send_document_mutation(route, signer, mutation, authorization, inbound_tx)
-                .await
-                .is_ok();
+            let outcome =
+                send_document_mutation(route, signer, mutation, authorization, inbound_tx).await;
+            return outcome.is_ok();
         }
         CollabRequest::OfferContent { hash, bytes } => {
             if let Err(error) = route.channel.offer_blob(&hash, &bytes).await {
@@ -7337,24 +7510,45 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::CompleteInvocation { id, code, message } => {
             if let Err(error) = route.channel.complete_invocation(id, &code, &message).await {
-                tracing::warn!(%error, id, "collab: completing resource/action invocation failed");
-                inbound_tx
-                    .state
-                    .fail_closed("invocation completion outcome unknown");
+                // The peer answering that it will not take this completion is
+                // about this invocation; a lost call leaves its outcome
+                // unknown and, as ever, takes subsequent outbound work with it.
+                if refused_by_peer(&error) {
+                    tracing::warn!(
+                        %error,
+                        id,
+                        "collab: the broker refused this invocation completion; the bridge stays open"
+                    );
+                } else {
+                    tracing::warn!(%error, id, "collab: completing resource/action invocation failed");
+                    inbound_tx
+                        .state
+                        .fail_closed("invocation completion outcome unknown");
+                }
             }
         }
         CollabRequest::UpdateInvocation { id, update } => match serde_json::to_string(&update) {
             Ok(json) => {
                 if let Err(error) = route.channel.update_invocation(id, &json).await {
-                    tracing::warn!(%error, id, "collab: updating action invocation failed");
                     // Broker-owned acceptance and rejected progress are not
-                    // owner durability acknowledgments. A failed terminal may
-                    // follow an effect and must stop subsequent outbound work.
-                    if update.is_terminal() {
-                        inbound_tx.state.fail_closed_with_rpc_error(
-                            "invocation update outcome unknown",
-                            Some((id, &error)),
+                    // owner durability acknowledgments. A refusal is the
+                    // peer's answer about this invocation alone, so the
+                    // bridge stays open; a lost terminal may follow an effect
+                    // and still stops subsequent outbound work.
+                    if refused_by_peer(&error) {
+                        tracing::warn!(
+                            %error,
+                            id,
+                            "collab: the broker refused this invocation update; the bridge stays open"
                         );
+                    } else {
+                        tracing::warn!(%error, id, "collab: updating action invocation failed");
+                        if update.is_terminal() {
+                            inbound_tx.state.fail_closed_with_rpc_error(
+                                "invocation update outcome unknown",
+                                Some((id, &error)),
+                            );
+                        }
                     }
                 }
             }
@@ -7974,8 +8168,15 @@ mod tests {
         media_stops: usize,
         media_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
         fail_document: bool,
+        /// Refuse this many document commits the way a broker that will not
+        /// take the change answers: a definite error, not a lost call.
+        refuse_documents: usize,
+        refused_documents: usize,
         document_gates: std::collections::VecDeque<DocumentSendGate>,
         fail_terminal: bool,
+        /// Refuse this many invocation updates the way a broker that will not
+        /// take them answers: a definite error, not a lost call.
+        refuse_terminals: usize,
         terminal_updates: usize,
         invocation_updates: Vec<(u64, tilo_actions::InvocationUpdate)>,
         joined: Vec<(String, Vec<u8>)>,
@@ -8871,8 +9072,17 @@ mod tests {
             }
             captures.terminal_updates += 1;
             if captures.fail_terminal {
-                return Promise::err(capnp::Error::failed(
+                // No answer came back: the peer may or may not have kept this
+                // update, which is an unknown outcome, not a refusal.
+                return Promise::err(capnp::Error::disconnected(
                     "effect receipt barrier failed; outcome unknown".into(),
+                ));
+            }
+            if captures.refuse_terminals > 0 {
+                captures.refuse_terminals -= 1;
+                tracing::warn!("collab: fixture refuses one invocation update");
+                return Promise::err(capnp::Error::failed(
+                    "this invocation update was not accepted".into(),
                 ));
             }
             Promise::ok(())
@@ -8892,7 +9102,21 @@ mod tests {
             };
             let mut captures = self.captures.lock().unwrap();
             if captures.fail_document {
-                return Promise::err(capnp::Error::failed("owner durable barrier failed".into()));
+                // The call is lost on its way back: the peer may or may not
+                // have kept the change, which is an unknown outcome, not an
+                // answer. A typed refusal below is the opposite: the peer read
+                // the change and said it will not take this one.
+                return Promise::err(capnp::Error::disconnected(
+                    "owner durable barrier failed; outcome unknown".into(),
+                ));
+            }
+            if captures.refuse_documents > 0 {
+                captures.refuse_documents -= 1;
+                captures.refused_documents += 1;
+                tracing::warn!("collab: fixture refuses one document change");
+                return Promise::err(capnp::Error::failed(
+                    "so.tilo.chat named no kind for a new record".into(),
+                ));
             }
             captures.signed_ops.push(op);
             if let Some(gate) = captures.document_gates.pop_front() {
@@ -9803,11 +10027,40 @@ mod tests {
         (client_fd, captures, handle)
     }
 
+    /// Stand up the fake broker, then open the window's manager on a
+    /// **committed** primary route: through the production constructor, so
+    /// the route the broker acknowledges is the one whose owner applies each
+    /// edit itself. That route sends commits over the wire
+    /// (`send_document_mutation`) — the path a refused commit travels. An
+    /// ordinary route sends document frames through `send_document_frame`
+    /// instead, which shares [`frame_refused`] classification.
+    #[cfg(unix)]
+    fn committed_route_over_fake_broker(
+        broker: FakeBroker,
+    ) -> (CollaborationManager, SharedCaptures, thread::JoinHandle<()>) {
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let room = Uuid::new_v4();
+        let manager = CollaborationManager::for_route_from(
+            SdkConnectSource::Fd(fd),
+            "so.tilo.notes".into(),
+            room,
+            Some("tab:0000000000000003".into()),
+            presence_handle_env(),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: harness_document_signer(),
+            }),
+            "person",
+        )
+        .expect("the fake broker's committed route opens");
+        (manager, captures, thread)
+    }
+
     #[test]
     fn session_owner_commit_sdk_failure_stops_queued_terminal() {
         let broker = FakeBroker::default();
-        let (fd, captures, thread) = stand_up_fake_broker(broker);
-        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
+        let (mut manager, captures, thread) = committed_route_over_fake_broker(broker);
         captures.lock().unwrap().fail_document = true;
         manager.send(CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(
@@ -9856,7 +10109,10 @@ mod tests {
                 std::slice::from_ref(&beside),
             );
         assert_eq!(manager.route_join_failure(&beside), None);
-        manager.join_route(beside.clone());
+        manager.join_route(
+            beside.clone(),
+            crate::record::RecordKind::new("tilo.rich-text"),
+        );
         tilo_test_env::wait_until("the refused join to say why", || {
             manager.route_join_failure(&beside).is_some()
         });
@@ -9872,11 +10128,127 @@ mod tests {
         );
     }
 
+    /// A peer may answer one commit with a definite refusal — it read the
+    /// change and will not take it, here because the record it would create
+    /// was named without its kind. That is not a lost connection: the bridge
+    /// stays open, the app stays published and reachable, and the very next
+    /// change goes through.
+    #[test]
+    fn a_refused_document_commit_fails_only_that_change() {
+        let broker = FakeBroker::default();
+        let (mut manager, captured, thread) = committed_route_over_fake_broker(broker);
+        captured.lock().unwrap().refuse_documents = 1;
+        assert!(manager.send(CollabRequest::document_incremental(
+            b"refused change".to_vec()
+        )));
+        let refused = manager.begin_document_publication_barrier().unwrap();
+        let error = refused
+            .wait(Some(tilo_test_env::hang_deadline()))
+            .unwrap_err();
+        assert!(
+            matches!(&error, DocumentPublicationError::Refused(reason)
+                if reason.contains("named no kind for a new record")),
+            "the refused change is reported as refused, not as an unknown outcome: {error}"
+        );
+        assert!(
+            manager.is_connected(),
+            "a definite refusal is an answer, not a lost connection"
+        );
+        assert!(broker_state(&manager).is_healthy());
+        assert!(
+            manager
+                .refused_change()
+                .is_some_and(|said| said.contains("named no kind")),
+            "the connection stays up, so the owner is told which change was refused"
+        );
+        assert_eq!(
+            captured.lock().unwrap().refused_documents,
+            1,
+            "the broker answered about exactly one change"
+        );
+        assert!(
+            broker_state(&manager).is_healthy(),
+            "the refusal must not withdraw the app's publication"
+        );
+        // The app's publication still works: a later change goes through.
+        assert!(manager.send(CollabRequest::document_incremental(
+            b"later change".to_vec()
+        )));
+        let later = manager.begin_document_publication_barrier().unwrap();
+        assert_eq!(later.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
+        assert_eq!(captured.lock().unwrap().signed_ops.len(), 1);
+        assert!(manager.is_connected());
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    /// The outcome-unknown half of the same path: a commit call that never
+    /// got an answer still ends collaboration, as it always has.
+    #[test]
+    fn a_document_commit_whose_outcome_is_unknown_still_closes_the_bridge() {
+        let broker = FakeBroker::default();
+        let (mut manager, captured, thread) = committed_route_over_fake_broker(broker);
+        captured.lock().unwrap().fail_document = true;
+        assert!(manager.send(CollabRequest::document_incremental(
+            b"unknown change".to_vec()
+        )));
+        tilo_test_env::wait_until("`!manager.is_connected()`", || !manager.is_connected());
+        assert!(
+            !format!("{:?}", manager.document_publication_failure()).contains("Refused"),
+            "an unknown outcome is not a refusal"
+        );
+        assert_eq!(manager.refused_change(), None);
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    /// An invocation update the broker refuses is about that invocation: the
+    /// bridge stays open and the app keeps its place. An update whose
+    /// delivery is unknown still stops outbound work.
+    #[test]
+    fn a_refused_invocation_update_keeps_the_bridge() {
+        let broker = FakeBroker::default();
+        let (mut manager, captured, thread) = committed_route_over_fake_broker(broker);
+        captured.lock().unwrap().refuse_terminals = 1;
+        manager.send(CollabRequest::UpdateInvocation {
+            id: 41,
+            update: tilo_actions::InvocationUpdate::Succeeded {
+                invocation: tilo_actions::InvocationId::new(),
+                output: tilo_actions::ActionOutput::default(),
+            },
+        });
+        tilo_test_env::wait_until("the refused update to be answered", || {
+            captured.lock().unwrap().terminal_updates == 1
+        });
+        // Give the shovel a turn to act on the answer the broker sent.
+        thread::sleep(Duration::from_millis(50));
+        assert!(
+            manager.is_connected(),
+            "a refused invocation update is an answer, not a lost connection"
+        );
+        // Later work still reaches the broker.
+        manager.send(CollabRequest::UpdateInvocation {
+            id: 42,
+            update: tilo_actions::InvocationUpdate::Succeeded {
+                invocation: tilo_actions::InvocationId::new(),
+                output: tilo_actions::ActionOutput::default(),
+            },
+        });
+        tilo_test_env::wait_until("the later update to reach the broker", || {
+            captured.lock().unwrap().terminal_updates == 2
+        });
+        assert!(manager.is_connected());
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    /// A broker-owned acceptance rejection is about that update; a later
+    /// terminal whose delivery is unknown (the receipt barrier failed) still
+    /// stops subsequent outbound work before the next request goes out.
     #[test]
     fn session_owner_commit_sdk_terminal_failure_disconnects_before_next_request() {
         let broker = FakeBroker::default();
-        let (fd, captures, thread) = stand_up_fake_broker(broker);
-        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
+        let (mut manager, captures, thread) = committed_route_over_fake_broker(broker);
         captures.lock().unwrap().fail_terminal = true;
         let invocation = tilo_actions::InvocationId::new();
         manager.send(CollabRequest::UpdateInvocation {
@@ -9933,7 +10305,10 @@ mod tests {
             cluster_id,
             record: Some("second".into()),
         };
-        manager.join_route(secondary.clone());
+        manager.join_route(
+            secondary.clone(),
+            crate::record::RecordKind::new("tilo.rich-text"),
+        );
         tilo_test_env::wait_until(
             "`broker_state(&manager).document_reads.publishable(&secondary.channel_id())`",
             || {
@@ -10909,7 +11284,7 @@ mod tests {
         assert!(captures.lock().unwrap().signed_ops.is_empty());
         assert!(!manager.is_connected());
         assert!(
-            manager.document_change_refused(),
+            format!("{:?}", manager.document_publication_failure()).contains("Refused"),
             "a refusal is told apart from a lost connection"
         );
         drop(manager);
@@ -11037,9 +11412,14 @@ mod tests {
         thread.join().unwrap();
     }
 
+    /// A commit RPC the peer answers with a refusal is that change's own
+    /// failure: the barrier reports it and the bridge, which carried the
+    /// answer, keeps the app published. (An RPC whose outcome is unknown is
+    /// the closing case; see
+    /// `a_document_commit_whose_outcome_is_unknown_still_closes_the_bridge`.)
     #[test]
     #[cfg(unix)]
-    fn document_publication_rpc_failure_survives_worker_exit() {
+    fn a_refused_document_rpc_fails_the_barrier_without_closing() {
         let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
         let (entered, observed) = mpsc::channel();
         let (release, receiver) = tokio::sync::oneshot::channel();
@@ -11068,7 +11448,14 @@ mod tests {
             error.to_string().contains("document RPC refused"),
             "{error}"
         );
-        assert!(!manager.is_connected());
+        assert!(
+            manager.is_connected(),
+            "the peer answered; the app stays published and reachable"
+        );
+        assert!(
+            !manager.sync_lost(),
+            "the app is still syncing; one refused change never reads as a lost connection"
+        );
         drop(manager);
         thread.join().unwrap();
     }
@@ -11263,6 +11650,34 @@ mod tests {
         });
         assert_eq!(received, (0..answers).collect::<Vec<_>>());
         assert!(state.is_healthy());
+    }
+
+    /// Only an answer about the request ends collaboration for one change:
+    /// a peer saying it will not take this change is not a lost connection,
+    /// while a lost, cancelled or overloaded call — and a missing service —
+    /// leave the outcome unknown.
+    #[test]
+    fn only_a_peers_answer_counts_as_a_refusal() {
+        use runtime_portal::NotAvailable;
+        let typed = NotAvailable::Capnp(capnp::Error::failed(
+            "so.tilo.chat named no kind for a new record".into(),
+        ));
+        assert!(refused_by_peer(&typed));
+        assert!(refused_by_peer(&NotAvailable::Capnp(
+            capnp::Error::unimplemented("no such method".into())
+        )));
+        for unknown in [
+            NotAvailable::Capnp(capnp::Error::disconnected("connection reset".into())),
+            NotAvailable::Capnp(capnp::Error::overloaded("bounded bridge is full".into())),
+            NotAvailable::ServiceFdMissing,
+            NotAvailable::ConnectionFailed(std::io::Error::other("no service")),
+        ] {
+            assert!(
+                !refused_by_peer(&unknown),
+                "{} is not an answer about the change",
+                unknown
+            );
+        }
     }
 
     #[test]
@@ -11499,7 +11914,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
         for route in &routes {
-            manager.join_route(route.clone());
+            manager.join_route(
+                route.clone(),
+                crate::record::RecordKind::new("tilo.rich-text"),
+            );
         }
         manager
             .begin_document_publication_barrier()

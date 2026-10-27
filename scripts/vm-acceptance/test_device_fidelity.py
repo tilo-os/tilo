@@ -64,9 +64,11 @@ for line in sys.stdin:
     if m.get("method") == "initialize":
         if os.path.exists(state + "/answer"): os.remove(state + "/answer")
         open(state + "/prompt", "w").write("1")
-        for _ in range(50):
-            if os.path.exists(state + "/answer"): break
-            time.sleep(0.1)
+        deadline = time.monotonic() + float(os.environ["FAKE_ANSWER_S"])
+        while not os.path.exists(state + "/answer") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not os.path.exists(state + "/answer"):
+            break
         if open(state + "/answer").read() == "deny":
             say({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32000, "message": "the person refused"}})
             break
@@ -104,8 +106,10 @@ def fake_binary(directory: Path, apps: list[str], extra_tools=()) -> Path:
 class FakeVm:
     """The parts of TiloVm the agent checks use, over a real guest client process."""
 
-    def __init__(self, root: Path, binary: Path | None, door=True, answer_prompts=True):
+    def __init__(self, root: Path, binary: Path | None, door=True, answer_prompts=True, answer_s=20.0):
         self.root, self.binary, self.door, self.answer_prompts = root, binary, door, answer_prompts
+        # How long the fake door waits for the person before it hangs up on the client.
+        self.answer_s = answer_s
         self.home = root / "home"
         self.state = root / "state"
         self.home.mkdir()
@@ -120,6 +124,10 @@ class FakeVm:
         if self.binary:
             env["ACC_MCP_BIN"] = str(self.binary)
         env["ACC_MCP_INITIALIZE_S"] = "20"
+        env["FAKE_ANSWER_S"] = str(self.answer_s)
+        # The fake lists everything it will ever list at once: an app missing from the
+        # first answer stays missing, so the client's wait for it need not be long.
+        env["ACC_MCP_LISTED_S"] = "0.5"
         return subprocess.run(["sh", "-c", script], env=env, capture_output=True, text=True,
                               timeout=timeout).stdout
 
@@ -183,7 +191,11 @@ class AgentDoorChecks(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
+        for name in ("PROMPT_S", "PROMPT_POLL_S"):
+            self.addCleanup(setattr, agent, name, getattr(agent, name))
         agent.PROMPT_S = 15
+        # The fake prompt appears as soon as the client asks; look for it often.
+        agent.PROMPT_POLL_S = 0.05
 
     def run_agent(self, **kwargs):
         binary = fake_binary(self.root, kwargs.pop("apps", ["so.tilo.notes"]), kwargs.pop("extra", ()))
@@ -221,8 +233,10 @@ class AgentDoorChecks(unittest.TestCase):
         self.assertIn("pixel tools", results["M01"].detail)
 
     def test_a_person_who_is_never_asked_is_unobservable_not_a_pass(self):
-        agent.PROMPT_S = 2
-        _, results = self.run_agent(answer_prompts=False)
+        # Nobody answers: the harness gives up after PROMPT_S, and the fake door hangs up
+        # on the client soon after, as a door whose prompt nobody saw would time out.
+        agent.PROMPT_S = 0.2
+        _, results = self.run_agent(answer_prompts=False, answer_s=0.2)
         self.assertEqual(results["M01"].status, "fail")
         self.assertTrue(results["M01"].unobservable)
         self.assertIn("never asked", results["M01"].detail)
@@ -261,7 +275,7 @@ class AgentDoorChecks(unittest.TestCase):
 
 
 class GuestClientTransport(unittest.TestCase):
-    def probe(self, server, assertions):
+    def probe(self, server, assertions, env=()):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "fake-mcp"
             binary.write_text("#!/usr/bin/env python3\nimport os, sys\n" + textwrap.dedent(server))
@@ -274,7 +288,7 @@ class GuestClientTransport(unittest.TestCase):
                     "\nfinally:\n    client.close()\n")
             # Bound regressions that previously blocked forever inside readline/close.
             proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                                  env=dict(os.environ, ACC_MCP_BIN=str(binary)), timeout=HANG_BOUND)
+                                  env=dict(os.environ, ACC_MCP_BIN=str(binary), **dict(env)), timeout=HANG_BOUND)
             self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_coalesced_lines_do_not_disappear_in_text_buffering(self):
@@ -315,7 +329,7 @@ class GuestClientTransport(unittest.TestCase):
             client.close = lambda: None
             assert client.proc.returncode == -9
             assert client.proc.stdout.closed
-        ''')
+        ''', env={"ACC_MCP_CLOSE_S": "0.2"})
 
     def test_shutdown_drains_final_notifications_and_reaps_child(self):
         self.probe('''

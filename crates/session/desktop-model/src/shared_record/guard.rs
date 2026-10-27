@@ -112,6 +112,45 @@ pub fn admit(
     Ok(changed)
 }
 
+/// What [`admit_complete`] did with a write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admitted {
+    /// Taken in; whether it changed the desktop.
+    Merged(bool),
+    /// It builds on changes the desktop does not hold yet: nothing of it
+    /// is taken in until they are here.
+    Waiting,
+}
+
+/// [`admit`] for a holder that takes a write only once it holds every
+/// change the write builds on. A write that arrives before them waits:
+/// nothing of it applies, and its holder offers it again later. So each of
+/// its changes is decided as a write of the author who signed it, never
+/// taken in later with someone else's.
+///
+/// # Errors
+/// Why the write is refused.
+pub fn admit_complete(
+    doc: &mut AutoCommit,
+    mutation: &DocumentMutation,
+    writer: &Writer<'_>,
+) -> Result<Admitted, DesktopRefusal> {
+    let bytes = match mutation {
+        DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
+    };
+    let mut next = doc.clone();
+    let before = next.get_heads();
+    next.load_incoming(bytes)
+        .map_err(|error| DesktopRefusal::Unreadable(error.to_string()))?;
+    if !next.get_missing_deps(&[]).is_empty() {
+        return Ok(Admitted::Waiting);
+    }
+    judge(&next, &before, writer)?;
+    let changed = next.get_heads() != before;
+    *doc = next;
+    Ok(Admitted::Merged(changed))
+}
+
 impl DesktopGuard {
     #[must_use]
     pub const fn new(doc: AutoCommit) -> Self {

@@ -246,6 +246,11 @@ pub struct AgentParticipant {
     /// that is never published: the operations a plan may name before the
     /// app is open ([`PlanContext::previews`]).
     previews: BTreeMap<String, Vec<ActionDescriptor>>,
+    /// The apps a plan's reference described, which every later one
+    /// describes too: an agent granted many, told those in play, sends the
+    /// same reference again rather than one that drops an app and loses
+    /// the prompt cache from it on.
+    described: BTreeSet<String>,
     /// How many changes a new record of each app holds (its genesis), read
     /// from its preview: a record holding no more is blank
     /// ([`Self::blank`]).
@@ -428,6 +433,7 @@ impl AgentParticipant {
             running: None,
             asking: None,
             previews: BTreeMap::new(),
+            described: BTreeSet::new(),
             genesis_changes: BTreeMap::new(),
             task_made: Vec::new(),
             others_wrote: BTreeSet::new(),

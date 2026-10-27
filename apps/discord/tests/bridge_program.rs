@@ -290,6 +290,14 @@ fn pass() -> Vec<Step> {
             ],
         ),
         each(
+            "arrange_channels",
+            vec![guild(
+                "arrange-channels",
+                "arrange-channels",
+                &[("op", item(""))],
+            )],
+        ),
+        each(
             "delete_channels",
             vec![guild(
                 "delete-channel",
@@ -614,6 +622,18 @@ fn pass() -> Vec<Step> {
                 "drop-category",
                 "delete-category",
                 &[("category", item("category"))],
+                false,
+            )],
+        ),
+        each(
+            "chat_arrangements",
+            vec![chat(
+                "arrange-chat",
+                "arrange-channels",
+                &[
+                    ("categories", item("categories")),
+                    ("channels", item("channels")),
+                ],
                 false,
             )],
         ),

@@ -231,6 +231,7 @@ pub(crate) mod work_accounting;
 pub mod workspace_drop;
 pub mod workspace_governance;
 pub mod workspace_history;
+pub(crate) mod workspace_layouts;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 use ui::widget::{

@@ -239,7 +239,7 @@ async fn admit_subscription(
         .autobind
         .filter(|_| own_room || peer.user_public_key == *session.own_user_public_key);
     let ws = if own_room {
-        bind_own_room(session.workspaces, autobind, peer, workspace_id).await?
+        bind_own_room(session.workspaces, autobind, workspace_id).await?
     } else {
         get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?
     };
@@ -439,23 +439,21 @@ pub(super) async fn handle_unsubscribe(
     Ok(None)
 }
 
-/// The person's own room ([`tilo_relay_protocol::own_room`]) bound for `peer`: a room
-/// whose only admitted user root is theirs, so any of their devices is
-/// admitted to it, and no device of anyone else. The relay only carries it,
-/// as it carries any room: what their devices seal into it stays theirs.
-/// Admitting the root again on every subscription keeps a room bound before
-/// a restart, or by the relay owner, theirs as well.
+/// The person's own room ([`tilo_relay_protocol::own_room`]) bound for
+/// `peer`: a room whose id their root alone derives, so any of their devices
+/// is admitted to it, and no device of anyone else
+/// ([`crate::room_access`]). The relay only carries it, as it carries any
+/// room: what their devices seal into it stays theirs.
 async fn bind_own_room(
     workspaces: &WorkspaceRegistry,
     autobind: Option<&WorkspaceAutobind>,
-    peer: &AuthenticatedPeer,
     workspace_id: u64,
 ) -> Result<Option<SharedWorkspace>, StoreError> {
     let existing = workspaces.lock().await.get(&workspace_id).cloned();
-    let workspace = match (existing, autobind) {
-        (Some(workspace), _) => workspace,
-        (None, None) => return Ok(None),
-        (None, Some(autobind)) => {
+    Ok(match (existing, autobind) {
+        (Some(workspace), _) => Some(workspace),
+        (None, None) => None,
+        (None, Some(autobind)) => Some(
             crate::workspace_io::get_or_initialize(
                 workspaces,
                 autobind.state_root.clone(),
@@ -465,18 +463,9 @@ async fn bind_own_room(
                 crate::room_access::AdmissionMode::Explicit,
                 MAX_AUTOBOUND_WORKSPACES,
             )
-            .await?
-        }
-    };
-    let added = workspace
-        .lock()
-        .await
-        .admitted_users
-        .insert(peer.user_public_key);
-    if added {
-        crate::authority_epoch::bump();
-    }
-    Ok(Some(workspace))
+            .await?,
+        ),
+    })
 }
 
 pub async fn get_or_autobind_workspace(

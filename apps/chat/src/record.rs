@@ -58,6 +58,43 @@ fn given_channel_id(given: &str) -> Result<Id, Refusal> {
     Ok(Id::from_raw(given))
 }
 
+/// One channel's place in [`Chat::arrange_channels`]: listed under
+/// `category`, none for uncategorised.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelPlace {
+    pub channel: String,
+    #[serde(default)]
+    pub category: Option<String>,
+}
+
+/// Put the items `order` names in that order. An item not named stays
+/// with the named one before it (those before every named one stay
+/// first), so what one side of a bridge lists alone keeps its neighbour.
+fn arrange<T>(items: &mut Collection<T>, order: &[Id]) {
+    let mut leading: Vec<Id> = Vec::new();
+    let mut following: BTreeMap<&Id, Vec<Id>> = BTreeMap::new();
+    let mut last: Option<&Id> = None;
+    for id in items.ids() {
+        match order.iter().find(|named| *named == id) {
+            Some(named) => last = Some(named),
+            None => match last {
+                Some(named) => following.entry(named).or_default().push(id.clone()),
+                None => leading.push(id.clone()),
+            },
+        }
+    }
+    let mut wanted = leading;
+    for named in order {
+        wanted.push(named.clone());
+        wanted.extend(following.remove(named).unwrap_or_default());
+    }
+    for (index, id) in wanted.iter().enumerate() {
+        if items.position(id) != Some(index) {
+            items.move_to(id, index);
+        }
+    }
+}
+
 /// The id of the room's text channel every chat opens with, `#chat`.
 pub const CHAT_CHANNEL: &str = "c_chat";
 /// The id of the room's voice channel every chat opens with, `#voice`.
@@ -1372,6 +1409,80 @@ impl Chat {
         };
         let target = self.channels.position(&neighbour).unwrap_or_default();
         self.channels.move_to(channel, target);
+        Ok(())
+    }
+
+    /// Move a category.
+    ///
+    /// One place up or down among the categories.
+    #[action(item = categories, moderation)]
+    pub fn move_category(&mut self, category: &Id, up: bool) -> Result<(), Refusal> {
+        let at = self
+            .categories
+            .position(category)
+            .ok_or_else(|| Refusal::new("there is no such category"))?;
+        let target = if up {
+            at.checked_sub(1)
+        } else {
+            Some(at.saturating_add(1)).filter(|next| *next < self.categories.len())
+        };
+        if let Some(target) = target {
+            self.categories.move_to(category, target);
+        }
+        Ok(())
+    }
+
+    /// Arrange channels.
+    ///
+    /// Lists the categories named in this order, and the channels named in
+    /// this order, each under the category it names. One not named stays
+    /// right after the one it followed.
+    #[action(moderation)]
+    pub fn arrange_channels(
+        &mut self,
+        #[param("Categories, in the order to list them")] categories: Vec<String>,
+        #[param("Channels, in the order to list them, each with the category to list it under")]
+        channels: Vec<ChannelPlace>,
+    ) -> Result<(), Refusal> {
+        let category_ids: Vec<Id> = categories
+            .iter()
+            .map(|id| Id::from_raw(id.as_str()))
+            .collect();
+        let channel_ids: Vec<Id> = channels
+            .iter()
+            .map(|place| Id::from_raw(place.channel.as_str()))
+            .collect();
+        let distinct =
+            |ids: &[Id]| ids.iter().collect::<std::collections::BTreeSet<_>>().len() == ids.len();
+        if !distinct(&category_ids) || !distinct(&channel_ids) {
+            return Err(Refusal::new("each channel and category is named once"));
+        }
+        if !category_ids.iter().all(|id| self.categories.contains(id))
+            || channels.iter().any(|place| {
+                place
+                    .category
+                    .as_deref()
+                    .is_some_and(|category| !self.categories.contains(&Id::from_raw(category)))
+            })
+        {
+            return Err(Refusal::new("there is no such category"));
+        }
+        if !channel_ids.iter().all(|id| self.channels.contains(id)) {
+            return Err(Refusal::new("there is no such channel"));
+        }
+        for (id, place) in channel_ids.iter().zip(&channels) {
+            let category = place.category.as_deref().map(Id::from_raw);
+            if self
+                .channels
+                .get(id)
+                .is_some_and(|c| c.category != category)
+                && let Some(channel) = self.channels.get_mut(id)
+            {
+                channel.category = category;
+            }
+        }
+        arrange(&mut self.categories, &category_ids);
+        arrange(&mut self.channels, &channel_ids);
         Ok(())
     }
 

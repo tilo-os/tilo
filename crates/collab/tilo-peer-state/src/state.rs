@@ -3727,7 +3727,13 @@ pub fn workspace_seed(
             .iter()
             .map(|change| change.raw_bytes().to_vec())
             .collect(),
-        documents: Vec::new(),
+        // The room's shared desktop: every member's layout lands in it.
+        documents: vec![SeedDocument {
+            app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
+            record_id: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
+            kind: tilo_desktop_model::ownership::DESKTOP_KIND.into(),
+            bytes: AutoCommit::new().save(),
+        }],
     })
 }
 

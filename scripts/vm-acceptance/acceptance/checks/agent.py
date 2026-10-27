@@ -38,6 +38,8 @@ DOOR = '"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo-session/agent.sock"'
 MARK = "ACC-MCP "
 # How long the person's prompt may take to appear after the client's initialize.
 PROMPT_S = 60
+# How often the harness looks for that prompt.
+PROMPT_POLL_S = 0.5
 # The tools the door serves.
 DOOR_TOOLS = ["tilo_do", "tilo_find", "tilo_ls", "tilo_read", "tilo_status"]
 # The client names itself so (clientInfo), and the door admits it as this agent.
@@ -111,7 +113,7 @@ def _answer_prompt(ctx, decision: str) -> str:
             return None
         return rows[0] if rows else None
 
-    row = wait_until(waiting, PROMPT_S, interval=0.5)
+    row = wait_until(waiting, PROMPT_S, interval=PROMPT_POLL_S)
     if row is None:
         raise Unobservable(f"no `{decision}@...` row of the {PROVIDER} provider within {PROMPT_S} s of the "
                            "client's initialize: the person is never asked, or cannot be answered over "

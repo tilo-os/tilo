@@ -18,7 +18,7 @@ fn an_absent_on_demand_record_is_said_once_and_waited_on() {
     };
     let (fd, captures, _thread) = stand_up_fake_broker(broker);
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", room);
-    manager.join_route(part.clone());
+    manager.join_route(part.clone(), crate::record::RecordKind::new(""));
     let unavailable = |events: &[CollabEvent]| {
         events
             .iter()

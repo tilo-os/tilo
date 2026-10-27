@@ -1218,6 +1218,21 @@ impl FakeDiscord {
         drop(state);
     }
 
+    /// Someone moves `channel` in Discord's channel list: under `parent`
+    /// (none for the top level) at `position` (dispatching
+    /// `CHANNEL_UPDATE`).
+    pub fn place_channel(&self, channel: &str, parent: Option<&str>, position: i64) {
+        let mut state = self.shared.lock();
+        let Some(stored) = state.channel_mut(channel) else {
+            return;
+        };
+        stored["parent_id"] = json!(parent);
+        stored["position"] = json!(position);
+        let event = stored.clone();
+        state.dispatch("CHANNEL_UPDATE", event);
+        drop(state);
+    }
+
     /// `@everyone` loses `perms` in `channel` through an overwrite
     /// (dispatching `CHANNEL_UPDATE`).
     pub fn deny_everyone(&self, channel: &str, perms: u64) {

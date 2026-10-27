@@ -17,6 +17,7 @@
 //! The default transport (feature `broker-transport`) delegates to the
 //! `runtime-collab` Cap'n Proto broker on a worker thread it owns.
 
+mod annotation;
 mod peer;
 pub use peer::PeerTransport;
 use uuid::Uuid;
@@ -1351,8 +1352,12 @@ impl CollaborationManager {
 
     /// Join and subscribe to an additional route without publishing traffic.
     /// Repeated joins of the same route are idempotent.
-    pub fn join_route(&mut self, route: RouteSpec) {
-        let _ = self.submit(TransportCommand::Join(route));
+    /// Join `route`, whose record holds `record_kind`. The kind travels with
+    /// the join so a host that must create the record when this device
+    /// writes first knows what it holds; joining without it would let the
+    /// host answer that the app named no kind.
+    pub fn join_route(&mut self, route: RouteSpec, record_kind: crate::record::RecordKind) {
+        let _ = self.submit(TransportCommand::Join(route, record_kind));
     }
 
     /// Install an already-provisioned MLS endpoint for `route`.
@@ -1552,8 +1557,19 @@ impl CollaborationManager {
                 "document route handoff refused"
             );
             // Join first; the route's original history must be applied
-            // before any local mutation is published on it.
-            let _ = self.submit(TransportCommand::Join(route));
+            // before any local mutation is published on it. The join names
+            // the kind the owner opened the record with, so the host can
+            // create the record when this device writes first; the owner's
+            // own `join_route` is what names it, and a join repeated here
+            // only reaches a host that already has the record.
+            let record_kind = match &self.backend {
+                Backend::Transport(transport) => transport.joined_record_kind(&route.channel_id()),
+                Backend::Disabled(_) => None,
+            };
+            let _ = self.submit(TransportCommand::Join(
+                route,
+                record_kind.unwrap_or_else(|| crate::record::RecordKind::new("")),
+            ));
             return Err(CollabSendError::Unavailable);
         }
         // A known committed route may be refreshing. Required original
@@ -1571,10 +1587,36 @@ impl CollaborationManager {
         matches!(&self.backend, Backend::Transport(transport) if transport.document_publication_failed())
     }
 
-    /// Whether publication stopped because the workspace refused a change,
-    /// not because the connection was lost.
-    pub(crate) fn document_change_refused(&self) -> bool {
-        matches!(&self.backend, Backend::Transport(transport) if transport.document_change_refused())
+    /// The kind of record `route` was joined with, as the transport holds it.
+    #[cfg(test)]
+    pub(crate) fn joined_record_kind(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<crate::record::RecordKind> {
+        match &self.backend {
+            Backend::Disabled(_) => None,
+            Backend::Transport(transport) => transport.joined_record_kind(&route.channel_id()),
+        }
+    }
+
+    /// The last publication outcome the transport reported, for telling a
+    /// refusal of one change apart from a lost connection.
+    #[cfg(test)]
+    pub(crate) fn document_publication_failure(&self) -> Option<DocumentPublicationError> {
+        match &self.backend {
+            Backend::Disabled(_) => None,
+            Backend::Transport(transport) => transport.publication_outcome(),
+        }
+    }
+
+    /// The last change the peer answered but would not accept, while nothing
+    /// later went through. The bridge is still connected: only that change is
+    /// not accepted, and the owner reconciles its local copy.
+    pub(crate) fn refused_change(&self) -> Option<String> {
+        match &self.backend {
+            Backend::Disabled(_) => None,
+            Backend::Transport(transport) => transport.refused_change(),
+        }
     }
 
     #[cfg(test)]

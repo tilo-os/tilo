@@ -1317,3 +1317,38 @@ fn element_pictures_reach_the_renderer_without_pixels() {
     }
     assert_eq!(ids.len(), PICTURES as usize);
 }
+
+/// What plays reaches the engine's own system controls (a page's Media
+/// Session), and the player follows a press on them.
+#[test]
+fn the_engines_system_controls_hear_what_plays_and_the_player_follows_them() {
+    let mut vp = VideoPlayer::new().with_engine(media::MediaEngine::new_synthesized());
+    vp.set_now_playing(NowPlaying {
+        track_id: "yt:abc123".into(),
+        title: "Runaway".into(),
+        artist: "Aurora".into(),
+        art_url: String::new(),
+    });
+    let described = vp
+        .engine()
+        .and_then(media::MediaEngine::now_playing)
+        .cloned();
+    assert_eq!(
+        described,
+        Some(media::NowPlaying {
+            title: "Runaway".into(),
+            artist: "Aurora".into(),
+            ..media::NowPlaying::default()
+        })
+    );
+    vp.play();
+    vp.engine_mut()
+        .unwrap()
+        .press_now_playing(media::NowPlayingAction::Pause);
+    vp.pump_media_controls();
+    assert_ne!(
+        vp.state,
+        PlaybackState::Playing,
+        "a pause there pauses here"
+    );
+}

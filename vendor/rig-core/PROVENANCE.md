@@ -36,10 +36,19 @@ Local runtime changes are in the Chat decoder, completion writer and stream-even
   Gated HTTP tests withhold the terminal frame until a preview is observed,
   proving liveness rather than merely event order in a buffered reply.
 
+- Add the OpenAI Responses placement `FirstInstructions`: only the first
+  system message becomes the top-level `instructions`; the rest of the leading
+  run stays in `input` as `system` messages, in place. The gateway uses it for
+  OpenAI's own Responses API, so a planner's stable instructions are not joined
+  with the system context after them, which varies, and stay in the prompt
+  cache. The other placements are unchanged. The gateway's `host_backend`
+  tests cover it on the request it sends.
+
 Wire regression coverage lives in the gateway's `rig_stream_tests.rs` and in
 this crate's Chat tests. See `vendor/PATCHES.md`. The manifests and dependencies
 are unchanged. The archive's standalone `Cargo.lock` and Cargo cache marker
 are omitted; the runtime uses the repository's committed workspace lock.
 
 Remove this patch when upstream ships equivalent Chat-name accumulation and
-consistent normalized/replay/event names. Rig remains the sole wire decoder.
+consistent normalized/replay/event names, and a placement that lifts only the
+first system message. Rig remains the sole wire decoder.

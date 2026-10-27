@@ -1878,6 +1878,7 @@ fn write_windows(
             person: Some(&person),
             mine: &mine,
             retained: &|_| false,
+            carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
         },
     )
     .unwrap();
@@ -2151,7 +2152,7 @@ async fn the_governors_own_windows_pass_the_door_of_a_personal_room() {
         .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
         .await
         .unwrap();
-    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let (a, a_salt) = admitted_member(&rooms, &room, &key, &cert, 3).await;
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
     assert_eq!(
         rooms
