@@ -40,6 +40,7 @@ so t.toml carries both, generated between markers:
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import fnmatch
 import json
 import os
@@ -246,7 +247,8 @@ def suite_checks(manifest: suites.Manifest) -> str:
     for group in manifest.groups:
         fields = GROUP_FIELDS.get(group.name, {})
         inputs = sorted({glob(path) for path in (*group.inputs, *group.suites)}
-                        | {suites.MANIFEST, "tools/ci/suites.py", "tools/with-test-environment.sh"}
+                        | {suites.MANIFEST, "tools/ci/suites.py", "tools/policy/run_unit_tests.py",
+                           "tools/with-test-environment.sh"}
                         | set(fields.get("prepare", "").split()[1:2]))
         run = f"python3 tools/ci/suites.py run --jobs 8 --group {group.name}"
         if "prepare" in fields:
@@ -328,11 +330,15 @@ def goldens(image: str) -> str:
 
 
 def arm64_goldens(image: str) -> str:
-    """The goldens on aarch64, in the same image, to see where its pixels differ from x86_64's."""
+    """The goldens on aarch64, in the same image, to see where its pixels differ from x86_64's.
+    A look, not a gate (the baselines are x86_64's), so it runs on request, never as part of a
+    release candidate; keyed like visual-goldens, so a request after an unrelated change returns
+    the last result."""
     sys.path.insert(0, str(ROOT / "tools/ci"))
     import nextest_filters
     golden = nextest_filters.filters()["GOLDEN_FILTER"]
-    packages = " ".join(f"-p {name}" for name in sorted(set(re.findall(r"package\(([\w-]+)\)", golden))))
+    names = sorted(set(re.findall(r"package\(([\w-]+)\)", golden)))
+    packages = " ".join(f"-p {name}" for name in names)
     return "\n".join([
         "[[check]]",
         'name = "nightly-arm64-goldens"',
@@ -340,9 +346,12 @@ def arm64_goldens(image: str) -> str:
         'requires = ["arch=arm64"]',
         "run = " + json.dumps(f"bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "
                               f"--no-tests=pass {packages} -E '{golden}'"),
+        'inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", '
+        '"tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]',
+        f"cargo_packages = {array(names)}",
         'env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
         "writable_sources = true",
-        'on = ["stable", "dispatch"]',
+        'on = ["dispatch"]',
         'cost = "heavy"',
         "default = false",
     ]) + "\n"
@@ -1057,8 +1066,15 @@ def main(argv: list[str]) -> int:
         return 0
     if expected != text:
         print("t.toml is out of date with tools/ci/suites.toml, tools/ci/products.toml, .config/ or the workspace: "
-              "run python3 tools/ci/t_toml.py write",
+              "run python3 tools/ci/t_toml.py write (`t fix t-toml`)",
               file=sys.stderr)
+        # Which generated blocks differ, and how, so the reason is in the first lines of the log.
+        have = {m["name"]: m[0] for m in BLOCK.finditer(text)}
+        for m in BLOCK.finditer(expected):
+            if have.get(m["name"]) != m[0]:
+                diff = difflib.unified_diff(have.get(m["name"], "").splitlines(), m[0].splitlines(),
+                                            "t.toml", "generated", n=0, lineterm="")
+                print(f"\nblock {m['name']}:", *list(diff)[2:12], sep="\n", file=sys.stderr)
         return 1
     print("t.toml matches tools/ci/suites.toml, tools/ci/products.toml, .config/ and the workspace")
     return 0

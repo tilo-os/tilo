@@ -35,11 +35,16 @@ PLACEHOLDER_OTHER_HOMES = frozenset(
     {"you", "u", "user", "alice", "bob", "owner", "reader", "ordinary", "public", "default", "shared"}
 )
 SCRATCH = re.compile(r"\.super" r"powers/")
-# Every violation contains one of these literal hints. This deliberately
-# broader match only avoids splitting unrelated files into individual lines;
-# the existing matchers below still determine every diagnostic.
+# Every violation contains one of these literal hints, with the case its
+# matcher needs: the wrapper in any case, a home after a path separator. Only
+# files, and then lines, with a hint are handed to the matchers below, which
+# still determine every diagnostic: a case-insensitive "users" matched about
+# 650 files and sent each of their 860,000 lines through all four matchers.
+# The hints' literal parts, which a file must contain before any regex reads it.
+LITERALS = (b"/var/home/", b"Users", b".super" b"powers/")
+WRAPPER_LITERAL = b"r" b"cargo"
 REFERENCE_HINT = re.compile(
-    r"r" r"cargo|/var/home/|Users|\.super" r"powers/", re.IGNORECASE
+    r"(?i:r" r"cargo)|/var/home/|[\\/]Users[\\/]|\.super" r"powers/"
 )
 
 
@@ -73,12 +78,16 @@ def file_violations(path: Path, shown: str) -> list[Violation]:
     data = path.read_bytes()
     if b"\0" in data:
         return []
+    # Plain substring tests first: one regex over every byte of the tree was most of the run.
+    if not any(literal in data for literal in LITERALS) and WRAPPER_LITERAL not in data.lower():
+        return []
     text = data.decode("utf-8", errors="replace")
     if not REFERENCE_HINT.search(text):
         return []
     return [
         Violation(shown, number, reason)
         for number, line in enumerate(text.splitlines(), 1)
+        if REFERENCE_HINT.search(line)
         for reason in line_violations(line, ignore_file=path.name == ".gitignore")
     ]
 

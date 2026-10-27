@@ -92,6 +92,16 @@ impl NativeControl {
         self.resource.clone()
     }
 
+    /// The resource of a control `id` whose `invoke` its owner answers
+    /// itself ([`invoked_control`]), without a handler of its own.
+    pub(crate) fn resource_of(
+        id: &str,
+        label: &str,
+        kind: tilo_actions::OperationKind,
+    ) -> tilo_actions::Resource {
+        Self::new(id, label, kind, Box::new(|| {})).0.resource
+    }
+
     /// The handler back, to publish it under another id.
     pub(crate) fn into_handler(self) -> Box<dyn FnMut()> {
         self.handler
@@ -125,6 +135,24 @@ impl NativeControl {
             tilo_actions::ActionOutput::default(),
         )))
     }
+}
+
+/// The control an `invoke` operation addresses, when it is one.
+///
+/// # Errors
+/// Returns why the payload does not read.
+pub(crate) fn invoked_control(
+    op: &crate::widget::ResourceOperation<'_>,
+) -> Result<Option<String>, String> {
+    let Some(request) = op.unscoped() else {
+        return Ok(None);
+    };
+    if request.kind == tilo_actions::OperationKind::Document || request.type_id != NATIVE_INVOKE {
+        return Ok(None);
+    }
+    serde_json::from_slice(request.payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Default)]

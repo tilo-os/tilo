@@ -511,7 +511,7 @@ pub struct App {
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
     root_widget: Box<dyn Widget>,
-    history: Option<Box<crate::history_mode::host::HistoryHost>>,
+    history: Option<crate::history_mode::host::HistoryChrome>,
     #[cfg(any(test, feature = "test-support"))]
     controlled_installed_history_definition:
         Option<&'static crate::history_mode::HistoryDefinition>,
@@ -1331,6 +1331,7 @@ impl App {
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
+        // A native window links its History; only a page fetches it later.
         let host = tilo_startup_metrics::span("history-install", || {
             crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)
         })?;

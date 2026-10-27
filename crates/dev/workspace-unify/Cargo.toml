@@ -185,6 +185,7 @@ doc = false
 "cms-0_2_3" = { package = "cms", version = "^0.2.3", default-features = false, features = [] }
 "cobs-0_3_0" = { package = "cobs", version = "^0.3.0", default-features = false, features = [] }
 "code-editor" = { path = "../../../apps/code-editor", default-features = false, features = [] }
+"codebase-qualification" = { path = "../../../crates/dev/codebase-qualification", default-features = false, features = ["default", "filesystem"] }
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
 "collab-fixtures" = { path = "../../../crates/collab/collab-fixtures", default-features = false, features = [] }
@@ -2542,6 +2543,7 @@ doc = false
 "cms-0_2_3" = { package = "cms", version = "^0.2.3", default-features = false, features = [] }
 "cobs-0_3_0" = { package = "cobs", version = "^0.3.0", default-features = false, features = [] }
 "code-editor" = { path = "../../../apps/code-editor", default-features = false, features = [] }
+"codebase-qualification" = { path = "../../../crates/dev/codebase-qualification", default-features = false, features = ["default", "filesystem"] }
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
 "collab-fixtures" = { path = "../../../crates/collab/collab-fixtures", default-features = false, features = [] }

@@ -2495,6 +2495,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "codebase-qualification"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "collab-types",
+ "fs-protocol",
+ "iroh-blobs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-fs",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -24940,6 +24958,7 @@ dependencies = [
  "cms",
  "cobs",
  "code-editor",
+ "codebase-qualification",
  "codespan-reporting",
  "codex",
  "collab-fixtures",

@@ -16,14 +16,22 @@ FAILED` with the file's output under it, and a file that failed without naming a
 crashed, or did not import) as `test <file> ... FAILED`. t then compares each failing test with
 main's, so a test that fails on main too passes and one more failing is refused.
 
+A file whose tests each run for seconds (end-to-end script tests) would hold the suite for as
+long as all of them take one after another, so the files SHARDS names run in several processes,
+each a share of the file's tests as discover finds them (`--shard`), and those shares start
+first; the file is still reported as one. The slowest files are listed at the end of every run:
+one that holds the run up belongs in SHARDS.
+
 Usage: run_unit_tests.py [--jobs N] DIR [DIR ...]
+       run_unit_tests.py --shard I N FILE    (the I-th of N shares of FILE's tests, from 0)
 """
 from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+import os
 import re
 import subprocess
 import sys
@@ -31,8 +39,33 @@ import time
 
 PATTERN = "test_*.py"
 # The tests mostly wait, so more of them run at once than there are cores to give them.
-DEFAULT_JOBS = 16
+DEFAULT_JOBS = 32
 RAN = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
+# Files whose tests are run in this many processes, by name: those whose tests each take
+# seconds, measured on t (the run's "Slowest files"). A share should take under ten seconds there.
+SHARDS = {
+    "test_app_artifact_handoff.py": 12,
+    "test_extension_publish.py": 8,
+    "test_commit_hooks.py": 6,
+    "test_t_toml.py": 6,
+    "test_publish_chain.py": 4,
+    "test_ci_run.py": 3,
+    "test_pre_push.py": 3,
+    "test_component_manifest.py": 3,
+    "test_unused_dependencies.py": 3,
+    "test_changed_rust_comparison.py": 2,
+    "test_browser_runtime_release.py": 2,
+    "test_smoke_shards.py": 2,
+    "test_stage_sdk_services.py": 2,
+    "test_workflow_package_paths.py": 2,
+    "test_font_artifacts.py": 3,
+    "test_native_envelope.py": 3,
+    "test_font_catalog.py": 2,
+    "test_chrome_process_cleanup.py": 2,
+    "test_copy_language.py": 2,
+    "test_browser_cleanup_lifecycle.py": 2,
+    "test_thin_app_compiler_cache.py": 2,
+}
 # unittest's header of a failed test: `FAIL: test_x (module.Class.test_x)`, before Python 3.11
 # `FAIL: test_x (module.Class)`.
 FAILED = re.compile(r"^(?:FAIL|ERROR|UNEXPECTED SUCCESS): (\S+) \(([^)\s]+)\)", re.MULTILINE)
@@ -45,6 +78,9 @@ class Result:
     seconds: float
     tests: int
     output: str
+    # The processor time the file's processes and those they waited for took: on a loaded node
+    # the suite is bound by the sum of these, not by its slowest file.
+    cpu: float = 0.0
 
 
 def files(directories: list[Path]) -> list[Path]:
@@ -55,18 +91,47 @@ def files(directories: list[Path]) -> list[Path]:
     return found
 
 
-def run(path: Path) -> Result:
+def run(path: Path, shard: tuple[int, int] | None = None) -> Result:
     start = time.monotonic()
-    done = subprocess.run(
-        [sys.executable, "-m", "unittest", "discover", "-s", str(path.parent), "-p", path.name],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        errors="replace",
-    )
-    tests = sum(int(n) for n in RAN.findall(done.stdout))
-    return Result(path, done.returncode == 0, time.monotonic() - start, tests, done.stdout)
+    command = ([sys.executable, str(Path(__file__).resolve()), "--shard", str(shard[0]), str(shard[1]), str(path)]
+               if shard else [sys.executable, "-m", "unittest", "discover", "-s", str(path.parent), "-p", path.name])
+    with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, errors="replace") as process:
+        output = process.stdout.read()
+        _, status, usage = os.wait4(process.pid, 0)
+        process.returncode = os.waitstatus_to_exitcode(status)
+    tests = sum(int(n) for n in RAN.findall(output))
+    return Result(path, process.returncode == 0, time.monotonic() - start, tests, output,
+                  usage.ru_utime + usage.ru_stime)
+
+
+def run_shard(index: int, count: int, path: Path) -> int:
+    """Run the `index`-th of `count` shares of the tests discover finds in `path`, as
+    `python3 -m unittest discover -s DIR -p FILE` would run them, with its output."""
+    import unittest
+
+    def flat(suite):
+        for test in suite:
+            yield from flat(test) if isinstance(test, unittest.TestSuite) else (test,)
+
+    # As `python3 -m unittest` has it: the working directory first, not this script's (discover
+    # adds the test directory itself).
+    sys.path[0] = ""
+    found = list(flat(unittest.defaultTestLoader.discover(str(path.parent), pattern=path.name)))
+    if not found:
+        print(f"run_unit_tests.py: no tests in {path}", file=sys.stderr)
+        return 5
+    share = unittest.TestSuite(found[index::count])
+    result = unittest.TextTestRunner(stream=sys.stderr, verbosity=1).run(share)
+    return 0 if result.wasSuccessful() else 1
+
+
+def joined(results: list[Result]) -> Result:
+    """A file's shards as one result: t names a file's test once."""
+    first = results[0]
+    return replace(first, ok=all(r.ok for r in results), seconds=max(r.seconds for r in results),
+                   tests=sum(r.tests for r in results), output="\n".join(r.output for r in results),
+                   cpu=sum(r.cpu for r in results))
 
 
 def failed_tests(output: str) -> dict[str, str]:
@@ -105,6 +170,10 @@ def report(results: list[Result]) -> str:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    if argv[:1] == ["--shard"]:
+        if len(argv) != 4:
+            parser.error("--shard I N FILE")
+        return run_shard(int(argv[1]), int(argv[2]), Path(argv[3]))
     parser.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
     parser.add_argument("directories", nargs="+", type=Path)
     args = parser.parse_args(argv)
@@ -115,20 +184,33 @@ def main(argv: list[str]) -> int:
         print(f"run_unit_tests.py: no {PATTERN} in {', '.join(map(str, args.directories))}", file=sys.stderr)
         return 1
 
+    # The sharded files' shares first, the slowest ahead, then the rest: the run ends about when
+    # its slowest share does.
+    pieces = sorted(((path, (index, SHARDS[path.name])) for path in paths if path.name in SHARDS
+                     for index in range(SHARDS[path.name])), key=lambda piece: -piece[1][1])
+    pieces += [(path, None) for path in paths if path.name not in SHARDS]
     start = time.monotonic()
-    results: list[Result] = []
+    shares: dict[Path, list[Result]] = {}
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for future in as_completed([pool.submit(run, path) for path in paths]):
+        for future in as_completed([pool.submit(run, *piece) for piece in pieces]):
             result = future.result()
-            results.append(result)
+            shares.setdefault(result.path, []).append(result)
             if not result.ok:
                 print(f"\n---- {result.path} failed after {result.seconds:.1f}s:\n{result.output.rstrip()}\n", flush=True)
+    results = [joined(shares[path]) for path in paths]
+    for result in results:
+        if result.ok and result.tests == 0 and result.path.name in SHARDS:
+            # Every share of a sharded file ran none: discover would have found nothing either.
+            results[results.index(result)] = replace(result, ok=False, output=result.output + "\nno tests ran\n")
 
     failed = sorted(str(r.path) for r in results if not r.ok)
     print(report(results), flush=True)
     print("\nSlowest files:")
     for result in sorted(results, key=lambda r: r.seconds, reverse=True)[:10]:
         print(f"  {result.seconds:7.1f}s  {result.path}")
+    print(f"\nMost processor time ({sum(r.cpu for r in results):.0f}s in all):")
+    for result in sorted(results, key=lambda r: r.cpu, reverse=True)[:15]:
+        print(f"  {result.cpu:7.1f}s  {result.path}")
     print(f"\nRan {sum(r.tests for r in results)} tests in {len(results)} files in "
           f"{time.monotonic() - start:.1f}s, {args.jobs} at a time")
     if failed:

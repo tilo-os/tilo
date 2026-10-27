@@ -16,8 +16,7 @@
 //! - refuses a member's change to the room's topology (`SyncResp`) or to its
 //!   shared desktop record at every door it enters by
 //!   ([`Rooms::decide_layout_write`]): neither kept, nor forwarded, nor
-//!   taken in; the room's admission refuses it too
-//!   (`RoomRefusal::PersonalLayout`);
+//!   taken in;
 //! - replays to nobody what the relay retained of such changes before
 //!   ([`crate::store::WorkspaceStore::replay_member_layout`]);
 //! - removes what it committed of members' windows while the room shared

@@ -351,7 +351,9 @@ pub struct FrameHarness {
     layout_requested: bool,
     state: State,
     root: Box<dyn Widget>,
-    history: Option<Box<crate::history_mode::host::HistoryHost>>,
+    history: Option<crate::history_mode::host::HistoryChrome>,
+    /// A History registered before its code was in, installed once it is.
+    pending_history: Option<crate::history_mode::HistoryRegistration>,
     action_palette: Option<Box<crate::action_palette::ActionPalette>>,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// The window the open palette was asked for from, when the root lays
@@ -972,6 +974,7 @@ impl FrameHarness {
         self.control_domain = control_domain;
         self.component_wake = Some(wake);
         self.history = None;
+        self.pending_history = None;
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
@@ -1524,9 +1527,17 @@ impl FrameHarness {
         self.invalidate_local();
         registration.validate_root(self.root.as_ref())?;
         let mut history =
-            crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)?;
+            match crate::history_mode::host::make_history(registration, &self.state.doc)? {
+                crate::history_mode::host::MadeHistory::Ready(history) => history,
+                crate::history_mode::host::MadeHistory::Loading(registration) => {
+                    // The window shows without History until its code is
+                    // in; the next layout takes it up.
+                    self.pending_history = Some(registration);
+                    return Ok(());
+                }
+            };
         history.set_control_domain(&self.control_domain);
-        self.history = Some(Box::new(history));
+        self.history = Some(history);
         self.invalidate_layout_tree();
         self.relayout();
         self.validate_history_registration()
@@ -1787,6 +1798,7 @@ impl FrameHarness {
             layout_maps: crate::retained_widgets::Adopted::default(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
+            pending_history: None,
             action_palette: None,
             ordinary_palette_return_focus: None,
             palette_window: None,
@@ -3511,7 +3523,29 @@ impl FrameHarness {
     /// composition: the live host draws the next frame for that input, and
     /// the activation completes there. Bounded as composition is
     /// ([`crate::widget::layout::settle_widget_composition`]).
+    /// Install the History registered before its code was in, once it is.
+    fn adopt_loaded_history(&mut self) {
+        if self.pending_history.is_none() || !crate::history_mode::host::history_code_ready() {
+            return;
+        }
+        let Some(registration) = self.pending_history.take() else {
+            return;
+        };
+        match crate::history_mode::host::make_history(registration, &self.state.doc) {
+            Ok(crate::history_mode::host::MadeHistory::Ready(mut history)) => {
+                history.set_control_domain(&self.control_domain);
+                self.history = Some(history);
+                self.invalidate_layout_tree();
+            }
+            Ok(crate::history_mode::host::MadeHistory::Loading(registration)) => {
+                self.pending_history = Some(registration);
+            }
+            Err(error) => tracing::warn!(%error, "the window shows without its history"),
+        }
+    }
+
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.adopt_loaded_history();
         // The whole frame runs in the root's wake scope, as the live window's
         // redraw runs in the App's: a read its layout starts wakes it.
         let _wake = self.enter_wake();

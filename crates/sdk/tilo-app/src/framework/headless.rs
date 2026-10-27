@@ -42,7 +42,7 @@ const TEST_DEVICE: &str = "test-device";
 /// shared disk it waits for every other writer's data to reach it, and a
 /// capture syncs on each staged edit. Elsewhere it is the system's
 /// temporary directory.
-pub(super) fn profile_directory() -> std::io::Result<tempfile::TempDir> {
+pub(crate) fn profile_directory() -> std::io::Result<tempfile::TempDir> {
     if let Some(memory) = tilo_paths::memory_temp_dir()
         && let Ok(directory) = tempfile::Builder::new()
             .prefix("tilo-profile-")

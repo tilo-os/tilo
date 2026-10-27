@@ -77,6 +77,7 @@ window-toolbar-hide-inspector = Hide inspector
 # A window shared live into a conversation, from its own menu.
 window-share-to-channel = Share to channel…
 window-stop-sharing-in = Stop sharing in { $place }
+history-loading = Loading History…
 history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }

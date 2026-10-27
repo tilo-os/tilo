@@ -112,12 +112,12 @@ fn looks_like_archive(bytes: &[u8]) -> bool {
 fn pages_from_archive(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
     let mut parts = read_zip_parts(bytes, &archive_limits())
         .map_err(|_| ui::i18n!("notes-notion-archive-invalid"))?;
+    parts.retain(|(name, _)| !name.starts_with("__MACOSX/"));
     parts.sort_by(|(left, _), (right, _)| left.cmp(right));
-    let mut parts: HashMap<String, Vec<u8>> = parts
-        .into_iter()
-        .filter(|(name, _)| !name.starts_with("__MACOSX/"))
-        .collect();
-    let names: Vec<String> = parts.keys().cloned().collect();
+    // The names keep the sorted order; the map only serves lookups, since
+    // its own iteration order differs from run to run.
+    let names: Vec<String> = parts.iter().map(|(name, _)| name.clone()).collect();
+    let mut parts: HashMap<String, Vec<u8>> = parts.into_iter().collect();
     // Every picture the export kept, by the path a page names it by.
     let mut pictures: HashMap<String, Vec<u8>> = HashMap::new();
     for name in &names {

@@ -1835,3 +1835,45 @@ fn an_agent_closes_a_hosted_dialog_through_its_published_close_control() {
     .expect("the published close control is reachable");
     assert_eq!(dismissed.get(), 1);
 }
+
+/// The footer buttons are the dialog's published controls: an agent presses
+/// Save as an effect and Cancel as a view action, as a person presses them,
+/// and a disabled primary answer is not offered.
+#[test]
+fn an_agent_presses_a_dialog_footer_through_its_published_controls() {
+    let (saved, save) = counter();
+    let (cancelled, cancel) = counter();
+    let dialog = ModalDialog::new("Rename", TestContent)
+        .with_test_id("rename")
+        .primary_action("Save", save)
+        .secondary_action("Cancel", cancel)
+        .open(true);
+    let mut h = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        crate::widget::Column::new().push(Box::new(dialog)),
+        (800, 600),
+        Theme::dark(),
+    );
+    let resources = h.resources();
+    let kind = |id: &str| {
+        resources
+            .iter()
+            .find(|resource| resource.id.0 == id)
+            .map(|resource| resource.actions[0].kind)
+    };
+    assert_eq!(
+        kind("tilo.control:rename.primary"),
+        Some(tilo_actions::OperationKind::Effect)
+    );
+    assert_eq!(
+        kind("tilo.control:rename.secondary"),
+        Some(tilo_actions::OperationKind::View)
+    );
+    let none = serde_json::Map::new();
+    h.invoke_published("tilo.control:rename.secondary", "invoke", &none)
+        .expect("Cancel is reachable");
+    assert_eq!(cancelled.get(), 1);
+    h.invoke_published("tilo.control:rename.primary", "invoke", &none)
+        .expect("Save is reachable");
+    assert_eq!(saved.get(), 1);
+}

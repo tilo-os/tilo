@@ -511,3 +511,34 @@ fn an_effect_declared_immediate_cannot_answer_later() {
             if output.value == Some(serde_json::json!("pong"))
     ));
 }
+
+#[test]
+fn an_action_needing_what_the_host_lacks_is_published_unavailable() {
+    let declared = || {
+        let mut spec = Work::specs().remove(0);
+        spec.contract
+            .tags
+            .push(tilo_actions::REQUIRES_NATIVE_PATHS_TAG.to_owned());
+        spec
+    };
+    let mut on_the_web = declared();
+    require_host(&mut on_the_web, |tag| {
+        (tag == tilo_actions::REQUIRES_NATIVE_PATHS_TAG).then_some("no paths here")
+    });
+    assert_eq!(
+        on_the_web.contract.availability,
+        Availability::Unavailable {
+            code: tilo_actions::HOST_UNSUPPORTED_CODE.to_owned(),
+            reason: "no paths here".to_owned(),
+        }
+    );
+    // This host has file system paths, so publication keeps it available.
+    let published = overlaid(vec![declared()], &[]);
+    assert!(published[0].contract.availability.is_available());
+    assert_eq!(host_lacks(tilo_actions::REQUIRES_NATIVE_PATHS_TAG), None);
+    assert!(
+        host_lacks("requires-host:teleport").is_some(),
+        "a requirement the host does not know is one it lacks"
+    );
+    assert_eq!(host_lacks(tilo_actions::HOST_RENDER_TAG), None);
+}

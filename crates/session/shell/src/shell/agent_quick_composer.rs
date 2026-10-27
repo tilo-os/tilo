@@ -73,6 +73,11 @@ pub(crate) struct ComposerRequest {
     pub about: Option<super::selection_agent::SelectionSeed>,
     /// The model the person picked for the run; the agent's own without.
     pub model: Option<runtime_collab::TaskRunModel>,
+    /// What the person decided the request is, when they decided it in the
+    /// composer's mode picker rather than leaving it to the agent: work to
+    /// run, or something answered in place. `None` while the agent decides,
+    /// and always on a follow-up, which the run already shapes.
+    pub as_task: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,6 +177,10 @@ struct View {
     /// The model the person picked, among [`AgentQuickComposer::models`].
     model: LocalState<String>,
     picks_model: LocalState<bool>,
+    /// Whether the person decided the request themselves, and as what.
+    /// Empty while the agent decides, which is what it says until they do.
+    mode: LocalState<String>,
+    picks_mode: LocalState<bool>,
     context: LocalState<String>,
     asked: LocalState<String>,
     answer: LocalState<String>,
@@ -195,6 +204,8 @@ impl Default for View {
             picks_agent: LocalState::new(false),
             model: LocalState::new(String::new()),
             picks_model: LocalState::new(false),
+            mode: LocalState::new(String::new()),
+            picks_mode: LocalState::new(true),
             context: LocalState::new(String::new()),
             asked: LocalState::new(String::new()),
             answer: LocalState::new(String::new()),
@@ -300,6 +311,8 @@ pub(crate) struct AgentQuickComposer {
     models: Vec<(String, Option<runtime_collab::TaskRunModel>)>,
     /// Whether the model picker lists [`Self::models`] yet.
     model_picker: PickerListing,
+    /// Whether the mode picker lists its two choices yet.
+    mode_picker: PickerListing,
 }
 
 impl Default for AgentQuickComposer {
@@ -332,6 +345,7 @@ impl Default for AgentQuickComposer {
             agent_picker: PickerListing::Listed,
             models: Vec::new(),
             model_picker: PickerListing::Listed,
+            mode_picker: PickerListing::Unlisted,
         };
         composer.popover = composer.controls();
         composer
@@ -373,6 +387,15 @@ impl AgentQuickComposer {
                     Dropdown::from_state(Vec::new(), &self.view.model)
                         .with_id(MODEL_PICKER)
                         .with_resolved_accessible_name(t("agent-quick-model")),
+                ),
+            )))
+            .push(Box::new(When::from_state(
+                &self.view.picks_mode,
+                |picks| *picks,
+                Box::new(
+                    Dropdown::from_state(mode_choices(), &self.view.mode)
+                        .with_id(MODE_PICKER)
+                        .with_resolved_accessible_name(t("agent-quick-mode")),
                 ),
             )))
             .push(Box::new(
@@ -521,6 +544,7 @@ impl AgentQuickComposer {
         self.agent_switch = None;
         self.view.picks_agent.set(false);
         self.view.agent.set(owner.agent.clone());
+        self.view.mode.set(t("agent-quick-mode-decides"));
         self.offer_models(models_of());
         label.clone_into(&mut self.label);
         self.view
@@ -584,6 +608,11 @@ impl AgentQuickComposer {
     }
 
     fn list_agents(&mut self) {
+        if self.mode_picker == PickerListing::Unlisted
+            && set_picker_options(&mut self.popover, MODE_PICKER, &mode_choices())
+        {
+            self.mode_picker = PickerListing::Listed;
+        }
         if self.agent_picker == PickerListing::Unlisted
             && set_picker_options(&mut self.popover, AGENT_PICKER, &self.agents)
         {
@@ -765,6 +794,13 @@ impl AgentQuickComposer {
         } else {
             ComposerIntent::Request
         };
+        // The picker says what the person decided about a new request; a
+        // follow-up to one they ruled on keeps that ruling, which the
+        // adapter already carries with the run.
+        let as_task = match intent {
+            ComposerIntent::Request => mode_of(&self.view.mode.get()),
+            ComposerIntent::Steer => None,
+        };
         self.next_submission = self.next_submission.checked_add(1)?;
         self.save_draft();
         self.submissions.insert(
@@ -794,12 +830,32 @@ impl AgentQuickComposer {
             task,
             stop,
             context: self.context.clone(),
-            conversation: self.conversations.get(&owner).cloned().unwrap_or_default(),
+            conversation: self.conversation(&owner, as_task),
             about: self.about.clone().filter(|_| !stop),
             model: self.picked_model(),
+            as_task,
         };
+        // The ruling was for that request; the next one starts from the
+        // agent's own decision until the person makes another.
+        self.view.mode.set(t("agent-quick-mode-decides"));
         self.refresh();
         Some(request)
+    }
+
+    /// The turns before a request, with how the person decided it when they
+    /// decided it themselves: a follow-up that overrules the last decision
+    /// says so, in the place an agent reads its conversation.
+    fn conversation(&self, owner: &ComposerOwner, as_task: Option<bool>) -> Vec<ComposerTurn> {
+        let mut turns = self.conversations.get(owner).cloned().unwrap_or_default();
+        let answered = turns.last().is_some_and(|turn| turn.agent);
+        let decided = as_task.filter(|_| answered);
+        if let Some(as_task) = decided {
+            turns.push(ComposerTurn {
+                agent: false,
+                text: mode_line(as_task),
+            });
+        }
+        turns
     }
 
     /// What the person chose to do with the last answer.
@@ -1092,6 +1148,42 @@ const AGENT_PICKER: &str = "agent-quick-agent";
 
 /// The test id of the composer's model picker.
 const MODEL_PICKER: &str = "agent-quick-model";
+
+/// The test id of the composer's picker for what the request is.
+const MODE_PICKER: &str = "agent-quick-mode";
+
+/// What a request of the composer's is, as the person reads it there: the
+/// agent's own decision (empty), an answer in place, or work to run.
+fn mode_choices() -> Vec<String> {
+    vec![
+        t("agent-quick-mode-decides"),
+        t("agent-quick-mode-answer"),
+        t("agent-quick-mode-task"),
+    ]
+}
+
+/// What the mode picker's value means: `None` while the agent decides.
+fn mode_of(picked: &str) -> Option<bool> {
+    let task = t("agent-quick-mode-task");
+    let answer = t("agent-quick-mode-answer");
+    if picked == task {
+        Some(true)
+    } else if picked == answer {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// What a request the person ruled on says in its follow-ups, in their own
+/// words in the place an agent reads its conversation.
+fn mode_line(as_task: bool) -> String {
+    if as_task {
+        t("agent-quick-mode-task-line")
+    } else {
+        t("agent-quick-mode-answer-line")
+    }
+}
 
 /// The models a run may plan with: the agent's own first, then those the
 /// person's providers offer, as their record of them lists them.
@@ -1386,6 +1478,60 @@ mod tests {
             heads,
             "private editor input never writes collaborative content"
         );
+    }
+
+    #[test]
+    fn the_person_can_rule_that_an_instruction_is_work_or_an_answer() {
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        let tide = owner("tide");
+        open(&mut composer, tide.clone());
+        edit(
+            &mut composer,
+            &mut doc,
+            "Rename every file to its invoice number",
+        );
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        // Nothing is picked until the person picks it: the agent decides.
+        let decided = submit(&mut composer, &mut doc);
+        assert_eq!(decided.as_task, None);
+        assert!(
+            decided.conversation.is_empty(),
+            "the agent's own decision says nothing extra"
+        );
+        composer.observe_receipt(ComposerReceipt {
+            owner: tide.clone(),
+            submission: decided.submission,
+            outcome: ComposerOutcome::Answered("Which folder?".into()),
+        });
+
+        edit(&mut composer, &mut doc, "Sum up this section");
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert!(
+            action(
+                &mut composer,
+                MODE_PICKER,
+                &ui::a11y::Action::SetValue(t("agent-quick-mode-task")),
+                &mut doc
+            ),
+            "the mode picker offers running it as a task"
+        );
+        let ruled = submit(&mut composer, &mut doc);
+        assert_eq!(ruled.as_task, Some(true));
+        assert_eq!(
+            ruled.conversation.last(),
+            Some(&ComposerTurn {
+                agent: false,
+                text: t("agent-quick-mode-task-line"),
+            }),
+            "a follow-up tells the agent what the person ruled"
+        );
+
+        // The ruling was for that request: the next one asks the agent again.
+        edit(&mut composer, &mut doc, "And how long is the section?");
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        let next = submit(&mut composer, &mut doc);
+        assert_eq!(next.as_task, None);
     }
 
     #[test]

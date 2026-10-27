@@ -213,7 +213,9 @@ impl ContentDamage {
             .filter(|(placed, _)| *placed == placement)
             .and_then(|(_, before)| {
                 let (_, after) = self.painted.as_ref()?;
-                Some(crate::damage::changed_boxes(&before, after))
+                Some(crate::damage::changed_boxes_besides_own_damage(
+                    app, &before, after,
+                ))
             });
         let Some(moved) = moved.filter(|_| !presence.places_content_marks(crate::time::now()))
         else {
@@ -415,7 +417,12 @@ mod window_search;
 )]
 pub struct TileHost {
     content: TileContent,
-    history: Option<Box<crate::history_mode::host::HistoryHost>>,
+    history: Option<crate::history_mode::host::HistoryChrome>,
+    /// A History registered before its code was in, installed once it is.
+    pending_history: Option<crate::history_mode::HistoryRegistration>,
+    /// The person opened History before its code was in: it opens once it
+    /// is, and a quiet panel stands in its place meanwhile.
+    history_opening: bool,
     /// Where the History control stands while History is closed: `None` in
     /// the app's own header row (a tile outside a desktop window), `Some`
     /// once a desktop window hosts the tile. `Some(true)`: the window's tab
@@ -624,30 +631,6 @@ impl TileHost {
         }
         tile
     }
-    fn install_history_registration(
-        &mut self,
-        registration: crate::history_mode::HistoryRegistration,
-    ) {
-        let owner = self.history_owner();
-        match crate::history_mode::host::HistoryHost::new(registration, &AutoCommit::new()) {
-            Ok(mut history) => {
-                history.set_enclosing_owner(owner);
-                history.set_keyboard_active(false);
-                if let Some(tab_presents) = self.window_history {
-                    history.remove_fallback_bar();
-                    history.set_open_button(!tab_presents);
-                    history.set_window_presents(tab_presents);
-                }
-                self.history = Some(Box::new(history));
-                self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-                self.structure_dirty = true;
-            }
-            Err(error) => {
-                self.record_error = Some(format!("History unavailable: {error}"));
-                self.structure_dirty = true;
-            }
-        }
-    }
 
     /// A desktop window hosts this tile; `tab_presents` says whether the
     /// window's tab row shows (and so presents the History control). The
@@ -688,46 +671,6 @@ impl TileHost {
             >(app.as_mut() as &mut dyn Widget),
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
-    }
-
-    /// The History control the window's tab row shows for this tile: open
-    /// or closed, or `None` where the tile has no History to open.
-    #[must_use]
-    pub fn history_control(&self) -> Option<crate::widget::HistoryControl> {
-        match &self.history {
-            Some(history) => history
-                .offers_control()
-                .then(|| crate::widget::HistoryControl::of(history.is_open())),
-            None => self
-                .app_history()
-                .and_then(crate::widget::WindowHistory::window_history_control),
-        }
-    }
-
-    /// Press the window's History control for this tile: open History, or
-    /// close it while it shows, through the same History door the History
-    /// shortcut and the palette use.
-    ///
-    /// # Errors
-    ///
-    /// The tile has no History, or its door refused the operation.
-    pub fn invoke_history_control(
-        &mut self,
-        control: crate::widget::HistoryControl,
-    ) -> Result<(), String> {
-        let Some(history) = self.history.as_deref_mut() else {
-            return self
-                .app_history_mut()
-                .ok_or_else(|| "History is unavailable".to_owned())?
-                .invoke_window_history_control(control);
-        };
-        let intent = crate::standalone_history_host::history_control_binding(control)
-            .invoke(())
-            .map_err(|error| error.to_string())?;
-        crate::history_mode::embedded::run_door_control(history, &intent)
-            .map_err(|error| error.to_string())?;
-        self.structure_dirty = true;
-        Ok(())
     }
 
     /// Queue `invocation` as one of the hosted app's own controls: an action
@@ -897,6 +840,8 @@ impl TileHost {
         let mut tile = Self {
             content,
             history: None,
+            pending_history: None,
+            history_opening: false,
             window_history: None,
             automatic_history: false,
             live_callback_node: None,
@@ -1284,6 +1229,7 @@ impl TileHost {
         self.binding = None;
         self.pending_binding = None;
         self.history = None;
+        self.pending_history = None;
         self.retained_invocations.clear();
         self.record_error = Some(reason);
         self.record_creation_refused = true;
@@ -1560,6 +1506,7 @@ impl TileHost {
     fn renew_history_lifetime(&mut self) {
         if self.automatic_history {
             self.history = None;
+            self.pending_history = None;
             self.automatic_history = false;
         }
         self.history_lifetime.control_domain.close();
@@ -1893,6 +1840,7 @@ impl TileHost {
             _ => Ok(None),
         };
         self.history = None;
+        self.pending_history = None;
         match registration {
             Ok(Some(registration)) => self.install_history_registration(registration),
             Err(error) => self.record_error = Some(format!("History unavailable: {error}")),
@@ -2706,6 +2654,7 @@ impl Widget for TileHost {
     }
 
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
+        let adopted = self.adopt_loaded_history();
         // A placeholder step that came due (its wake deadline), or a first
         // frame due to show, is a change of what the tile shows: the host
         // that woke for it paints.
@@ -2713,7 +2662,7 @@ impl Widget for TileHost {
         let arrival = self
             .arrival_now()
             .is_some_and(|arrival| arrival.needs_redraw(crate::motion::frame_now(), progress));
-        self.update_content(s, p) || arrival
+        self.update_content(s, p) || arrival || adopted
     }
     fn build_layout(
         &mut self,
@@ -3556,7 +3505,7 @@ impl crate::history_mode::capability::FrameworkHistoryTopology for TileHost {
     ) {
         if let TileContent::App(live) = &self.content {
             if let Some(history) = &self.history {
-                visitor(history, live.as_ref());
+                visitor(history.as_ref(), live.as_ref());
             }
             crate::history_mode::capability::visit_framework_history(live.as_ref(), visitor);
         }
@@ -3569,7 +3518,7 @@ impl crate::history_mode::capability::FrameworkHistoryTopology for TileHost {
         if let TileContent::App(live) = &mut self.content {
             if let Some(history) = &mut self.history {
                 history.set_enclosing_owner(owner);
-                visitor(history, live.as_mut());
+                visitor(history.as_mut(), live.as_mut());
             }
             crate::history_mode::capability::visit_framework_history_mut(live.as_mut(), visitor);
         }
@@ -3744,6 +3693,7 @@ impl TileHost {
         let bounds = vec![transform.transform_rect_bbox(self.rect)];
         crate::scene_parts::part(scene, content, bounds, |scene| {
             self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
+            self.draw_history_loading(scene, transform, tr, theme);
         });
         scene.pop_layer();
         // The edge, and the focus ring it becomes, is a band along the
@@ -3984,6 +3934,7 @@ fn draw_card_text(
 
 mod arrival;
 mod held;
+mod history;
 pub use held::{hold_windows, release_windows};
 #[cfg(test)]
 mod held_tests;

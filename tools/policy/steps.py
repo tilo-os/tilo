@@ -42,6 +42,9 @@ class Step:
     covered_by: str | None
     pre_push: bool = False
     history: bool = False
+    # It only lists the tracked paths through Git (`git = "paths"`), never reads blobs from the
+    # index, so t-git-index.sh indexes the paths without hashing the files.
+    git_paths: bool = False
 
     @property
     def check(self) -> str:
@@ -51,7 +54,9 @@ class Step:
     @property
     def command(self) -> str:
         """What runs it: under t-git-index.sh when it reads the tree through Git."""
-        return f"bash {GIT_INDEX} {self.run}" if self.git else self.run
+        if not self.git:
+            return self.run
+        return f"bash {GIT_INDEX} --paths {self.run}" if self.git_paths else f"bash {GIT_INDEX} {self.run}"
 
     @property
     def t_command(self) -> str:
@@ -72,7 +77,10 @@ def load(root: Path = ROOT) -> list[Step]:
             raise ValueError(f"{MANIFEST}: a step's name is lowercase words joined by '-', not {name!r}")
         step = Step(name, entry["label"], " ".join(entry["run"].replace("\\\n", " ").split()),
                     tuple(entry.get("inputs", ())), bool(entry.get("git")), bool(entry.get("tests")),
-                    entry.get("covered_by"), bool(entry.get("pre_push")), bool(entry.get("history")))
+                    entry.get("covered_by"), bool(entry.get("pre_push")), bool(entry.get("history")),
+                    entry.get("git") == "paths")
+        if entry.get("git") not in (None, True, False, "paths"):
+            raise ValueError(f"{MANIFEST}: step {name} says git = {entry.get('git')!r}: true or \"paths\"")
         if step.history and not step.tests:
             raise ValueError(f"{MANIFEST}: step {name} says history = true, which only the suite's tests may")
         if (step.tests, name) in seen:
