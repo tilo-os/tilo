@@ -470,17 +470,32 @@ CARGO_CHECKS: dict[str, dict] = {
     # user units, the login session, the SELinux policy, the image's Containerfile
     # and workflow, and the session scripts.
     "real-fuse": {
-        "packages": lambda packages, root: {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer",
-                                            "fs-protocol", "tilo-user-identity",
-                                            "tilo-session-record"},
-        "tested": {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer", "fs-protocol",
-                   "tilo-user-identity"},
+        "packages": lambda packages, root: {"tilo-fs", "fs-protocol", "tilo-user-identity", "tilo-session-record"},
+        "tested": {"tilo-fs", "fs-protocol", "tilo-user-identity"},
         "inputs": ["os/tests/tilo-session-lifecycle.sh", "crates/session/shell/src/linux_main.rs",
                    "os/usr/libexec/tilo-session",
                    "os/usr/lib/systemd/user/**", "os/usr/share/tilo/selinux/tilo-base.cil",
                    "os/usr/share/wayland-sessions/**", "os/dev-image/usr/lib/systemd/user/**",
                    "os/Containerfile", "dist/session/**",
                    "tools/desktop-isolation.sh", "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    # real-fuse's long suites, its relay proof, and its runtime and file explorer mounts, each a
+    # check of its own so they build and run side by side.
+    "real-fuse-mounts": {
+        "packages": lambda packages, root: {"tilo-fs"},
+        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    "real-fuse-shares": {
+        "packages": lambda packages, root: {"tilo-fs"},
+        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    "real-fuse-relay": {
+        "packages": lambda packages, root: {"tilo-relay"},
+        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    "real-fuse-runtime": {
+        "packages": lambda packages, root: {"tilo-runtime", "file-explorer"},
+        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
     },
     # The credential vault's wasm build linted, and its storage probe example built
     # and driven in Chromium (crates/system/accounts/web/run.mjs, tools/web/chrome.mjs).
@@ -969,6 +984,12 @@ IDLE_TESTS = ["canvas", "music", "pdf-viewer", "tilo-ui"]
 IDLE_LINTS = ["music", "tilo-messaging-protocol"]
 
 
+def with_examples(packages: dict[str, dict]) -> list[str]:
+    """The packages with example targets: the `examples` family builds and runs them."""
+    return sorted(name for name, package in packages.items()
+                  if any("example" in target["kind"] for target in package["targets"]))
+
+
 def property_tested(packages: dict[str, dict]) -> list[str]:
     """The packages with property tests (a proptest dependency): the `test-deep` family runs
     them with more cases on release candidates."""
@@ -1008,6 +1029,7 @@ def test_families(packages: dict[str, dict]) -> dict[str, str]:
     blocks = {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
               "test-idle-packages": f"packages = {array(IDLE_TESTS)}\n",
               "test-deep-packages": f"packages = {array(deep)}\n",
+              "examples-packages": f"packages = {array(sorted(set(with_examples(packages)) - {'workspace-unify'}))}\n",
               "clippy-exclude": f"exclude = {array(['workspace-unify', *IDLE_LINTS, *sorted(per_arch)])}\n",
               "clippy-idle-packages": f"packages = {array(IDLE_LINTS)}\n",
               "check-exclude": f"exclude = {array(['workspace-unify', *sorted(per_arch)])}\n"}
@@ -1049,7 +1071,7 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
     metadata = workspace_graph.cargo_metadata(ROOT)
     manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "test-idle-package-inputs": inputs, "test-deep-package-inputs": inputs,
+    return {"test-package-inputs": inputs, "test-idle-package-inputs": inputs, "test-deep-package-inputs": inputs, "examples-package-inputs": inputs,
             "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs,
             **{f"{family}-{arch}-package-inputs": inputs for family in ("test", "clippy") for arch in ARCHES},
             "suites": suite_checks(manifest),
