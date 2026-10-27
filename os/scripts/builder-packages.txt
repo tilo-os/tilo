@@ -3,7 +3,6 @@
 bash-devel
 capnproto
 clang
-clang-devel
 cmake
 expat-devel
 fontconfig-devel
