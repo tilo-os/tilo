@@ -54,6 +54,7 @@ impl tilo_messaging::HistoryHost for GroupHostFixture {
     fn read(
         &self,
         _: tilo_contact_directory::routing::Route,
+        _: Option<tilo_messaging::HistoryCursor>,
         _: usize,
     ) -> tilo_messaging::HistoryFuture {
         Box::pin(std::future::ready(Err(

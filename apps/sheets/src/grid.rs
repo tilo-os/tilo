@@ -412,6 +412,61 @@ impl Default for GridMetrics {
               simplify; consolidating them would touch this widget's many call sites for no \
               behavioural gain"
 )]
+/// A structural change on its way: the `count` rows (or columns) at `at`
+/// opening as they arrive or closing as they leave, and everything after
+/// them moving with the band on the standard disclosure
+/// ([`ui::motion::Disclosure`]) — a row that appears or a gap that closes
+/// arrives rather than teleporting.
+///
+/// It is a drawing offset, not layout: the rows are laid out where they now
+/// stand, and what moves is where this frame paints them (a press lands on
+/// the row that is there, as in a toolkit table's own row motion).
+struct Shift {
+    at: u32,
+    count: u32,
+    /// The band is leaving: its rows are already gone and the rows after it
+    /// close the gap.
+    leaving: bool,
+    /// The band's extent when open, in content space.
+    full: f64,
+    /// It starts on the first frame it is drawn, where the theme's motion
+    /// is at hand.
+    started: bool,
+    disclosure: ui::motion::Disclosure,
+}
+
+impl Shift {
+    /// How far the row (or column) `index` is drawn from its laid-out place,
+    /// and how much of an arriving band is open.
+    fn pose(&self, index: u32) -> f64 {
+        let opened = self.open_height();
+        if self.leaving {
+            // What follows the band was `opened` lower before it closed.
+            if index >= self.at { opened } else { 0.0 }
+        } else if index >= self.at.saturating_add(self.count) {
+            // What follows the band stands where it did, `full` higher.
+            opened - self.full
+        } else {
+            0.0
+        }
+    }
+
+    /// How much of an arriving band is open: the rows in it are drawn inside
+    /// this much, fading in, so they never cover a row still on its way out
+    /// of the way.
+    fn open_height(&self) -> f64 {
+        self.disclosure.reveal(self.full).height
+    }
+
+    fn open_opacity(&self) -> f32 {
+        self.disclosure.reveal(self.full).opacity
+    }
+
+    fn is_moving(&self) -> bool {
+        !self.started || self.disclosure.is_moving()
+    }
+}
+
 pub struct Grid {
     pub rect: Rect,
     /// Geometry follows the active accessibility text scale. The grid is a
@@ -459,6 +514,10 @@ pub struct Grid {
     /// bounds and the destination region to fill, `(src_tl, src_br, dst_tl,
     /// dst_br)`. Rising-edge, cleared by `take_pending_fill`.
     pending_fill: Option<(Addr, Addr, Addr, Addr)>,
+    /// Rows and columns arriving or leaving on the standard disclosure: what
+    /// this frame draws them on their way from ([`Shift`]).
+    row_shift: Option<Shift>,
+    col_shift: Option<Shift>,
     selecting: bool,
     /// Formula "point mode": while editing a formula, clicking/dragging cells
     /// inserts their references. `point_anchor` is the char index in the edit
@@ -520,6 +579,8 @@ impl Grid {
             vbar: Scrollbar::vertical(),
             fill_drag: None,
             pending_fill: None,
+            row_shift: None,
+            col_shift: None,
             selecting: false,
             point_anchor: None,
             point_drag_start: (0, 0),
@@ -599,6 +660,96 @@ impl Grid {
             y += self.row_h(r);
             self.row_y.push(y);
         }
+    }
+
+    /// The rows `at..at + count` just appeared: they arrive on the standard
+    /// disclosure, and the rows below make room for them.
+    pub fn rows_inserted(&mut self, at: u32, count: u32) {
+        self.row_shift =
+            Some(self.arrival(at, count, false, &self.row_y, self.metrics.default_row_h()));
+    }
+
+    /// The rows `at..at + count` just left: the rows below close the gap.
+    pub fn rows_removed(&mut self, at: u32, count: u32) {
+        self.row_shift =
+            Some(self.arrival(at, count, true, &self.row_y, self.metrics.default_row_h()));
+    }
+
+    /// The columns `at..at + count` just appeared, and the ones after them
+    /// make room.
+    pub fn columns_inserted(&mut self, at: u32, count: u32) {
+        self.col_shift =
+            Some(self.arrival(at, count, false, &self.col_x, self.metrics.default_col_w()));
+    }
+
+    /// The columns `at..at + count` just left, and the ones after them close
+    /// the gap.
+    pub fn columns_removed(&mut self, at: u32, count: u32) {
+        self.col_shift =
+            Some(self.arrival(at, count, true, &self.col_x, self.metrics.default_col_w()));
+    }
+
+    /// The change `at..at + count` on its way, over the prefix sums of the
+    /// layout it has now: the band is as tall as the rows in it (or as one
+    /// default row apiece, for rows past the layout's end).
+    fn arrival(&self, at: u32, count: u32, leaving: bool, sums: &[f64], default: f64) -> Shift {
+        let count = count.max(1);
+        let from = sums.get(at as usize).copied();
+        let to = sums.get(at.saturating_add(count) as usize).copied();
+        let full = match (from, to) {
+            (Some(from), Some(to)) if to > from => to - from,
+            _ => default * f64::from(count),
+        };
+        Shift {
+            at,
+            count,
+            leaving,
+            full,
+            started: false,
+            // A band that is leaving starts open and closes; one arriving
+            // starts closed and opens, both on the first frame it is drawn.
+            disclosure: if leaving {
+                ui::motion::Disclosure::opened()
+            } else {
+                ui::motion::Disclosure::closed()
+            },
+        }
+    }
+
+    /// Whether a row or column is still on its way: the app asks for frames.
+    pub fn is_animating(&self) -> bool {
+        self.row_shift.as_ref().is_some_and(Shift::is_moving)
+            || self.col_shift.as_ref().is_some_and(Shift::is_moving)
+    }
+
+    /// Start the changes a frame draws, on this theme's motion, and forget
+    /// the ones that have come to rest.
+    fn start_shifts(&mut self, theme: &Theme) {
+        for shift in [&mut self.row_shift, &mut self.col_shift]
+            .into_iter()
+            .flatten()
+        {
+            if !shift.started {
+                shift.started = true;
+                shift.disclosure.show_change(!shift.leaving, theme.motion());
+            }
+        }
+        if self.row_shift.as_ref().is_some_and(|s| !s.is_moving()) {
+            self.row_shift = None;
+        }
+        if self.col_shift.as_ref().is_some_and(|s| !s.is_moving()) {
+            self.col_shift = None;
+        }
+    }
+
+    /// How far row `r` is drawn from where it is laid out.
+    fn row_draw_shift(&self, r: u32) -> f64 {
+        self.row_shift.as_ref().map_or(0.0, |shift| shift.pose(r))
+    }
+
+    /// How far column `c` is drawn from where it is laid out.
+    fn col_draw_shift(&self, c: u32) -> f64 {
+        self.col_shift.as_ref().map_or(0.0, |shift| shift.pose(c))
     }
 
     /// Replace the rendered cell data (called every frame from the app's
@@ -1166,8 +1317,8 @@ impl Grid {
 
     /// Screen rect for a cell, in absolute coords (may lie outside the body).
     pub(crate) fn cell_screen_rect(&self, c: u32, r: u32) -> Rect {
-        let x = self.grid_x0() + self.col_left(c) - self.scroll_x;
-        let y = self.grid_y0() + self.row_top(r) - self.scroll_y;
+        let x = self.grid_x0() + self.col_left(c) + self.col_draw_shift(c) - self.scroll_x;
+        let y = self.grid_y0() + self.row_top(r) + self.row_draw_shift(r) - self.scroll_y;
         Rect::new(x, y, x + self.col_w(c), y + self.row_h(r))
     }
 
@@ -2354,6 +2505,9 @@ impl Grid {
             self.rebuild_geom();
             self.needs_autofit = false;
         }
+        // A row or column that just appeared or left starts on its way
+        // here, where the theme's motion is at hand.
+        self.start_shifts(theme);
         let this = &*self;
         let body = this.body_rect();
         let cols = this.visible_cols();
@@ -2384,19 +2538,49 @@ impl Grid {
                 Self::draw_reference_washes(scene, transform, theme, &references);
             });
         }
+        let arriving = this.row_shift.as_ref().filter(|shift| !shift.leaving);
         for &r in &rows {
             let row = this.cell_screen_rect(0, r);
-            let Some(band) = intersect(Rect::new(body.x0, row.y0, body.x1, row.y1), body) else {
+            let mut band = Rect::new(body.x0, row.y0, body.x1, row.y1);
+            // A row of a band that is opening is drawn only inside what has
+            // opened of it, so it never covers a row still on its way.
+            let mut opacity = 1.0;
+            if let Some(shift) = arriving
+                && r >= shift.at
+                && r < shift.at.saturating_add(shift.count)
+            {
+                let top = this.cell_screen_rect(0, shift.at).y0;
+                band = Rect::new(
+                    band.x0,
+                    band.y0,
+                    band.x1,
+                    band.y1.min(top + shift.open_height()),
+                );
+                opacity = shift.open_opacity();
+            }
+            let Some(band) = intersect(band, body) else {
                 continue;
             };
             parts.draw(scene, format!("sheet-row-{r}"), band, |scene| {
                 clipped(scene, transform, band, |scene| {
+                    if opacity < 1.0 {
+                        scene.push_layer(
+                            Fill::NonZero,
+                            BlendMode::default(),
+                            opacity,
+                            transform,
+                            &band,
+                        );
+                    }
                     this.draw_row_cells(
                         &mut PaintCtx::new(scene, transform, tr, theme),
                         &cols,
                         r,
                         body,
                     );
+                    if opacity < 1.0 {
+                        scene.pop_layer();
+                    }
                 });
             });
         }
@@ -2615,7 +2799,9 @@ impl Grid {
         let stroke = Stroke::new(1.0);
         // verticals
         for &c in cols {
-            let x = (self.grid_x0() + self.col_left(c) - self.scroll_x).round() + 0.5;
+            let x = (self.grid_x0() + self.col_left(c) + self.col_draw_shift(c) - self.scroll_x)
+                .round()
+                + 0.5;
             scene.stroke(
                 &stroke,
                 transform,
@@ -2640,7 +2826,9 @@ impl Grid {
             }
         }
         for &r in rows {
-            let y = (self.grid_y0() + self.row_top(r) - self.scroll_y).round() + 0.5;
+            let y = (self.grid_y0() + self.row_top(r) + self.row_draw_shift(r) - self.scroll_y)
+                .round()
+                + 0.5;
             scene.stroke(
                 &stroke,
                 transform,
@@ -2650,7 +2838,11 @@ impl Grid {
             );
         }
         if let Some(&lastr) = rows.last() {
-            let y = (self.grid_y0() + self.row_top(lastr) + self.row_h(lastr) - self.scroll_y)
+            let y = (self.grid_y0()
+                + self.row_top(lastr)
+                + self.row_draw_shift(lastr)
+                + self.row_h(lastr)
+                - self.scroll_y)
                 .round()
                 + 0.5;
             if y < body.y1 {
@@ -3493,6 +3685,61 @@ mod tests {
         }
         g.values = map;
         g
+    }
+
+    /// A row that appears opens the room the rows below need rather than
+    /// teleporting into place: the band starts closed, the row after it is
+    /// drawn where it was, and both come to rest on the standard disclosure.
+    /// A row that leaves closes its band, and the rows below rise into it.
+    #[test]
+    fn an_inserted_row_opens_and_the_rows_after_it_make_room() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut g = grid_with(&[]);
+        g.set_metrics(GridMetrics::resolve(&mut tr, &theme));
+        let laid = g.cell_screen_rect(0, 3).y0;
+        let row_h = g.metrics.default_row_h();
+
+        g.rows_inserted(2, 1);
+        // Drawn before its first frame: the band is closed, so the row after
+        // it still stands where it did — one row above its new place.
+        assert!(g.is_animating(), "the change asks for frames");
+        assert!(
+            (g.cell_screen_rect(0, 3).y0 - (laid - row_h)).abs() < 0.01,
+            "the row after the closed band keeps its old place"
+        );
+        let shift = g.row_shift.as_ref().expect("the band is on its way");
+        assert!((shift.full - row_h).abs() < 0.01, "one row opens");
+
+        // Mid-way: the following row has moved down by what has opened of
+        // the band, not by the whole of it.
+        g.start_shifts(&theme);
+        assert!(
+            g.row_shift
+                .as_ref()
+                .is_some_and(|shift| shift.open_height() > -0.01),
+            "the band is opening"
+        );
+        let opened = g.row_shift.as_ref().map_or(0.0, Shift::open_height);
+        let followed = g.cell_screen_rect(0, 3).y0 - laid;
+        assert!(
+            (-row_h..=0.01).contains(&followed),
+            "the row after the band moves from where it was to its new place: {followed}"
+        );
+        assert!(opened >= 0.0);
+
+        // A row leaving closes its band: the rows below start a band lower
+        // and rise into the gap.
+        let mut g = grid_with(&[]);
+        g.set_metrics(GridMetrics::resolve(&mut tr, &theme));
+        let laid = g.cell_screen_rect(0, 2).y0;
+        g.rows_removed(2, 1);
+        let shift = g.row_shift.as_ref().expect("the band is leaving");
+        assert!(shift.leaving);
+        assert!(
+            (g.cell_screen_rect(0, 2).y0 - (laid + row_h)).abs() < 0.01,
+            "the row that closed the gap starts a row lower"
+        );
     }
 
     #[test]
