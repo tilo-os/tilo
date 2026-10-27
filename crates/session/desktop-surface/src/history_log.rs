@@ -16,7 +16,8 @@ use tilo_automerge::WriteTyped as _;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{DesktopTree, RoomId, shared_record};
 
-/// A change's message names its author after this prefix.
+/// A change written before changes named their action names its author
+/// after this prefix.
 const AUTHOR_PREFIX: &str = "author:";
 /// The newest changes a room history replays; older ones stay in the log.
 pub const MAX_REPLAYED_CHANGES: usize = 600;
@@ -45,7 +46,7 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
         Ok(true) => {
             log.commit_with(
                 CommitOptions::default()
-                    .with_message(format!("{AUTHOR_PREFIX}{author}"))
+                    .with_message(shared_record::change_message(Some(author)))
                     .with_time(time),
             );
             true
@@ -73,10 +74,13 @@ pub fn save_pending<E>(
 }
 
 /// The author a change of a desktop log names.
-pub fn change_author(message: Option<&str>) -> Option<&str> {
-    message?
-        .strip_prefix(AUTHOR_PREFIX)
-        .filter(|a| !a.is_empty())
+pub fn change_author(message: Option<&str>) -> Option<String> {
+    shared_record::change_author(message).or_else(|| {
+        message?
+            .strip_prefix(AUTHOR_PREFIX)
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned)
+    })
 }
 
 /// The name of the workspace in front on a desktop a host value carries,
@@ -93,7 +97,7 @@ pub fn workspace_name(value: &serde_json::Value) -> Option<String> {
 pub fn latest_author(log: &AutoCommit) -> Option<String> {
     log.base_heads().iter().find_map(|head| {
         let change = automerge::ReadDoc::get_change_by_hash(log, head)?;
-        change_author(change.message()).map(str::to_owned)
+        change_author(change.message())
     })
 }
 
@@ -175,9 +179,7 @@ pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
         };
         let actor = change.actor_id().clone();
         if let Some(author) = change_author(change.message()) {
-            authors
-                .entry(actor.to_hex_string())
-                .or_insert_with(|| author.to_owned());
+            authors.entry(actor.to_hex_string()).or_insert(author);
         }
         doc.set_actor(actor);
         if !declared {

@@ -722,16 +722,23 @@ pub fn room_layout_choice(doc: &AutoCommit) -> Option<RoomLayout> {
     }
 }
 
-/// The people the room `doc` governs lists as its members, by person id:
-/// who still holds what they made on its desktop
+/// The people the room `doc` governs lists as its owner and members, by
+/// person id: who still holds what they made on its desktop
 /// ([`crate::ownership::released`]). `None` when `doc` lists nobody (not
 /// heard yet), so nothing is taken as released before the list arrives.
 #[must_use]
 pub fn room_members(doc: &AutoCommit) -> Option<std::collections::BTreeSet<String>> {
+    use automerge::{ROOT, ReadDoc};
+    let owner = doc
+        .get(&ROOT, ROOM_OWNER_KEY)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| value.into_string().ok());
     let people: std::collections::BTreeSet<String> =
         blob_map_of::<serde_json::Value>(doc, ROOM_MEMBERS_KEY)
             .into_iter()
             .map(|(person, _)| person)
+            .chain(owner)
             .collect();
     (!people.is_empty()).then_some(people)
 }

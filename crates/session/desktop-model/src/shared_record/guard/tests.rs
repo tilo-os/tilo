@@ -1,6 +1,7 @@
-use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
-use tilo_desktop_model::ownership::{Act, Authors};
-use tilo_desktop_model::{DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId};
+use crate::layout::{Strip, Tab, TileContent, WindowGroup};
+use crate::ownership::{Act, Authors};
+use crate::shared_record;
+use crate::{DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId};
 
 use super::*;
 
@@ -95,6 +96,18 @@ fn room() -> DesktopGuard {
     DesktopGuard::new(doc)
 }
 
+fn writer<'a>(
+    person: &'a str,
+    members: Option<&'a std::collections::BTreeSet<String>>,
+    allows: &'a dyn Fn(&Touched) -> bool,
+) -> Writer<'a> {
+    Writer {
+        person,
+        members,
+        allows,
+    }
+}
+
 /// Only the room's moderator may act on what someone else made.
 fn moderates(writer: &'static str) -> impl Fn(&Touched) -> bool {
     move |_| writer == MOD
@@ -105,7 +118,7 @@ fn a_guest_closes_their_own_window_but_not_someone_elses() {
     let mut guard = room();
     let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
     let refused = guard
-        .decide(&closes_bens, ADA, None, &moderates(ADA))
+        .decide(&closes_bens, &writer(ADA, None, &moderates(ADA)))
         .unwrap_err();
     assert!(matches!(
         &refused,
@@ -120,7 +133,7 @@ fn a_guest_closes_their_own_window_but_not_someone_elses() {
 
     let closes_hers = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN)]));
     guard
-        .decide(&closes_hers, ADA, None, &moderates(ADA))
+        .decide(&closes_hers, &writer(ADA, None, &moderates(ADA)))
         .unwrap();
     assert_eq!(windows(&guard), vec![2]);
 }
@@ -130,11 +143,11 @@ fn the_owner_closes_their_window_and_a_moderator_closes_anyones() {
     let mut guard = room();
     let closes_his = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA)]));
     guard
-        .decide(&closes_his, BEN, None, &moderates(BEN))
+        .decide(&closes_his, &writer(BEN, None, &moderates(BEN)))
         .unwrap();
     let closes_adas = Page::of(&guard, 3).write(&desktop(&[]));
     guard
-        .decide(&closes_adas, MOD, None, &moderates(MOD))
+        .decide(&closes_adas, &writer(MOD, None, &moderates(MOD)))
         .unwrap();
     assert!(windows(&guard).is_empty());
 }
@@ -145,11 +158,13 @@ fn moving_someone_elses_window_is_refused() {
     // Ben's window put in front of Ada's: his order among others' is the
     // same, so this reads as Ada moving hers, and is admitted.
     let swapped = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN), (1, 100, ADA)]));
-    guard.decide(&swapped, ADA, None, &moderates(ADA)).unwrap();
+    guard
+        .decide(&swapped, &writer(ADA, None, &moderates(ADA)))
+        .unwrap();
     // Ben's window into Ada's group is a move.
     let moved = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 100, BEN)]));
     let refused = guard
-        .decide(&moved, ADA, None, &moderates(ADA))
+        .decide(&moved, &writer(ADA, None, &moderates(ADA)))
         .unwrap_err();
     assert!(
         matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 2 && act.act == Act::Move)
@@ -162,11 +177,15 @@ fn a_page_writing_over_an_old_desktop_is_judged_by_what_it_changed() {
     let mut ada = Page::of(&guard, 1);
     // Ben opens window 3 while Ada's page is behind.
     let opens = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
-    guard.decide(&opens, BEN, None, &moderates(BEN)).unwrap();
+    guard
+        .decide(&opens, &writer(BEN, None, &moderates(BEN)))
+        .unwrap();
     // Ada, not having seen it, closes her own: admitted, and Ben's new
     // window is untouched, since her change wrote only her entries.
     let closes = ada.write(&desktop(&[(2, 200, BEN)]));
-    guard.decide(&closes, ADA, None, &moderates(ADA)).unwrap();
+    guard
+        .decide(&closes, &writer(ADA, None, &moderates(ADA)))
+        .unwrap();
     assert_eq!(windows(&guard), vec![2, 3]);
 }
 
@@ -175,7 +194,7 @@ fn claiming_someone_elses_window_is_refused() {
     let mut guard = room();
     let claims = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, ADA)]));
     let refused = guard
-        .decide(&claims, ADA, None, &moderates(ADA))
+        .decide(&claims, &writer(ADA, None, &moderates(ADA)))
         .unwrap_err();
     assert!(
         matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 2 && act.act == Act::Attribute)
@@ -187,9 +206,7 @@ fn a_write_that_is_not_automerge_changes_nothing() {
     let mut guard = room();
     let _ = guard.decide(
         &DocumentMutation::Incremental(vec![1, 2, 3]),
-        ADA,
-        None,
-        &moderates(ADA),
+        &writer(ADA, None, &moderates(ADA)),
     );
     assert_eq!(windows(&guard), vec![1, 2]);
 }
@@ -202,7 +219,7 @@ fn a_window_of_someone_who_left_the_room_is_anyones_to_close() {
     let members: std::collections::BTreeSet<String> = [ADA.to_owned()].into();
     let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
     guard
-        .decide(&closes_bens, ADA, Some(&members), &moderates(ADA))
+        .decide(&closes_bens, &writer(ADA, Some(&members), &moderates(ADA)))
         .unwrap();
     assert_eq!(windows(&guard), vec![1]);
 }
