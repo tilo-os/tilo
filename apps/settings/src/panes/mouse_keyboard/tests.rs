@@ -913,13 +913,15 @@ fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
     };
     app.harness()
         .dispatch_to_root(&key(winit::event::ElementState::Pressed));
-    // A pressed physical key is named wherever the drawing came from.
+    // A pressed physical key is named whenever the keys below it carry the
+    // layout's legends; the drawing holds no key to press on a host that has
+    // no keyboard data.
     assert_eq!(
         read(&mut app)["pressed_physical_keys"],
-        serde_json::json!(if preview["native_layout_available"] == true {
-            vec!["AD06"]
-        } else {
+        serde_json::json!(if without_keyboard_data {
             Vec::<&str>::new()
+        } else {
+            vec!["AD06"]
         })
     );
     app.harness()
