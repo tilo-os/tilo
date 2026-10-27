@@ -681,6 +681,10 @@ impl Panel {
 /// says it for every app: the hint appears as the window enters, and goes on
 /// its own after its delay, without anybody dismissing it.
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the panel is the test's subject for the whole test, not a guard to drop early"
+)]
 fn entering_fullscreen_says_the_way_out_once_and_then_stops() {
     let mut panel = Panel::new();
     let before = ui::time::now();
@@ -716,7 +720,9 @@ fn entering_fullscreen_says_the_way_out_once_and_then_stops() {
 
     // A moment before its delay runs out it is still up; its delay spent, it
     // is gone, and the full screen itself stays.
-    let edge = gone - std::time::Duration::from_millis(1);
+    let edge = gone
+        .checked_sub(std::time::Duration::from_millis(1))
+        .expect("a moment before the hint's delay is inside the clock's range");
     assert!(
         panel.fullscreen_hint_at(edge).is_some(),
         "still said a moment before its delay runs out"
