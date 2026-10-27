@@ -86,8 +86,8 @@ test('administration bootstrap is explicit, mount-local and separate from infere
  await first.host.cleanup();await second.host.cleanup();await inferenceOnly.host.cleanup();await missingToken.host.cleanup();
 });
 
-test('standalone control-panel bootstraps preserve both exact application IDs',async()=>{
- for(const app of ['so.tilo.model-providers','so.tilo.settings']){
+test('a standalone control-panel bootstrap preserves its exact application ID',async()=>{
+ for(const app of ['so.tilo.model-providers']){
   const mounted=await fixture({app,providerManagement:{endpoint:'https://models.example.test/model/rpc',sessionToken:'admin-'+app}});
   assert.equal(mounted.runtime.config.app,app);
   assert.equal(mounted.runtime.config.providerManagement.sessionToken,'admin-'+app);

@@ -164,9 +164,34 @@ NOT_CONTROL_CALLBACKS = {
     "on_open_item": "answers the resource's published open action",
     "on_stage": "stages view state for a screenshot scenario",
 }
+# Buttons a toolkit composite draws itself and runs a closure for: a
+# dialog's footer, a menu's entries, a row's hover and swipe actions, a
+# card's hover action, a navigation list's item actions. Each builder call
+# that hands one a closure counts, as a closure-activated control does; a
+# composite that publishes its buttons itself leaves this set.
+ACTION_BUTTON_BUILDERS = frozenset(
+    {
+        "primary_action", "secondary_action", "tertiary_action", "hover_action",
+        "swipe_action", "icon_action", "destructive_action", "item_actions",
+    }
+)
+# `MenuItem::action` and a row's or property's `.action(Icon::…, label, …)`
+# are the same buttons under the common name `action`, told apart by their
+# call shape.
+ACTION_BUTTON_CALL = re.compile(
+    r"\.\s*(?:" + "|".join(sorted(ACTION_BUTTON_BUILDERS)) + r")\s*\("
+    r"|\bMenuItem\s*::\s*(?:action|icon_action|destructive_action)\s*\("
+    r"|\.\s*action\s*\(\s*(?:ui\s*::\s*icons\s*::\s*)?Icon\s*::"
+)
+# Closure-taking toolkit builders named `*action*` that are neither counted
+# above nor controls: why.
+NOT_ACTION_BUTTONS = {
+    "action": "counted by call shape (ACTION_BUTTON_CALL)",
+    "actions_group": "binds each hit to its published action",
+}
 CONTROL_CALLBACK_SOURCES = ("crates/sdk/ui-core/src", "crates/sdk/tilo-app/src/framework")
 CLOSURE_CALLBACK_DEFINITION = re.compile(
-    r"\bpub\s+fn\s+(on_[a-z_]+)\s*(<[^{;]*?>)?\s*\(([^{;]*?)\)\s*(?:->[^{;]*?)?(where[^{;]*)?\{",
+    r"\bpub\s+fn\s+(on_[a-z_]+|[a-z_]*action[a-z_]*)\s*(<[^{;]*?>)?\s*\(([^{;]*?)\)\s*(?:->[^{;]*?)?(where[^{;]*)?\{",
     re.DOTALL,
 )
 CLOSURE_TYPE = re.compile(r"\bFn(?:Mut|Once)?\s*\(")
@@ -188,7 +213,12 @@ def closure_controls(code: str, raw: str, matches: list[re.Match]) -> list[re.Ma
 
 def unclassified_control_callbacks(root: Path) -> list[Violation]:
     """Closure-taking toolkit `on_*` builders neither counted nor excused."""
-    known = CONTROL_CALLBACKS | NOT_CONTROL_CALLBACKS.keys()
+    known = (
+        CONTROL_CALLBACKS
+        | NOT_CONTROL_CALLBACKS.keys()
+        | ACTION_BUTTON_BUILDERS
+        | NOT_ACTION_BUTTONS.keys()
+    )
     violations = []
     for directory in CONTROL_CALLBACK_SOURCES:
         for source in sorted((root / directory).rglob("*.rs")):
@@ -204,7 +234,8 @@ def unclassified_control_callbacks(root: Path) -> list[Violation]:
                         source,
                         line_number(raw, match.start()),
                         f"closure-taking `{name}` is unclassified: add it to CONTROL_CALLBACKS "
-                        "(a control's activation) or NOT_CONTROL_CALLBACKS with its reason in "
+                        "or ACTION_BUTTON_BUILDERS (a control's activation) or "
+                        "NOT_CONTROL_CALLBACKS or NOT_ACTION_BUTTONS with its reason in "
                         f"{Path(__file__).name}",
                     )
                 )
@@ -218,6 +249,11 @@ RATCHETS = {
         re.compile(r"\.\s*(?:" + "|".join(sorted(CONTROL_CALLBACKS)) + r")\s*\("),
         "new closure-activated control; bind it to a resource action (`on_action`), a "
         "published effect or view (`on_effect`, `on_view`) or a framework bound control",
+    ),
+    "closure_action_button": (
+        ACTION_BUTTON_CALL,
+        "new closure-run button of a toolkit composite (a dialog footer, a menu entry, a "
+        "row's or card's action); bind it to a resource action or publish it",
     ),
     "bespoke_command_entry": (
         re.compile(r"\bCommandEntry\s*::\s*new\s*\("),
@@ -242,9 +278,12 @@ RATCHETS = {
     ),
 }
 # Which matches of a ratchet count, given the file's code and raw text.
-RATCHET_FILTERS = {"closure_control": closure_controls}
+RATCHET_FILTERS = {
+    "closure_control": closure_controls,
+    "closure_action_button": closure_controls,
+}
 # Ratchets of the shipped app: test files and `#[cfg(test)]` items are exempt.
-PRODUCTION_RATCHETS = {"closure_control"}
+PRODUCTION_RATCHETS = {"closure_control", "closure_action_button"}
 
 # The one resource/action/view model (docs/architecture/README.md): an app's
 # edits go through the framework `Dispatcher`, it launches as a `ResourceApp`,

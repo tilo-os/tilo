@@ -65,6 +65,6 @@ use client::RelayClient;
 use coedit::AttributedPresence;
 #[cfg(all(test, feature = "agents"))]
 use coedit::CoeditPayload;
-use tilo_relay_protocol::{room_workspace_id, room_workspace_id_matches};
+use tilo_relay_protocol::{own_room_workspace_id_matches, room_workspace_id, room_workspace_id_matches};
 #[cfg(all(test, feature = "agents"))]
 use transport::Envelope;

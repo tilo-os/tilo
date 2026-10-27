@@ -459,7 +459,12 @@ impl MessagingHost for AccountSupervisor {
     }
 }
 impl HistoryHost for AccountSupervisor {
-    fn read(&self, route: Route, limit: usize) -> HistoryFuture {
+    fn read(
+        &self,
+        route: Route,
+        cursor: Option<tilo_messaging::HistoryCursor>,
+        limit: usize,
+    ) -> HistoryFuture {
         let client = self.active(&route);
         Box::pin(async move {
             if limit != tilo_messaging::MAX_HISTORY_MESSAGES {
@@ -468,7 +473,7 @@ impl HistoryHost for AccountSupervisor {
             client
                 .map_err(|_| tilo_messaging::HistoryError::Unavailable)?
                 .history()
-                .read(route)
+                .read(route, cursor)
                 .await
         })
     }

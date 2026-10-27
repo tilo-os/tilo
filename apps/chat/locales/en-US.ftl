@@ -182,7 +182,7 @@ chat-share-loading = Loading the live view…
 chat-share-open-to-see = Open it to see it live
 chat-share-open = Open { $title }, shared by { $name }
 chat-share-pick = Share { $title }
-chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
+chat-voice-unavailable = Calls can't start here: no host carries this workspace's calls
 chat-call-not-joined = Join the call first.
 chat-attachment-import-unavailable = Attachment import is unavailable on this host.
 

@@ -33,7 +33,9 @@ pub mod locales;
 pub mod model;
 mod note;
 mod project;
+mod runs;
 mod sample;
+mod task_chip;
 mod thread;
 mod window_bar;
 
@@ -56,19 +58,22 @@ pub enum Place {
     List,
     /// A lane per status.
     Board,
+    /// The tasks the tracker holds a run for, all of them.
+    Tasks,
     /// The tasks that have said something, as their conversations.
     Thread,
 }
 
 impl Place {
     /// The places the window shows, in the bar's order.
-    pub(crate) const ALL: [Self; 3] = [Self::List, Self::Board, Self::Thread];
+    pub(crate) const ALL: [Self; 4] = [Self::List, Self::Board, Self::Tasks, Self::Thread];
 
     pub(crate) const fn key(self) -> &'static str {
         match self {
             Self::List => "list",
             Self::Board => "board",
             Self::Thread => "thread",
+            Self::Tasks => "tasks",
         }
     }
 
@@ -83,6 +88,7 @@ impl Place {
             Self::List => tr("tasks-place-list"),
             Self::Board => tr("tasks-place-board"),
             Self::Thread => tr("tasks-place-thread"),
+            Self::Tasks => tr("tasks-place-tasks"),
         }
     }
 }
@@ -190,6 +196,7 @@ impl ResourceApp for App {
                     Place::List => list::view(cx, &nav),
                     Place::Board => board::view(cx, &nav),
                     Place::Thread => thread::view(cx, &nav),
+                    Place::Tasks => runs::view(cx, &nav),
                 })
             })
         });
@@ -419,9 +426,16 @@ fn sidebar(cx: &ViewCx<Tracker>, nav: &Nav, tracker: &LocalState<Tracker>) -> El
                         chosen.project.set(Some(area));
                     } else {
                         chosen.project.set(None);
-                        chosen
-                            .filter
-                            .set(Filter::of(&key).map(|filter| filter.key()));
+                        let filter = Filter::of(&key);
+                        // The running tasks are the task list's own, a place
+                        // of their own rather than a narrower list: the row
+                        // that asks for them shows them.
+                        if filter == Some(Filter::Running) {
+                            chosen.place.set(Place::Tasks);
+                        } else if chosen.place.get() == Place::Tasks {
+                            chosen.place.set(Place::List);
+                        }
+                        chosen.filter.set(filter.map(|filter| filter.key()));
                     }
                 }),
         ) as Element
