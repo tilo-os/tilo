@@ -239,7 +239,7 @@ impl Expr {
             Self::Split { .. } => {
                 Some(serde_json::json!({"type": "array", "items": {"type": "string"}}))
             }
-            Self::Map { field, .. } => Some(serde_json::json!({"type": "array"})),
+            Self::Map { .. } => Some(serde_json::json!({"type": "array"})),
             Self::Take { .. } | Self::Filter { .. } | Self::Sort { .. } => typed("array"),
             Self::Object { members } => {
                 let mut properties = Map::new();
@@ -375,6 +375,8 @@ fn describe_binding(binding: &Binding) -> String {
 pub enum ExprError {
     /// A value of the wrong type reached an operation.
     Type { what: String },
+    // Every variant is spelled out as a struct so the JSON one carries in a
+    // run report says what went wrong even when it holds nothing.
     /// A number operation would have left the numbers JSON can hold.
     OutOfRange {},
     /// A division or modulo by zero.
@@ -391,14 +393,16 @@ impl fmt::Display for ExprError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Type { what } => f.write_str(what),
-            Self::OutOfRange => f.write_str("the result is too large a number to hold"),
-            Self::DivideByZero => f.write_str("it divides by zero"),
+            Self::OutOfRange {} => f.write_str("the result is too large a number to hold"),
+            Self::DivideByZero {} => f.write_str("it divides by zero"),
             Self::MissingField { field } => write!(f, "there is no field `{field}`"),
             Self::Unordered { left, right } => write!(f, "a {left} and a {right} have no order"),
-            Self::Empty => f.write_str("the list is empty"),
+            Self::Empty {} => f.write_str("the list is empty"),
         }
     }
 }
+
+impl std::error::Error for ExprError {}
 
 /// Whether `value` is truthy: neither null, false, zero, nor an empty string,
 /// array or object.
