@@ -373,7 +373,8 @@ impl BotRunner {
     }
 
     /// Take in what changed since the cursors, queue the firings, run
-    /// those that are due, and keep the progress. Answers the runs' reports.
+    /// those that are due as it begins, and keep the progress. Answers the
+    /// runs' reports.
     ///
     /// A firing the host could not run is tried again later, and
     /// dead-lettered once its attempts are spent.
@@ -389,7 +390,11 @@ impl BotRunner {
         }
         self.keep()?;
         let mut reports = Vec::new();
-        while let Some(queued) = self.progress.queue.next_due(tilo_clock::unix_now_ms_i64()) {
+        // What was due when the pass began: a firing put back during it (a
+        // refused run, one the host could not run) waits for the next pass
+        // at its backoff, even when this pass outlasted the backoff, so a
+        // pass never runs one firing twice.
+        while let Some(queued) = self.progress.queue.next_due(now) {
             let firing = queued.firing.clone();
             let finished = match self.fire(&firing).await {
                 Ok(Fired::Refused(reason)) => {
