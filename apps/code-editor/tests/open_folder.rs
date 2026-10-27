@@ -16,32 +16,20 @@ fn project_folder() -> tempfile::TempDir {
     folder
 }
 
-/// The sidebar's Open folder, shown while no project is open.
-const OPEN_FOLDER: &str = "empty-state:No folder open";
-
-/// Click the sidebar's Open folder, naming what can be clicked if it is not
-/// there.
+/// Click the sidebar's Open folder, shown while no project is open, where
+/// the person sees it: the button its accessibility node names.
 fn click_open_folder(app: &mut TestApp<CodeEditorShell>) {
     let harness = app.harness();
-    if let Err(error) = harness.click_named(OPEN_FOLDER) {
-        let mut targets: Vec<_> = harness
-            .targets()
-            .into_iter()
-            .map(|(name, rect)| format!("{name} {rect:?}"))
-            .collect();
-        targets.sort();
-        let labels: Vec<_> = harness
-            .a11y_nodes()
-            .into_iter()
-            .filter_map(|(_, node)| {
-                node.label()
-                    .map(|label| format!("{:?} {label}", node.role()))
-            })
-            .collect();
-        panic!(
-            "the sidebar offers Open folder: {error}; targets: {targets:#?}; labels: {labels:#?}"
-        );
-    }
+    let bounds = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::Button && node.label() == Some("Open folder")
+        })
+        .and_then(|(_, node)| node.bounds())
+        .expect("the sidebar offers Open folder");
+    let center = bounds.center();
+    harness.click_at(center.x, center.y);
 }
 
 fn shows(app: &mut TestApp<CodeEditorShell>, name: &str) -> bool {
