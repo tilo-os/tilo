@@ -24,6 +24,7 @@ pub mod content_export;
 pub mod date;
 mod detail;
 mod form;
+mod handoff;
 mod import_inbox;
 pub mod model;
 mod priority_contacts;
