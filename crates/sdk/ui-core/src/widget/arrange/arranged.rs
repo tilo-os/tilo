@@ -457,6 +457,18 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         }
     }
 
+    /// An arrangement paints nothing of its own: what changed is what its
+    /// shown children repaint. The default would repaint its whole box
+    /// whenever any child changed, which for a window's root arrangement is
+    /// the whole window for each keystroke.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        for (index, slot) in self.slots.iter().enumerate() {
+            if !self.layout.hidden(index) {
+                slot.element.collect_damage(regions);
+            }
+        }
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         self.slots
             .iter()

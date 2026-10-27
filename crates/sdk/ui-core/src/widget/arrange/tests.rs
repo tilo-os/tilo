@@ -445,3 +445,70 @@ fn a_page_its_parent_places_stays_where_it_is_placed_when_it_settles_its_width()
     assert!((laid.location.x - 10.0).abs() < 0.5, "{laid:?}");
     assert!((laid.size.width - 880.0).abs() < 0.5, "{laid:?}");
 }
+
+/// A leaf that repaints its box while `dirty`.
+struct Repaints {
+    inner: Spacer,
+    dirty: bool,
+}
+
+impl Widget for Repaints {
+    fn build_layout(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        self.inner.build_layout(tree, theme, nodes)
+    }
+
+    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
+        self.inner.apply_layout(tree, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        _scene: &mut vello::Scene,
+        _transform: vello::kurbo::Affine,
+        _text: &mut crate::text_render::TextRenderer,
+        _theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+    }
+
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        self.inner.get_rect()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    fn name(&self) -> &'static str {
+        "Repaints"
+    }
+}
+
+#[test]
+fn a_stack_repaints_what_its_children_repaint_not_its_box() {
+    let theme = Theme::dark();
+    let leaf = |dirty| {
+        Box::new(Repaints {
+            inner: Spacer::fixed(20.0),
+            dirty,
+        }) as crate::widget::Element
+    };
+    let mut stack = Stack::stack()
+        .align(Align::Start)
+        .push(leaf(false))
+        .push(leaf(true))
+        .push(leaf(false));
+    solve(&mut stack, &theme, 400.0);
+    let mut damage = Vec::new();
+    stack.collect_damage(&mut damage);
+    assert_eq!(
+        damage,
+        vec![rects(&stack)[1]],
+        "the changed child alone, not the stack's box"
+    );
+}
