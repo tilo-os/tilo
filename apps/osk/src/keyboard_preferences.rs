@@ -3,7 +3,7 @@
 //! was typed, suggestions offer what might, and the dictionary language need
 //! not match the letter layout.
 
-use super::*;
+use super::{KeyboardSize, Language, OskWidget, Predictor};
 
 impl OskWidget {
     /// Whether a finished word may be rewritten to a likely correction.
@@ -75,7 +75,15 @@ impl OskWidget {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+
+    use taffy::{NodeId, Size, Style, TaffyTree};
+    use ui::theme::Theme;
+    use ui::widget::Widget;
+    use vello::kurbo::{Point, Rect};
+
+    use super::{KeyboardSize, Language, OskWidget};
+    use crate::{KeyAction, KeyId};
 
     fn type_word(osk: &mut OskWidget, word: &str) {
         for c in word.chars() {
