@@ -159,6 +159,9 @@ fn action_failed(
 struct PageOperation {
     invocation: ui::tilo_actions::InvocationId,
     request_id: u32,
+    /// The action as it was asked, for an answer that says what ran: a
+    /// capture's picture is an artifact, a read's is the page to look at.
+    acted: ui::webview::PageRequest,
     phase: PagePhase,
     deadline: std::time::Instant,
     /// A main-frame load that settled while the request was with the engine
@@ -2088,10 +2091,12 @@ impl BrowserWidget {
         }
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
         let act = request.described();
+        let acted = request.clone();
         let now = std::time::Instant::now();
         self.page_operation = Some(PageOperation {
             invocation,
             request_id: self.page_request_seq,
+            acted,
             phase: PagePhase::Queued {
                 request,
                 until: now + PAGE_LOAD_WAIT,
@@ -2133,6 +2138,7 @@ impl BrowserWidget {
             PagePhase::Navigating { reply } => self.page_success(
                 operation.invocation,
                 &reply,
+                &operation.acted,
                 Some("the page it opened is still loading"),
             ),
             PagePhase::Queued { .. } | PagePhase::Sent => {
@@ -2188,7 +2194,7 @@ impl BrowserWidget {
                 }
             };
             self.page_operation_result =
-                Some(self.page_success(operation.invocation, reply, note.as_deref()));
+                Some(self.page_success(operation.invocation, reply, &operation.acted, note.as_deref()));
             return;
         }
         self.page_operation_result = Some(match result {
@@ -2200,7 +2206,7 @@ impl BrowserWidget {
                 });
                 return;
             }
-            Ok(reply) => self.page_success(operation.invocation, &reply, None),
+            Ok(reply) => self.page_success(operation.invocation, &reply, &operation.acted, None),
             // A page that refused the action because it was busy, or never
             // answered, is reported as what it is.  Calling it retryable here
             // would contradict the at-most-once contract this app publishes
@@ -2238,7 +2244,7 @@ impl BrowserWidget {
         };
         let note = error.map(|error| format!("the page it opened failed to load: {error}"));
         self.page_operation_result =
-            Some(self.page_success(operation.invocation, &reply, note.as_deref()));
+            Some(self.page_success(operation.invocation, &reply, &operation.acted, note.as_deref()));
     }
 
     fn completed_download_path(&self, id: &str) -> Result<std::path::PathBuf, String> {

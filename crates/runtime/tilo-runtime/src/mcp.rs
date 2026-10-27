@@ -55,6 +55,14 @@ pub struct McpServer<H> {
     /// The app each of this session's invocations went to, so a later
     /// `tilo_status` reads produced content with that app's scope.
     produced_by: std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, String>>,
+    /// Whether each of those invocations ran an effect ([`Self::produced_by`]).
+    /// The host cannot be asked afterwards: the answer names the resource by
+    /// the id its window bound it under (`tilo-ui-bound:v1:…`), which
+    /// resolves to no action, so an action on a bound resource looked like
+    /// an effect and the picture it read was named, never shown. What the
+    /// answer itself says (`agent.kind`) outranks this.
+    produced_effect:
+        std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, Option<bool>>>,
     /// The images this session has been shown, by content hash, with the
     /// invocation that showed each: the same picture again is named, not
     /// sent again.
@@ -96,6 +104,14 @@ pub(crate) const MAX_WORKING: usize = 16;
 /// once, so a flood of calls neither queues without end nor makes the one
 /// that cancels wait behind it.
 pub(crate) const MAX_ADMITTED: usize = 64;
+
+/// One action's kind, as what ran could tell it: [`Self::Unsaid`] falls
+/// back on asking the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EffectOf {
+    Ran(bool),
+    Unsaid,
+}
 
 /// Where an answer carries the images it shows until [`tool_result`] moves
 /// them out of the JSON and into MCP image blocks. Not a valid JSON key an
@@ -580,6 +596,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             open_files: std::sync::Arc::default(),
             media: None,
             produced_by: std::sync::Mutex::default(),
+            produced_effect: std::sync::Mutex::default(),
             shown: std::sync::Mutex::default(),
             seen: std::sync::Mutex::default(),
             working: tokio::sync::Semaphore::new(MAX_WORKING),
@@ -615,8 +632,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     {
         self.produced_by.lock_recover()
     }
-    /// Remember that `invocation` went to the instance of `app_id`.
-    fn record_producer(&self, invocation: tilo_actions::InvocationId, app_id: Option<&str>) {
+    /// Remember that `invocation` went to the instance of `app_id`, and
+    /// whether the host said, as the action began, that it is an effect
+    /// (`None`: it did not say).
+    fn record_producer(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        app_id: Option<&str>,
+        effect: Option<bool>,
+    ) {
         let Some(app_id) = app_id.filter(|_| self.media.is_some()) else {
             return;
         };
@@ -625,6 +649,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             produced.clear();
         }
         produced.insert(invocation, app_id.to_owned());
+        drop(produced);
+        let mut effects = self.produced_effect.lock_recover();
+        if effects.len() >= 256 {
+            effects.clear();
+        }
+        effects.insert(invocation, effect);
     }
     fn shown(
         &self,
@@ -658,18 +688,49 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         drop(shown);
         (fresh, unchanged)
     }
-    /// Whether `target` is an effect operation, as its provider describes
-    /// it now. Asked only when an answer carries pictures.
-    async fn is_effect(&self, target: &RemoteActionTarget) -> bool {
-        let Ok(revision) = self.current_revision(&target.provider).await else {
-            return false;
-        };
-        self.ask(CatalogueQuery::resolve(target, revision))
-            .await
-            .ok()
-            .and_then(|page| page.rows.into_iter().next())
-            .and_then(|row| row.action)
-            .is_some_and(|action| action.kind == tilo_actions::OperationKind::Effect)
+    /// Whether the action `invocation` ran is an effect: `stamp` is
+    /// `agent` of the answer's output, where a running app marks what it did
+    /// (a read answers a picture to look at; an effect's picture, an export,
+    /// is an artifact it made).
+    ///
+    /// The mark comes first because it names the action that actually ran.
+    /// The answer's own `target` cannot: it carries the id a bound resource
+    /// was issued under (`tilo-ui-bound:v1:<publication>:<instance>:…`),
+    /// which the host cannot resolve back to an action, so asking it there
+    /// labelled every action on a bound resource an effect — and a capture's
+    /// picture was then named by address and never shown.
+    fn is_effect(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        stamp: Option<&Value>,
+    ) -> EffectOf {
+        if let Some(kind) = stamp
+            .and_then(|agent| agent.get("kind"))
+            .and_then(Value::as_str)
+        {
+            return EffectOf::Ran(kind != "view");
+        }
+        if let Some(Some(ran)) = self.produced_effect.lock_recover().get(&invocation) {
+            return EffectOf::Ran(*ran);
+        }
+        EffectOf::Unsaid
+    }
+    /// Whether the host describes `target` as an effect now: what an
+    /// invocation whose action ran outside this session's record went to.
+    /// `None` when it cannot say — an id a window bound its resource under
+    /// names no action to the host, and silence is not a yes.
+    async fn action_is_effect(&self, target: &RemoteActionTarget) -> Option<bool> {
+        let revision = self.current_revision(&target.provider).await.ok()?;
+        Some(
+            self.ask(CatalogueQuery::resolve(target, revision))
+                .await
+                .ok()?
+                .rows
+                .into_iter()
+                .next()?
+                .action
+                .is_some_and(|action| action.kind == tilo_actions::OperationKind::Effect),
+        )
     }
     /// Carry the images a succeeded `invocation` produced in `value`, under
     /// [`IMAGES`], for [`tool_result`] to show. With `again` false, a
@@ -688,6 +749,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         again: bool,
         target: Option<&RemoteActionTarget>,
     ) {
+        let stamp = value.pointer("/update/output/value/agent").cloned();
         let Some(media) = self.media.clone() else {
             return;
         };
@@ -710,9 +772,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if hashes.is_empty() {
             return;
         }
-        if let Some(target) = target
-            && self.is_effect(target).await
-        {
+        let effect = match self.is_effect(invocation, stamp.as_ref()) {
+            EffectOf::Ran(effect) => effect,
+            EffectOf::Unsaid => match target {
+                Some(target) => self.action_is_effect(target).await.unwrap_or(false),
+                None => false,
+            },
+        };
+        if effect {
             return;
         }
         let (hashes, unchanged) = self.not_yet_shown(hashes, invocation, again);
@@ -1989,7 +2056,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .parse::<u64>()
             .ok()
             .zip(named_path(&a.arguments).map(str::to_owned));
-        self.record_producer(invocation, app_id.as_deref());
+        // Whether the action is an effect is asked once, here, where the
+        // target is the one about to run: the answer's own target carries
+        // the id a bound resource was issued under, which the host cannot
+        // resolve. Silence is kept as silence, and an answer that says what
+        // ran (`agent.kind`) settles it.
+        let effect = self.action_is_effect(&target).await;
+        self.record_producer(invocation, app_id.as_deref(), effect);
         let mut value = match self
             .run_with_handles(
                 target.clone(),

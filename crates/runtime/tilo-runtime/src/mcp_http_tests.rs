@@ -58,6 +58,10 @@ struct StubHost {
     kind: Arc<StdMutex<tilo_actions::OperationKind>>,
     /// The tags of the published action's contract.
     tags: Arc<StdMutex<Vec<String>>>,
+    /// Answer for the resource as published, whatever id the caller named:
+    /// as the host does for the id a window bound a resource under, which
+    /// names no resource it publishes.
+    catalogue_only: bool,
 }
 
 impl StubHost {
@@ -107,7 +111,7 @@ impl ActionHost for StubHost {
     fn query(
         &self,
         _caller: &Caller,
-        query: CatalogueQuery,
+        mut query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         if matches!(self.availability, CatalogueAvailability::ExitDuringQuery)
             && query.provider.is_some()
@@ -125,6 +129,11 @@ impl ActionHost for StubHost {
         let mut row = self.row();
         if let Some(provider) = query.provider.clone() {
             row.provider = provider;
+        }
+        if self.catalogue_only {
+            // An id this host publishes nothing under (a bound one): the
+            // page holds what it does publish, and answers no target.
+            query.target = None;
         }
         let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);
         page.providers = vec![CatalogueProvider {
@@ -1353,6 +1362,88 @@ fn an_effect_answers_with_its_picture_address_not_the_picture() {
             .to_owned();
         let status = tool(&server, "tilo_status", json!({"invocation_id": id})).await;
         assert_eq!(images(&status), 1, "{status}");
+    });
+}
+
+/// The id a window bound a resource under names no action to the host
+/// (`tilo-ui-bound:v1:…`), so asking it about a bound resource afterwards
+/// cannot say what ran. The answer says it instead, and that mark decides:
+/// a read on a bound resource shows its picture, not content that was only
+/// named.
+#[test]
+fn a_read_of_a_bound_resource_shows_its_picture_even_where_the_host_cannot_resolve_it() {
+    let bound = "tilo-ui-bound:v1:pubb:aabb:746573742e6e6f74653a31";
+    // The host answers for no such resource, exactly as a bound id.
+    let host = StubHost {
+        catalogue_only: true,
+        ..StubHost::default()
+    };
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"url":"https://site.test/","agent":{"kind":"view","action":"outline"}})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    let images = |reply: &Value| {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .count()
+    };
+    run(async {
+        let reply = tool(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":bound,"action":tilo_resource::APPLY}),
+        )
+        .await;
+        assert_eq!(
+            reply["structuredContent"]["update"]["state"], "succeeded",
+            "{reply}"
+        );
+        assert_eq!(images(&reply), 1, "{reply}");
+    });
+}
+
+/// The same bound resource whose answer says what ran was an effect keeps
+/// its picture as an artifact: named, and shown on request.
+#[test]
+fn a_bound_resources_effect_still_answers_with_its_picture_address() {
+    let bound = "tilo-ui-bound:v1:pubb:aabb:746573742e6e6f74653a31";
+    let host = StubHost {
+        catalogue_only: true,
+        ..StubHost::default()
+    };
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"agent":{"kind":"effect"}})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    run(async {
+        let reply = tool(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":bound,"action":tilo_resource::APPLY}),
+        )
+        .await;
+        assert!(
+            reply["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|block| block["type"] != "image"),
+            "{reply}"
+        );
+        assert!(
+            reply["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("tilo.content:look"),
+            "{reply}"
+        );
     });
 }
 
