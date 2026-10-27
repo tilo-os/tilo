@@ -89,6 +89,48 @@ impl Room {
         self.window.update(&self.doc, &root);
     }
 
+    /// Lay the window out at 1200x800, as a host does after a frame: what changed in place is
+    /// laid out in place from then on.
+    fn lay_out(&mut self) {
+        use ui::taffy::prelude::{AvailableSpace, Size};
+        let _ = self.window.take_structure_change();
+        let mut taffy = ui::taffy::TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = self
+            .window
+            .build_layout(&mut taffy, &ui::Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(1200.0),
+                    height: AvailableSpace::Definite(800.0),
+                },
+            )
+            .expect("the window lays out");
+        self.window
+            .apply_layout(&taffy, node, ui::kurbo::Point::ZERO);
+    }
+
+    /// Paint the window into `scene`, as a frame does.
+    fn paint(&mut self, scene: &mut ui::vello::Scene) {
+        let mut text = ui::TextRenderer::new();
+        self.window.draw(
+            scene,
+            ui::kurbo::Affine::IDENTITY,
+            &mut text,
+            &ui::Theme::dark(),
+            &ui::presence::PresenceCtx::default(),
+        );
+    }
+
+    /// A drawn frame: the window painted, nothing left to repaint.
+    fn draw(&mut self) {
+        let mut scene = ui::vello::Scene::new();
+        self.paint(&mut scene);
+        self.window.mark_drawn();
+    }
+
     fn resources() -> Vec<ui::tilo_actions::Resource> {
         crate::resource::published()
     }
@@ -1762,4 +1804,74 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
     );
     assert_eq!(room.rows().len(), notes, "every note is still there");
     assert_eq!(room.window.detail_target(), None, "the window started over");
+}
+
+#[test]
+fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
+    use ui::widget::Widget as _;
+    let mut room = Room::seeded("todo");
+    let (key, _) = room.rows().remove(0);
+    room.activate(&key);
+    let detail = room.window.detail_tree().expect("the item is shown");
+    let input = first_input(&detail).expect("the item's title").key.clone();
+    // The list mounts the rows its laid-out height shows, measures them as they are laid out,
+    // then holds them.
+    room.lay_out();
+    room.settle();
+    room.lay_out();
+    room.lay_out();
+    let mut typed = String::new();
+    for letter in ['p', 'l', 'a', 'n'] {
+        typed.push(letter);
+        room.window.act(UiEvent::Edit(input.clone(), typed.clone()));
+        room.settle();
+        let change = room.window.take_structure_change();
+        assert!(
+            matches!(
+                change,
+                ui::widget::StructureChange::None | ui::widget::StructureChange::Children
+            ),
+            "a keystroke rebuilt the window's tree ({change:?}): its row and its field change \
+             in place"
+        );
+        room.lay_out();
+    }
+}
+
+#[test]
+fn a_keystroke_repaints_its_field_not_the_window() {
+    // The item's column slides in: what a keystroke repaints is asked of the
+    // window at rest.
+    let _settled = ui::motion::testing::settled();
+    let mut room = Room::seeded("todo");
+    let (key, _) = room.rows().remove(0);
+    room.activate(&key);
+    let detail = room.window.detail_tree().expect("the item is shown");
+    let input = first_input(&detail).expect("the item's title").key.clone();
+    room.lay_out();
+    room.settle();
+    room.lay_out();
+    room.draw();
+    let window = room.window.get_rect();
+    let mut typed = String::new();
+    for letter in ['p', 'l', 'a', 'n'] {
+        typed.push(letter);
+        room.window.act(UiEvent::Edit(input.clone(), typed.clone()));
+        room.settle();
+        // Drawn where the last layout placed it: the harness lays a window
+        // out only by rebuilding it, which the live window does not do for
+        // a keystroke.
+        let mut scene = ui::vello::Scene::new();
+        room.paint(&mut scene);
+        let mut damage = Vec::new();
+        room.window.collect_damage(&mut damage);
+        room.window.mark_drawn();
+        // The field and the row change; nothing that holds them repaints
+        // as a whole (the harness, which presents no frame, leaves the
+        // list's column to repaint its box).
+        assert!(
+            !damage.is_empty() && damage.iter().all(|rect| rect.area() < window.area() / 2.0),
+            "a keystroke repainted what holds the field: {damage:?} of {window:?}"
+        );
+    }
 }

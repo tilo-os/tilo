@@ -62,6 +62,7 @@ use crate::resource::{Live, Room, RoomState, caller_of};
 use pane::Pane;
 use rows::{HostRows, Registry};
 use shell::DETAIL;
+use ui::tilo_resource::profiling::Phase;
 
 /// An answer to the Ask bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1727,6 +1728,7 @@ impl Widget for Window {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let _phase = Phase::start("tl.sync");
         let (doc, _) = ui::doc::document_ref(state, path);
         let Some(host) = self.host_for(doc) else {
             self.body.sync(state, path);
@@ -1750,11 +1752,14 @@ impl Widget for Window {
         } else if let Some(live) = self.live.as_ref().filter(|live| live.pending()) {
             live.update();
         }
+        let views = Phase::start("tl.views");
         self.poll_views();
+        drop(views);
         self.body.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let _phase = Phase::start("tl.update");
         let door = self.take_door_work();
         let opened = self.take_open_requests();
         let settled = self.settle_outbox();
@@ -1769,8 +1774,11 @@ impl Widget for Window {
         }
         // Who is at a resource shows wherever a view reads its lenses.
         let lenses = std::mem::take(&mut self.lenses_changed);
+        let handled = Phase::start("tl.events");
         let changed = self.handle_events() || door || opened || settled || lenses || renamed;
+        drop(handled);
         if changed {
+            let _views = Phase::start("tl.views");
             self.poll_views();
         }
         self.take_toast_undo();
@@ -1834,6 +1842,12 @@ impl Widget for Window {
                 undrawn.read_at.elapsed().as_millis()
             );
         }
+    }
+
+    /// The window paints nothing of its own: what changed is what its body
+    /// repaints, not the whole window whenever anything in it changed.
+    fn collect_damage(&self, regions: &mut Vec<ui::kurbo::Rect>) {
+        self.body.collect_damage(regions);
     }
 
     fn take_structure_dirty(&mut self) -> bool {
