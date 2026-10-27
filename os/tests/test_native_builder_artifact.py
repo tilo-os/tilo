@@ -51,8 +51,10 @@ class RegistryIOTests(unittest.TestCase):
                         'except ValueError:\n pass\n'
                         'else:\n raise AssertionError("FIFO accepted")\n'
                     )
+                    # The bound only catches a reader that blocks on the FIFO for good;
+                    # starting the interpreter alone takes seconds in a loaded test VM.
                     result = subprocess.run([sys.executable, '-c', script],
-                                            capture_output=True, text=True, timeout=2)
+                                            capture_output=True, text=True, timeout=60)
                     self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_regular_input_and_successful_mount_still_work(self):

@@ -29,6 +29,25 @@ const NEW_NOTE: &str = "create-page";
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "tasks.effect")]
 pub enum TasksEffect {
+    /// Start a project
+    ///
+    /// Open the form a project or an area is made in. It changes nothing on
+    /// its own: a script or an agent that means to make one invokes the
+    /// tracker's own action with a name. It edits nothing, so a viewer may
+    /// open it too.
+    #[effect(kind = "read")]
+    NewProject,
+
+    /// Open issue
+    ///
+    /// Show an issue's page, as choosing it in the list does.
+    #[effect(view, idempotent, item = issues)]
+    #[effect(icon = "circle-dot")]
+    OpenIssue {
+        #[param("The issue")]
+        issue: Id,
+    },
+
     /// Write a note
     ///
     /// A note in Notes for the issue, titled after it and linked from it.
@@ -44,6 +63,9 @@ pub enum TasksEffect {
 pub(crate) fn handle(effect: TasksEffect, cx: &mut EffectCx<Tracker>) -> EffectAnswer {
     match effect {
         TasksEffect::WriteNote { issue } => write_note(cx, issue),
+        // The window answers these itself as they arrive (see `lib::router`):
+        // the form a project is made in, and the page an issue is shown on.
+        TasksEffect::NewProject | TasksEffect::OpenIssue { .. } => Ok(Effected::done()),
     }
 }
 
