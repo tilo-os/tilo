@@ -210,7 +210,8 @@ case ${1:-} in
     # orders dev bases, as it did in Build / OS dev. The dev components come compiled
     # (os-compile-dev-<arch>): nothing compiles here. While stable has not published this tree's
     # env-runtime the OS image ships none; the dev image then ships env-runtime-dev-<arch>'s, built
-    # from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone.
+    # from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone. Its
+    # local model catalog is model-catalog-dev-<arch>'s, which names the runtimes of this tree.
     # Its layers are dated by the OS image's clock (its base's and RPM snapshot's), not by the
     # commit or the time they were built, so a dev layer whose content is the same is the same
     # blob in the next build, and a publication sends it once.
@@ -221,6 +222,7 @@ case ${1:-} in
       TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
       TILO_COMPILED_DEV=$compiled \
       TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/dev/$arch \
+      TILO_DEV_MODEL_CATALOG=/target/model-catalog/dev/$arch \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
       bash os/dev/build-dev-image.sh
     # Kept as the layers it added over the OS image's, composed with them: the OS image's
