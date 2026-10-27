@@ -337,6 +337,35 @@ impl ScrollRegion {
         moved
     }
 
+    /// Move the offset so the viewport's lower edge falls in a gap between
+    /// `bands` (content coordinates) rather than cutting one through its
+    /// middle: a field list drawn edge to edge then always ends on a whole
+    /// field, never on half of one with the list's own empty sheet below it.
+    ///
+    /// `bands` are the fields, top down. Where the edge cuts a field the list
+    /// scrolls on until that field is whole — the fade at the edge already
+    /// said there was more to see — so the field is complete when the offset
+    /// reaches the content's end, as a list resting at its foot shows all of
+    /// its last field. An edge already in a gap is left alone, and so is one
+    /// no gap can be reached from: the person scrolling is not fought either
+    /// way.
+    pub fn land_between(&mut self, bands: &[Rect]) {
+        let shown = self.content_rect().height();
+        let offset = self.offset.y;
+        let edge = offset + shown;
+        let Some(cut) = bands
+            .iter()
+            .find(|band| band.y0 < edge - 0.5 && band.y1 > edge + 0.5)
+        else {
+            return;
+        };
+        let max = self.max_offset().y;
+        let target = cut.y1.min(max);
+        if target > offset {
+            self.scroll_by(Vec2::new(0.0, target - offset));
+        }
+    }
+
     /// Scroll the least that shows `rect` (in content coordinates).
     pub fn scroll_into_view(&mut self, rect: Rect) {
         let shown = self.content_rect();
