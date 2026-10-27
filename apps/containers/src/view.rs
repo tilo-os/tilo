@@ -6,6 +6,7 @@
 //! theme decides how it looks. Interaction leaves as an [`Intent`] that the
 //! app applies to the window, the draft and the engine.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::num::u32_of_usize;
@@ -55,6 +56,8 @@ pub(crate) enum Intent {
     PromptSubmit,
     PromptCancel,
     ClosePull,
+    /// End the download: the engine's process is stopped, not just hidden.
+    StopPull,
     /// Ask the engine again whether it is there.
     Reconnect,
 }
@@ -466,6 +469,9 @@ pub(crate) struct DetailModel<'a> {
     pub container: &'a Container,
     pub tab: DetailTab,
     pub controls: bool,
+    /// A verb on this container is in flight: the engine has not answered
+    /// yet, so its controls wait rather than inviting a second click.
+    pub busy: bool,
     /// A live engine answers the container's published actions; the sample
     /// answers through the app.
     pub live_engine: bool,
@@ -518,7 +524,7 @@ fn verb_button(
     let c = model.container;
     let button = Button::new(&format!("detail-{verb_id}-{}", c.id), label)
         .with_icon(icon)
-        .with_enabled(model.controls);
+        .with_enabled(model.controls && !model.busy);
     let binding = (model.live_engine && verb_id != "remove")
         .then(|| crate::app::container_row(c, true).into_resource())
         .and_then(|resource| ui::tilo_actions::ActionBinding::unit_for(&resource, verb_id).ok());
@@ -1042,34 +1048,72 @@ pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents)
     page(None, rows)
 }
 
-/// The body of the pull sheet: the state of the pull and its latest output.
-pub(crate) fn pull_body(pull: &crate::app::PullProgress) -> Column {
-    let state: Element = match &pull.failed {
-        Some(error) => Box::new(Text::new(error).with_role(TextRole::Body)),
-        None if pull.done => Box::new(
+/// What the pull sheet says it is fetching: the bytes Podman reported, or
+/// just the phase where it named none.
+fn downloading_text(fetched: Option<(u64, Option<u64>)>) -> Cow<'static, str> {
+    match fetched {
+        Some((done, Some(total))) => Cow::Owned(format!(
+            "Downloading layers: {} of {}",
+            ui::format::size(done),
+            ui::format::size(total)
+        )),
+        Some((done, None)) => Cow::Owned(format!(
+            "Downloading layers: {} so far",
+            ui::format::size(done)
+        )),
+        None => Cow::Borrowed("Downloading layers"),
+    }
+}
+
+/// The body of the pull sheet: the state of the pull, what it has fetched, and
+/// its output — all of it, scrolling, so the reason a pull stalled (an auth
+/// prompt, a retrying layer) is still there to read.
+pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> Column {
+    let state: Element = match (&pull.failed, pull.stopped) {
+        (Some(error), _) => Box::new(Text::new(error).with_role(TextRole::Body)),
+        (None, true) => Box::new(
+            Text::new("Stopped. What had been fetched stays in the image store.")
+                .with_role(TextRole::Body)
+                .dimmed(),
+        ),
+        (None, false) if pull.done => Box::new(
             Text::new("The image is ready to create containers from.")
                 .with_role(TextRole::Body)
                 .dimmed(),
         ),
-        // A pull reports layers, not a share of the whole: it spins
-        // instead of pretending to a fraction.
-        None => Box::new(
+        // A pull reports layers, not a share of the whole: it spins instead of
+        // pretending to a fraction. The bytes below say how far it has got.
+        (None, false) => Box::new(
             Row::new()
                 .no_wrap()
                 .push(Box::new(Spinner::new()))
                 .push(Box::new(
-                    Text::new("Downloading layers")
+                    Text::new(&downloading_text(pull.fetched))
                         .with_role(TextRole::Body)
                         .dimmed(),
                 )),
         ),
     };
-    let skip = pull.lines.len().saturating_sub(8);
-    Column::new()
+    let mut column = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
-        .push(state)
-        .push(output(pull.lines.iter().skip(skip).map(String::as_str)))
+        .push(state);
+    if !pull.done && !pull.stopped && pull.failed.is_none() {
+        // A mistaken multi-gigabyte pull must be stoppable, not only hidable.
+        let stop = intents.clone();
+        column = column.push(Box::new(
+            Button::new("containers-pull-stop", "Stop the download")
+                .role(ButtonRole::Secondary)
+                .on_view(move || stop.push(Intent::StopPull)),
+        ));
+    }
+    column
+        .push(output(pull.lines.iter().map(String::as_str)))
+        .push(Box::new(
+            Text::new("Every line Podman wrote, oldest first.")
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ))
 }
 
 /// What the window shows, published by the app whenever the engine or the
@@ -1086,6 +1130,9 @@ pub(crate) struct Model {
     /// Podman did not answer a live app: the pages say so instead of
     /// showing empty lists.
     pub missing: bool,
+    /// The container a lifecycle verb is in flight on, if any: its controls
+    /// wait for the engine instead of inviting a second click.
+    pub busy: Option<String>,
     /// Digests of what each column shows, taken once per publish so the
     /// columns compare a hash instead of the engine on every frame.
     pub list_digest: Digest,
@@ -1213,7 +1260,7 @@ fn detail_commands(parts: &Parts) -> Element {
     let intents = parts.intents.clone();
     Box::new(ModelView::from_state_by(
         &parts.model,
-        |m: &Model| (m.detail_digest, m.controls),
+        |m: &Model| (m.detail_digest, m.controls, m.busy.clone()),
         move |m: &Model| -> Element {
             let chosen = m.view.selected.as_deref().and_then(|id| m.engine.find(id));
             let Some(container) = chosen else {
@@ -1223,6 +1270,7 @@ fn detail_commands(parts: &Parts) -> Element {
                 container,
                 tab: m.view.tab,
                 controls: m.controls,
+                busy: m.busy.as_deref() == Some(container.id.as_str()),
                 live_engine: m.engine.live,
             };
             let mut row = Row::new();
@@ -1302,7 +1350,15 @@ fn detail_view(parts: &Parts) -> Element {
     let intents = parts.intents.clone();
     let view = Box::new(ModelView::from_state_by(
         &parts.model,
-        |m: &Model| (m.detail_digest, m.view.tab, m.controls, m.missing),
+        |m: &Model| {
+            (
+                m.detail_digest,
+                m.view.tab,
+                m.controls,
+                m.missing,
+                m.busy.clone(),
+            )
+        },
         move |m: &Model| {
             let chosen = m.view.selected.as_deref().and_then(|id| m.engine.find(id));
             match chosen {
@@ -1311,6 +1367,7 @@ fn detail_view(parts: &Parts) -> Element {
                         container,
                         tab: m.view.tab,
                         controls: m.controls,
+                        busy: m.busy.as_deref() == Some(container.id.as_str()),
                         live_engine: m.engine.live,
                     },
                     &intents,
