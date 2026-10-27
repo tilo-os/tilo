@@ -1577,6 +1577,8 @@ ENROLL = "/usr/libexec/tilo/tilo-enroll"
 # The machine's identity tree, which the VM's person owns.
 MACHINE_IDENTITY = "/var/lib/tilo"
 HOME_PEERS = f"{MACHINE_IDENTITY}/peers/home-peers.json"
+# Where the relay's directory goes: a root-owned runtime directory.
+RELAY_RUNTIME = "/run"
 
 # As root: a fresh directory the relay's account owns, its device key (printed as one JSON
 # line with its relay's endpoint id), and `tilo-enroll pair` started as a transient unit
@@ -1584,8 +1586,15 @@ HOME_PEERS = f"{MACHINE_IDENTITY}/peers/home-peers.json"
 HOME_RELAY_PAIR = r"""
 exec 2>&1
 set -eu
-d=/run/__DIR__
-systemctl stop __UNIT__.service __UNIT__-pair.service 2>/dev/null || true
+d=__RUN__/__DIR__
+# A relay left by an earlier run that refuses to stop keeps its state: never delete it under
+# a running relay.
+for u in __UNIT__.service __UNIT__-pair.service; do
+  load=$(systemctl show "$u" --property=LoadState --value)
+  if [ "$load" != not-found ]; then
+    systemctl stop "$u"
+  fi
+done
 systemctl reset-failed __UNIT__.service __UNIT__-pair.service 2>/dev/null || true
 rm -rf "$d"
 mkdir -m 750 "$d" "$d/identity" "$d/state"
@@ -1612,7 +1621,7 @@ __ENROLL__ approve --identity-root __MACHINE__ \
 HOME_RELAY_START = r"""
 exec 2>&1
 set -eu
-d=/run/__DIR__
+d=__RUN__/__DIR__
 for _ in $(seq 60); do
   [ "$(systemctl show -p SubState --value __UNIT__-pair.service)" = running ] || break
   sleep 1
@@ -1635,11 +1644,17 @@ echo "HOME-RELAY started"
 """
 
 HOME_RELAY_STOP = r"""
-d=/run/__DIR__
+d=__RUN__/__DIR__
 journalctl -u __UNIT__-pair.service -u __UNIT__.service --no-pager -o short-monotonic 2>/dev/null \
   | tail -n 200 | cut -c1-400
-systemctl stop __UNIT__.service __UNIT__-pair.service 2>/dev/null || true
-systemctl reset-failed __UNIT__.service __UNIT__-pair.service 2>/dev/null || true
+# A relay that refuses to stop keeps its directory, and the failure is the step's.
+for u in __UNIT__.service __UNIT__-pair.service; do
+  load=$(systemctl show "$u" --property=LoadState --value) || exit $?
+  if [ "$load" != not-found ]; then
+    systemctl stop "$u" || exit $?
+  fi
+done
+systemctl reset-failed __UNIT__.service __UNIT__-pair.service 2>/dev/null
 rm -rf "$d"
 """
 
@@ -1653,7 +1668,7 @@ SHARED_SESSION_LOG = (
 
 def _guest(script: str, **values) -> str:
     for key, value in {"DIR": HOME_RELAY_DIR, "UNIT": HOME_RELAY_UNIT, "ENROLL": ENROLL,
-                       "MACHINE": MACHINE_IDENTITY, **values}.items():
+                       "MACHINE": MACHINE_IDENTITY, "RUN": RELAY_RUNTIME, **values}.items():
         script = script.replace(f"__{key}__", str(value))
     return script
 
@@ -1667,7 +1682,10 @@ def home_relay_port(uid: int) -> int:
 def start_home_relay(ctx) -> dict:
     """Enroll a home relay into the VM's person as production does and start it; return its
     device key, relay endpoint id and port. Raises Unobservable when the guest cannot."""
-    out = ctx.vm.root_exec(_guest(HOME_RELAY_PAIR, LABEL=shlex.quote(HOME_RELAY_LABEL)))
+    try:
+        out = ctx.vm.root_exec(_guest(HOME_RELAY_PAIR, LABEL=shlex.quote(HOME_RELAY_LABEL)))
+    except VmError as e:
+        raise core.Unobservable(f"the home server's pairing could not be set up: {e}") from e
     ctx.write("R09-home-relay-pair.txt", out)
     try:
         key = first_json(out)
