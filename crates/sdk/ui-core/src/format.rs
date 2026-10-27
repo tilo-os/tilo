@@ -415,6 +415,13 @@ pub fn month_day_year(day: NaiveDate) -> String {
     Formats::current().month_day_year(day)
 }
 
+/// A day without its year and a time of day: `Jun 30, 14:05`. See
+/// [`Formats::month_day_time`].
+#[must_use]
+pub fn month_day_time(at: NaiveDateTime) -> String {
+    Formats::current().month_day_time(at)
+}
+
 /// The abbreviated weekday: `Sun`.
 #[must_use]
 pub fn weekday_short(day: chrono::Weekday) -> String {
